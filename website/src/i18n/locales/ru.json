@@ -8238,6 +8238,7 @@
       "can_t_preview_this_dashboard_here": "Эту панель нельзя показать здесь",
       "couldn_t_open_this_page_in_the_browser": "Не удалось открыть эту страницу в браузере",
       "couldn_t_start_the_browser_view": "Не удалось запустить представление браузера.",
+      "dashboard_policy_blocks_embedding_http_page": "Браузер разрешил бы эту страницу, но эта панель встраивает страницы http:// только с 127.0.0.1 или localhost. Это политика шлюза, а не блокировка браузера.",
       "dismiss": "Скрыть",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Введите выше URL вашего dev-сервера (например, Vite или статический сервер на localhost), чтобы\n              посмотреть сайт, над которым работаете — он перезагружается по мере правок.",
       "exit_expanded_preview": "Свернуть",

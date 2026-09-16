@@ -8126,6 +8126,7 @@
       "can_t_preview_this_dashboard_here": "Impossibile visualizzare l'anteprima di questa dashboard qui",
       "couldn_t_open_this_page_in_the_browser": "Impossibile aprire questa pagina nel browser",
       "couldn_t_start_the_browser_view": "Non è stato possibile avviare la vista del browser.",
+      "dashboard_policy_blocks_embedding_http_page": "Il browser consentirebbe questa pagina, ma questa dashboard incorpora solo pagine http:// servite da 127.0.0.1 o localhost. È una regola del gateway, non un blocco del browser.",
       "dismiss": "Ignora",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Inserisci sopra l'URL del tuo server di sviluppo (ad es. un server Vite o statico in esecuzione su localhost) per\n              vedere l'anteprima del sito su cui stai lavorando — si ricarica in tempo reale mentre modifichi.",
       "exit_expanded_preview": "Comprimi",

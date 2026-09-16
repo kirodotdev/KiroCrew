@@ -7902,6 +7902,7 @@
       "can_t_preview_this_dashboard_here": "이 대시보드는 여기에서 미리 볼 수 없습니다",
       "couldn_t_open_this_page_in_the_browser": "이 페이지를 브라우저에서 열 수 없습니다",
       "couldn_t_start_the_browser_view": "브라우저 보기를 시작할 수 없습니다.",
+      "dashboard_policy_blocks_embedding_http_page": "브라우저는 이 페이지를 허용하지만, 이 대시보드는 127.0.0.1 또는 localhost에서 제공되는 http:// 페이지만 삽입합니다. 이는 게이트웨이 정책이며 브라우저의 차단이 아닙니다.",
       "dismiss": "닫기",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "위에 개발 서버 URL을 입력하면(예: localhost에서 실행 중인 Vite 또는 정적 서버)\n 작업 중인 사이트를 미리 볼 수 있습니다 — 편집할 때마다 실시간으로 새로 고쳐집니다.",
       "exit_expanded_preview": "접기",

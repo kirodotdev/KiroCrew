@@ -8014,6 +8014,7 @@
       "can_t_preview_this_dashboard_here": "এই ড্যাশবোর্ড এখানে প্রিভিউ করা যাবে না",
       "couldn_t_open_this_page_in_the_browser": "এই পেজটি ব্রাউজারে খোলা যায়নি",
       "couldn_t_start_the_browser_view": "ব্রাউজার ভিউ চালু করা যায়নি।",
+      "dashboard_policy_blocks_embedding_http_page": "ব্রাউজার এই পেজটি অনুমতি দিত, কিন্তু এই ড্যাশবোর্ড কেবল 127.0.0.1 বা localhost থেকে পরিবেশিত http:// পেজই এম্বেড করে। এটি গেটওয়ের নীতি, ব্রাউজারের কোনো বাধা নয়।",
       "dismiss": "বন্ধ করুন",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "আপনি যে সাইটে কাজ করছেন সেটির প্রিভিউ দেখার জন্য উপরে আপনার dev-server URL দিন (যেমন localhost-এ চলা একটি Vite বা স্ট্যাটিক সার্ভার) —\n              আপনি এডিট করার সাথে সাথেই এটি লাইভ রিলোড হয়।",
       "exit_expanded_preview": "সংকুচিত করো",

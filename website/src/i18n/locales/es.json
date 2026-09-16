@@ -8126,6 +8126,7 @@
       "can_t_preview_this_dashboard_here": "Aquí no se puede ver la vista previa de este panel",
       "couldn_t_open_this_page_in_the_browser": "No se pudo abrir esta página en el navegador",
       "couldn_t_start_the_browser_view": "No se pudo iniciar la vista del navegador.",
+      "dashboard_policy_blocks_embedding_http_page": "El navegador permitiría esta página, pero este panel solo incrusta páginas http:// servidas desde 127.0.0.1 o localhost. Es una política de la pasarela, no un bloqueo del navegador.",
       "dismiss": "Descartar",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Introduce arriba la URL de tu servidor de desarrollo (p. ej. un servidor Vite o estático en localhost) para\n              ver la vista previa del sitio en el que trabajas: se recarga en vivo mientras editas.",
       "exit_expanded_preview": "Contraer",

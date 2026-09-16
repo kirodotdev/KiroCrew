@@ -8126,6 +8126,7 @@
       "can_t_preview_this_dashboard_here": "Não é possível visualizar este painel aqui",
       "couldn_t_open_this_page_in_the_browser": "Não foi possível abrir esta página no navegador",
       "couldn_t_start_the_browser_view": "Não foi possível iniciar a vista do navegador.",
+      "dashboard_policy_blocks_embedding_http_page": "O navegador permitiria esta página, mas este painel só incorpora páginas http:// servidas de 127.0.0.1 ou localhost. É uma política do gateway, não um bloqueio do navegador.",
       "dismiss": "Descartar",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Informe acima a URL do seu servidor de desenvolvimento (ex.: um servidor Vite ou estático em localhost) para\n              visualizar o site em que você está trabalhando — ele recarrega automaticamente conforme você edita.",
       "exit_expanded_preview": "Recolher",

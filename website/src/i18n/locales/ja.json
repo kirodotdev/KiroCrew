@@ -7902,6 +7902,7 @@
       "can_t_preview_this_dashboard_here": "このダッシュボードはここでプレビューできません",
       "couldn_t_open_this_page_in_the_browser": "このページをブラウザーで開けませんでした",
       "couldn_t_start_the_browser_view": "ブラウザービューを起動できませんでした。",
+      "dashboard_policy_blocks_embedding_http_page": "ブラウザーはこのページを許可しますが、このダッシュボードは 127.0.0.1 または localhost から配信される http:// ページしか埋め込みません。これはゲートウェイのポリシーであり、ブラウザーによるブロックではありません。",
       "dismiss": "閉じる",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "上記に開発サーバーの URL を入力すると（例: localhost で実行中の Vite または静的サーバー）、\n              作業中のサイトをプレビューできます。編集時にライブリロードされます。",
       "exit_expanded_preview": "拡大プレビューを終了",

@@ -8014,6 +8014,7 @@
       "can_t_preview_this_dashboard_here": "Dieses Dashboard kann hier nicht in der Vorschau angezeigt werden",
       "couldn_t_open_this_page_in_the_browser": "Diese Seite konnte nicht im Browser geöffnet werden",
       "couldn_t_start_the_browser_view": "Die Browseransicht konnte nicht gestartet werden.",
+      "dashboard_policy_blocks_embedding_http_page": "Der Browser würde diese Seite zulassen, aber dieses Dashboard bettet http://-Seiten nur von 127.0.0.1 oder localhost ein. Das ist eine Gateway-Richtlinie, keine Blockierung durch den Browser.",
       "dismiss": "Schließen",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Geben Sie oben die URL Ihres Dev-Servers ein (z. B. ein Vite- oder statischer Server auf localhost), um\n              die Site in der Vorschau zu sehen, an der Sie arbeiten — sie wird beim Bearbeiten live neu geladen.",
       "exit_expanded_preview": "Einklappen",

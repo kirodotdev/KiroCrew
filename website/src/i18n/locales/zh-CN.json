@@ -7902,6 +7902,7 @@
       "can_t_preview_this_dashboard_here": "无法在此预览此仪表板",
       "couldn_t_open_this_page_in_the_browser": "无法在浏览器中打开此页面",
       "couldn_t_start_the_browser_view": "无法启动浏览器视图。",
+      "dashboard_policy_blocks_embedding_http_page": "浏览器本可以允许此页面，但此仪表板只嵌入来自 127.0.0.1 或 localhost 的 http:// 页面。这是网关策略，而不是浏览器的拦截。",
       "dismiss": "忽略",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "在上方输入你的开发服务器 URL（例如运行在 localhost 上的 Vite 或静态服务器），\n              即可预览你正在开发的站点 — 编辑时会实时重新加载。",
       "exit_expanded_preview": "折叠",

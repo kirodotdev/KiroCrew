@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
-import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster } from '../components/WebPreviewPanel'
+import WebPreviewPanel, { normalizeUrl, setSessionPreviewUrl, setSessionPreviewPending, isolatePreviewHost, isDashboardOrigin, withCacheBuster, httpEmbedRefusal, isPotentiallyTrustworthyHost } from '../components/WebPreviewPanel'
 
 // The crop button is gated on snip support (getDisplayMedia). Force it on so
 // the button renders under happy-dom (which has no mediaDevices.getDisplayMedia).
@@ -317,6 +317,10 @@ describe('WebPreviewPanel', () => {
 
       const shown = 'http://0.0.0.0:5173/very/long/path'
       expect(screen.getByText("Can't embed an http:// page here")).toBeInTheDocument()
+      // `0.0.0.0` is not loopback, so this one really IS the engine's mixed-content
+      // block — the card must say so, and must not blame the dashboard's policy.
+      expect(screen.getByTestId('web-preview-embed-refusal-browser')).toHaveTextContent(/mixed content/)
+      expect(screen.queryByTestId('web-preview-embed-refusal-policy')).toBeNull()
       expect(screen.getByText(shown).tagName).toBe('CODE')
       expect(screen.getByText('Open in browser').closest('a')).toHaveAttribute('href', shown)
       expect(screen.queryByText(`Open ${shown}`)).toBeNull()
@@ -366,6 +370,78 @@ describe('WebPreviewPanel', () => {
     } finally {
       window.location.href = originalHref
     }
+  })
+
+  // The engine does NOT block `*.localhost` (it is potentially trustworthy); the
+  // dashboard's own embed allowlist does. The card has to name that blocker, or
+  // a reader is sent into a mixed-content investigation for a policy problem
+  // (#10696). The copy names the dashboard, not the CSP: with instances enabled
+  // the CSP admits `*.localhost` while the panel still refuses it.
+  it('blames the dashboard policy, not the browser, for a *.localhost refusal', () => {
+    const originalHref = window.location.href
+    window.location.href = 'https://dashboard.example.com/'
+    try {
+      renderWithProviders(<WebPreviewPanel sessionKey="sess-1" />)
+      const input = screen.getByLabelText('Preview URL')
+      fireEvent.change(input, { target: { value: 'http://myapp.localhost:5173/' } })
+      fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+      const reason = screen.getByTestId('web-preview-embed-refusal-policy')
+      expect(reason).toHaveTextContent(/this dashboard only embeds http:\/\/ pages/)
+      expect(reason).toHaveTextContent(/gateway policy, not a browser block/)
+      expect(reason).not.toHaveTextContent(/mixed content/)
+      expect(screen.queryByTestId('web-preview-embed-refusal-browser')).toBeNull()
+      // The escape hatch survives on every branch — it is what makes the state
+      // recoverable.
+      expect(screen.getByText('Open in browser').closest('a'))
+        .toHaveAttribute('href', 'http://myapp.localhost:5173/')
+    } finally {
+      window.location.href = originalHref
+    }
+  })
+
+  describe('httpEmbedRefusal', () => {
+    it('does not arise on an http dashboard or for an https target', () => {
+      expect(httpEmbedRefusal('http://myapp.localhost:5173/', 'http:')).toBeNull()
+      expect(httpEmbedRefusal('http://0.0.0.0:5173/', 'http:')).toBeNull()
+      expect(httpEmbedRefusal('https://myapp.localhost:5173/', 'https:')).toBeNull()
+    })
+
+    it('admits the hosts the dashboard frame-src always carries', () => {
+      expect(httpEmbedRefusal('http://127.0.0.1:5173/', 'https:')).toBeNull()
+      expect(httpEmbedRefusal('http://localhost:5173/', 'https:')).toBeNull()
+    })
+
+    it.each([
+      ['http://myapp.localhost:5173/'],
+      ['http://127.0.0.2:5173/'],
+      ['http://[::1]:5173/'],
+    ])('names the dashboard policy for a trustworthy host with no frame-src entry (%s)', (url) => {
+      expect(httpEmbedRefusal(url, 'https:')).toBe('policy')
+    })
+
+    it.each([
+      ['http://0.0.0.0:5173/'],
+      ['http://example.com/'],
+      ['http://10.0.0.7:5173/'],
+    ])('names the browser for a host the engine blocks as mixed content (%s)', (url) => {
+      expect(httpEmbedRefusal(url, 'https:')).toBe('browser')
+    })
+
+    it('fails closed to the browser wording for an unparseable URL', () => {
+      expect(httpEmbedRefusal('http://exa mple/', 'https:')).toBe('browser')
+    })
+  })
+
+  describe('isPotentiallyTrustworthyHost', () => {
+    it('follows W3C Secure Contexts: loopback names and 127/8, not 0.0.0.0', () => {
+      for (const h of ['localhost', 'app.localhost', 'a.b.localhost', '127.0.0.1', '127.255.255.254', '[::1]', '::1']) {
+        expect(isPotentiallyTrustworthyHost(h), h).toBe(true)
+      }
+      for (const h of ['0.0.0.0', 'example.com', 'localhost.example.com', '1270.0.0.1', '127.0.0', '', '10.0.0.1']) {
+        expect(isPotentiallyTrustworthyHost(h), h).toBe(false)
+      }
+    })
   })
 
   // A public http:// host never reaches the frame on this transport at all: it is

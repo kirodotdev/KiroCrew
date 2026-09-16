@@ -363,6 +363,42 @@ function isLoopbackHost(h: string): boolean {
  *  before the target is ever framed. */
 const EMBEDDABLE_LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost'])
 
+/** Whether an `http://` document on *h* is a potentially trustworthy origin under
+ *  W3C Secure Contexts — `localhost`, the `*.localhost` reserved TLD, all of
+ *  `127.0.0.0/8`, and IPv6 loopback — so the ENGINE does not block it as mixed
+ *  content inside an `https` dashboard. `0.0.0.0` is the unspecified address,
+ *  not loopback, and is deliberately absent: the engine really does block it.
+ *
+ *  This is condition 1 of `EMBEDDABLE_LOOPBACK_HOSTS`, split out so the refusal
+ *  card can name the right blocker: a trustworthy host that is still not
+ *  embeddable fails only condition 2, the dashboard's own `frame-src`. */
+export function isPotentiallyTrustworthyHost(h: string): boolean {
+  if (h === 'localhost' || h.endsWith('.localhost')) return true
+  if (h === '[::1]' || h === '::1') return true
+  return /^127\.(?:\d{1,3})\.(?:\d{1,3})\.(?:\d{1,3})$/.test(h)
+}
+
+/** Why an `http://` target cannot be framed inside an `https` dashboard, or
+ *  `null` when it can (an embeddable loopback host) or the question does not
+ *  arise (an `http` dashboard, an `https` target).
+ *
+ *  - `'browser'`: the host is not potentially trustworthy, so the engine blocks
+ *    the frame as mixed content. Nothing on the gateway side can change that.
+ *  - `'policy'`: the engine would allow it, but this dashboard does not embed
+ *    it: `EMBEDDABLE_LOOPBACK_HOSTS` is pinned to the hosts the gateway's CSP
+ *    `frame-src` carries in every mode, and this host is not one of them (a
+ *    `*.localhost` entry exists only in instances mode, so the panel refuses it
+ *    even there rather than guess). That is a gateway policy, not a browser one.
+ *
+ *  One sentence used to cover both, and blamed the browser for the second — which
+ *  sent a reader into a mixed-content investigation for a CSP problem. */
+export function httpEmbedRefusal(url: string, dashboardProtocol: string): 'browser' | 'policy' | null {
+  if (dashboardProtocol !== 'https:' || !url.startsWith('http://')) return null
+  const host = hostnameOf(url)
+  if (EMBEDDABLE_LOOPBACK_HOSTS.has(host)) return null
+  return isPotentiallyTrustworthyHost(host) ? 'policy' : 'browser'
+}
+
 /** A URL's hostname, or `''` when it will not parse — so a caller deciding
  *  whether to RELAX a guard fails closed instead of throwing during render. */
 function hostnameOf(url: string): string {
@@ -1439,20 +1475,18 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // (URL bar, "Open in browser", persistence) and is what the liveness probe hits.
   const frameSrc = useMemo(() => withCacheBuster(url, reloadKey), [url, reloadKey])
 
-  // An http:// frame inside an https:// dashboard (remote/tunnel) is blocked by
-  // the browser as mixed content — detect it so we can explain + offer the
-  // open-in-new-tab fallback instead of rendering a silently-blank frame.
+  // An http:// frame inside an https:// dashboard (remote/tunnel) may be blocked
+  // — detect it so we can explain + offer the open-in-new-tab fallback instead
+  // of rendering a silently-blank frame.
   //
   // The scheme alone does not decide it: a loopback target is a potentially
   // trustworthy origin the engine does NOT block, so a scheme-only test refuses
   // a dev server (or the CLI browser view) that would have loaded, and blames the
   // browser for a refusal that is ours. See `EMBEDDABLE_LOOPBACK_HOSTS` for which
-  // hosts qualify and why the rest still do not.
-  const mixedContent = useMemo(
-    () => typeof window !== 'undefined'
-      && window.location.protocol === 'https:'
-      && url.startsWith('http://')
-      && !EMBEDDABLE_LOOPBACK_HOSTS.has(hostnameOf(url)),
+  // hosts qualify, and `httpEmbedRefusal` for WHICH blocker stops the rest — the
+  // card names it, so a CSP refusal is never explained as mixed content.
+  const embedRefusal = useMemo(
+    () => (typeof window !== 'undefined' ? httpEmbedRefusal(url, window.location.protocol) : null),
     [url],
   )
 
@@ -1466,7 +1500,7 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
   // in favour of the stopped state, a later success restores it.
   const unreachable = useLivenessProbe(
     url,
-    !!url && !mixedContent && !selfOrigin && !pending && active,
+    !!url && embedRefusal === null && !selfOrigin && !pending && active,
     reloadKey,
   )
 
@@ -2187,14 +2221,28 @@ export default function WebPreviewPanel({ sessionKey, active = true }: { session
               ))}
             </div>
           </div>
-        ) : mixedContent ? (
+        ) : embedRefusal ? (
+          // The explanation follows the blocker, not the scheme: `'browser'` is
+          // the engine's mixed-content rule (a public or `0.0.0.0` host),
+          // `'policy'` is the dashboard's own embed allowlist (a `*.localhost` or
+          // other trustworthy host outside it). Both keep the
+          // open-in-browser link — it is what makes the state recoverable.
           <div className="flex flex-col items-center justify-center h-full gap-3 px-6 text-center bg-bg">
             <Globe size={22} className="text-muted" />
             <div className="text-[13px] font-medium text-text">{i18nT('components.webPreviewPanel.can_t_embed_an_http_page_here')}</div>
-            <div className="text-[11px] text-muted max-w-[320px] leading-snug">
-              {i18nT('components.webPreviewPanel.this_dashboard_is_served_over_https_so_the_brows')}
-              <span className="font-mono"> {i18nT('components.webPreviewPanel.http')} </span>
-              {i18nT('components.webPreviewPanel.page_mixed_content')}
+            <div
+              className="text-[11px] text-muted max-w-[320px] leading-snug"
+              data-testid={`web-preview-embed-refusal-${embedRefusal}`}
+            >
+              {embedRefusal === 'policy' ? (
+                i18nT('components.webPreviewPanel.dashboard_policy_blocks_embedding_http_page')
+              ) : (
+                <>
+                  {i18nT('components.webPreviewPanel.this_dashboard_is_served_over_https_so_the_brows')}
+                  <span className="font-mono"> {i18nT('components.webPreviewPanel.http')} </span>
+                  {i18nT('components.webPreviewPanel.page_mixed_content')}
+                </>
+              )}
             </div>
             <code className="text-[11px] font-mono px-2 py-1 rounded bg-bg-elevated text-text break-all max-w-[320px]">
               {url}

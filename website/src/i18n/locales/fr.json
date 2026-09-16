@@ -8126,6 +8126,7 @@
       "can_t_preview_this_dashboard_here": "Impossible de prévisualiser ce tableau de bord ici",
       "couldn_t_open_this_page_in_the_browser": "Impossible d'ouvrir cette page dans le navigateur",
       "couldn_t_start_the_browser_view": "Impossible de démarrer la vue du navigateur.",
+      "dashboard_policy_blocks_embedding_http_page": "Le navigateur autoriserait cette page, mais ce tableau de bord n'intègre que les pages http:// servies depuis 127.0.0.1 ou localhost. C'est une règle de la passerelle, pas un blocage du navigateur.",
       "dismiss": "Ignorer",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "Saisissez ci-dessus l'URL de votre serveur de développement (par ex. un serveur Vite ou statique sur localhost) pour\n              prévisualiser le site sur lequel vous travaillez — il se recharge en direct pendant que vous éditez.",
       "exit_expanded_preview": "Réduire",

@@ -8014,6 +8014,7 @@
       "can_t_preview_this_dashboard_here": "इस डैशबोर्ड का पूर्वावलोकन यहाँ नहीं किया जा सकता",
       "couldn_t_open_this_page_in_the_browser": "इस पेज को ब्राउज़र में नहीं खोला जा सका",
       "couldn_t_start_the_browser_view": "ब्राउज़र दृश्य शुरू नहीं हो सका।",
+      "dashboard_policy_blocks_embedding_http_page": "ब्राउज़र इस पेज की अनुमति देता, लेकिन यह डैशबोर्ड केवल 127.0.0.1 या localhost से सर्व किए गए http:// पेज ही एम्बेड करता है। यह गेटवे की नीति है, ब्राउज़र की रोक नहीं।",
       "dismiss": "खारिज करें",
       "enter_your_dev_server_url_above_e_g_a_vite_or_st": "ऊपर अपना dev-server URL डालें (उदा. localhost पर चल रहा Vite या स्टैटिक सर्वर) ताकि\n              आप जिस साइट पर काम कर रहे हैं उसका पूर्वावलोकन देख सकें — संपादन करते ही यह लाइव-रीलोड होती है।",
       "exit_expanded_preview": "समेटें",
