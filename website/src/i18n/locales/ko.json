@@ -6238,6 +6238,7 @@
       "null": "null",
       "office_download_hint": "이 파일은 미리보기를 사용할 수 없습니다. 다운로드하여 Word, Excel, PowerPoint 또는 호환 뷰어에서 여세요.",
       "office_download_original": "원본 다운로드",
+      "office_structure_unavailable": "일반 텍스트를 표시하고 있습니다 — 이 파일에서 제목, 목록, 표를 읽을 수 없었습니다. 전체 레이아웃은 원본을 다운로드해 확인하세요.",
       "office_open_hint": "이 파일은 미리보기를 사용할 수 없습니다. 해당 앱에서 열거나 사본을 다운로드하세요.",
       "office_preview_loading": "미리보기 로드 중…",
       "office_preview_truncated": "미리보기는 문서의 시작 부분만 표시합니다. 전체 내용을 보려면 원본을 다운로드하세요.",

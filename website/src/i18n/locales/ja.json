@@ -6238,6 +6238,7 @@
       "null": "null",
       "office_download_hint": "このファイルはプレビューできません。ダウンロードして Word、Excel、PowerPoint または互換ビューアで開いてください。",
       "office_download_original": "元のファイルをダウンロード",
+      "office_structure_unavailable": "書式なしテキストを表示しています — このファイルから見出し・リスト・表を読み取れませんでした。完全なレイアウトは元のファイルをダウンロードしてご確認ください。",
       "office_open_hint": "このファイルはプレビューできません。対応するアプリで開くか、コピーをダウンロードしてください。",
       "office_preview_loading": "プレビューを読み込み中…",
       "office_preview_truncated": "プレビューには文書の冒頭のみ表示されています。全文を表示するには元のファイルをダウンロードしてください。",
