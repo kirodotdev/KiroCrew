@@ -1934,14 +1934,17 @@ def _register_optional_connector(
     (GitHub ``transport_provider``, Google ``operations_factory``, Salesforce
     ``call_runner``) and is the authority on its own fail-closed behavior when
     that dependency is absent (GitHub refuses at fetch/detect_changes; Google/SF
-    refuse at validate_config). So the connector is registered whenever its
-    module imports — matching its documented contract (registered + editable,
-    refusing live reads until wired) — and the ``runner_factory`` is passed into
-    the constructor ONLY when the host has installed one (once the W01
-    control-plane executor, PR #11286, is available); otherwise it is
-    constructed with its own default. This is real construction+injection (not
-    an ``app[...]`` presence flag), and copies no vendor code — only the import
-    + injected instantiation live here.
+    refuse at validate_config). The injected value is a PER-SOURCE factory — the
+    connector calls it as ``factory(source)`` to build that source's own runner,
+    so one installed factory serves many sources without sharing a credential
+    binding. So the connector is registered whenever its module imports —
+    matching its documented contract (registered + editable, refusing live reads
+    until wired) — and the ``runner_factory`` is passed into the constructor ONLY
+    when the host has installed one; otherwise it is constructed with its own
+    default (this handler never synthesises a stand-in empty runner to feign
+    activation). This is real construction+injection (not an ``app[...]``
+    presence flag), and copies no vendor code — only the import + injected
+    instantiation live here.
 
     Returns True when the connector was registered.
     """
@@ -3095,15 +3098,23 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # this is their single registration site. A connector is registered
         # whenever its module imports (its documented contract: registered +
         # edition-overridable, refusing live reads until wired), and its
-        # W01-backed runner/factory is INJECTED when the host has installed one
+        # W01-backed runner factory is INJECTED when the host has installed one
         # under ``knowledge_connector_runners`` — a {source_type: runner_factory}
-        # map wired once the control-plane executor (PR #11286) is available.
-        # Absent module → not registered (fail-closed: add_source rejects the
-        # source_type, retrieval never sees it, never public). No vendor code is
-        # copied here; only the import + injected instantiation live in this
-        # shared handler. Built-ins are set BEFORE the edition merge below so an
-        # edition can still ADD or override a source_type. See
-        # _register_optional_connector.
+        # map. Each value is a PER-SOURCE factory: the connector invokes it as
+        # ``factory(source)`` to build that source's own runner (Google's
+        # ``operations_factory(source)``; Salesforce's per-source call runner),
+        # so one installed factory serves many sources without sharing a
+        # credential binding across them. WHERE the host obtains these factories
+        # (which composes the control-plane executor + per-source custody) is not
+        # settled yet, and this handler does NOT synthesise a default/empty
+        # runner to stand in: an absent factory means the connector is
+        # constructed with its own default and self-refuses live reads
+        # (fail-closed), never a fabricated "activated" state. An absent MODULE
+        # means the source_type is not registered at all (add_source rejects it,
+        # retrieval never sees it, never public). No vendor code is copied here;
+        # only the import + injected instantiation live in this shared handler.
+        # Built-ins are set BEFORE the edition merge below so an edition can
+        # still ADD or override a source_type. See _register_optional_connector.
         _runner_factories = app.get("knowledge_connector_runners") or {}
         for _stype, _mod, _cls in (
             ("github",
