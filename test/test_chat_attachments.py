@@ -503,14 +503,14 @@ def test_same_text_modulo_images_pairs_a_copy_stored_on_a_unc_data_home(monkeypa
     the pair the two write boundaries exist to collapse becomes two history rows.
 
     Purely lexical throughout (no path here is written), and every spelling is
-    forward-slash with ``data_home`` patched, so the gate answers the same on the
-    Linux CI box as on Windows -- the reason the UNC-gate tests give.
+    forward-slash with ``peek_data_home`` patched, so the gate answers the same on
+    the Linux CI box as on Windows -- the reason the UNC-gate tests give.
     """
     from kiro_crew.messaging import outbound_files as module
 
     monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
     unc_home = "//fileserver/home/me/.kiro/crew"
-    monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: Path(unc_home))
+    monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: Path(unc_home))
 
     unc_sessions = f"{unc_home}/sessions"
     stored = f"{unc_sessions}/{STEM}.attachments/0123456789abcdef-shot.png"

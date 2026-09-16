@@ -38,6 +38,7 @@ from kiro_crew.messaging.outbound_files import (
     iter_local_refs,
     local_destination,
     md_destination,
+    protected_ref_spans,
     strip_url_syntax,
     unescape_md,
 )
@@ -277,7 +278,7 @@ class TestUncDestinationIsNotARemoteUrl:
     bare ``//`` prefix test read as remote, so the scan returned nothing for a
     file this gateway had written itself.
 
-    Every spelling here is forward-slash and ``data_home`` is patched, for the
+    Every spelling here is forward-slash and ``peek_data_home`` is patched, for the
     reason the UNC-gate tests already give: ``normcase``/``normpath`` leave
     ``//host/...`` intact on POSIX, so the purely lexical gate answers the same on
     the Linux CI box as on Windows. The real ``unc_probe_allowed`` is used rather
@@ -293,7 +294,7 @@ class TestUncDestinationIsNotARemoteUrl:
         from kiro_crew.messaging import outbound_files as module
 
         monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
-        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: Path(self._UNC_HOME))
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: Path(self._UNC_HOME))
 
     def test_a_stored_unc_attachment_is_a_local_reference(
         self, windows_with_a_unc_data_home: None
@@ -327,13 +328,49 @@ class TestUncDestinationIsNotARemoteUrl:
         from kiro_crew.messaging import outbound_files as module
 
         monkeypatch.setattr(module, "os", type("OS", (), {"name": "posix"})(), raising=False)
-        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: Path(self._UNC_HOME))
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", lambda: Path(self._UNC_HOME))
         assert is_remote_destination(self._STORED) is True
         assert iter_local_refs(f"![s]({self._STORED})") == []
 
     def test_an_ordinary_path_never_reaches_the_unc_question(self) -> None:
         assert is_remote_destination("/tmp/a.png") is False
         assert is_remote_destination(r"C:\Users\me\a.png") is False
+
+    def test_the_inline_classifier_resolves_no_home_per_call(
+        self, windows_with_a_unc_data_home: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The scan must stay free of home resolution, because it runs ON the loop.
+
+        ``telegram.renderer._rotate_on_length`` calls ``protected_ref_spans``
+        INLINE rather than through ``asyncio.to_thread``, and says why: the scan
+        costs 7-15 us/KB, against a 145-650 us thread hop. That trade is only
+        sound while the scan is pure string work. Routing it through
+        ``unc_probe_allowed`` put the data-home accessor in it, and with
+        ``KIROCREW_HOME`` set that accessor resolves the override on every call
+        -- an SMB round-trip on the very roaming profile this feature targets.
+
+        Asserted on CALLS to the accessor, not on elapsed time: a timing
+        assertion would be a flake, and the contract being defended is
+        structural. Red before the memo: one accessor call per classification.
+        """
+        calls: list[int] = []
+        real_home = Path(self._UNC_HOME)
+
+        def counting_data_home() -> Path:
+            calls.append(1)
+            return real_home
+
+        monkeypatch.setattr("kiro_crew.config.paths.peek_data_home", counting_data_home)
+        text = f"![shot]({self._STORED})"
+        # Prime whatever this configuration is allowed to resolve once, so the
+        # count below is per-call cost rather than first-touch cost.
+        assert protected_ref_spans(text)
+        calls.clear()
+
+        for _ in range(5):
+            assert protected_ref_spans(text)
+
+        assert calls == []
 
 
 class TestOutboundSecurity:

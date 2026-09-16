@@ -927,12 +927,56 @@ class TestValidateFilePath:
         import kiro_crew.hooks as hooks_mod
 
         unc_home = "//roaming-server/profiles/alice/.kiro/crew"
-        monkeypatch.setattr(hooks_mod._config_paths, "data_home", lambda: Path(unc_home))
+        monkeypatch.setattr(hooks_mod._config_paths, "peek_data_home", lambda: Path(unc_home))
         self._windows(monkeypatch)
         candidate = unc_home + "/ledger/state.json"
         # The UNC gate admits it (unc_probe_allowed returns True); the value may
         # still be canonicalized downstream, but it is NOT refused by the gate.
         assert hooks_mod.unc_probe_allowed(candidate) is True
+
+    def test_root_resolution_performs_no_maintenance_io(self, monkeypatch, tmp_path):
+        """The trusted-root memo resolves WHERE the data home is without
+        creating it or refreshing the recovery breadcrumb.
+
+        ``_unc_data_home_root()`` is primed at import time, so if it delegated
+        to ``data_home()`` a first resolution would run ``config_dir()``'s
+        maintenance -- ``mkdir(parents=True)`` plus the breadcrumb write --
+        as a side effect of importing this module. It resolves through
+        ``peek_data_home()`` instead: same override predicate, no filesystem
+        writes.
+        """
+        import kiro_crew.config.paths as paths_mod
+        import kiro_crew.hooks as hooks_mod
+
+        home = tmp_path / "unmade" / ".kiro" / "crew"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # Fresh resolution state: nothing memoized from other tests.
+        monkeypatch.setattr(paths_mod, "_resolved_home", None)
+        monkeypatch.setattr(hooks_mod, "_unc_data_home_root_cache", None)
+
+        root = hooks_mod._unc_data_home_root()
+
+        assert root == home.resolve() or root == home
+        # The whole point: resolution did NOT create the home...
+        assert not home.exists()
+        # ...and did not run breadcrumb maintenance anywhere under tmp_path.
+        assert not list(tmp_path.rglob("*.breadcrumb"))
+
+    def test_root_memo_invalidates_on_peek_accessor_swap(self, monkeypatch):
+        """The memo key carries the identity of the accessor the root is
+        resolved through (``peek_data_home``), so a monkeypatched accessor --
+        how every test above steers the gate -- invalidates the memo instead
+        of serving a stale root past it.
+        """
+        import kiro_crew.hooks as hooks_mod
+
+        monkeypatch.setattr(hooks_mod, "_unc_data_home_root_cache", None)
+        first = hooks_mod._unc_data_home_root()
+        assert first is not None
+
+        swapped = Path("//other-server/profiles/bob/.kiro/crew")
+        monkeypatch.setattr(hooks_mod._config_paths, "peek_data_home", lambda: swapped)
+        assert hooks_mod._unc_data_home_root() == swapped
 
 
 class TestSafeReadFile:

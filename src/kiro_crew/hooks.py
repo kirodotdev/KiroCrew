@@ -2462,6 +2462,64 @@ def is_unc_shape(raw: str) -> bool:
     return len(raw) >= 2 and raw[0] in "\\/" and raw[1] in "\\/"
 
 
+_unc_data_home_root_cache: tuple[tuple[object, ...], Path | None] | None = None
+
+
+def _unc_data_home_root() -> Path | None:
+    """The data home as a UNC-gate trusted root, memoized per configuration.
+
+    The twin of :func:`_unc_agents_root`, and it exists for the same reason.
+    ``data_home()`` is cheap only on its *default-home* branch: with
+    ``KIROCREW_HOME`` set it calls ``_valid_override_home()`` FIRST, on every
+    call, and that does ``Path(override).expanduser().resolve()`` --
+    filesystem I/O, and on a UNC-shaped override an SMB touch. ``config_dir()``
+    memoizes, but that memo sits BEHIND the predicate, so it never covers this.
+    Measured at this PR's head: three ``protected_ref_spans()`` calls produced
+    three resolves of the override.
+
+    That is the one configuration this gate has to be fast in. A roaming
+    profile is exactly when ``KIROCREW_HOME`` points at a share, so the
+    per-call resolve lands on the host whose latency the gate promises never to
+    depend on -- and :func:`unc_probe_allowed` is reached from
+    ``iter_local_refs``, which ``telegram.renderer._rotate_on_length`` runs
+    INLINE on the event loop against a documented 7-15 us/KB budget.
+
+    Resolves through :func:`peek_data_home`, NOT :func:`data_home`: this module
+    primes the memo at import time, and ``data_home()`` on a first resolution
+    delegates to ``config_dir()`` -- ``mkdir`` plus the recovery-breadcrumb
+    write. The gate only needs to know WHERE the root is (a path-prefix trust
+    check), so importing this module must not create directories or write
+    breadcrumbs -- that maintenance belongs to ``ensure_data_home()`` at process
+    start. ``peek_data_home()`` applies the SAME override predicate, so reader
+    and writer agree on the root, and reads nothing else.
+
+    Memoized on the RAW ``KIROCREW_HOME`` value plus the accessor identity and
+    the resolved-home cache the default branch reads -- so an env change, a
+    monkeypatched accessor or a reset of the resolution cache all invalidate
+    naturally.
+
+    A computation failure memoizes ``None`` (root absent, gate stays total),
+    for the reason :func:`_unc_agents_root` gives: the failure being avoided is
+    a per-call resolve that can block on an SMB timeout, and the degraded state
+    -- UNC attachment paths refused -- is the safe one.
+    """
+    global _unc_data_home_root_cache
+    key: tuple[object, ...] = (
+        os.environ.get("KIROCREW_HOME"),
+        _config_paths.peek_data_home,
+        getattr(_config_paths, "_resolved_home", None),
+    )
+    cached = _unc_data_home_root_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        root: Path | None = _config_paths.peek_data_home()
+    except (ValueError, OSError, RuntimeError):
+        root = None
+    _unc_data_home_root_cache = (key, root)
+    return root
+
+
 _unc_agents_root_cache: tuple[tuple[object, ...], Path | None] | None = None
 
 
@@ -2516,6 +2574,11 @@ def _unc_agents_root() -> Path | None:
 # start, off the loop, so the one resolution per configuration lands there.
 # Best-effort: a failure here memoizes root-absent exactly as a lazy miss would.
 _unc_agents_root()
+# Same priming for the data home, for the same reason: the first gate check
+# after start (or after a ``KIROCREW_HOME`` change) would otherwise pay the
+# override resolve on whatever thread asked, which on the inline classifier
+# path is the event loop.
+_unc_data_home_root()
 #: Upper bound on the Windows link chain validate_file_path will walk
 #: hop-by-hop before refusing. Covers both linked ancestors and the leaf.
 #: Mirrors the kernels' own symlink-resolution ceilings (Linux SYMLOOP_MAX
@@ -2573,18 +2636,25 @@ def unc_probe_allowed(raw: str) -> bool:
     write the managed specs there -- see ``kiro_agents_dir()``'s docstring;
     on a roaming profile it sits on the same UNC share as the data home, and
     without it every user-level agent spec read is silently refused).
-    The comparison is purely lexical (``normpath``/``normcase``) and the
-    agents root is memoized per configuration (see ``_unc_agents_root``), so
-    this check never touches the network itself.
+    The comparison is purely lexical (``normpath``/``normcase``) and BOTH
+    resolving roots are memoized per configuration (``_unc_data_home_root``,
+    ``_unc_agents_root``), so this check never touches the network itself.
+
+    The data home is memoized for the same reason as the agents dir, and the
+    omission was load-bearing rather than cosmetic: ``data_home()`` resolves
+    ``KIROCREW_HOME`` on every call when that override is set, which is
+    precisely the roaming-profile configuration in which the override names a
+    share. Calling it per gate check put an SMB round-trip inside a predicate
+    documented as lexical.
     """
     try:
         cand = os.path.normcase(os.path.normpath(raw))
     except (ValueError, OSError):
         return False
-    roots: tuple[Path, ...] = (_config_paths.data_home(), Path(tempfile.gettempdir()))
-    agents_root = _unc_agents_root()
-    if agents_root is not None:
-        roots += (agents_root,)
+    roots: tuple[Path, ...] = (Path(tempfile.gettempdir()),)
+    for extra in (_unc_data_home_root(), _unc_agents_root()):
+        if extra is not None:
+            roots += (extra,)
     for root in roots:
         rootn = os.path.normcase(os.path.normpath(str(root)))
         if not is_unc_shape(rootn):

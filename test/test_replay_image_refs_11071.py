@@ -229,7 +229,7 @@ class TestBarePathPassAgreesWithTheUncPredicate:
 
         monkeypatch.setattr(module, "os", type("OS", (), {"name": "nt"})(), raising=False)
         monkeypatch.setattr(
-            "kiro_crew.config.paths.data_home", lambda: pathlib.Path(self._UNC_HOME)
+            "kiro_crew.config.paths.peek_data_home", lambda: pathlib.Path(self._UNC_HOME)
         )
 
     def test_a_stored_unc_attachment_is_stripped_by_both_passes(

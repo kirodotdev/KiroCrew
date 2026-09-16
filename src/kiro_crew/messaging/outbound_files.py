@@ -118,11 +118,12 @@ _MD_ESCAPE_RE = re.compile(r"\\(.)")
 #: separator (``C:\Users\me\shot.png``).
 _MD_ESCAPABLE = frozenset("()[]\\<>\"'")
 
-#: Destinations that are not a local file at all, so there is nothing to upload
-#: and nothing to report. Public because both directions test against it: a
-#: remote reference is skipped by extraction and by artifact registration alike,
-#: and two copies of the list is how one direction starts treating a scheme the
-#: other rejects as a local path.
+#: Prefixes of destinations that are not a local file. NOT the classifier: `//`
+#: is ambiguous, so this tuple is a necessary condition and not a sufficient
+#: one. Both directions call :func:`is_remote_destination` instead -- testing
+#: this tuple directly is exactly the bug that predicate exists to fix, because
+#: it reads a roaming profile's own UNC attachment path as a remote URL.
+#: Exported for the grammar (and the tests that pin it), not as an entry point.
 REMOTE_PREFIXES = ("http://", "https://", "data:", "//")
 
 
