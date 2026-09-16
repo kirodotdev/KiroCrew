@@ -4652,6 +4652,8 @@
         },
         "settingsModal": {
           "cancel": "रद्द करें",
+          "couldn_t_load_these_settings": "ये सेटिंग्स लोड नहीं हो सकीं।",
+          "couldn_t_save_these_settings_try_again": "ये सेटिंग्स सहेजी नहीं जा सकीं — पुन: प्रयास करें।",
           "default_keeps_the_model_your_chat_agent_resolves": "डिफ़ॉल्ट वही मॉडल रखता है जो तुम्हारा चैट एजेंट पहले से तय करता है। चुना गया मॉडल बदलाव के बाद शुरू होने वाले spec सत्रों पर लागू होता है — चल रही spec अपना मौजूदा मॉडल रखती है।",
           "empty_keep_specs_with_each_project_recommended": "खाली = spec को उसी प्रोजेक्ट के साथ रखें (अनुशंसित)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "spec को हर प्रोजेक्ट के भीतर रखने के लिए इसे खाली छोड़ो (तुम्हारे कोड के बगल में .kiro/specs फ़ोल्डर — Kiro का मानक)। या सभी spec को एक जगह इकट्ठा करने के लिए फ़ोल्डर पथ सेट करो।",

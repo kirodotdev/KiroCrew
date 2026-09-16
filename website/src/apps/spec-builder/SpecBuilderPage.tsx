@@ -121,7 +121,7 @@ function SpecBuilderInner() {
         />
       )}
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} setErr={setErr} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   )
 }

@@ -4626,6 +4626,8 @@
         },
         "settingsModal": {
           "cancel": "취소",
+          "couldn_t_load_these_settings": "이 설정을 불러오지 못했습니다.",
+          "couldn_t_save_these_settings_try_again": "이 설정을 저장하지 못했습니다. 다시 시도해 주세요.",
           "default_keeps_the_model_your_chat_agent_resolves": "기본값은 채팅 에이전트가 해석하는 모델을 그대로 사용합니다. 선택한 모델은 변경 이후 시작되는 스펙 세션에 적용되며, 진행 중인 스펙은 현재 모델을 유지합니다.",
           "empty_keep_specs_with_each_project_recommended": "비움 = 각 프로젝트에 스펙 보관(권장)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "비워 두면 각 프로젝트 안에 스펙을 보관합니다(코드 옆의 .kiro/specs 폴더 — Kiro 표준).\n 또는 폴더 경로를 설정해 모든 스펙을 한곳에 모을 수 있습니다.",

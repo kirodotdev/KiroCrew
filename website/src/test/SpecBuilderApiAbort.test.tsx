@@ -124,7 +124,7 @@ describe('spec-builder api cancellation', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={qc}>
-        <SettingsModal onClose={() => {}} setErr={() => {}} />
+        <SettingsModal onClose={() => {}} />
       </QueryClientProvider>,
     )
 

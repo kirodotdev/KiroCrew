@@ -4729,6 +4729,8 @@
         },
         "settingsModal": {
           "cancel": "Annulla",
+          "couldn_t_load_these_settings": "Impossibile caricare queste impostazioni.",
+          "couldn_t_save_these_settings_try_again": "Impossibile salvare queste impostazioni — riprova.",
           "default_keeps_the_model_your_chat_agent_resolves": "Predefinito mantiene il modello già risolto dal tuo agente di chat. Una scelta vale per le sessioni di spec avviate dopo la modifica — una spec in corso mantiene il modello attuale.",
           "empty_keep_specs_with_each_project_recommended": "Vuoto = mantieni le spec insieme a ciascun progetto (consigliato)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Lascia vuoto per mantenere le spec all'interno di ciascun progetto (una cartella .kiro/specs accanto al codice: lo standard di Kiro). Oppure indica il percorso di una cartella per raccogliere tutte le spec in un unico posto.",

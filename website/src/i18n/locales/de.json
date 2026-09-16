@@ -4703,6 +4703,8 @@
         },
         "settingsModal": {
           "cancel": "Abbrechen",
+          "couldn_t_load_these_settings": "Diese Einstellungen konnten nicht geladen werden.",
+          "couldn_t_save_these_settings_try_again": "Diese Einstellungen konnten nicht gespeichert werden – bitte erneut versuchen.",
           "default_keeps_the_model_your_chat_agent_resolves": "Standard übernimmt das Modell, das dein Chat-Agent ohnehin auflöst. Eine Auswahl gilt für Spec-Sitzungen, die nach der Änderung starten — eine bereits laufende Spec behält ihr aktuelles Modell.",
           "empty_keep_specs_with_each_project_recommended": "Leer = Specs beim jeweiligen Projekt behalten (empfohlen)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Lassen Sie dies leer, um Specs in jedem Projekt zu behalten (ein Ordner .kiro/specs neben Ihrem Code — der Kiro-Standard). Oder geben Sie einen Ordnerpfad an, um alle Specs an einem Ort zu sammeln.",

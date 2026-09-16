@@ -4575,6 +4575,8 @@
         },
         "settingsModal": {
           "cancel": "取消",
+          "couldn_t_load_these_settings": "无法加载这些设置。",
+          "couldn_t_save_these_settings_try_again": "无法保存这些设置，请重试。",
           "default_keeps_the_model_your_chat_agent_resolves": "默认沿用聊天代理当前解析到的模型。所选模型对更改后启动的 spec 会话生效——进行中的 spec 会继续使用其当前模型。",
           "empty_keep_specs_with_each_project_recommended": "留空 = 将 spec 保存在各自的项目中（推荐）",
           "leave_this_empty_to_keep_specs_inside_each_proje": "留空即可将 spec 保存在每个项目内部（代码旁的 .kiro/specs 文件夹，这是 Kiro 的标准做法）。或者设置一个文件夹路径，把所有 spec 集中存放。",

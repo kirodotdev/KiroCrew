@@ -1,5 +1,5 @@
 /**
- * Screenshots for the Spec Builder #7662 fixes.
+ * Screenshots for the Spec Builder modal-error fixes (#7662, #8757).
  *
  * Drives the isolated capture entry (website/capture/spec-builder-7662.html),
  * which mounts the REAL SpecDetail / SpecRail. Every frame asserts its state
@@ -13,6 +13,11 @@
  *                          action
  *   05-rail-cleared        clicking Clear filter emptied the input and
  *                          restored the full list
+ *   06-settings-save-error-dark   the refused settings save rendered INSIDE
+ *                          the settings modal (translated lead + reason),
+ *                          modal still open, Save enabled for a retry
+ *   07-settings-save-error-light  light theme parity
+ *   08-settings-save-error-390    the same modal at a 390px viewport
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6832 --strictPort   # in another shell
@@ -42,6 +47,8 @@ const DETAIL = {
   },
 }
 
+const SETTINGS = { base_path: '/home/dev/specs', model: '' }
+
 const browser = await chromium.launch()
 let failed = false
 
@@ -66,6 +73,16 @@ async function newPage(scene, theme, viewport = { width: 1280, height: 820 }) {
     }
     if (path === '/api/apps/spec-builder/specs/checkout-flow') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(DETAIL) })
+    }
+    if (path === '/api/apps/spec-builder/settings') {
+      if (req.method() === 'POST') {
+        return route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'settings file is read-only: ~/.kiro/crew/apps/spec-builder/settings.json' }),
+        })
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(SETTINGS) })
     }
     const isList = /commands|skills|agents|sessions|files|history|models|specs$/.test(path)
     return route.fulfill({ status: 200, contentType: 'application/json', body: isList ? '[]' : '{}' })
@@ -137,6 +154,50 @@ async function refusedDelete(page) {
   const emptyGone = (await page.getByTestId('filtered-empty').count()) === 0
   check('05 list restored', emptyGone, 'empty state gone, groups back')
   await page.screenshot({ path: `${OUT}/05-rail-cleared.png` })
+  await page.close()
+}
+
+/** Wait for the seeded read, click Save, and wait for the in-modal alert. */
+async function refusedSettingsSave(page) {
+  const dialog = page.getByRole('dialog', { name: 'Settings' })
+  await dialog.waitFor()
+  const save = dialog.getByRole('button', { name: 'Save', exact: true })
+  await save.waitFor({ state: 'visible' })
+  // Save is disabled until the settings read lands; click() waits for enabled.
+  await save.click()
+  await dialog.getByRole('alert').waitFor()
+  return dialog
+}
+
+// 06 — refused settings save renders inside the modal (dark)
+{
+  const page = await newPage('settings', 'dark')
+  const dialog = await refusedSettingsSave(page)
+  const alert = await dialog.getByRole('alert').textContent()
+  check('06 translated lead', /Couldn’t save these settings — try again\./.test(alert || ''), 'lead present')
+  check('06 reason detail', /settings file is read-only/.test(alert || ''), 'reason present')
+  check('06 modal still open', await dialog.isVisible(), 'dialog visible after the refusal')
+  const saveEnabled = await dialog.getByRole('button', { name: 'Save', exact: true }).isEnabled()
+  check('06 retry reachable', saveEnabled, `save enabled=${saveEnabled}`)
+  await page.screenshot({ path: `${OUT}/06-settings-save-error-dark.png` })
+  await page.close()
+}
+
+// 07 — light theme parity
+{
+  const page = await newPage('settings', 'light')
+  await refusedSettingsSave(page)
+  await page.screenshot({ path: `${OUT}/07-settings-save-error-light.png` })
+  await page.close()
+}
+
+// 08 — the modal at a 390px viewport
+{
+  const page = await newPage('settings', 'dark', { width: 390, height: 780 })
+  const dialog = await refusedSettingsSave(page)
+  const box = await dialog.boundingBox()
+  check('08 modal fits 390', !!box && box.width <= 390, `dialog width=${box?.width}`)
+  await page.screenshot({ path: `${OUT}/08-settings-save-error-390.png` })
   await page.close()
 }
 

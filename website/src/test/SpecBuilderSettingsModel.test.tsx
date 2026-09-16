@@ -82,7 +82,7 @@ function renderModal() {
   })
   render(
     <QueryClientProvider client={qc}>
-      <SettingsModal onClose={() => {}} setErr={() => {}} />
+      <SettingsModal onClose={() => {}} />
     </QueryClientProvider>,
   )
 }

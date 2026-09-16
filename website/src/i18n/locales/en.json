@@ -3467,6 +3467,8 @@
         },
         "settingsModal": {
           "cancel": "Cancel",
+          "couldn_t_load_these_settings": "Couldn’t load these settings.",
+          "couldn_t_save_these_settings_try_again": "Couldn’t save these settings — try again.",
           "default_keeps_the_model_your_chat_agent_resolves": "Default keeps whatever model your chat agent already resolves to. A pick applies to spec sessions that start after the change — a spec already in progress keeps its current model.",
           "empty_keep_specs_with_each_project_recommended": "Empty = keep specs with each project (recommended)",
           "leave_this_empty_to_keep_specs_inside_each_proje": "Leave this empty to keep specs inside each project (a .kiro/specs folder next to your code — the Kiro standard).\n        Or set a folder path to collect all specs in one place instead.",
