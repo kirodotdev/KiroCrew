@@ -388,6 +388,32 @@ class TestUncProbeGate:
         assert hooks.unc_probe_allowed("//evil/share/x.png") is False
         assert len(calls) == 1
 
+    def test_data_home_is_resolved_once_per_configuration(self, monkeypatch, tmp_path):
+        """The data home is the OTHER resolving root, and it needs the same memo.
+
+        ``data_home()`` is cheap only on its default-home branch. With
+        ``KIROCREW_HOME`` set it calls ``_valid_override_home()`` first, on
+        every call, which does ``Path(override).expanduser().resolve()`` --
+        and a roaming profile is precisely when that override names a share, so
+        the per-check cost is an SMB round-trip. ``config_dir()``'s own memo
+        does not cover it: that memo sits behind the predicate.
+
+        Same contract as the agents root above, asserted the same way: the
+        accessor is consulted once per configuration, not once per check.
+        """
+        calls: list[int] = []
+
+        def counting_data_home():
+            calls.append(1)
+            return Path(self._UNC_KIRO_HOME + "/crew")
+
+        monkeypatch.setattr("kiro_crew.config.paths.data_home", counting_data_home)
+        monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: tmp_path / "agents")
+        assert hooks.unc_probe_allowed(self._UNC_KIRO_HOME + "/crew/uploads/a.png") is True
+        assert hooks.unc_probe_allowed(self._UNC_KIRO_HOME + "/crew/uploads/b.png") is True
+        assert hooks.unc_probe_allowed("//evil/share/x.png") is False
+        assert len(calls) == 1
+
     def test_agents_root_failure_is_memoized_not_retried(self, monkeypatch, tmp_path):
         """A failing resolution is memoized as root-absent for the
         configuration: the gate must not re-run a resolve that can block on an
