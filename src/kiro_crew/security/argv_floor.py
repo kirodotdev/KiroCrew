@@ -1550,6 +1550,20 @@ def _is_self_update(text_lower: str) -> bool:
     return _matches_self_subcommand(text_lower, ("update",))
 
 
+def _is_self_file_delivery(text_lower: str) -> bool:
+    """``kirocrew file-delivery`` behind any shell dressing of interposed flags.
+
+    Structural, not regex-tier, for the same reason the other self-protection
+    predicates are: the approve verb's authority is possession of a nonce on the
+    sandbox-MASKED ``file-delivery-consent-pending/`` leaf. The mask already
+    stops a prompt-injected agent reading or forging that nonce; denying the
+    command here is the defence-in-depth partner that also stops the agent
+    invoking the verb to complete its own armed step-up -- exactly as
+    ``_is_self_update`` fences ``kirocrew update``.
+    """
+    return _matches_self_subcommand(text_lower, ("file-delivery",))
+
+
 def _is_self_gateway_restart(text_lower: str) -> bool:
     """``kirocrew gateway restart`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("gateway", "restart"))

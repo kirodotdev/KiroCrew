@@ -1630,6 +1630,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
     {
         "self-protection-restart",
         "self-protection-update",
+        "self-protection-file-delivery",
         "self-protection-gateway-restart",
         "self-protection-cloud",
     }
@@ -1677,6 +1678,12 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "Matched structurally on the command's argv: the product CLI is the argv's own "
         "program and its leading subcommand self-updates this gateway. This floor has "
         "no catalog row and no opt-out."
+    ),
+    "self-protection-file-delivery": (
+        "Matched structurally on the command's argv: the product CLI is the argv's own "
+        "program and its leading subcommand is 'file-delivery', whose approve verb would "
+        "complete a flagged-file delivery consent step-up. This floor has no catalog row "
+        "and no opt-out."
     ),
     "self-protection-gateway-restart": (
         "Matched structurally on the command's argv: the product CLI is the argv's own "

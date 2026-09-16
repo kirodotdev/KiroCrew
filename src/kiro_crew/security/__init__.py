@@ -115,6 +115,7 @@ from .argv_floor import (
     _is_kill_by_name_program,
     _is_push_to_protected_branch,
     _is_self_cloud_destructive,
+    _is_self_file_delivery,
     _is_self_gateway_restart,
     _is_self_kill,
     _is_self_module_flag,
@@ -1606,6 +1607,7 @@ def is_denied(
     for rule_id, predicate in (
         ("self-protection-restart", _is_self_restart),
         ("self-protection-update", _is_self_update),
+        ("self-protection-file-delivery", _is_self_file_delivery),
         ("self-protection-gateway-restart", _is_self_gateway_restart),
         ("self-protection-cloud", _is_self_cloud_destructive),
     ):

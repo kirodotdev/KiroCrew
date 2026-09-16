@@ -96,7 +96,9 @@ class TestCatalog:
         # file tools, so a text regex over the command added refusals of read-only
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
-        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
+        # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
+        # flagged-file delivery self-protection floor added no row: it is an
+        # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
         assert len(BUILTIN_DENIED_RULES) == 112
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
@@ -311,6 +313,7 @@ class TestSelfProtectionFlagInterposition:
     _UNGATED_TEMPLATES = {
         "self-protection-restart": "kirocrew {flags} restart",
         "self-protection-update": "kirocrew {flags} update",
+        "self-protection-file-delivery": "kirocrew {flags} file-delivery approve",
         "self-protection-gateway-restart": "kirocrew {flags} gateway restart",
         "self-protection-cloud": "kirocrew {flags} cloud destroy",
     }
@@ -452,6 +455,7 @@ class TestSelfProtectionFlagInterposition:
     _SUBCOMMANDS = {
         "self-protection-restart": ["restart"],
         "self-protection-update": ["update"],
+        "self-protection-file-delivery": ["file-delivery"],
         "self-protection-gateway-restart": ["gateway", "restart"],
         "self-protection-cloud": ["cloud", "destroy"],
     }

@@ -298,6 +298,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # conductor's records except through the routes that check its binding.
     "work-ledger",
     "cron-history",
+    # The single-use step-up nonce that authorizes recording a flagged-file
+    # delivery grant. Whole DIRECTORY (arm renames a sibling ``.tmp`` into place),
+    # with NO in-sandbox reader: the gateway writes it on arm and the host
+    # ``kirocrew file-delivery approve`` reads it. Masked because a same-UID agent
+    # could otherwise FORGE a nonce here with a runtime-constructed shell path
+    # (the file gate's text/argv matcher does not see such a path) and then drive
+    # the owner's loopback browser to POST that chosen nonce, recording a grant
+    # with no human present -- the exact self-approval hole the step-up exists to
+    # close. Deliberately NOT under ``trust/``, which is sandbox-visible for SEL
+    # appends.
+    "file-delivery-consent-pending",
     # The cron in-flight markers, masked rather than sealed read-only because
     # nothing in the sandbox reads one: they are written and cleared by the run
     # task in the GATEWAY process, and the boot-time loop-stall breaker that acts
@@ -904,6 +915,15 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Same lazily-created shape as aws-control-staging: the file-delivery step-up
+    # nonce dir is created on demand only when the owner first ARMS a grant
+    # (``file_delivery_consent.arm_grant`` -> ``make_owner_only_dir(path.parent)``).
+    # On a fresh install with no prior arm the leaf is absent at spawn, the
+    # ``isdir``-guarded SENSITIVE_DIRS loop skips it, and a later dashboard arm
+    # materialises the nonce INSIDE a running sandbox's view -- where a same-UID
+    # agent reads it and drives the loopback /approve to self-grant. Precreated
+    # (empty, 0o700) before every spawn so the mask always has a name to bind over.
+    "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a

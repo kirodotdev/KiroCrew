@@ -555,6 +555,20 @@ _CREW_SECRET_LEAVES: list[str] = [
     # writer and opens the path directly, not through this gate, so it keeps
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
+    # The single-use step-up nonce that authorizes RECORDING a flagged-file
+    # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
+    # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
+    # leaf rather than under ``trust/`` on purpose: ``trust/`` is sandbox-VISIBLE
+    # (it holds SEL append targets an in-sandbox MCP server writes), so a
+    # prompt-injected agent could FORGE a nonce there with a runtime-constructed
+    # shell path (the acknowledged evadable tier) and then drive the owner's
+    # loopback browser to POST that chosen nonce -- recording a grant with no
+    # human present. This leaf has NO in-sandbox reader (the gateway writes it on
+    # arm, the host ``kirocrew file-delivery approve`` reads it), so it is also
+    # bind-masked in ``sandbox._CREW_HIDDEN_LEAVES``; masking is what actually
+    # closes the forge path, since the text/argv file gate alone does not stop a
+    # runtime-constructed shell write.
+    "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
