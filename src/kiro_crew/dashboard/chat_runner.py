@@ -68,7 +68,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
-from kiro_crew.constants import strip_control_comments
+from kiro_crew.constants import reflow_glued_option_marker, strip_control_comments
 from kiro_crew.context import prepare_store_vectors
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
@@ -4033,6 +4033,15 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    # Repair a glued option marker before persisting. A mid-turn steer reply (or
+    # any concatenation seam upstream) can append prose directly after an
+    # ``[OPTIONS: ...]`` line with no separator, producing a single line the render
+    # grammar cannot match (its closer is anchored to end-of-line), so the marker
+    # leaks as literal text and loses its pills. Every finished segment passes
+    # through here (an abnormally ended turn goes through _persist_partial_reply,
+    # which applies the same repair), so the additive newline insert fixes the
+    # stored transcript once, without touching the parse grammar.
+    assistant_text = reflow_glued_option_marker(assistant_text)
     # Redact the accumulated text
     redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
     for w in exfil_warnings:
@@ -7588,8 +7597,11 @@ async def _run_chat(
         """
         if not assistant_text:
             return
+        # Same glued-marker repair as _flush_segment: the interrupted body is the
+        # same accumulated text, and it is rendered by the same grammar.
+        body = reflow_glued_option_marker(assistant_text)
         slot.purge_chunks()
-        _redacted = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+        _redacted = redact_credentials(redact_exfiltration_urls(body)[0])[0]
         slot.append("assistant", _redacted, "msg msg-a")
         _append_redaction_notice(slot, _redacted)
         crew_log_emit.on_message_sent(
