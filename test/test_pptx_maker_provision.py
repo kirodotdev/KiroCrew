@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -675,6 +676,52 @@ class TestRenderAgents:
             assert provision._render_agents(tmp_path / "install", log=[]) == 0
 
 
+_MODE_ENFORCED = pytest.mark.skipif(
+    os.name != "nt" and os.geteuid() == 0,
+    reason="root ignores POSIX mode bits, so a read-only fixture cannot refuse removal",
+)
+
+
+def _harden(root: Path) -> None:
+    """Make *root* look like this package on a read-only install.
+
+    Deepest entry first, so every `is_dir()` still runs under a searchable
+    parent. On Windows `os.chmod` only sets the read-only attribute, which is
+    enough: it is what `rmdir`/`unlink` consult there.
+    """
+    for entry in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        os.chmod(entry, 0o555 if entry.is_dir() else 0o444)
+    os.chmod(root, 0o555)
+
+
+def _soften(root: Path) -> None:
+    """Undo :func:`_harden`, root downwards so the walk can descend.
+
+    Directories go back to owner-only `S_IRWXU` rather than `0o755`: all this
+    has to restore is THIS process's ability to list, write and descend so
+    pytest can clean `tmp_path` up, and group/other bits buy none of that.
+    Spelled symbolically because it is the exact permission being asked for --
+    and because the numeric spelling of owner-rwx trips
+    `insecure-file-permissions`, which reads any `7` triad as widely permissive
+    even when it is owner-only. On Windows `os.chmod` honours only the
+    read-only flag, which the owner write bit clears either way.
+    """
+    os.chmod(root, stat.S_IRWXU)
+    for entry in root.rglob("*"):
+        os.chmod(entry, stat.S_IRWXU if entry.is_dir() else 0o644)
+
+
+@pytest.fixture
+def restore_modes(tmp_path: Path):
+    """Hand the read-only fixtures back writable.
+
+    Without this they defeat pytest's own `tmp_path` cleanup, which is the same
+    refusal these tests are about.
+    """
+    yield
+    _soften(tmp_path)
+
+
 class TestStageStatic:
     def test_prompts_are_copied_so_a_read_only_wheel_install_works(self, tmp_path: Path):
         """Copied, not symlinked: the package dir is read-only on a wheel
@@ -695,6 +742,79 @@ class TestStageStatic:
         stale.write_text("from an older version", encoding="utf-8")
         provision._stage_static(install_dir, log=[])
         assert not stale.exists()
+
+    @_MODE_ENFORCED
+    def test_restaging_replaces_a_copy_made_from_a_read_only_source(
+        self, tmp_path: Path, restore_modes: None
+    ):
+        """The staged copy inherits the package dir's modes, so on a read-only
+        install (a Nix store path, a read-only mount) it is read-only too — and
+        the NEXT provision must still be able to replace it.
+
+        The stale copy in the test above is one this test wrote itself, so it is
+        writable and a plain `rmtree` clears it; that is why the idempotence
+        contract held there and still broke here. `provision` reports ok even
+        when staging fails, so an upgrade kept the previous version's prompts
+        and said it had succeeded.
+        """
+        pkg = tmp_path / "pkg"
+        prompts = pkg / "prompts"
+        prompts.mkdir(parents=True)
+        (prompts / "deck.md").write_text("v1", encoding="utf-8")
+        install_dir = tmp_path / "install"
+        log: list[str] = []
+        with mock.patch.object(provision, "_PACKAGE_ROOT", pkg):
+            _harden(prompts)
+            provision._stage_static(install_dir, log)
+            assert (install_dir / "prompts" / "deck.md").read_text(encoding="utf-8") == "v1"
+            # The app is upgraded: the packaged prompt changes underneath.
+            _soften(prompts)
+            (prompts / "deck.md").write_text("v2", encoding="utf-8")
+            _harden(prompts)
+            provision._stage_static(install_dir, log)
+        # The staged prompt FIRST: a failed restage is what the app actually
+        # serves, and the log line below is only how it is reported.
+        assert (install_dir / "prompts" / "deck.md").read_text(encoding="utf-8") == "v2"
+        assert log == []
+
+    @_MODE_ENFORCED
+    def test_the_read_only_fixture_really_refuses_a_plain_rmtree(
+        self, tmp_path: Path, restore_modes: None
+    ):
+        """Guard the guard: a fixture that could be removed anyway would let the
+        restaging test above pass without the repair."""
+        tree = tmp_path / "tree"
+        (tree / "sub").mkdir(parents=True)
+        (tree / "sub" / "a.md").write_text("x", encoding="utf-8")
+        _harden(tree)
+        with pytest.raises(OSError):
+            shutil.rmtree(tree)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="asserts real POSIX mode bits")
+    def test_the_staged_copy_is_left_owner_writable(self, tmp_path: Path, restore_modes: None):
+        """Normalizing the fresh copy is what keeps every LATER provision cheap:
+        the repair walk has nothing left to fix. Checked by mode rather than by
+        behaviour so it holds even where the process ignores mode bits."""
+        pkg = tmp_path / "pkg"
+        prompts = pkg / "prompts"
+        prompts.mkdir(parents=True)
+        (prompts / "deck.md").write_text("v1", encoding="utf-8")
+        _harden(prompts)
+        install_dir = tmp_path / "install"
+        with mock.patch.object(provision, "_PACKAGE_ROOT", pkg):
+            provision._stage_static(install_dir, log=[])
+        staged = install_dir / "prompts"
+        assert stat.S_IMODE(staged.stat().st_mode) & stat.S_IRWXU == stat.S_IRWXU
+
+    def test_a_removal_that_cannot_be_repaired_is_reported(self, tmp_path: Path):
+        """A tree that survives the forced removal must not be copied over
+        silently — the raise is what `_stage_static` turns into a log line."""
+        install_dir = tmp_path / "install"
+        (install_dir / "prompts").mkdir(parents=True)
+        log: list[str] = []
+        with mock.patch.object(provision, "rmtree_force", return_value=False):
+            provision._stage_static(install_dir, log)
+        assert any("could not be staged" in line for line in log)
 
     def test_the_skill_is_deliberately_not_staged(self, tmp_path: Path):
         """The skill ships via `builtin_skills/` (copied on every gateway start)

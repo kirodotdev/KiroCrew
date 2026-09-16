@@ -42,6 +42,7 @@ from pathlib import Path
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.platform_compat import ensure_owner_rwx_dirs, rmtree_force
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -449,11 +450,33 @@ def _render_agents(install_dir: Path, log: list[str]) -> int:
 
 
 def _copy_tree(source: Path, target: Path) -> None:
-    """Replace *target* with a copy of *source*, following no symlinks."""
+    """Replace *target* with a copy of *source*, following no symlinks.
+
+    ``shutil.copytree`` preserves source modes verbatim, and the source here is
+    the package directory, which is read-only on a wheel install (see
+    :func:`_stage_static`). The copy is therefore read-only too, and a plain
+    ``shutil.rmtree`` cannot remove it: POSIX consults the PARENT directory's
+    write bit to unlink a child, Windows the entry's own read-only attribute.
+    So the first provision succeeded and every later one raised, which
+    :func:`_stage_static` logs while :func:`provision` still reports ok --
+    leaving the previous version's prompts installed under a successful
+    upgrade, against this module's documented idempotence.
+    """
     if target.exists():
-        shutil.rmtree(target)
+        # Repairs a tree staged before this normalization existed. It is not
+        # redundant with `rmtree_force`: that helper chmods the entry whose
+        # removal failed, which on POSIX is the child, while the bit that
+        # refused belongs to the parent. Each covers the other's gap --
+        # directories here, read-only files as `rmtree_force` walks.
+        ensure_owner_rwx_dirs(target)
+        if not rmtree_force(target):
+            raise OSError(f"could not remove the staged copy at {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, target, symlinks=False)
+    # The same normalization every other packaged-copy site applies
+    # (`deploy/__init__.py`, `skills.py`). Doing it here is what leaves the
+    # NEXT provision's repair walk with nothing to fix.
+    ensure_owner_rwx_dirs(target)
 
 
 def _stage_static(install_dir: Path, log: list[str]) -> None:
