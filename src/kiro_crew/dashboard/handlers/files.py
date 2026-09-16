@@ -1196,6 +1196,8 @@ _ALLOWED_TEXT_EXT = {
     ".yaml",
     ".yml",
     ".xml",
+    # draw.io / diagrams.net XML source.
+    ".drawio",
     ".csv",
     ".tsv",
     ".log",
