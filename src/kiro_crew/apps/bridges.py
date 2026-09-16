@@ -52,7 +52,7 @@ from kiro_crew.config.loader import (
     publish_materialized_agents,
     schedule_materialized_agents_refresh,
 )
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import isolated_agents_dir, kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.env import emit_env
@@ -82,6 +82,47 @@ KIRO_AGENTS_DIR: Path | None = None
 def _kiro_agents_dir() -> Path:
     """The kiro-cli agents directory, resolved against the live data home."""
     return KIRO_AGENTS_DIR if KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
+
+def _shared_dir_owned_elsewhere(agents_dir: Path, *, source: str) -> Path | None:
+    """The foreign data home when *agents_dir* is the shared machine-wide directory
+    this instance does not own; ``None`` when app specs may be written there.
+
+    App agents are materialised, pruned and removed under ``kiro_agents_dir()``,
+    the same directory ``agent.rebuild_agent_config`` owns or declines. Under the
+    CLI prologue's ``KIRO_HOME`` export a non-default data home resolves that to
+    its own ``isolated_agents_dir`` and this is ``None``. It answers only when a
+    foreign instance is pointed at the shared directory anyway (the documented
+    ``KIRO_HOME=~/.kiro`` read-only opt-out, or a caller that bypassed the
+    prologue): two instances with different app sets would otherwise prune and
+    re-register each other's specs, and removing an app here would delete the
+    default instance's copies. Ownership is decided in ``kiro_crew.agent``, in
+    one place, for both writers; imported lazily like the module's other reach
+    into ``agent``, which imports this package's siblings at call time as well.
+    """
+    from kiro_crew.agent import foreign_home_targets_shared_agents_dir  # noqa: PLC0415
+
+    foreign = foreign_home_targets_shared_agents_dir(agents_dir)
+    if foreign is not None:
+        # A permission decision on the same shared, security-relevant resource that
+        # ``agent._decline_shared_agent_home`` audits, recorded the same way so every
+        # refusal to touch the machine-wide agent home -- the core spec there or an
+        # app's -- is reconstructible from the audit log alone rather than only from
+        # the process log. ``source`` names the writer that stood down (register,
+        # deregister, prune); whether a warning is worth logging as well is the
+        # caller's call, the audit row is not optional.
+        sel().log_api_access(
+            caller="system",
+            operation="agent_home_write",
+            outcome="denied",
+            source=source,
+            resources=str(agents_dir),
+            error=(
+                f"non-default data home {foreign} refused app-agent write to shared "
+                f"agent home (own specs belong in {isolated_agents_dir(foreign)})"
+            ),
+        )
+    return foreign
 
 
 # Where KiroCrew loads skills from
@@ -945,6 +986,17 @@ def _register_agents(
     # behaviour and silently retire the guarantee.
     with _health_reconcile_guard():
         agents_dir = _kiro_agents_dir()
+        foreign = _shared_dir_owned_elsewhere(agents_dir, source="register_agents")
+        if foreign is not None:
+            logger.warning(
+                "App %s: not writing agent specs into the shared %s from non-default data "
+                "home %s; kiro-cli reads the default instance's specs there and only that "
+                "instance writes them.",
+                app_name,
+                agents_dir,
+                foreign,
+            )
+            return []
         agents_dir.mkdir(parents=True, exist_ok=True)
         policy = _agent_mcp_policy(app_name)
         own_servers = _own_mcp_servers(app_name)
@@ -1101,6 +1153,8 @@ def _deregister_agents(app_name: str) -> int:
     removed = 0
     agents_dir = _kiro_agents_dir()
     if not agents_dir.is_dir():
+        return 0
+    if _shared_dir_owned_elsewhere(agents_dir, source="deregister_agents") is not None:
         return 0
     for entry in agents_dir.iterdir():
         if entry.name.startswith(prefix) and entry.name.endswith(".json"):
@@ -3042,7 +3096,11 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
         agent_name = data.get("name", agent_path.stem)
         current_links.add(_safe_link_name(_namespace(app_name, agent_name)) + ".json")
     agents_dir = _kiro_agents_dir()
-    if current_links is not None and agents_dir.is_dir():
+    if (
+        current_links is not None
+        and agents_dir.is_dir()
+        and _shared_dir_owned_elsewhere(agents_dir, source="prune_stale_app_resources") is None
+    ):
         prefix = _safe_link_name(app_name + "/")
         for entry in agents_dir.iterdir():
             if (
