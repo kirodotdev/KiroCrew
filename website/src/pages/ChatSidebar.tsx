@@ -708,6 +708,12 @@ interface Slot {
   // An unanswered question card the turn is parked on. Its own subtitle, and it
   // suppresses the "your turn" dot for the same reason an approval does.
   needs_input?: boolean
+  // The NEWEST assistant reply ends with an `[OPTIONS:]` ask (payload
+  // `has_options`). Read by the loop-waiting subtitle: an armed loop whose
+  // newest reply is an explicit ask is holding for the user, not working.
+  // Newest-reply-only by construction — any later turn that talks over the
+  // marker clears it, so a superseded ask can never be resurrected (#10615).
+  has_options?: boolean
   // The transcript shows the last turn ending without a reply (trailing error
   // row or unanswered user row) — the state behind the composer's Resume
   // button. Always false while a turn runs. Read by the goal-loop subtitle so a
@@ -1908,6 +1914,16 @@ const SessionRow = memo(function SessionRow({
       detailedSubagentsRunning: subagentCount > 0,
     })
     const goalLoopStalled = !!goalLoop && !!s.interrupted && !liveWorkSupersedesInterruption
+    // An armed loop whose NEWEST reply is an explicit `[OPTIONS:]` ask. The
+    // loop cannot advance that decision itself — the user owes the answer — so
+    // it must not read as unattended progress (the goal-loop branch below).
+    // Gated on the newest reply only: `s.has_options` drops the moment any
+    // later turn talks over the marker, so a superseded ask can never be
+    // resurrected — the staleness that reverted the buried-[OPTIONS:] scan
+    // (#10615). Idle only: a running turn IS the loop working, and a stalled
+    // loop's danger row (below) outranks an ask its dead turn cannot collect.
+    const loopWaiting = (!!goalLoop || monitorOwnsRunning)
+      && !!s.has_options && !s.running && !s.interrupted
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;
@@ -2057,6 +2073,49 @@ const SessionRow = memo(function SessionRow({
           <div className={ROW_STATUS_LINE_CLS} title={needsInputLabel}>
             <MessageCircleQuestionMark size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden />
             <span className="truncate font-medium" style={{ color: 'var(--info)' }}>{needsInputLabel}</span>
+          </div>
+        ),
+      },
+      {
+        // An armed loop (goal loop or structured monitor) whose newest reply is
+        // an `[OPTIONS:]` ask. Ranked with the owed-decision cluster, above
+        // every "working" signal: the loop is holding for the user, and the
+        // pulsing goal-loop row below would read as unattended progress —
+        // the exact confusion this branch exists to remove. Static glyph,
+        // warn ink: nothing is running. The trailing detail keeps the loop's
+        // identity (cycle count / monitor status) so the row still says WHICH
+        // automation is waiting, per the goalLoopDetail pattern.
+        key: 'loop_waiting',
+        when: loopWaiting,
+        build: () => (
+          // The tooltip names the cycle count so the trailing fraction is
+          // glossed, not orphaned: the UX blind-reader could not tell the
+          // waiting row's trailing "Loop 18/80" and the progress row's leading
+          // "Loop 7/24" were the same counter. Monitors have no fraction, so
+          // they keep the generic title.
+          <div
+            className={ROW_STATUS_LINE_CLS}
+            title={goalLoop
+              ? (goalLoop.maxCycles > 0
+                ? i18nT('pages.chatSidebar.loop_waiting_title_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
+                : i18nT('pages.chatSidebar.loop_waiting_title_cycle_2', { count: goalLoop.cycleCount }))
+              : i18nT('pages.chatSidebar.loop_waiting_title')}
+          >
+            {goalLoop
+              ? <Goal size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+              : <MonitorRadar actionRunning={false} className="text-warn" />}
+            {/* Monitors get a visible "paused" gloss instead of the live
+                status string: "Waiting on you · Monitor · active" read as a
+                contradiction (UX span 4a221cc48433). Goal loops keep the
+                cycle fraction but PREFIX it with "Paused at" — reusing the
+                working row's "Loop N/M" verbatim made the two rows read as
+                the same state (UX span 03f52eaca7f7); the tooltip above
+                carries the full sentence. */}
+            <span className="truncate"><span className="font-medium" style={{ color: 'var(--warn)' }}>{i18nT('pages.chatSidebar.loop_waiting_on_you')}</span><span className="text-muted"> · {goalLoop
+              ? (goalLoop.maxCycles > 0
+                ? i18nT('pages.chatSidebar.loop_waiting_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
+                : i18nT('pages.chatSidebar.loop_waiting_cycle_2', { count: goalLoop.cycleCount }))
+              : i18nT('pages.chatSidebar.loop_waiting_monitor')}</span></span>
           </div>
         ),
       },
