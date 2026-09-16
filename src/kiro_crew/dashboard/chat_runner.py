@@ -6619,13 +6619,44 @@ async def _run_chat(
         ):
             _current_replay_message = None
 
+    session_key = effective_session_key(slot)
+    sessions = getattr(state, "sessions", None)
+
+    def _session_stop_generation() -> int:
+        """The session manager's Stop count for this turn's session key.
+
+        ``SessionManager.stop_turn`` bumps it before the provider cancel is
+        awaited, on every surface that can stop this session: the dashboard's
+        own Stop handler, a linked channel's stop command, a transport's stop
+        verb. Test doubles for ``state.sessions`` may lack the method or answer
+        with a non-int; both read as 0 so the slot's own signal still decides.
+        """
+        reader = getattr(sessions, "stop_generation", None)
+        if not callable(reader):
+            return 0
+        try:
+            value = reader(session_key)
+        except Exception:  # pragma: no cover - a broken double, not a stop
+            return 0
+        if inspect.iscoroutine(value):
+            value.close()
+            return 0
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    _session_stop_gen_at_entry = _session_stop_generation()
+
     def _stop_pressed() -> bool:
         """The user's Stop signal for this turn, read LIVE at the call site.
 
-        True when a stop is in flight OR the monotonic stop generation moved since
+        True when a stop is in flight OR a monotonic stop generation moved since
         entry -- a Stop that pressed and already resolved back to idle is invisible
-        to ``_stopping`` but not to the counter. The two end-of-turn continuation
-        gates (Stop-hook and refusal recovery) read THIS, never the backend's wire
+        to ``_stopping`` but not to the counters. Two counters are read: the slot's
+        own (moved by the dashboard Stop handler) and the session manager's for
+        this turn's session key (moved by ``stop_turn`` on any surface). A
+        channel-born slot runs its turns on the channel's session, so a stop
+        issued from that channel never touches the slot's state -- only the
+        session-scoped count sees it. The two end-of-turn continuation gates
+        (Stop-hook and refusal recovery) read THIS, never the backend's wire
         stop reason: a backend that aborts a policy-denied turn (codex answers its
         only reject option, ``cancel``, that way) reports ``cancelled`` with no
         Stop pressed, and the continuation is owed there. A function rather than a
@@ -6633,8 +6664,10 @@ async def _run_chat(
         hook and the credential-hint lookup both suspend between the turn's end
         and the queue write.
         """
-        return bool(getattr(slot, "_stopping", False)) or (
-            getattr(slot, "_stop_generation", _stop_gen_at_entry) != _stop_gen_at_entry
+        return (
+            bool(getattr(slot, "_stopping", False))
+            or getattr(slot, "_stop_generation", _stop_gen_at_entry) != _stop_gen_at_entry
+            or _session_stop_generation() != _session_stop_gen_at_entry
         )
 
     # Who caused this turn, for the session ledger. Bound COMPLETELY here, before
@@ -6652,9 +6685,6 @@ async def _run_chat(
     # turn no dispatch claimed is a user turn -- never a guess read off the
     # message, which the user writes.
     _ledger_actor = _turn_actor or ("autonudge" if _directive_self_wake else "user")
-
-    session_key = effective_session_key(slot)
-    sessions = getattr(state, "sessions", None)
 
     # Append-only session ledger identity, declared HERE rather than only where
     # it is filled in below: the mid-turn steer cut flushes a segment from a
@@ -12890,9 +12920,7 @@ async def _run_chat(
         # (streaming, completion persistence, or the hook _fire above) may have
         # resolved already -- stop_turn() reporting "idle" resets _stop_state --
         # and only the generation counter still says it happened.
-        if should_queue_hook_continuation(
-            slot._stopping, needs_session_reset, user_stopped=_stop_pressed()
-        ):
+        if should_queue_hook_continuation(needs_session_reset, user_stopped=_stop_pressed()):
             _hook_reasons = parse_hook_continuations(_stop_hook_out)
             # No block decision -> nothing to queue; skip the cap load and
             # arithmetic on the common empty path (also what the old
@@ -12905,7 +12933,7 @@ async def _run_chat(
                 # boundary before mutating the queue so a Stop that lands during
                 # that await cannot be bypassed by the stale outer guard.
                 if not should_queue_hook_continuation(
-                    slot._stopping, needs_session_reset, user_stopped=_stop_pressed()
+                    needs_session_reset, user_stopped=_stop_pressed()
                 ):
                     _hook_reasons = []
             else:
@@ -12996,7 +13024,6 @@ async def _run_chat(
         # this continuation is the only channel that still reaches its model.
         if should_queue_refusal_recovery(
             _refusal_reasons,
-            slot._stopping,
             needs_session_reset,
             user_stopped=_stop_pressed(),
             notices_sent=len(_refusal_notices) + _refusal_notices_settled,

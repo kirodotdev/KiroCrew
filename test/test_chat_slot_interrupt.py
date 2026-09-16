@@ -211,7 +211,7 @@ class TestRefusalRecoverySkippedOnCancel:
             ("Creating /tmp/name.txt", "command '---' is not on the read-only allowlist")
         ]
         assert not should_queue_refusal_recovery(
-            refusal_reasons, stopping=False, needs_reset=False, user_stopped=True
+            refusal_reasons, needs_reset=False, user_stopped=True
         )
 
     def test_normal_refusal_still_triggers_recovery(self):
@@ -219,9 +219,7 @@ class TestRefusalRecoverySkippedOnCancel:
         from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
         refusal_reasons = [("write /tmp/x", "not on read-only allowlist")]
-        assert should_queue_refusal_recovery(
-            refusal_reasons, stopping=False, needs_reset=False, user_stopped=False
-        )
+        assert should_queue_refusal_recovery(refusal_reasons, needs_reset=False, user_stopped=False)
 
 
 class TestRefusalRecoveryOnBackendAbort:
@@ -243,18 +241,16 @@ class TestRefusalRecoveryOnBackendAbort:
         # Stop. The gate only ever sees the latter, so recovery is owed.
         from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
-        assert should_queue_refusal_recovery(
-            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=False
-        )
+        assert should_queue_refusal_recovery(self.REFUSALS, needs_reset=False, user_stopped=False)
 
     def test_a_real_stop_press_still_suppresses_recovery(self):
         # The person pressed Stop during the turn (and it may already have
-        # resolved, so stopping is False again): the continuation must not
+        # resolved, so the slot reads idle again): the continuation must not
         # jump ahead of whatever they type next.
         from kiro_crew.dashboard.state import should_queue_refusal_recovery
 
         assert not should_queue_refusal_recovery(
-            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=True
+            self.REFUSALS, needs_reset=False, user_stopped=True
         )
 
     def test_the_gate_has_no_stop_reason_input_at_all(self):
@@ -277,7 +273,6 @@ class TestRefusalRecoveryOnBackendAbort:
 
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             notices_sent=1,
             notices_pending=0,

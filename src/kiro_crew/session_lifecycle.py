@@ -214,6 +214,19 @@ class SessionLifecycleState:
     suppress_replay: set[str] = field(default_factory=set)
     origin_links: dict[str, Any] = field(default_factory=dict)
     on_recycled: _RecycleCallback | None = None
+    # Per-session-key count of Stop requests, keyed by folded key. Bumped by
+    # :meth:`SessionLifecycleService.stop_turn` BEFORE the provider cancel is
+    # awaited, so a turn runner that snapshots the count at turn start and
+    # re-reads it at its end-of-turn gates sees a Stop from ANY surface that
+    # reaches this session -- the dashboard, a linked channel command, a
+    # transport's stop verb -- not only the one that owns the runner's slot.
+    # Monotonic across ``reset``: a hard stop resets the session object, so a
+    # flag on the session itself would vanish with the very turn it stopped.
+    # Popped on the teardown paths that end the key's conversation for good
+    # (``remove``, ``remove_if_unclaimed``, ``destroy``, the identity sweep),
+    # beside the sibling per-key dicts, so a long-lived gateway does not keep
+    # one entry per channel thread it ever stopped.
+    stop_requests: dict[str, int] = field(default_factory=dict)
 
 
 class SessionLifecycleService:
@@ -236,6 +249,15 @@ class SessionLifecycleService:
     @_identity_sweep_lock.setter
     def _identity_sweep_lock(self, lock: asyncio.Lock) -> None:
         self.state.identity_sweep_lock = lock
+
+    def stop_generation(self, key: str) -> int:
+        """How many Stop requests :meth:`stop_turn` has recorded for *key*.
+
+        Monotonic per folded key; 0 for a key never stopped. A turn runner
+        snapshots this at turn start and treats any later change as a user
+        Stop, whichever surface issued it.
+        """
+        return self.state.stop_requests.get(self._owner._fold_key(key), 0)
 
     @property
     def _recycling(self) -> dict[str, _SessionEntry]:
@@ -585,6 +607,7 @@ class SessionLifecycleService:
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+            self.state.stop_requests.pop(key, None)
             if session is not None:
                 # Same tick as the pop: see reset for why recording after the
                 # teardown awaits would consume a successor's start.
@@ -637,6 +660,7 @@ class SessionLifecycleService:
                         owner._compact_cooldown_until.pop(key, None)
                         self._suppress_replay.discard(key)
                         self._origin_links.pop(key, None)
+                        self.state.stop_requests.pop(key, None)
                         retired_keys.append(key)
                         # Do not clear _compact_pending_verdict: the identity
                         # recycle preserves that deferred verdict.
@@ -759,6 +783,7 @@ class SessionLifecycleService:
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+            self.state.stop_requests.pop(key, None)
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -811,6 +836,7 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
+            self.state.stop_requests.pop(key, None)
             # Ordinary permanent destroy starts a new conversation on reuse and
             # therefore clears the old threshold. History deletion can race a
             # same-key transcript claim in another process, so its explicit
@@ -1201,6 +1227,11 @@ class SessionLifecycleService:
         if not session:
             return "idle"
 
+        # Record the Stop against the session key before anything is awaited:
+        # the runner's end-of-turn gates may run as soon as the provider's
+        # cancel lands, and `prev_turn_cancelled` (set only after the ack) is
+        # too late for them.
+        self.state.stop_requests[key] = self.state.stop_requests.get(key, 0) + 1
         if not preserve_queue:
             owner.clear_queue(key)
         budget: float = owner._cfg.agent.soft_stop_budget_secs
