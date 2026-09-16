@@ -507,11 +507,14 @@ class OrphanStallMonitor(ManagerComponent):
         """True if a subagent is wedged in startup and should be reaped early.
 
         A subagent qualifies only once it has actually entered execution
-        (``_exec_started`` set by ``_run_inner``) yet has launched no runtime
-        (``_pid is None``) and produced no turn (``turns == 0``) within
-        ``_startup_deadline`` seconds. Keying on ``_exec_started`` — not the
-        registration timestamp ``started`` — means an agent merely awaiting
-        spawn approval (never entered ``_run_inner``) is never caught here.
+        (``_exec_started`` set by ``_run_inner``) yet has not begun its first
+        provider stream, launched no runtime (``_pid is None``), and produced
+        no turn (``turns == 0``) within ``_startup_deadline`` seconds. A
+        provider can create its child lazily from ``stream()``, so a missing PID
+        alone is not evidence that startup has not progressed. Keying on
+        ``_exec_started`` — not the registration timestamp ``started`` — means
+        an agent merely awaiting spawn approval (never entered ``_run_inner``)
+        is never caught here.
         """
         exec_started = info._exec_started
         if exec_started is None:
@@ -519,6 +522,7 @@ class OrphanStallMonitor(ManagerComponent):
         return (
             info.turns == 0
             and info._pid is None
+            and info._first_stream_started is None
             and (now - exec_started) > self._manager._startup_deadline
         )
 

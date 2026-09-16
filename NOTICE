@@ -26,3 +26,10 @@ recipe are derived from prior MIT-licensed open-source projects that
 reverse-engineered that path. No third-party code is copied; the
 implementation is independent, and the module is isolated so the
 dependency is auditable in one place.
+
+The shell-command classifier behind the chat transcript's tool-call titles
+(website/src/utils/shellCommandParse.ts and its Python mirror
+src/kiro_crew/tool_call_title.py) reimplements the rule set of OpenAI
+Codex's parse_command.rs (https://github.com/openai/codex, Apache-2.0) in
+TypeScript and Python. No Rust source is copied; the Apache-2.0 notice for
+Codex is reproduced under "Ported rule sets" in THIRD-PARTY-NOTICES.

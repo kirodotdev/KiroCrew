@@ -1650,7 +1650,15 @@ class AcpProvider(LLMProvider):
             tool_input=e.tool_input,
             tool_input_redacted=e.tool_input_redacted,
             tool_output=e.tool_output,
+            tool_output_digest=e.tool_output_digest,
+            tool_output_bytes=e.tool_output_bytes,
             tool_final=e.tool_final,
+            # Forwarded beside `tool_final` because it is NOT derivable from it:
+            # `tool_final` is true only for a completed call, so a consumer that
+            # needs to know a tool FAILED has this field or nothing. Dropping it
+            # here would leave every non-dashboard consumer of the provider
+            # interface unable to tell a failure from a call still in progress.
+            tool_status=e.tool_status,
             usage=e.usage,
             raw_tool_params=e.raw_tool_params,
             # PROVENANCE flags for the child-fidelity gate. Dropping these

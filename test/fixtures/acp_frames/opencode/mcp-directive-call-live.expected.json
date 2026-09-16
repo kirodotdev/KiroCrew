@@ -39,7 +39,10 @@
         "kind": "tool_result",
         "tool_call_id": "call_live_1",
         "tool_final": true,
-        "tool_output": "Monitor loop requested for this session.\n[[KIROCREW_SESSION_DIRECTIVE]]{\"kind\":\"monitor_start\",\"args\":{\"message\":\"Watch CI on this PR; stop when it is green.\",\"interval_secs\":300,\"gate\":true}}"
+        "tool_output": "Monitor loop requested for this session.\n[[KIROCREW_SESSION_DIRECTIVE]]{\"kind\":\"monitor_start\",\"args\":{\"message\":\"Watch CI on this PR; stop when it is green.\",\"interval_secs\":300,\"gate\":true}}",
+        "tool_output_bytes": 192,
+        "tool_output_digest": "a3b4b4df2e1e8cb82c908bab69088629c85052ac0a558e8447f881e6b8dc96be",
+        "tool_status": "completed"
       }
     ],
     "frame": "session/update",

@@ -1116,11 +1116,18 @@ async def run_bridge(
         """Ping the gateway ONLY while requests are outstanding, and declare the
         peer dead after ``ping_max_misses`` consecutive unanswered pings.
 
-        Each ping/miss cycle consumes exactly ONE ``ping_interval``: when
-        something is outstanding the wait for the pong *is* the interval, so the
-        advertised grace is ``ping_interval × ping_max_misses`` rather than twice
-        that. Only an idle bridge sleeps separately, and it resets the miss count
-        so an earlier partial streak cannot carry across an idle gap.
+        Every cycle consumes exactly ONE ``ping_interval``, whichever way it
+        ends: a MISSED pong consumes it as the wait itself, and an ANSWERED pong
+        consumes what is left of it as a sleep. So the advertised grace is
+        ``ping_interval × ping_max_misses`` rather than twice that, and the ping
+        RATE is one per interval rather than one per round-trip. That remainder
+        sleep is load-bearing: the gateway answers a ping inline in its
+        connection handler, so a healthy pong is back in microseconds and a loop
+        that returned straight to the next ping would ping at socket speed for
+        the whole life of an outstanding request -- burning a core on this stub
+        and on the single-loop daemon that has to answer every one of them.
+        An idle bridge also resets the miss count, so an earlier partial streak
+        cannot carry across an idle gap.
 
         Never fires on an idle bridge, nor on a peer that answers while still
         working — that is the distinction between "slow" and "wedged", and the
@@ -1146,7 +1153,11 @@ async def run_bridge(
             except (OSError, ConnectionError, BrokenPipeError):
                 # Socket already broken — bridge will tear down on its own.
                 return
-            # This wait IS the cycle's interval — do not sleep again.
+            # Stamped AFTER the write, not before: _write_frame awaits the
+            # shared writer lock and drain, so a stamp taken first would count
+            # that backpressure against the interval and let the next ping
+            # follow the pong immediately.
+            sent_at = bridge_loop.time()
             # We check immediately after sending: the pong may have arrived
             # between our clear and the send (or during the write).
             # Give the peer the full next interval to reply.
@@ -1158,6 +1169,24 @@ async def run_bridge(
                 pass
             if _pong_received.is_set():
                 consecutive_misses = 0
+                # Answered: the wait above was NOT the interval, so sleep out
+                # the rest of it before the next ping. Measured from the ping on
+                # the wire, so a slow-but-answered pong shortens this sleep
+                # instead of adding to it, keeping the rate at one ping per
+                # interval no matter how fast the peer replies. A stop wakes us
+                # at once, so teardown never waits out a gap. ``_peer_dead_evt``
+                # needs no waiter here: this task is its only setter and it
+                # returns immediately after setting it, so it cannot change
+                # under us.
+                remaining = ping_interval - (bridge_loop.time() - sent_at)
+                if remaining > 0:
+                    try:
+                        await asyncio.wait_for(
+                            stop_event.wait(), timeout=remaining
+                        )
+                        return
+                    except asyncio.TimeoutError:
+                        pass
             else:
                 consecutive_misses += 1
                 logger.warning(

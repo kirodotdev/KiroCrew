@@ -20,8 +20,7 @@ Design:
     Slack + cron sessions all calling ensure_ready() at boot) creates exactly one
     instrument, never a duplicate. The caches are keyed by metric NAME and are
     not evicted, so callers MUST use low-cardinality constant names (see the
-    cardinality note in ``schema.py``); bounded eviction is deferred to a later
-    wave.
+    cardinality note in ``schema.py``); bounded eviction is not implemented.
   * Every public method is best-effort: a telemetry failure NEVER propagates to
     the caller -- it is logged at WARNING and swallowed.
   * A recorder built with ``meter=None`` is a no-op recorder, used when telemetry

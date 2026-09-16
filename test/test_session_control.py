@@ -470,6 +470,67 @@ async def test_a_natural_teardown_during_the_steer_reports_requeued(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monkeypatch):
+    """The append-only log must not claim a steer cut a turn that never got it.
+
+    ``steered`` only means the client accepted the write. If the turn ends during
+    the await, the teardown requeues the text and it runs LATER -- so a
+    ``message/steered`` written on the RPC's return is a permanent false statement
+    about a turn, and the body would also be logged twice once the requeue path
+    records it.
+
+    Exactly one entry, and it is ``message/queued``: the requeue moves the text
+    straight into the slot queue without passing the append that records a queued
+    message, so this is the only place that can record it at all.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("KIROCREW_SESSION_LEDGER", "1")
+    import json
+
+    from kiro_crew import ledger as lg
+    from kiro_crew import session_ledger_emit
+
+    session_ledger_emit.reset_caches()
+    sid = "sess-steer-requeue"
+    session_ledger_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
+    session_ledger_emit.on_turn_started(sid, 1, "user")
+    assert session_ledger_emit.flush()
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-1"))
+
+    async def _steer(msg):
+        # The turn's teardown runs while the RPC is in flight and requeues the text.
+        did = slot._steer_delivery_ids.pop(msg, "")
+        slot._pending_steers.remove(msg)
+        slot._queue.append({"id": "q1", "content": msg, "meta": {"steer_delivery_id": did}})
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_steer)
+    client.session_id = sid
+    slot._acp_client = client
+
+    outcome = await cd.steer_into_running_turn(state, slot, "run this instead")
+
+    assert outcome == cd.STEER_REQUEUED
+    assert session_ledger_emit.flush()
+    body = [
+        json.loads(line)
+        for line in lg.ledger_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
+    ]
+    mine = [e for e in body if e["type"] in ("message/steered", "message/queued")]
+    assert len(mine) == 1, f"expected one entry for one message, got {[e['type'] for e in mine]}"
+    assert mine[0]["type"] == "message/queued"
+    assert mine[0]["data"]["source"] == "steer"
+    assert not [
+        e for e in body if e["type"] == "message/steered"
+    ], "a requeued steer was recorded as having cut the turn"
+    session_ledger_emit.reset_caches()
+
+
+@pytest.mark.asyncio
 async def test_a_second_identical_steer_is_refused_rather_than_registered(tmp_path):
     """Two overlapping identical steers: the second must not register at all.
 
@@ -3522,6 +3583,142 @@ def test_an_unrelated_identical_queue_item_is_not_read_as_our_requeue(tmp_path):
     assert (
         result == chat_delivery.STEER_STEERED
     ), "an identical queue entry without our delivery id must not read as our requeue"
+
+
+def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkeypatch):
+    """The steer RPC proves the bytes left, not that any turn received them.
+
+    A steer reported delivered can still be sitting pending when its turn ends, and
+    that turn's teardown requeues it to a LATER turn. A `message/steered` written
+    from here would already be on disk saying the earlier turn received it, and an
+    append-only entry cannot be moved the way the transcript row can. So this path
+    writes no ledger entry at all; the `steering_consumed` echo owns that fact.
+
+    Mutation guard: recording the delivered case here -- from a live ordinal or any
+    other guess -- reddens this.
+    """
+    from kiro_crew import session_ledger_emit
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-2"))
+    text = "use the other branch"
+    slot._acp_client = _steerable(accepted=True)
+
+    steered_at: list[int] = []
+    queued_for: list[str] = []
+    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(
+        session_ledger_emit, "on_message_steered", lambda *a, **kw: steered_at.append(1)
+    )
+    monkeypatch.setattr(
+        session_ledger_emit, "on_message_queued", lambda sid, **_kw: queued_for.append(sid)
+    )
+    # A turn IS running, so a guess would have had something plausible to record.
+    monkeypatch.setattr(session_ledger_emit, "live_turn", lambda _sid: 13)
+
+    def _consume_inside_the_rpc(*_a, **_kw):
+        # The running turn takes the registration, which is what makes the
+        # reconciliation report delivered.
+        slot._pending_steers.clear()
+        slot._steer_confirmed.add(slot._steer_delivery_ids[text])
+        return True
+
+    slot._acp_client.steer = AsyncMock(side_effect=_consume_inside_the_rpc)
+
+    result = asyncio.run(chat_delivery.steer_into_running_turn(state, slot, text))
+
+    assert result == chat_delivery.STEER_STEERED
+    assert steered_at == [], "the delivery path must not assert consumption"
+    assert queued_for == [], "and it is not a queued message either"
+
+
+def test_a_stop_race_that_only_expects_a_requeue_records_nothing(tmp_path, monkeypatch):
+    """An expected requeue is a prediction, and this log records observation.
+
+    On this path the steer is still pending and a stop has landed, so the teardown
+    is expected to requeue the text. It may not: a second stop can hard-kill and
+    discard the pending steers first, and then a `message/queued` written here
+    permanently claims a queue entry that was never made. The text still reaches
+    the log if it runs, as the `message/received` of the turn that runs it.
+
+    Mutation guard: recording the queued outcome here reddens this.
+    """
+    from kiro_crew import session_ledger_emit
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-2"))
+    text = "stop and do this instead"
+    slot._acp_client = _steerable(accepted=True)
+
+    queued: list[str] = []
+    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(
+        session_ledger_emit, "on_message_queued", lambda sid, **_kw: queued.append(sid)
+    )
+
+    def _stop_without_requeueing(*_a, **_kw):
+        # A stop lands while the steer is still registered, and nothing has moved
+        # it into the queue: exactly the state where a requeue is only expected.
+        slot._stop_generation = int(getattr(slot, "_stop_generation", 0) or 0) + 1
+        return True
+
+    slot._acp_client.steer = AsyncMock(side_effect=_stop_without_requeueing)
+
+    result = asyncio.run(chat_delivery.steer_into_running_turn(state, slot, text))
+
+    assert result == chat_delivery.STEER_REQUEUED
+    assert queued == [], "an expected requeue is not an observed one"
+
+
+def test_a_requeued_steer_is_recorded_as_a_queued_message(tmp_path, monkeypatch):
+    """The one ledger fact this path CAN prove, named by the right id.
+
+    The requeue moves the text straight into the slot queue without passing the
+    append that records `message/queued`, so nothing else in the system knows it
+    happened. The id recorded is the QUEUE ENTRY's own -- the same quantity
+    `queue_for_next_turn` records, so one reader joins both against the queue. The
+    client's `sendId` is a different namespace minted by a different party and
+    would look like a queue id without being one. No turn rides on it: a queued
+    message belongs to no turn until the one that runs it starts.
+
+    Mutation guard: recording `send_id` reddens this, because the two differ here.
+    """
+    from kiro_crew import session_ledger_emit
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-2"))
+    text = "run the deploy"
+    slot._acp_client = _steerable(accepted=True)
+
+    queued: list[dict] = []
+    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(
+        session_ledger_emit, "on_message_queued", lambda sid, **kw: queued.append(dict(kw))
+    )
+    seen: dict[str, str] = {}
+
+    def _requeue_like_the_teardown(*_a, **_kw):
+        did = slot._steer_delivery_ids.get(text, "")
+        slot._pending_steers.clear()
+        seen["qid"] = str(slot.queue_insert(0, text, meta={"steer_delivery_id": did}))
+        return True
+
+    slot._acp_client.steer = AsyncMock(side_effect=_requeue_like_the_teardown)
+
+    result = asyncio.run(
+        chat_delivery.steer_into_running_turn(state, slot, text, send_id="s-client-side")
+    )
+
+    assert result == chat_delivery.STEER_REQUEUED
+    assert len(queued) == 1 and queued[0]["source"] == "steer"
+    assert seen["qid"], "the harness never queued anything -- the test proves nothing"
+    assert (
+        queued[0]["queued_seq"] == seen["qid"]
+    ), "the entry must name the queue entry it became, not the client's send id"
+    assert queued[0]["queued_seq"] != "s-client-side"
 
 
 def test_our_own_requeue_is_still_detected_by_its_delivery_id(tmp_path):

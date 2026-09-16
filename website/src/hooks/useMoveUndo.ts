@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { MOVE_UNDO_MS, type MovedItem } from '../components/MoveUndoBar'
+import useHeldWindow from './useHeldWindow'
 
 /** A live offer: one {@link MovedItem} plus the lifecycle the hook enforces. */
 export type MoveUndoOffer = MovedItem & {
@@ -166,33 +167,18 @@ export default function useMoveUndo({ locate, apply, folderExists }: MoveUndoDep
   // deadline must not expire under a hand that is already reaching for Undo,
   // which would take the affordance away from exactly the slower reader it
   // exists for — and the footer shifts up into the spot the button just left.
-  // The hold and the remainder are both keyed to the OFFER they belong to, and
-  // an id that does not match the live offer reads as "full, running". A new
-  // drag therefore cannot inherit a suspended clock (the pointer never leaves a
-  // bar that is REPLACED, so nothing else would clear the hold) or a part-spent
-  // window — by construction, rather than by a reset a later edit could forget.
-  // That cross-offer case carries no test: a second drag needs a board drop
-  // zone, and the zones unmount once the first move lands. Hence the shape above
-  // over an explicit reset — there is no branch left to get wrong.
+  // The clock itself (deadline, hold, remainder) is `useHeldWindow`, shared with
+  // the header's Auto-title Undo. The hold is keyed to the OFFER it belongs to,
+  // and an id that does not match the live offer reads as "not held". A new drag
+  // therefore cannot inherit a suspended clock (the pointer never leaves a bar
+  // that is REPLACED, so nothing else would clear the hold) — by construction,
+  // rather than by a reset a later edit could forget. That cross-offer case
+  // carries no test: a second drag needs a board drop zone, and the zones
+  // unmount once the first move lands. Hence the shape above over an explicit
+  // reset — there is no branch left to get wrong.
   const [heldOffer, setHeldOffer] = useState<number | null>(null)
-  const [spent, setSpent] = useState<{ id: number; remaining: number } | null>(null)
-  const paused = offer != null && heldOffer === offer.id
-  const remainingMs = offer && spent?.id === offer.id ? spent.remaining : MOVE_UNDO_MS
-  const deadlineRef = useRef(0)
-  useEffect(() => {
-    if (!offer) return
-    if (paused) {
-      setSpent({ id: offer.id, remaining: Math.max(0, deadlineRef.current - Date.now()) })
-      return
-    }
-    deadlineRef.current = Date.now() + remainingMs
-    const timer = setTimeout(() => setOffer(null), remainingMs)
-    return () => clearTimeout(timer)
-    // Keyed on the offer's id and the hold ALONE: flipping `live` must not
-    // restart the clock, and neither must the remainder this effect writes when
-    // it freezes — that write is the input to the NEXT resume, not a new window.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [offer?.id, paused])
+  const expire = useCallback(() => setOffer(null), [])
+  const { remainingMs, paused } = useHeldWindow(offer?.id ?? null, MOVE_UNDO_MS, heldOffer === offer?.id, expire)
 
   useEffect(() => {
     if (!offer) return

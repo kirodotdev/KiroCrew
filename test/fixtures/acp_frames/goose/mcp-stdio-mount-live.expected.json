@@ -136,7 +136,10 @@
         "kind": "tool_result",
         "tool_call_id": "call_h6atgqyn",
         "tool_final": true,
-        "tool_output": "crew-stdio-mount-proved"
+        "tool_output": "crew-stdio-mount-proved",
+        "tool_output_bytes": 23,
+        "tool_output_digest": "9f9748c9e18a42034c91e3b56ef3086e820bc06bf97a0a2b536addd6bdd43922",
+        "tool_status": "completed"
       }
     ],
     "frame": "session/update",

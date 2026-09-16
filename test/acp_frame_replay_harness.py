@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -222,7 +223,32 @@ def replay_frames(
     the value its extension echoed as ``_meta.gate_envelope_nonce`` so the replay
     reads its permission frames the way the live session did. Absent, as on every
     other harness, no frame is read as an envelope.
+
+    The session-ledger flag is forced ON for the replay. The parsers measure a
+    tool result's full byte count and digest only while that flag is set, since
+    the emitter is its only consumer -- so replaying with it off would record a
+    shorter event than any session with the feature enabled produces, and the
+    corpus would stop pinning the shape it exists to pin. Set here rather than in
+    each caller so the snapshot WRITER and the test that checks it against the
+    committed snapshot cannot disagree about which shape is being recorded. It is
+    restored afterwards: this process runs other tests, and leaving the feature on
+    for them would change what they exercise.
     """
+    prior = os.environ.get("KIROCREW_SESSION_LEDGER")
+    os.environ["KIROCREW_SESSION_LEDGER"] = "1"
+    try:
+        return _replay(frames, gate_envelope_nonce=gate_envelope_nonce)
+    finally:
+        if prior is None:
+            os.environ.pop("KIROCREW_SESSION_LEDGER", None)
+        else:
+            os.environ["KIROCREW_SESSION_LEDGER"] = prior
+
+
+def _replay(
+    frames: list[dict[str, Any]], *, gate_envelope_nonce: str | None = None
+) -> list[dict[str, Any]]:
+    """The replay itself. See :func:`replay_frames` for the flag it runs under."""
     caches: dict[str, Any] = {
         "tool_input_cache": {},
         "shell_cache": {},

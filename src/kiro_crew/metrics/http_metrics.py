@@ -248,6 +248,4 @@ def make_route_latency_middleware(
                 except Exception:  # never break the request path for telemetry
                     logger.debug("route latency record failed", exc_info=True)
 
-    # Tag so server.py can assert/introspect the middleware if needed.
-    route_latency_middleware._is_route_latency = True  # type: ignore[attr-defined]
     return route_latency_middleware

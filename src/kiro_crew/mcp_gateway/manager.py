@@ -206,6 +206,13 @@ class GatewayManager:
     #: class-level-default reasoning as ``_stand_downs_issued`` above: the
     #: watchdog reads it on paths that build this object via ``__new__``.
     _last_drift_check: float = 0.0
+    #: Whether the spent-stand-down-budget settle has been announced. The
+    #: watchdog re-enters ``_repair_or_adopt`` on every drift re-check for as
+    #: long as a refusing incumbent holds the socket, and the settle verdict
+    #: never changes once the budget is spent — so it is logged at ERROR once
+    #: and at DEBUG thereafter. Class-level default for the same ``__new__``
+    #: reasoning as above.
+    _cap_settle_logged: bool = False
 
     def __init__(self, spec: GatewaySpec) -> None:
         self._spec = spec
@@ -215,6 +222,7 @@ class GatewayManager:
         self._adopted = False
         self._stand_downs_issued = 0
         self._last_drift_check = 0.0
+        self._cap_settle_logged = False
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -428,22 +436,6 @@ class GatewayManager:
         Refusing to adopt would instead leave the socket held by a daemon nobody
         supervises and no working broker at all.
         """
-        if self._stand_downs_issued >= _MAX_STAND_DOWN_REQUESTS:
-            # Oscillation guard. Reached only when this process has already asked
-            # _MAX_STAND_DOWN_REQUESTS times, which in practice means another
-            # live gateway instance keeps re-winning the socket with a different
-            # target map. Settle instead of trading the socket forever.
-            logger.error(
-                "mcp-gateway: incumbent on %s still cannot resolve %s, but this "
-                "gateway has already issued %d stand-downs — adopting it instead "
-                "of contending further. Another gateway instance is likely "
-                "sharing this socket path with a different stub set; these "
-                "servers' stubs stay on per-session exec.",
-                self._spec.socket_path,
-                ", ".join(missing),
-                self._stand_downs_issued,
-            )
-            return _ADOPT
         grounds: list[str] = []
         if missing:
             grounds.append(f"cannot resolve {', '.join(missing)}")
@@ -451,6 +443,37 @@ class GatewayManager:
             grounds.append("runs different code than this gateway")
         if orphaned:
             grounds.append("belongs to a gateway that has exited and is about to stop itself")
+        if self._stand_downs_issued >= _MAX_STAND_DOWN_REQUESTS:
+            # Oscillation guard. Reached only when this process has already asked
+            # _MAX_STAND_DOWN_REQUESTS times: either another live gateway
+            # instance keeps re-winning the socket with a different target map,
+            # or the incumbent predates the stand-down grounds this code sends
+            # (a survivor from a replaced install) and will never honour one.
+            # Settle instead of trading the socket forever.
+            #
+            # Settling is a DECISION, so it is announced once. The watchdog's
+            # drift re-check lands here every _DRIFT_RECHECK_INTERVAL_SECS for
+            # as long as the incumbent holds the socket, and re-logging the
+            # same settled verdict at ERROR turned one upgrade skew into a
+            # permanent ~288-line/day log storm in the field. Repeats go to
+            # DEBUG; _adoption_drift's own WARNING still names any newly
+            # missing stems each re-check, so new degradation stays visible.
+            log = logger.debug if self._cap_settle_logged else logger.error
+            self._cap_settle_logged = True
+            log(
+                "mcp-gateway: incumbent on %s still %s, but this gateway has "
+                "already issued %d stand-downs — adopting it instead of "
+                "contending further. %s",
+                self._spec.socket_path,
+                " and ".join(grounds),
+                self._stand_downs_issued,
+                "Another gateway instance is likely sharing this socket path "
+                "with a different stub set; these servers' stubs stay on "
+                "per-session exec."
+                if missing
+                else "Run `kirocrew restart` to replace it.",
+            )
+            return _ADOPT
         logger.warning(
             "mcp-gateway: incumbent on %s %s — asking it to stand down so a daemon "
             "matching this gateway can bind",

@@ -5,7 +5,8 @@ import { useAppSelector, useAppDispatch } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../../i18n/LanguageProvider'
-import { DERIVE_LABEL_THRESHOLD_CHARS, deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
+import { deriveShellSummary, pickToolLabel } from '../../utils/toolLabel'
+import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -162,7 +163,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
    *  the ease. Defaults to false so hosts without a heat signal keep the
    *  animations unconditionally. */
   transcriptHot?: boolean }) {
-  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // memo() bails out of the provider-level repaint; subscribe directly. The
+  // generation is also a dependency of the derived-title memo below, whose
+  // `i18nT` output would otherwise stay in the previous locale after a switch.
+  const langGen = useLanguageGeneration()
   const dispatch = useAppDispatch()
   const label = message.content.replace(/^🔧\s*/, '')
   const toolCallId = message.meta?.tool_call_id as string | undefined
@@ -182,7 +186,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // expansion as well as completion status for the icon. All transcript scans go
   // through the shared per-slot index (see toolRowIndex.ts): built once per
   // (messages, toolLog) identity change, O(1) per row per dispatch.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, fromLog } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, trustedToolName, mcpServer, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -244,6 +248,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         // the label is simplified/localized for humans, so gating behaviour on
         // it would break under `useSimplifiedToolNames` or a translated UI.
         toolName: e.text || '',
+        // Trusted identity from the transport's `_meta.kiro`, when it sent one;
+        // '' otherwise, and the title derivation falls back to parsing the title.
+        trustedToolName: e.tool_name || '',
+        mcpServer: e.mcp_server || '',
         fromLog: true,
       }
     }
@@ -278,6 +286,10 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       // Historical rows have no log entry; the message content is the only
       // carrier. Harmless either way — a replayed wait is never in flight.
       toolName: message.content.replace(/^🔧\s*/, ''),
+      // Persisted by _tool_meta (chat_runner.py) since the title-derivation
+      // change; rows written before it read '' and derive from the title.
+      trustedToolName: (message.meta?.tool_name as string | undefined) || '',
+      mcpServer: (message.meta?.mcp_server as string | undefined) || '',
       // No live tool-log entry backs this row. `isDone` above is a REPLAY
       // default, not an observation, so anything that needs real liveness must
       // consult server state instead of trusting it (see the wait countdown).
@@ -676,14 +688,50 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     .filter(Boolean)
     .join('\n')
 
+  // The language-neutral, argument-derived title for this call — `List files
+  // in src` for `ls -la src`, `Session send: <target>` for an MCP call, kiro-cli's
+  // own `Reading a.rs:1-20` when nothing better can be said. Live and replayed
+  // rows share this one function, so a replayed shell row whose title degraded
+  // to the bare `shell` is recomputed from its persisted `input.command`. The
+  // verbatim command / incoming title survives as `rawTitle` for the tooltip
+  // and the expanded header's tool chip.
+  // The slot's project directory, so native-tool titles show paths relative
+  // to it (`Read src/a.ts`, not the absolute path). Reads THIS row's slot —
+  // a split-view pane must not borrow the active session's tree.
+  const projectDir = useAppSelector(s => {
+    const key = slot ?? s.chat.activeSlot
+    return key ? (s.dashboard.slots.find(sl => sl.key === key)?.project || undefined) : undefined
+  })
+
+  const derived = useMemo(() => {
+    void langGen // the localized title is a function of the catalog generation too
+    return deriveToolCallTitle({
+      title: label,
+      kind: toolKind,
+      rawInput: input,
+      isShell,
+      toolName: trustedToolName,
+      mcpServer,
+      cwd: projectDir,
+    })
+  }, [label, toolKind, input, isShell, trustedToolName, mcpServer, projectDir, langGen])
+
   // Purpose is the agent's prose label (simplified mode). Guard it against the
   // active UI language so a purpose written in another language (e.g. a Chinese
   // label persisted before the user switched to English) falls back to the
-  // language-neutral raw tool label instead of showing foreign-script text.
+  // language-neutral derived title instead of showing foreign-script text.
+  //
+  // With `simplifiedToolNames` OFF the user opted into the verbatim command on
+  // the row, so the raw title stays the label whenever it says anything; the
+  // derived title steps in only where the transport's title was already useless
+  // (the replayed `shell` stub, KAS's fixed `Run Command`, an empty title).
+  // That rule lives in `pickToolLabel`, shared with the approval bar and the
+  // session status line, so every surface agrees by construction.
   const toolLabel = pickToolLabel({
     simplified,
     purpose: purpose || (message.meta?.purpose as string | undefined),
     rawLabel: label,
+    derivedTitle: derived.title,
     uiLang,
   })
 
@@ -692,41 +740,48 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
   // purpose mode where the label is prose and no path is otherwise shown. The
   // full path stays in the button tooltip and the expanded details.
   const basename = useMemo(() => (filePath ? (filePath.split('/').pop() || filePath) : null), [filePath])
-  // When the chip is shown, strip the now-redundant raw path out of the visible
-  // label. Raw mode `Read /a/b/c.ts` → `Read`; purpose-mode prose contains no
-  // path substring → unchanged. Falls back to the full label if stripping
-  // would leave it empty (label was nothing but the path).
+  // When the chip is shown, strip the now-redundant path out of the visible
+  // label. A derived `Read src/a.ts` → `Read` (the title carries the display
+  // path, the chip the basename); purpose-mode prose contains no path substring
+  // → unchanged. Falls back to the full label if stripping would leave it empty
+  // (label was nothing but the path).
   const displayLabel = useMemo(() => {
     if (!showFileOpen || !filePath) return toolLabel
-    const stripped = toolLabel.split(filePath).join('').replace(/\s+/g, ' ').trim()
-    return stripped || toolLabel
-  }, [showFileOpen, filePath, toolLabel])
-  // A purpose-less shell call's label is the raw command. The collapsed row's
-  // `truncate` (LABEL_COLLAPSED_CLASS) already bounds how much of it is
-  // visible, but a clipped wall of quoting says nothing — in simplified mode a
-  // flood-length shell label is substituted with a derived command digest
-  // (binaries + redirect target), so the visible line is meaningful. Short
-  // labels pass through untouched, and raw mode always shows the exact command.
-  //
-  // The digest parses COMMANDS, so it only ever runs when the shown label
-  // actually fell back to the raw title (no purpose, or purpose suppressed by
-  // the language guard — `pickToolLabel` returns `rawLabel` in exactly those
-  // cases). A prose purpose parsed as a command keeps only its head token —
-  // "Run the full benchmark…" rendered as "Run" — and the `Running:` prefix
-  // path inside deriveShellSummary parses regardless of `bareCommand`, so the
-  // gate is on the call itself, not just the flag. Long purposes pass through
-  // and CSS truncation owns the overflow, exactly as it does for
-  // restored-history rows.
-  const pillLabelText = useMemo(() => {
-    if (!simplified) return displayLabel
-    if (displayLabel.length <= DERIVE_LABEL_THRESHOLD_CHARS && !displayLabel.includes('\n')) {
-      return displayLabel
+    for (const candidate of [filePath, relDisplayPath(filePath, projectDir)]) {
+      if (candidate && toolLabel.includes(candidate)) {
+        const stripped = toolLabel.split(candidate).join('').replace(/\s+/g, ' ').trim()
+        if (stripped) return stripped
+      }
     }
-    if (toolLabel !== label) return displayLabel
-    return deriveShellSummary(displayLabel, { bareCommand: isShell }) ?? displayLabel
-  }, [displayLabel, simplified, isShell, toolLabel, label])
-  // Hover reveals the verbatim command whenever the pill shows a substitute.
-  const pillLabelTitle = pillLabelText === displayLabel ? undefined : displayLabel
+    return toolLabel
+  }, [showFileOpen, filePath, toolLabel, projectDir])
+  // Simplified mode, shell command the classifier refused (`$VAR`, redirects,
+  // heredocs, loops) and no purpose to show. The command digest — the binaries
+  // it runs plus the first redirect target (`ls, grep → out.txt`) — says more
+  // than the raw prefix cut at 80 chars when it names TWO OR MORE things; a
+  // lone binary (`wc` for `for f in …; do wc -l "$f"; done`) says less than the
+  // command itself, so that case keeps the raw first line. Raw mode never
+  // digests: that mode asked for the exact command.
+  const pillLabelText = useMemo(() => {
+    // `derived.kind` is the shell signal here: a historical row has no
+    // `is_shell` on its log entry, but the derivation read the same title.
+    if (!simplified || derived.derived || derived.kind !== 'execute') return displayLabel
+    if (displayLabel !== derived.title) return displayLabel // the purpose is showing
+    const digest = deriveShellSummary(derived.rawTitle, { bareCommand: true })
+    return digest && (digest.includes(', ') || digest.includes(' → ')) ? digest : displayLabel
+  }, [displayLabel, simplified, derived])
+  // Hover reveals the verbatim command / incoming title whenever the pill shows
+  // a substitute for it — a derived title, a digest, or the purpose.
+  const pillLabelTitle = pillLabelText === derived.rawTitle ? undefined : (derived.rawTitle || undefined)
+  // A shell row the classifier left verbatim (`$VAR`, redirects, loops) sits
+  // among prose titles; setting it in the code face says "this is the exact
+  // command" instead of leaving the reader to guess why one row reads
+  // differently. `font-mono` pins Tailwind's `var(--mono)` on purpose here —
+  // the label IS code — where the prose labels around it must not (see the
+  // note on the pill wrapper below).
+  const pillLabelIsVerbatimCommand =
+    derived.kind === 'execute' && !derived.derived && pillLabelText === derived.title && Boolean(derived.rawTitle)
+  const pillLabelFaceClass = pillLabelIsVerbatimCommand ? 'font-mono text-[0.92em]' : ''
   // Both running and pending-approval pills shimmer — the highlight color
   // tracks the status so pending shimmers warn-yellow (matching the approval
   // bar) and running shimmers accent.
@@ -898,7 +953,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         {isShimmering ? (
           <motion.span
             data-testid="tool-pill-label"
-            className={`${labelWrapClass} min-w-0 leading-5 bg-clip-text`}
+            className={`${labelWrapClass} ${pillLabelFaceClass} min-w-0 leading-5 bg-clip-text`}
             style={{
               backgroundImage: `linear-gradient(90deg, ${shimmerBase} 0%, ${shimmerBase} 40%, ${shimmerHighlight} 50%, ${shimmerBase} 60%, ${shimmerBase} 100%)`,
               backgroundSize: '300% 100%',
@@ -909,7 +964,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 2.4, repeat: Infinity, ease: 'linear' }}
           >{pillLabelText}</motion.span>
         ) : (
-          <span data-testid="tool-pill-label" className={`${labelWrapClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{pillLabelText}</span>
+          <span data-testid="tool-pill-label" className={`${labelWrapClass} ${pillLabelFaceClass} min-w-0 leading-5 text-muted hover:text-text transition-colors`}>{pillLabelText}</span>
         )}
       </button>
 
@@ -1049,7 +1104,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={derived.rawTitle || label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>

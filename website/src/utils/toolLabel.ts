@@ -26,6 +26,8 @@
  * pass through unchanged.
  */
 
+import { isInformativeTitle } from './toolCallTitle'
+
 type Script = 'latin' | 'han' | 'kana' | 'hangul' | 'cyrillic' | 'devanagari' | 'bengali'
 
 /** "Hard" (non-Latin) scripts whose mere presence unambiguously signals a
@@ -105,12 +107,6 @@ export function labelMatchesLanguage(text: string, lang: string): boolean {
   return true
 }
 
-/** A label longer than this — or spanning lines — reads better as a derived
- *  summary than as raw code. Threshold only: the collapsed row's CSS `truncate`
- *  (see ToolCallLine's LABEL_COLLAPSED_CLASS) owns visual overflow; this
- *  constant only decides when substituting a summary is worth it. */
-export const DERIVE_LABEL_THRESHOLD_CHARS = 200
-
 /** Shell titles arrive as ``Running: <command>`` or as the bare command; MCP
  *  invocations as ``Running: @server/tool``. Only real commands are parseable. */
 const RUNNING_PREFIX_RE = /^Running:\s+/
@@ -127,6 +123,12 @@ const HEREDOC_RE = /<<[-~]?\s*['"]?[A-Za-z_]/
  *  the summary when a more meaningful binary is present, kept when it is the
  *  whole command (``cd /tmp`` should still read ``cd``). */
 const BOOKKEEPING = new Set(['export', 'cd', 'set', 'source', 'exec', 'unset'])
+/** Control-flow words a segment can start with. A segment that IS one of these
+ *  (`done`, `fi`) or that only introduces a loop variable (`for f in …`) names
+ *  no binary; a segment that opens with one (`do wc -l`, `then echo`) names the
+ *  binary after it. */
+const LOOP_HEADS = new Set(['for', 'select', 'case'])
+const CONTROL_WORDS = new Set(['do', 'done', 'then', 'else', 'elif', 'if', 'fi', 'while', 'until', 'esac', '!', '{', '}'])
 
 /** Blank out quoted spans (keeping length) so operators inside quotes do not
  *  split segments — ``grep -E 'foo|bar'`` is one command, not two. Display-only
@@ -183,8 +185,9 @@ export function deriveShellSummary(
     const noRedirects = masked.replace(/\d*>&\d*|&>>?|>>?|<<?[-~]?/g, ' ')
     for (const seg of noRedirects.split(SEGMENT_SPLIT_RE)) {
       const tokens = seg.trim().split(/\s+/).filter(Boolean)
+      if (tokens.length && LOOP_HEADS.has(tokens[0])) continue
       let i = 0
-      while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i])) i++
+      while (i < tokens.length && (ENV_ASSIGN_RE.test(tokens[i]) || CONTROL_WORDS.has(tokens[i]))) i++
       const head = tokens[i]
       if (!head) continue
       const base = head.split('/').pop() || head
@@ -204,19 +207,33 @@ export function deriveShellSummary(
 /**
  * Choose the text a tool pill / session-row / approval bar should display.
  *
- * - Raw mode (`simplified` off): always the raw tool label.
- * - Simplified mode: the agent's `purpose`, UNLESS its script does not match
- *   the active UI language, in which case fall back to `rawLabel` so the user
- *   never sees prose in a language other than their interface.
+ * The base label comes first, and every surface gets the same one:
+ * - Simplified mode: the derived title (`derivedTitle`), when supplied.
+ * - Raw mode (`simplified` off): the verbatim `rawLabel` whenever it says
+ *   anything; the derived title steps in only where the transport's title was
+ *   already useless (a `shell` / `Run Command` stub, an empty title).
+ *
+ * Then, in simplified mode only, the agent's `purpose` replaces that base,
+ * UNLESS its script does not match the active UI language, in which case the
+ * base stays so the user never sees prose in a language other than their
+ * interface. Callers without a derivation (`derivedTitle` omitted) get the
+ * raw label as the base in both modes.
  */
 export function pickToolLabel(opts: {
   simplified: boolean
   purpose?: string | null
   rawLabel: string
+  derivedTitle?: string
   uiLang: string
 }): string {
-  const { simplified, purpose, rawLabel, uiLang } = opts
+  const { simplified, purpose, rawLabel, derivedTitle, uiLang } = opts
+  const base =
+    derivedTitle === undefined
+      ? rawLabel
+      : simplified || !isInformativeTitle(rawLabel)
+        ? derivedTitle
+        : rawLabel
   const trimmed = (purpose ?? '').trim()
-  if (!simplified || !trimmed) return rawLabel
-  return labelMatchesLanguage(trimmed, uiLang) ? trimmed : rawLabel
+  if (!simplified || !trimmed) return base
+  return labelMatchesLanguage(trimmed, uiLang) ? trimmed : base
 }

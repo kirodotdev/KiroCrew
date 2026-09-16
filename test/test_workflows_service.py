@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -109,6 +110,31 @@ class BlockingSourceStore:
 
     def delete(self, run_id: str) -> None:
         self.deleted.append(run_id)
+
+
+# A hang guard, not the assertion: ``_await_store_entry`` settles on causality
+# and this only turns a lost run into a failed test, well under pytest-timeout.
+_HANG_GUARD_SECS = 30.0
+
+
+async def _await_store_entry(store: BlockingSourceStore, task: asyncio.Task) -> None:
+    """Wait until the store's source-bearing save has begun blocking a worker.
+
+    ``begin_host_run`` reaches that save only after the run-id allocator's
+    fsync chain and scope admission, all off-loop; on a loaded Windows runner
+    that alone can outlast a fixed wall-clock budget. Waiting on the causal
+    signal keeps every assertion that follows (off-loop thread, responsive
+    loop, cancellation cleanup) exactly as strong while removing the clock.
+    If ``task`` settles first, its own failure surfaces; a clean settle without
+    the save is a deterministic failure.
+    """
+    give_up_at = time.monotonic() + _HANG_GUARD_SECS
+    while not store.started.is_set():
+        if task.done():
+            task.result()
+            raise AssertionError("the task settled before its source-bearing save began")
+        assert time.monotonic() < give_up_at, "the source-bearing save never began"
+        await asyncio.sleep(0.005)
 
 
 def _patch_stream(monkeypatch, replies: list[str]) -> dict:
@@ -772,7 +798,7 @@ async def test_host_source_persistence_runs_off_event_loop() -> None:
 
     update = asyncio.create_task(svc.set_source(run_id, source, source_format="task-plan"))
     try:
-        assert await asyncio.to_thread(store.started.wait, 1)
+        await _await_store_entry(store, update)
         await asyncio.sleep(0)
         assert update.done() is False
         assert store.save_thread_id != loop_thread_id
@@ -799,7 +825,7 @@ async def test_host_registration_persistence_runs_off_event_loop() -> None:
         )
     )
     try:
-        assert await asyncio.to_thread(store.started.wait, 1)
+        await _await_store_entry(store, registration)
         await asyncio.sleep(0)
         assert registration.done() is False
         assert store.save_thread_id != loop_thread_id
@@ -823,7 +849,7 @@ async def test_cancelled_host_registration_removes_the_partial_run() -> None:
             driver="taskrunner",
         )
     )
-    assert await asyncio.to_thread(store.started.wait, 1)
+    await _await_store_entry(store, registration)
 
     registration.cancel()
     store.release.set()
@@ -832,6 +858,25 @@ async def test_cancelled_host_registration_removes_the_partial_run() -> None:
 
     assert svc.list_runs() == []
     assert store.deleted == ["wf_000001"]
+
+
+async def test_store_entry_barrier_is_causal_not_wall_clock() -> None:
+    store = BlockingSourceStore()
+
+    async def fail_before_saving() -> None:
+        raise RuntimeError("registration failed before the store")
+
+    with pytest.raises(RuntimeError, match="before the store"):
+        await _await_store_entry(store, asyncio.create_task(fail_before_saving()))
+    with pytest.raises(AssertionError, match="settled before its source-bearing save"):
+        await _await_store_entry(store, asyncio.create_task(asyncio.sleep(0)))
+
+    started = asyncio.create_task(asyncio.sleep(3600))
+    try:
+        store.started.set()
+        await _await_store_entry(store, started)  # returns on the signal alone
+    finally:
+        started.cancel()
 
 
 async def test_host_rebind_persistence_runs_off_event_loop() -> None:
@@ -853,7 +898,7 @@ async def test_host_rebind_persistence_runs_off_event_loop() -> None:
 
     checkpoint = asyncio.create_task(svc.rebind(run_id, driver_task, task_id="task_rebind"))
     try:
-        assert await asyncio.to_thread(store.started.wait, 1)
+        await _await_store_entry(store, checkpoint)
         await asyncio.sleep(0)
         assert checkpoint.done() is False
         assert store.save_thread_id != loop_thread_id

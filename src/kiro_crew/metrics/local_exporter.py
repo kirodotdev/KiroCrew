@@ -412,14 +412,12 @@ class JsonlMetricExporter(MetricExporter):
         return deletions
 
     @staticmethod
-    def _unlink(path: Path) -> bool:
-        """Best-effort shard delete; returns True on success."""
+    def _unlink(path: Path) -> None:
+        """Best-effort shard delete; a failure is logged and swallowed."""
         try:
             path.unlink()
-            return True
         except OSError as exc:
             logger.debug("metrics shard unlink %s failed: %s", path, exc)
-            return False
 
     def force_flush(self, timeout_millis: float = 10_000) -> bool:
         return True

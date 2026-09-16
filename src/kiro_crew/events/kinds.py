@@ -2,13 +2,18 @@
 
 Deliberately minimal and consumer-driven: every kind here is CONSTRUCTED by a
 shipped caller -- today the backfill validator, proving schema fit against the
-real stores. That rule holds only while the validator exists: it is disposable
-by contract, so when the first emit sites land and it is deleted, the SAME rule
-requires those emitters to be the constructors. A kind that arrives at that
-point with no emitter constructing it does not belong here. Kinds for facts no
-one writes yet (turn boundaries, cron fires, nudge cycles, workflow phases)
-therefore land WITH their emitters -- additive-only evolution makes that free,
-and shipping the names early would publish a vocabulary nothing writes.
+real stores. That rule holds while the validator exists: it is disposable by
+contract, so a kind that outlives it must have an emitter constructing it. A kind
+that arrives with no constructor does not belong here.
+
+Facts that need ORDER, threading or citation are not this track's to name. The
+decision of record is ``docs/request-for-change/rfc-append-only-ledger.md``: they
+go to the per-unit append-only ledger, whose writer assigns a per-unit ``seq``,
+and turn boundaries are the first of them -- ``kiro_crew.session_ledger_emit``
+writes them there. So a kind for such a fact is not merely un-emitted here, it
+belongs to the other stream. What remains for this track is unsequenced facts
+whose emitters land with them; additive-only evolution makes that free, and
+publishing a vocabulary nothing writes would not.
 
 All fields beyond the base envelope are optional wherever the historical stores
 cannot guarantee them. The validator's job is to measure how much of the real

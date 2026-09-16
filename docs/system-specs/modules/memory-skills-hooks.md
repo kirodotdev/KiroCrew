@@ -308,7 +308,7 @@ resolution: which layer wins".
 
 Structured files under `~/.kiro/crew/workspace/memory/`:
 - `preferences.md` — learned user preferences (V1 legacy consolidation may replace the file; V2 is owner-managed)
-- `projects.md` — active project context (V1 legacy consolidation may replace the file; V2 is owner-managed)
+- `projects.md` — active project context (V1 legacy consolidation may replace the file; V2 is owner-managed). Its `# Active Projects` header contract is owned by `memory.normalize_projects_document(content, *, today=)`, which `MemoryStore.write_projects`, `MemoryStore.write_private_profile_validated` and the dashboard's `_validate_private_profile_update` all call before writing. The three used to carry their own copy, and the dashboard one lives in a different package from the two store ones, so a change to either pair could not see the other. `today` is a parameter rather than read inside, so each write keeps its own single clock read. The two branches trim ASYMMETRICALLY, and that is the shipped contract rather than an oversight: an already-headed document is written as `content.strip() + "\n"`, while an unheaded one wraps the RAW content, so surrounding whitespace survives in exactly one of the two branches.
 - `history/{date}.md` — daily conversation summaries (append-only; heartbeat age pruning applies only to V1)
 
 ### A store's three paths, and where the index actually lives
@@ -1472,6 +1472,12 @@ fails with its name instead of silently substituting a different persona.
 Template resources cannot import Global V1 memory or another member's state;
 the owner's preferences/projects use the separately validated private reader.
 Declared globs have bounded enumeration and do not follow linked directories.
+Wildcard-matched entries classified by the existing managed-source check are
+excluded before descent or content reads. A broad `*/AGENTS.md` resource therefore
+keeps ordinary project guides without scanning the workspace's managed memory or
+lessons. Literal managed prefixes and explicitly named managed files still refuse;
+other admission and read failures are not swallowed. Directory names alone do
+not exclude an ordinary project outside the configured managed workspaces.
 Containment is judged on resolved paths on both sides: a declared root (the
 project root, or the owner's home for a resource outside it) is normalized the
 same way an admitted document is, so a root reached through a symlink -- a

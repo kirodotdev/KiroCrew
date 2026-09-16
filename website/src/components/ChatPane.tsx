@@ -23,6 +23,7 @@ import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './Queue
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
+import SessionTitleControl from '../pages/chat/SessionTitleControl'
 import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
@@ -61,6 +62,7 @@ import { performSlotSwitch } from '../lib/slotSwitch'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
+import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { prepareSendPayload, serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
@@ -260,6 +262,9 @@ export default function ChatPane({
   // not persist — the shared toast is transient feedback, not the error surface.
   const [switchError, setSwitchError] = useState('')
   const [stopError, setStopError] = useState('')
+  // In-pane report of a title rename / regenerate that did not land (#9727):
+  // the main header routes the same failure into its action banner.
+  const [titleError, setTitleError] = useState<{ title: string; message: string } | null>(null)
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
   // The transcript is virtualized (chat-core P5-e): ChatMessageList owns the
@@ -517,7 +522,7 @@ export default function ChatPane({
   }
   const hydrateLimit = limitRef.current
   const { data: slotDetail, isError: slotDetailFailed, refetch: refetchSlotDetail } = useQuery({
-    queryKey: ['slot-messages', slotKey, hydrateLimit],
+    queryKey: slotMessagesQueryKey(slotKey, hydrateLimit),
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
   })
@@ -1189,7 +1194,7 @@ export default function ChatPane({
         } as React.CSSProperties}
       >
         {!frameless && (
-        <div data-pane-title-row className={`relative z-50 flex items-center gap-2 pr-3 py-2 border-b border-border bg-card shrink-0 transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[49px]' : 'pl-3'}`}>
+        <div data-pane-title-row className={`group/header relative z-50 flex items-center gap-2 pr-3 py-2 border-b border-border bg-card shrink-0 transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${leading?.inset ? 'pl-[49px]' : 'pl-3'}`}>
           {/* Leading edge (#10585): in split view this pane may stand in for
               the single-chat title row at the surface's top-left. `inset`
               clears the shell's stationary sidebar toggle: the pane starts at
@@ -1203,7 +1208,16 @@ export default function ChatPane({
           {leading?.inset && <span aria-hidden="true" data-pane-leading-divider className="absolute left-[41px] top-1/2 -translate-y-1/2 w-px h-5 bg-border" />}
           {leading?.control}
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
-          <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
+          {/* Same rename / regenerate control as the single-session header
+              (#9727): the title row is the `group/header` hover target that
+              reveals the Pen and the Sparkles button. */}
+          <SessionTitleControl
+            slotKey={slotKey}
+            title={title}
+            compact
+            onError={(message, lead) => setTitleError({ title: lead, message })}
+            onAttempt={() => setTitleError(null)}
+          />
           {parentKey && (
             <span
               className="shrink-0 text-[10px] text-accent bg-accent/10 rounded-full px-1.5 py-0.5 truncate max-w-[38%]"
@@ -1420,6 +1434,17 @@ export default function ChatPane({
           testId="chat-pane-stop-error"
           message={stopError}
           onDismiss={() => setStopError('')}
+        />
+        {/* No hand-off: the composer draft is untouched by a failed rename; the
+            title in the bar is the one the store still holds, so the user can
+            simply try again. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-title-error"
+          title={titleError?.title}
+          message={titleError?.message}
+          onDismiss={() => setTitleError(null)}
         />
 
         {/* Quote transit: the selection flies from where it was taken into this

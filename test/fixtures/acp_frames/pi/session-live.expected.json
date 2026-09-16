@@ -138,7 +138,10 @@
       {
         "kind": "tool_result",
         "tool_call_id": "call_snrgf5v4",
-        "tool_output": "Validation failed for tool \"read\":\n  - path: must have required properties path\n\nReceived arguments:\n{}"
+        "tool_output": "Validation failed for tool \"read\":\n  - path: must have required properties path\n\nReceived arguments:\n{}",
+        "tool_output_bytes": 103,
+        "tool_output_digest": "0c9ad5317c24ef1c20c92b5fa99042ad04e4e7c3d2aa636239e82ec238d2500a",
+        "tool_status": "failed"
       }
     ],
     "frame": "session/update",

@@ -3943,6 +3943,11 @@ class GatewayOrchestrator:
                                     slot,
                                     wrapped,
                                     _directive_user_origin=False,
+                                    # Structural provenance for the session
+                                    # ledger: the queued twin above carries
+                                    # CRON_NOTIFICATION_KIND, and this branch is
+                                    # the same injector dispatching directly.
+                                    _turn_actor="cron",
                                 ),
                             )
                             slot.task = task
@@ -8011,6 +8016,10 @@ class GatewayOrchestrator:
                         slot,
                         msg,
                         _directive_user_origin=False,
+                        # The text is the re-injected sub-agent completion or
+                        # failure this recovery drains, so the sub-agent is what
+                        # caused the turn.
+                        _turn_actor="subagent",
                     )
                 ),
             )
@@ -8831,6 +8840,11 @@ class GatewayOrchestrator:
                                     _injection_slot,
                                     announce,
                                     _directive_user_origin=False,
+                                    # Structural provenance for the session
+                                    # ledger: the queued twin above carries
+                                    # SUBAGENT_COMPLETION_KIND, and this branch
+                                    # is the same injector dispatching directly.
+                                    _turn_actor="subagent",
                                     **_run_kwargs,
                                 )
                             )
@@ -12685,6 +12699,24 @@ class GatewayOrchestrator:
         # session by this point, so the sweep is not racing a mapping publisher --
         # the same position the sweep already held here before this change.
         await asyncio.to_thread(cleanup_orphaned_sessions)
+        # The session ledger's buffered appends, for EVERY gateway mode. The
+        # dashboard registers its own cleanup hook, but a mode that builds no
+        # dashboard app -- slack-only is the plain case -- never runs one, and
+        # os._exit below skips atexit, so without this the buffer dies with the
+        # process. What it drops is the last thing each session did, which is
+        # exactly what a reader looks for after a restart. Bounded inside the
+        # emitter and off-loop, like the log-queue drain that follows; calling it
+        # twice is a no-op, so the dashboard hook stays as it is.
+        try:
+            # Imported HERE, not at module scope: AUTOSDE's
+            # no-new-work-on-gateway-boot-path rule asks for an optional subsystem's
+            # import to be gated, and a shutdown drain is the only use in this module.
+            from kiro_crew import session_ledger_emit
+
+            if not await asyncio.to_thread(session_ledger_emit.drain_for_shutdown):
+                logger.warning("session ledger did not fully drain before exit")
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("session ledger drain failed during shutdown", exc_info=True)
         # This is a hard exit too: os._exit skips atexit, so the log queue's
         # drain hook never runs here either. Without this the whole shutdown
         # tail is lost -- including the "Graceful shutdown timed out" warning

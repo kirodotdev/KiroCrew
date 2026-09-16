@@ -53,6 +53,7 @@ from kiro_crew.monitoring.completion import (
 )
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.tool_call_title import derive_tool_call_title
 
 logger = logging.getLogger(__name__)
 
@@ -526,11 +527,37 @@ class TurnDriver:
                 _purpose = _redact(getattr(event, "tool_purpose", ""))
                 if event.tool_call_id and _purpose:
                     tool_purposes[str(event.tool_call_id)] = _purpose
+                # The channel's task label is the same argument-derived title
+                # the dashboard row shows (tool_call_title mirrors
+                # website/src/utils/toolCallTitle.ts): `List files in src`
+                # rather than the literal command, `Session send: <target>`
+                # rather than `@server/tool`. When nothing better can be said
+                # it is the raw command cut to ~80 chars; the approval prompt
+                # below still carries the verbatim ``tool_input``.
+                #
+                # Derived from ``tool_input`` ONLY — the transport-redacted
+                # string — never from ``raw_tool_params``: the derivation cuts
+                # and whitespace-collapses argument text, and a credential cut
+                # that way escapes the redactors that run on the finished
+                # title, so unredacted input would leak key-body bytes into a
+                # persisted channel status.
+                _derived = derive_tool_call_title(
+                    title=event.title or "",
+                    kind=getattr(event, "tool_kind", "") or "",
+                    raw_input=getattr(event, "tool_input", "") or "",
+                    is_shell=bool(getattr(event, "is_shell", False)),
+                    tool_name=getattr(event, "tool_name", "") or "",
+                    mcp_server=getattr(event, "mcp_server_name", "") or "",
+                )
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,
                         tool_call_id=event.tool_call_id,
-                        title=_redact(event.title),
+                        title=_redact(_derived.title or event.title),
+                        # Programmatic identity travels beside the display title
+                        # so a renderer's behaviour rules (Slack's `wait` stream
+                        # rollover) key on the tool, not on derived copy.
+                        tool_name=getattr(event, "tool_name", "") or "",
                         tool_kind=getattr(event, "tool_kind", ""),
                         tool_purpose=_purpose,
                     )

@@ -195,5 +195,6 @@
   "pages.webhooksPage.enabled_credentials",
   "pages.webhooksPage.switched_off_credentials_kept",
   "pages.worldsPage.agent",
-  "pages.worldsPage.slot"
+  "pages.worldsPage.slot",
+  "utils.toolCallTitle.and_more"
 ]

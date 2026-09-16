@@ -352,7 +352,7 @@ async def discard_session_start(session_key: str) -> None:
     the next boot as a crash that never happened.
 
     Deliberately not one of the ``end_reason`` values: those describe how a live
-    session ENDED, and inventing a twelfth member for "never started" would put a
+    session ENDED, and inventing an eleventh member for "never started" would put a
     non-session into the lifetime histogram's population.
 
     **Why this is a coroutine, in the one place an await looks least welcome.**
@@ -819,8 +819,8 @@ async def _unlink_generations(generations: Sequence[tuple[str, float]]) -> None:
 
     **Cancelling the await must neither drop the unlink nor put it back on the
     loop, and a shielded bare executor future is the only shape that does both.**
-    Three rounds of review narrowed this to one line, so the reasoning is recorded
-    in full.
+    The reasoning is recorded in full below, because the one line it produced shows
+    none of it.
 
     ``asyncio.to_thread`` submits before it suspends, but submitted is not started:
     on a saturated executor the work item is still queued, and cancelling the await

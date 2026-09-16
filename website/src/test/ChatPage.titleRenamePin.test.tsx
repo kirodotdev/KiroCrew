@@ -237,6 +237,21 @@ describe('ChatPage - a refused header rename reverts the optimistic title (#1020
     })
   })
 
+  it('a new rename attempt clears the previous rename failure from the header notice', async () => {
+    renderChatPage()
+    let input = await openRename()
+    apiMocks.renameSlot = vi.fn().mockRejectedValueOnce(new Error('refused')).mockResolvedValue({})
+    act(() => { fireEvent.change(input, { target: { value: 'Refused title' } }) })
+    act(() => { fireEvent.blur(input) })
+    const notice = await screen.findByTestId('action-error')
+    expect(notice.textContent).toContain('refused')
+    // Second attempt: the stale failure is gone the moment it starts.
+    input = await openRename()
+    act(() => { fireEvent.change(input, { target: { value: 'Second try' } }) })
+    act(() => { fireEvent.blur(input) })
+    await waitFor(() => expect(screen.queryByTestId('action-error')).toBeNull())
+  })
+
   it('falls back to a local revert when the recovery re-read also fails', async () => {
     const store = renderChatPage()
     const input = await openRename()

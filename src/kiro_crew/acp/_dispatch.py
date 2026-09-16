@@ -14,6 +14,7 @@ request shapes, per-turn metadata/credit capture, and notification classificatio
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import math
@@ -47,6 +48,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
     STOP_REASON_CONTENT_FILTERED_WIRE,
+    TERMINAL_TOOL_STATUSES,
     TODO_TASKS_MAX,
     TODO_TEXT_MAX,
     TOOL_PURPOSE_KEYS,
@@ -1700,15 +1702,45 @@ def log_unrenderable_content(log: logging.Logger, tool_use_id: Any, content: Any
     )
 
 
+def _measure_tool_output(redacted: str) -> tuple[str, int]:
+    """The full redacted output's digest and byte count, or "not recorded".
+
+    Measured BEFORE the display cut, because the cut is for the dashboard and a
+    digest of a truncated prefix would state a fact about text nothing observed:
+    two outputs sharing their first bounded characters would hash the same, and
+    the byte count would under-report every output past the bound.
+
+    Computed only while the ledger is on. The pair has one consumer, the emitter,
+    which is gated on the same flag -- so with the flag off this is work nothing
+    reads, over text as large as a file the model just printed. ``("", -1)`` is
+    the emitter's own spelling for a field it must not record, distinct from a
+    measurement of empty output, so the off path records neither field rather
+    than recording zero.
+
+    One function for both parser sites (this module's terminal-frame builder and
+    the streaming update parser in ``client``) so the digest they produce cannot
+    drift apart: a ledger reader comparing two entries has no way to tell which
+    parser produced either one.
+    """
+    from kiro_crew.session_ledger_emit import enabled as _ledger_enabled
+
+    if not _ledger_enabled():
+        return "", -1
+    raw = redacted.encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest(), len(raw)
+
+
 def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> AcpEvent | None:
-    """Build an ``EVENT_TOOL_RESULT`` from a ``tool_call_update`` carrying output.
+    """Build an ``EVENT_TOOL_RESULT`` from output or a terminal tool status.
 
     Three output shapes: ``content[].content.text`` blocks (stream mid-turn),
     ``rawOutput.items[]`` (``Text`` / ``Json.stdout``) on ``status=completed``,
     and -- since ``rawOutput`` is unstructured passthrough rather than a
-    contract -- any other non-empty ``rawOutput`` object, serialised. Returns
-    None when the update carries no output at all (refinement-only updates are
-    handled by :func:`_build_tool_refinement_event`).
+    contract -- any other non-empty ``rawOutput`` object, serialised. A terminal
+    update with no renderable output emits the observed status without inventing
+    output. Returns None when the update carries neither output nor terminal
+    status (refinement-only updates are handled by
+    :func:`_build_tool_refinement_event`).
 
     ``cache_scope`` is the emitting session's origin scope, forwarded only so the
     duration histogram closes the same registry entry its start opened.
@@ -1716,10 +1748,9 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
     tool_use_id = update.get("toolCallId", "")
     if not tool_use_id:
         return None
-    # Before the output parsing below, which returns None for an output-less
-    # update: a tool that completed with no output is still a completed
-    # round-trip. A non-terminal status is a no-op here, so a mid-stream update
-    # leaves the clock running for the real completion.
+    # A terminal status is useful even when output parsing finds no text: it
+    # closes the observed round-trip without claiming a result body. A
+    # non-terminal status leaves the clock running for the real completion.
     record_tool_call_finished(tool_use_id, status=update.get("status"), scope=cache_scope)
     # Parts are collected RAW and redaction runs once over their JOIN, before
     # the single 8000-char bound. Both orderings matter: bounding first can
@@ -1780,11 +1811,25 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             # winning over the raw envelope.
             if raw_output and "items" not in raw_output:
                 output_parts.append(_dumps_degraded(raw_output, default=str))
+    tool_status = str(update.get("status") or "")
     if not output_parts:
-        log_unrenderable_content(logger, tool_use_id, content)
-        return None
+        if tool_status not in TERMINAL_TOOL_STATUSES:
+            log_unrenderable_content(logger, tool_use_id, content)
+            return None
+        return AcpEvent(
+            kind=EVENT_TOOL_RESULT,
+            tool_call_id=tool_use_id,
+            tool_final=tool_status == "completed",
+            tool_status=tool_status,
+        )
     joined = "\n".join(output_parts)
     _redacted = _redact(joined)
+    # Measured only when the ledger is on. These two fields have exactly one
+    # consumer -- the flag-gated emitter -- so hashing every tool result while it
+    # is off is work nothing reads, and a tool result is as large as a file the
+    # model just printed. The defaults carry "not recorded" rather than a
+    # measurement of nothing, which is the distinction the emitter already keeps.
+    tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
     final_output = _redacted[: session_directive.MAX_TOOL_RESULT_CHARS]
     # Both session-directive sentinels are TAIL-anchored, and this cut runs AFTER
     # redaction -- which can grow the text, since a credential is replaced by a
@@ -1807,7 +1852,10 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
         kind=EVENT_TOOL_RESULT,
         tool_call_id=tool_use_id,
         tool_output=final_output,
+        tool_output_digest=tool_output_digest,
+        tool_output_bytes=tool_output_bytes,
         tool_final=update.get("status") == "completed",
+        tool_status=str(update.get("status") or ""),
     )
 
 

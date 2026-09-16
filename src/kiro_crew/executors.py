@@ -89,6 +89,7 @@ __all__ = [
     "path_resolve_executor",
     "path_probe_executor",
     "path_transfer_executor",
+    "ledger_executor",
     "governance_executor",
     "cron_gate_executor",
     "CronGateTimeout",
@@ -285,6 +286,15 @@ _MAX_PATH_RESOLVE_WORKERS = 2
 # executor the rest of the gateway shares.
 _MAX_PATH_PROBE_WORKERS = 8
 _MAX_PATH_TRANSFER_WORKERS = 8
+# ONE worker, and the count is the contract rather than a capacity guess. An
+# append-only ledger assigns ``seq`` by reading the file's own tail under its
+# lock, and a turn's entries thread under the ``seq`` its ``turn/started``
+# returned -- so the entries of one unit must reach the file in the order their
+# call sites produced them. A single worker draining a FIFO queue is what
+# guarantees that; two workers would let a tool frame overtake the turn start it
+# threads under, and the lock would serialize those writes without restoring
+# their order. Appends are small and fsync-bound, so one worker is also enough.
+_MAX_LEDGER_WORKERS = 1
 
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
@@ -300,6 +310,7 @@ _cron_gate_pool: ThreadPoolExecutor | None = None
 _path_resolve_pool: ThreadPoolExecutor | None = None
 _path_probe_pool: ThreadPoolExecutor | None = None
 _path_transfer_pool: ThreadPoolExecutor | None = None
+_ledger_pool: ThreadPoolExecutor | None = None
 
 
 def configure_default_executor() -> None:
@@ -517,6 +528,40 @@ def path_transfer_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _path_transfer_pool
+
+
+def ledger_executor() -> ThreadPoolExecutor:
+    """Return the process-wide append-only ledger writer pool, creating it on first use.
+
+    Threads are named ``mc-ledger``, and there is exactly ONE of them
+    (:data:`_MAX_LEDGER_WORKERS`) because the order entries reach a unit's file
+    is part of the format, not an optimization -- see that constant.
+
+    Serves :mod:`kiro_crew.session_ledger_emit`, whose storage call takes the
+    per-ledger lock, reads a bounded tail to assign ``seq`` and ``fsync``s the
+    appended line. Those otherwise run on the gateway's own event loop: a
+    ``flock`` that waits and an ``fsync`` that enters the kernel, once per tool
+    frame and once per turn, on the single loop that also drives the liveness
+    heartbeat.
+
+    Its OWN pool rather than :func:`maintenance_executor`, for the reason
+    :func:`path_resolve_executor` has one: an ``fsync`` on a wedged or full
+    filesystem holds its worker until the kernel returns, and a started
+    ``run_in_executor`` future cannot be cancelled. Here that can only delay
+    other ledger writes -- which are fail-soft and never block a turn -- while on
+    the maintenance pool it would occupy a worker the orphan-reaping sweeps need
+    to recover from an event-loop wedge.
+    """
+    global _ledger_pool
+    if _ledger_pool is None:
+        with _lock:
+            if _ledger_pool is None:
+                _ledger_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_LEDGER_WORKERS,
+                    thread_name_prefix="mc-ledger",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _ledger_pool
 
 
 def embed_executor() -> ThreadPoolExecutor:
@@ -939,6 +984,7 @@ def shutdown_maintenance_executor() -> None:
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
     global _path_probe_pool, _path_transfer_pool
+    global _ledger_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
@@ -953,6 +999,7 @@ def shutdown_maintenance_executor() -> None:
         path_resolve_pool, _path_resolve_pool = _path_resolve_pool, None
         path_probe_pool, _path_probe_pool = _path_probe_pool, None
         path_transfer_pool, _path_transfer_pool = _path_transfer_pool, None
+        ledger_pool, _ledger_pool = _ledger_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
@@ -979,3 +1026,5 @@ def shutdown_maintenance_executor() -> None:
         path_probe_pool.shutdown(wait=False, cancel_futures=True)
     if path_transfer_pool is not None:
         path_transfer_pool.shutdown(wait=False, cancel_futures=True)
+    if ledger_pool is not None:
+        ledger_pool.shutdown(wait=False, cancel_futures=True)

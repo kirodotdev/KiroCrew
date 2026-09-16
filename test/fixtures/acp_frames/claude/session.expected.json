@@ -310,7 +310,14 @@
   },
   {
     "action": "update",
-    "events": [],
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_014o6ucJPag5iZuJoMrQM6HM",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
     "frame": "session/update",
     "session_update": "tool_call_update"
   },

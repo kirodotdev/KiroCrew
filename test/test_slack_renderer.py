@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -28,6 +30,7 @@ from kiro_crew.slack.renderer import (
     SlackApprovalDecider,
     SlackRenderer,
     build_approval_blocks,
+    is_wait_identity,
 )
 
 
@@ -1352,3 +1355,34 @@ class TestRendererPresentationGuards:
             asyncio.run(
                 TurnDriver(_Provider(self._events()), renderer, approval_mode="auto").run("hi")
             )
+
+
+class TestWaitIdentity:
+    """The wait-stream rollover keys on the tool's programmatic identity, not on
+    the display title, so a derived title (``Wait``) cannot disable it and a
+    look-alike name cannot trigger it."""
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["wait", "kirocrew-core___wait", "mcp__kirocrew-core__wait", "  WAIT  "],
+    )
+    def test_wait_spellings_match(self, tool_name):
+        assert is_wait_identity(tool_name) is True
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "wait_for_ci",
+            "await",
+            "kirocrew-core___wait_for_ci",
+            "waiter",
+            "",
+            "third-party___wait",
+            "mcp__other-server__wait",
+        ],
+    )
+    def test_other_names_do_not_match(self, tool_name):
+        # A single underscore is not an MCP separator, so ``wait_for_ci`` is a
+        # different tool; and a foreign server's own ``wait`` is not the core
+        # tool, so a suffix match would roll the stream over on it.
+        assert is_wait_identity(tool_name) is False

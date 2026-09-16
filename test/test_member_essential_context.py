@@ -756,3 +756,70 @@ def test_managed_source_never_resolves_unvalidated_candidate(tmp_path, monkeypat
 
     monkeypatch.setattr(os.path, "realpath", resolve)
     mec._refuse_managed_source(candidate)
+
+
+@pytest.mark.parametrize("pattern", ["*/AGENTS.md", "**/AGENTS.md"])
+@pytest.mark.parametrize("leaf", ["memory", "memory_index", "lessons", ".lessons"])
+def test_workspace_glob_excludes_managed_subtrees_before_scanning(env, monkeypatch, pattern, leaf):
+    from kiro_crew import member_essential_context as essentials
+    from kiro_crew.config import config_dir
+
+    project = config_dir() / "workspace"
+    managed = project / leaf
+    managed.mkdir(parents=True, exist_ok=True)
+    (managed / "AGENTS.md").write_text("MANAGED_CONTENT_MUST_NOT_LOAD", encoding="utf-8")
+    guides = project / "guides"
+    guides.mkdir(exist_ok=True)
+    (guides / "AGENTS.md").write_text("WORKSPACE_CHILD_GUIDE", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": [f"file://{pattern}"]}),
+        encoding="utf-8",
+    )
+    original_scan = essentials.os.scandir
+
+    def scan(path):
+        if not isinstance(path, int):
+            assert not Path(path).is_relative_to(managed), "managed subtree was enumerated"
+        return original_scan(path)
+
+    monkeypatch.setattr(essentials.os, "scandir", scan)
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, project=str(project)
+    )
+    assert "WORKSPACE_CHILD_GUIDE" in message
+    assert "MANAGED_CONTENT_MUST_NOT_LOAD" not in message
+    assert "You are writer." in message
+
+
+@pytest.mark.parametrize("resource", ["memory/AGENTS.md", "memory/*.md", "memory/**/AGENTS.md"])
+def test_workspace_explicit_managed_prefix_still_refuses(env, resource):
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project = config_dir() / "workspace"
+    (project / "memory").mkdir(parents=True, exist_ok=True)
+    (project / "memory" / "AGENTS.md").write_text("MANAGED_CONTENT", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": [f"file://{resource}"]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
+        documents_for_member("writer-template", str(project))
+
+
+def test_glob_keeps_memory_named_directory_in_an_ordinary_project(env):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    memory = env.project / "memory"
+    memory.mkdir()
+    (memory / "AGENTS.md").write_text("LEGITIMATE_PROJECT_GUIDE", encoding="utf-8")
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": ["file://*/AGENTS.md"]}),
+        encoding="utf-8",
+    )
+    documents = documents_for_member("writer-template", str(env.project))
+    assert "LEGITIMATE_PROJECT_GUIDE" in [body for _, body in documents]

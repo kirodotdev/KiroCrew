@@ -166,7 +166,10 @@ export default function LibraryPage() {
         setUninstallTarget(app)
         setKeepData(true)
         setKeepSpecific(new Set())
-        // Fetch uninstall preview (best-effort — dialog works without it)
+        // The preview is optional UI enrichment: when the request succeeds the
+        // dialog shows the dependency classification, and when it fails the
+        // dialog still works — just without the dependency panel. No error toast:
+        // the primary action must not depend on the preview.
         try {
           setUninstallPreview(await api.uninstallPreview(name))
         } catch {

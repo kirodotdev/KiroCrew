@@ -4,8 +4,9 @@ Design (see docs/request-for-change/rfc-local-notification-bus.md):
 
 - Every notification flows through :meth:`NotificationBus.push` as a
   :class:`NotificationPayload`.
-- Channels are producer-declared. Phase 1 registers only the system channels;
-  app channels arrive in Phase 2 via the app manifest.
+- Channels are producer-declared. The bus seeds itself with the system
+  channels; an app channel is registered lazily, on its first push, from the
+  priority its app manifest declared for it.
 - Priorities: ``critical`` > ``default`` > ``passive``. The channel supplies a
   default; an explicit payload priority wins.
 - The persisted note dict keeps the legacy ``kind`` field alongside the v2
@@ -16,12 +17,9 @@ Design (see docs/request-for-change/rfc-local-notification-bus.md):
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
-
-logger = logging.getLogger(__name__)
 
 # ── Constants ──
 
@@ -51,7 +49,7 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # the prompt that actually blocks a turn has its own critical channel
     # (system.approval), and this is the report about it, not the prompt.
     "system.safety_override": _DEFAULT_PRIORITY,
-    # Host resource pressure ("threshold crossed" per the RFC). The channel
+    # Host resource pressure: a memory threshold crossing. The channel
     # default stays `default`; the producer escalates the entering-critical
     # note explicitly (see notifications/resource_pressure.py).
     "system.resources": _DEFAULT_PRIORITY,
@@ -129,9 +127,9 @@ def _validate_internal_url(url: str, *, field: str = "url") -> None:
 class NotificationPayload:
     """Schema v2 notification (RFC "Notification payload").
 
-    Phase 1 carries the full field set so persistence and the wire format are
-    stable from the start; ``actions``/``url``/``icon``/``ttl`` are consumed by
-    the frontend in later phases.
+    The full field set is carried so persistence and the wire format stay
+    stable; ``actions``/``url``/``icon``/``ttl`` are optional and are omitted
+    from the note dict entirely when unset.
     """
 
     source: str
@@ -180,7 +178,7 @@ class NotificationPayload:
             # and the legacy `notify()` adapter only catches the latter -- so a
             # wrong-typed argument would escape as an uncaught crash from a
             # function whose contract is that it never raises. `ttl` above
-            # already guards its type this way; these two were the gap.
+            # guards its type the same way.
             if not isinstance(self.actions, list):
                 raise NotificationValidationError("actions must be a list")
             if len(self.actions) > _MAX_ACTIONS:
@@ -220,7 +218,7 @@ class NotificationPayload:
                     raise NotificationValidationError(
                         f"action label exceeds {_MAX_ACTION_LABEL_LEN} chars"
                     )
-                # Action contract (RFC Phase 4): an action MAY carry a `url`
+                # Action contract: an action MAY carry a `url`
                 # (a dashboard-internal deep link the frontend renders as a
                 # navigation button). URL-less actions are legal and persist —
                 # they carry an identifier for future dispatch semantics but
@@ -247,6 +245,16 @@ class NotificationPayload:
             if not isinstance(self.url, str):
                 raise NotificationValidationError("url must be a dashboard-internal path")
             _validate_internal_url(self.url, field="url")
+
+
+def _channel_for_kind(kind: str) -> str:
+    """Map a legacy ``kind`` to its system channel, or the fallback channel.
+
+    Shared by the legacy adapter and the JSONL normalizer so a live push and a
+    persisted row can never resolve the same kind to different channels.
+    """
+    channel = f"system.{kind}"
+    return channel if channel in SYSTEM_CHANNELS else _FALLBACK_CHANNEL
 
 
 def payload_from_legacy(
@@ -277,9 +285,7 @@ def payload_from_legacy(
     these do NOT repair: an invalid deep link raises, because a button that
     navigates somewhere unintended is worse than no button.
     """
-    channel = f"system.{kind}"
-    if channel not in SYSTEM_CHANNELS:
-        channel = _FALLBACK_CHANNEL
+    channel = _channel_for_kind(kind)
     # Coerce first: notify() never raised, and a non-string here would
     # TypeError out of the adapter before validation could catch it.
     if not isinstance(title, str):
@@ -313,11 +319,7 @@ def normalize_note(note: dict[str, Any]) -> dict[str, Any]:
     callers own the row and the file itself is never rewritten for migration.
     """
     if "channel" not in note:
-        kind = note.get("kind", "agent")
-        channel = f"system.{kind}"
-        if channel not in SYSTEM_CHANNELS:
-            channel = _FALLBACK_CHANNEL
-        note["channel"] = channel
+        note["channel"] = _channel_for_kind(note.get("kind", "agent"))
         note["source"] = _SYSTEM_SOURCE
     if "priority" not in note:
         note["priority"] = SYSTEM_CHANNELS.get(note["channel"], _DEFAULT_PRIORITY)
@@ -328,8 +330,8 @@ class NotificationBus:
     """Single entry point for notification delivery.
 
     The bus validates and enriches payloads, then hands the resulting note
-    dict to the delivery sink (``DashboardState`` in Phase 1 — it owns the
-    in-memory log, unread counter, SSE/WS broadcast, and JSONL persistence).
+    dict to the delivery sink (``DashboardState`` — it owns the in-memory log,
+    unread counter, SSE/WS broadcast, and JSONL persistence).
     """
 
     def __init__(self, sink: Callable[[dict[str, Any]], None]) -> None:
@@ -337,7 +339,7 @@ class NotificationBus:
         self._channels: dict[str, str] = dict(SYSTEM_CHANNELS)
 
     def register_channel(self, channel: str, default_priority: str = _DEFAULT_PRIORITY) -> None:
-        """Register a channel (Phase 2 uses this for app-declared channels)."""
+        """Register a channel; app manifests use this for app-declared channels."""
         if default_priority not in PRIORITIES:
             raise NotificationValidationError(
                 f"default_priority must be one of {PRIORITIES}, got {default_priority!r}"

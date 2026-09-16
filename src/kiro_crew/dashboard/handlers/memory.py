@@ -54,6 +54,7 @@ from kiro_crew.executors import embed_executor, run_in_embed_pool, run_with_reca
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.memory import normalize_projects_document
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import kill_and_reap
@@ -326,11 +327,7 @@ def _validate_private_profile_update(
     if builder is None:
         raise MemberEssentialContextError("The member context cannot be validated right now")
     if filename == "projects.md":
-        if content.strip().startswith("# Active Projects"):
-            content = content.strip() + "\n"
-        else:
-            date = datetime.now().strftime("%Y-%m-%d")
-            content = f"# Active Projects\n\n_Updated: {date}_\n\n{content}\n"
+        content = normalize_projects_document(content, today=datetime.now().strftime("%Y-%m-%d"))
     cfg = KiroCrewConfig.load()
     record = cfg.memory_stores.get(store)
     if record is None:

@@ -106,6 +106,31 @@ _DOCS_URL_RE = re.compile(
 MAX_STEPS_CEILING = 40
 MAX_SECONDS_CEILING = 900
 
+#: Who the tester is while it drives a scenario. The text is appended to the
+#: harness system prompt; the ``new-user`` persona also arms the
+#: ``report_friction`` tool (``friction.py``), so confusion is reported beside
+#: the verdict instead of being swallowed by a PASS. ``none`` is the bare
+#: tester with no friction channel -- for a scenario whose subject is the
+#: expert path, or to measure the channel's own cost.
+PERSONAS: dict[str, str] = {
+    "new-user": (
+        "WHO YOU ARE: this is your first time using Kiro Crew. You have not read its documentation "
+        "and nobody has shown it to you. You have used ordinary chat apps and a code editor before, "
+        "so you know what a sidebar, a settings page and a message box are, but every name, icon "
+        "and layout in THIS app is new to you. You are patient and honest about what you do not "
+        "understand.\n"
+        "WHILE YOU WORK: every time you (a) pause for more than a glance to find something, (b) "
+        "cannot find a control, (c) click the wrong thing, (d) do not understand a label, icon or "
+        "message, (e) do not know what is happening right now, or (f) find that the layout hides the "
+        "main action -- call `report_friction` at that moment, once per moment, in your own words, "
+        "and THEN continue the task. Report the confusion even when you got there in the end; the "
+        "point is what slowed you down, not whether you finished. Do not report the same moment "
+        "twice. Filing friction never changes the task, its steps or the verdict."
+    ),
+    "none": "",
+}
+DEFAULT_PERSONA = "new-user"
+
 
 class ScenarioError(ValueError):
     """A scenario file is malformed."""
@@ -126,7 +151,17 @@ class Scenario:
     seed: str = "rich"
     members: tuple[str, ...] = ()
     start_url: str = "/"
+    persona: str = DEFAULT_PERSONA
     path: Path | None = field(default=None, compare=False)
+
+    @property
+    def persona_prompt(self) -> str:
+        """System-prompt text for the persona ('' for ``none``)."""
+        return PERSONAS[self.persona]
+
+    @property
+    def reports_friction(self) -> bool:
+        return bool(self.persona_prompt)
 
     def task_prompt(self) -> str:
         """The user-turn text handed to the model, built only from the YAML."""
@@ -182,6 +217,7 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
         "expectations",
         "max_steps",
         "max_seconds",
+        "persona",
     }
     if unknown:
         raise ScenarioError(f"{path}: unknown keys {sorted(unknown)}")
@@ -224,6 +260,10 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
     if not isinstance(summary, str) or not summary.strip() or len(summary) > 200:
         raise ScenarioError(f"{path}: 'summary' must be a short non-empty string")
 
+    persona = doc.get("persona", DEFAULT_PERSONA)
+    if not isinstance(persona, str) or persona not in PERSONAS:
+        raise ScenarioError(f"{path}: 'persona' must be one of {sorted(PERSONAS)}")
+
     pre = doc.get("preconditions") or {}
     if not isinstance(pre, dict):
         raise ScenarioError(f"{path}: 'preconditions' must be a mapping")
@@ -263,6 +303,7 @@ def parse_scenario(doc: Any, path: Path) -> Scenario:
         seed=seed,
         members=tuple(members),
         start_url=start_url,
+        persona=persona,
         path=path,
     )
 

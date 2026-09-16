@@ -12,12 +12,14 @@ These pin two properties of the config-loader decoupling refactor:
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.config import paths
 
 
@@ -55,6 +57,25 @@ class TestConfigDir:
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         result = paths.config_dir()
         assert result == tmp_path / ".kiro" / "crew"
+
+
+class TestLedgerRoot:
+    def test_link_is_refused_without_touching_its_target(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        target = tmp_path / "outside"
+        target.mkdir()
+        make_dir_link(home / "ledgers", target)
+        restricted: list[Path] = []
+
+        with caplog.at_level(logging.WARNING, logger=paths.__name__):
+            paths._ensure_ledger_root(home, restricted.append)
+
+        assert restricted == [], "the owner-only callback would chmod the link target"
+        assert list(target.iterdir()) == [], "the linked target was modified"
+        assert any("Refusing ledger root" in record.message for record in caplog.records)
 
 
 class TestConfigPackageDir:

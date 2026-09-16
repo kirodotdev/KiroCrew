@@ -4,6 +4,10 @@ Covers:
 * A silent peer (accepts, never answers) causes the stub to emit a JSON-RPC
   error and report ``peer_dead`` on the session -- not park forever.
 * A legitimately slow call (peer still answers pings) is NOT killed.
+* The ping RATE stays one per interval against a peer that answers instantly,
+  rather than one per round-trip.
+* A missed pong still declares the peer dead inside the advertised grace, so
+  bounding the rate did not lengthen detection.
 * Normal bridge teardown (stdin EOF, or a stop) is reported as itself, so a
   reconnect is never attempted on a shutdown.
 """
@@ -228,6 +232,168 @@ async def test_slow_call_not_killed_when_pongs_arrive() -> None:
         if b.strip() and json.loads(b).get("type") == _BRIDGE_PING_TYPE
     ]
     assert len(ping_frames) >= 2
+
+
+@pytest.mark.asyncio
+async def test_ping_rate_is_bounded_by_the_interval() -> None:
+    """A peer that answers instantly must NOT be pinged at socket speed.
+
+    The pong wait is not the cycle's interval when the peer is healthy: the
+    gateway answers a ping inline in its connection handler, so the reply is
+    back in microseconds. If the monitor returns straight to the next ping, the
+    ping count scales with socket round-trip time instead of with elapsed time,
+    and one stub with a request outstanding pegs both itself and the
+    single-event-loop daemon that has to answer every ping.
+
+    So the assertion is on the RATE, derived from the elapsed time this run
+    actually took rather than from a hardcoded count: at most one ping per
+    interval, plus the one sent at cycle zero. A lower bound comes with it,
+    because a monitor that stopped pinging altogether would satisfy any ceiling.
+    """
+    gw_reader = asyncio.StreamReader()
+    stdin_reader = asyncio.StreamReader()
+    stdin_reader.feed_data(_jsonrpc_request("tools/call", "busy-1"))
+
+    gw_written: list[bytes] = []
+
+    class _InstantPongWriter:
+        """Answers every ping synchronously, as a healthy daemon does."""
+
+        _mc_write_lock = asyncio.Lock()
+
+        def __init__(self, feed_reader: asyncio.StreamReader) -> None:
+            self._feed = feed_reader
+
+        def write(self, data: bytes) -> None:
+            gw_written.append(data)
+            if _safe_json_get_type(data) == _BRIDGE_PING_TYPE:
+                pong = json.dumps({"type": _BRIDGE_PONG_TYPE}) + "\n"
+                self._feed.feed_data(pong.encode())
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    stdout_writer_transport = asyncio.StreamReader()
+    stdout_proto = asyncio.StreamReaderProtocol(stdout_writer_transport)
+    loop = asyncio.get_running_loop()
+    stdout_writer = asyncio.StreamWriter(
+        _FakeTransport(), stdout_proto, stdout_writer_transport, loop
+    )
+
+    stop_event = asyncio.Event()
+    ping_interval = 0.05
+    window = 0.6
+
+    async def _stop_after_window() -> None:
+        await asyncio.sleep(window)
+        stop_event.set()
+
+    stop_task = asyncio.create_task(_stop_after_window())
+    started = loop.time()
+
+    session = StubSession()
+    await asyncio.wait_for(
+        run_bridge(
+            gw_reader,
+            _InstantPongWriter(gw_reader),  # type: ignore[arg-type]
+            stop_event,
+            stdin=stdin_reader,
+            stdout_writer=stdout_writer,
+            ping_interval=ping_interval,
+            ping_max_misses=3,
+            peer_supports_ping=True,
+            session=session,
+        ),
+        timeout=30,
+    )
+    elapsed = loop.time() - started
+    await stop_task
+
+    assert session.reason == "stop"
+    pings = [b for b in gw_written if _safe_json_get_type(b) == _BRIDGE_PING_TYPE]
+    ceiling = elapsed / ping_interval + 1
+    assert len(pings) <= ceiling, (
+        f"{len(pings)} pings in {elapsed:.3f}s at interval {ping_interval}s "
+        f"exceeds the one-per-interval ceiling of {ceiling:.1f}: the monitor is "
+        "pinging per round-trip, not per interval"
+    )
+    # The monitor really ran: a socket-speed loop would be in the thousands
+    # here, and a broken one would be at zero.
+    assert len(pings) >= 2
+
+
+@pytest.mark.asyncio
+async def test_missed_pong_still_declares_peer_dead_within_the_grace() -> None:
+    """Bounding the ping rate must not lengthen dead-peer detection.
+
+    The remainder sleep belongs to the ANSWERED path only. Adding it to the
+    missed path as well would make each miss cycle cost two intervals and
+    silently double the advertised ``ping_interval × ping_max_misses`` grace, so
+    this pins the wall-clock ceiling, not just the verdict.
+    """
+    gw_reader = asyncio.StreamReader()
+    stdin_reader = asyncio.StreamReader()
+    stdin_reader.feed_data(_jsonrpc_request("tools/call", "silent-1"))
+
+    class _SilentWriter:
+        """Accepts frames and never answers -- a wedged daemon."""
+
+        _mc_write_lock = asyncio.Lock()
+
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    stdout_writer_transport = asyncio.StreamReader()
+    stdout_proto = asyncio.StreamReaderProtocol(stdout_writer_transport)
+    loop = asyncio.get_running_loop()
+    stdout_writer = asyncio.StreamWriter(
+        _FakeTransport(), stdout_proto, stdout_writer_transport, loop
+    )
+
+    ping_interval = 0.5
+    ping_max_misses = 3
+    grace = ping_interval * ping_max_misses
+    started = loop.time()
+
+    session = StubSession()
+    await asyncio.wait_for(
+        run_bridge(
+            gw_reader,
+            _SilentWriter(),  # type: ignore[arg-type]
+            asyncio.Event(),
+            stdin=stdin_reader,
+            stdout_writer=stdout_writer,
+            ping_interval=ping_interval,
+            ping_max_misses=ping_max_misses,
+            peer_supports_ping=True,
+            session=session,
+        ),
+        timeout=30,
+    )
+    elapsed = loop.time() - started
+
+    assert session.reason == "peer_dead"
+    # Generous absolute slack for a loaded host, but far below the 2x that a
+    # remainder sleep on the missed path would cost.
+    assert elapsed < grace + 1.0, (
+        f"peer declared dead after {elapsed:.3f}s, well past the advertised "
+        f"{grace:.3f}s grace: a miss cycle is costing more than one interval"
+    )
 
 
 @pytest.mark.asyncio

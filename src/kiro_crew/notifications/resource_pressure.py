@@ -234,9 +234,6 @@ class ResourcePressureNotifier:
 
     # ── note builders ────────────────────────────────────────────────────
 
-    def _push(self, payload: NotificationPayload) -> None:
-        self._bus.push(payload)
-
     def _push_slice_oom(self, message: str) -> None:
         """One note per detected OOM batch inside the agents slice.
 
@@ -245,7 +242,7 @@ class ResourcePressureNotifier:
         explanation anywhere but the log file. ``group_key`` stacks repeats
         so a thrashing host does not flood the bell feed.
         """
-        self._push(
+        self._bus.push(
             NotificationPayload(
                 source="system",
                 channel=CHANNEL,
@@ -262,7 +259,7 @@ class ResourcePressureNotifier:
             if realert
             else "Host memory critically low"
         )
-        self._push(
+        self._bus.push(
             NotificationPayload(
                 source="system",
                 channel=CHANNEL,
@@ -283,7 +280,7 @@ class ResourcePressureNotifier:
 
     def _push_tight(self, status: ResourceStatus, sustained_secs: float) -> None:
         minutes = int(sustained_secs // 60)
-        self._push(
+        self._bus.push(
             NotificationPayload(
                 source="system",
                 channel=CHANNEL,
@@ -301,7 +298,7 @@ class ResourcePressureNotifier:
         )
 
     def _push_recovery(self, status: ResourceStatus) -> None:
-        self._push(
+        self._bus.push(
             NotificationPayload(
                 source="system",
                 channel=CHANNEL,

@@ -27,6 +27,10 @@ class MemberEssentialContextError(ValueError):
     """A declared essential source cannot be included completely and safely."""
 
 
+class _ManagedEssentialSourceError(MemberEssentialContextError):
+    """A managed source is excluded from wildcard discovery, never readable."""
+
+
 def _refuse_managed_source(path: Path) -> None:
     """Resources cannot reopen Global V1 or a peer's managed member state.
 
@@ -81,12 +85,12 @@ def _refuse_managed_source(path: Path) -> None:
         if candidate.is_relative_to(workspace):
             parts = candidate.relative_to(workspace).parts
             if parts and parts[0].casefold().startswith(("memory", "lessons", ".lessons")):
-                raise MemberEssentialContextError(
+                raise _ManagedEssentialSourceError(
                     f"Essential source {path}: managed memory/member state cannot be a project resource"
                 )
             in_workspace = True
     if not in_workspace and any(candidate.is_relative_to(resolved_roots[root]) for root in roots):
-        raise MemberEssentialContextError(
+        raise _ManagedEssentialSourceError(
             f"Essential source {path}: managed memory/member state cannot be a project resource"
         )
 
@@ -232,6 +236,12 @@ def _matches(root: Path, pattern: str) -> list[Path]:
                     path = Path(entry.path)
                     matches = component == "**" or fnmatch.fnmatchcase(entry.name, component)
                     if not matches:
+                        continue
+                    # Wildcards discover project guides, not managed state. Prune
+                    # before descent; literal prefixes and reads still refuse it.
+                    try:
+                        _refuse_managed_source(path)
+                    except _ManagedEssentialSourceError:
                         continue
                     if is_link_or_junction(path):
                         raise MemberEssentialContextError(

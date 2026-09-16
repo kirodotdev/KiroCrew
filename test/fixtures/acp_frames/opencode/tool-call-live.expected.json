@@ -45,7 +45,10 @@
       {
         "kind": "tool_result",
         "tool_call_id": "call_xsro2n3p",
-        "tool_output": "The bash tool was called with invalid arguments: SchemaError(Expected number | undefined, got \"0\"\n  at [\"timeout\"]).\nPlease rewrite the input so it satisfies the expected schema."
+        "tool_output": "The bash tool was called with invalid arguments: SchemaError(Expected number | undefined, got \"0\"\n  at [\"timeout\"]).\nPlease rewrite the input so it satisfies the expected schema.",
+        "tool_output_bytes": 178,
+        "tool_output_digest": "67760b389d12e0c6c07bed3ac342aa65fdeedd230c72b21d526d64dca596386f",
+        "tool_status": "failed"
       },
       {
         "is_shell": true,

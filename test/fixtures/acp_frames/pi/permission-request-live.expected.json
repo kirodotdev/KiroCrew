@@ -191,7 +191,14 @@
   },
   {
     "action": "update",
-    "events": [],
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_t2dbfc6c",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
     "frame": "session/update",
     "session_update": "tool_call_update"
   },
@@ -305,7 +312,14 @@
   },
   {
     "action": "update",
-    "events": [],
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_9mf80jes",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
     "frame": "session/update",
     "session_update": "tool_call_update"
   },

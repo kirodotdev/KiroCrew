@@ -94,29 +94,45 @@ class TestUnrecognisedRawOutputIsNotAbsentOutput:
         assert "run_in_background" not in out
 
 
-class TestKiroCliEnvelopeSpaceUnchanged:
-    """The fallback is gated on the ABSENCE of ``items``, so no kiro-cli
-    envelope — including one that legitimately yields nothing — changes."""
+class TestKiroCliEnvelopeStatusOnlyResults:
+    """An outputless terminal envelope still reports the observed status."""
+
+    @staticmethod
+    def _assert_status_only(upd: dict[str, Any], status: str = "completed") -> None:
+        upd = dict(upd)
+        upd["status"] = status
+        events = _results(upd)
+        assert len(events) == 1, f"terminal status {status} was discarded without a result event"
+        assert events[0].tool_status == status
+        assert events[0].tool_final is (status == "completed")
+        assert events[0].tool_output == "", "a status-only result invented tool output"
 
     def test_items_envelope_output_unchanged(self) -> None:
         out = _results(CLI_ITEMS_ENVELOPE)[0].tool_output
         assert out == "KASPROBE123\n"
 
-    def test_empty_items_envelope_still_emits_no_result(self) -> None:
-        upd = dict(CLI_ITEMS_ENVELOPE)
-        upd["rawOutput"] = {"items": []}
-        assert _results(upd) == []
+    def test_outputless_terminal_statuses_emit_status_only_results(self) -> None:
+        for status in ("completed", "failed"):
+            upd = dict(CLI_ITEMS_ENVELOPE)
+            upd["rawOutput"] = {"items": []}
+            self._assert_status_only(upd, status)
 
-    def test_items_envelope_with_empty_text_still_emits_no_result(self) -> None:
+    def test_items_envelope_with_empty_text_emits_status_only_result(self) -> None:
         upd = dict(CLI_ITEMS_ENVELOPE)
         upd["rawOutput"] = {"items": [{"Text": ""}]}
-        assert _results(upd) == []
+        self._assert_status_only(upd)
 
-    def test_empty_raw_output_dict_emits_no_result(self) -> None:
+    def test_empty_raw_output_dict_emits_status_only_result(self) -> None:
         upd = dict(CLI_ITEMS_ENVELOPE)
         upd["rawOutput"] = {}
-        assert _results(upd) == []
+        self._assert_status_only(upd)
 
-    def test_missing_raw_output_emits_no_result(self) -> None:
+    def test_missing_raw_output_emits_status_only_result(self) -> None:
         upd = {k: v for k, v in CLI_ITEMS_ENVELOPE.items() if k != "rawOutput"}
+        self._assert_status_only(upd)
+
+    def test_outputless_nonterminal_update_emits_no_result(self) -> None:
+        upd = dict(CLI_ITEMS_ENVELOPE)
+        upd["status"] = "in_progress"
+        upd["rawOutput"] = {"items": []}
         assert _results(upd) == []

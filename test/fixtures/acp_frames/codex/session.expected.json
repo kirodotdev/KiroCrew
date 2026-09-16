@@ -130,7 +130,10 @@
         "kind": "tool_result",
         "tool_call_id": "call_ReplayCorpus1",
         "tool_final": true,
-        "tool_output": "acp-replay-corpus"
+        "tool_output": "acp-replay-corpus",
+        "tool_output_bytes": 17,
+        "tool_output_digest": "9dac8e79f1834630bae46d8cbc6be1203ea4a42a62efa37b8cf95e6a50d7db10",
+        "tool_status": "completed"
       }
     ],
     "frame": "session/update",

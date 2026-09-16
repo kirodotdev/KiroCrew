@@ -684,6 +684,30 @@ class TestMaskableDirsAreMaterializedBeforeTheSpawn:
 
     @_POSIX_ONLY
     @pytest.mark.parametrize("mode", ["standard", "cc", "strict"])
+    def test_an_absent_ledgers_root_is_materialized_before_the_mask_binds(self, crew_home, mode):
+        """The sharpest case of this whole class, named on its own.
+
+        A ledger is the authority a reader trusts instead of re-deriving, and the
+        store creates this root on its first write. Absent, the ``isdir`` guard
+        skips it and the mask is vacuous for the life of every sandbox spawned
+        first -- one of which can then create the directory itself and fill it with
+        entries attributed to the gateway.
+        """
+        root = crew_home / "ledgers"
+        assert not root.exists(), "the point of the test is that it starts absent"
+
+        created = sandbox._materialize_maskable_dirs()
+
+        assert str(root) in created
+        assert root.is_dir()
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        script = sandbox._build_launcher_script(mode)
+        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
+        assert match
+        assert str(root) in set(json.loads(match.group(1)))
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize("mode", ["standard", "cc", "strict"])
     def test_created_dirs_are_in_the_launcher_hidden_list(self, crew_home, mode):
         """Creating a path is only useful if the mask loop is handed it."""
         created = sandbox._materialize_maskable_dirs()

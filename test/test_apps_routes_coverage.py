@@ -1389,25 +1389,19 @@ class TestUpdateApp:
 
 
 class TestUninstallPreview:
-    """``handle_uninstall_preview`` is not on the router (no
-    ``add_get('/api/apps/{name}/uninstall/preview')`` in
-    ``register_app_routes``), so it is exercised as a handler with a mocked
-    request rather than over HTTP.
+    """``GET /api/apps/{name}/uninstall/preview`` driven over the router.
+
+    The requests go through a real aiohttp test client against an app built
+    by ``register_app_routes``, so every assertion here depends on the route
+    registration itself: removing the ``add_get`` turns each of these into a
+    404 failure.
     """
 
     @staticmethod
     async def _preview(name: str) -> tuple[int, dict[str, Any]]:
-        request = make_mocked_request(
-            "GET",
-            f"/api/apps/{name}/uninstall/preview",
-            match_info={"name": name},
-            app=web.Application(),
-        )
-        resp = await routes_mod.handle_uninstall_preview(request)
-        # Response.body is `bytes | Payload | None`; only the bytes case is
-        # JSON-decodable, so narrow explicitly rather than feeding mypy a union.
-        raw = resp.body if isinstance(resp.body, bytes) else b"{}"
-        return resp.status, json.loads(raw or b"{}")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/apps/{name}/uninstall/preview")
+            return resp.status, await resp.json()
 
     @pytest.mark.asyncio
     async def test_not_installed(
@@ -1458,6 +1452,20 @@ class TestUninstallPreview:
             "crons": ["c1"],
         }
         assert "dependencies" in data
+
+    @pytest.mark.asyncio
+    async def test_app_tokens_are_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An app token reaches its own ``/api/apps/{name}/**`` namespace via
+        ``_app_owns_path``, but the preview discloses sibling app names in the
+        shared-dependency classification -- so app-identity requests get 403,
+        even for the app's own preview."""
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        async with TestClient(TestServer(_make_app(app_identity=APP))) as client:
+            resp = await client.get(f"/api/apps/{APP}/uninstall/preview")
+            assert resp.status == 403
 
 
 class TestUninstallRefusals:

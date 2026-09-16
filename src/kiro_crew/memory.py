@@ -170,6 +170,23 @@ def _fts5_literal_query(query: str) -> str:
     return " ".join(fts5_quote_tokens(query))
 
 
+def normalize_projects_document(content: str, *, today: str) -> str:
+    """*content* as an ``# Active Projects`` document, wrapped once if it is not.
+
+    Two writes inside this module and one dashboard handler that validates the
+    document before handing it over each grew their own copy of this branch. The
+    copies live in different packages, so a change to one would leave the
+    validated and unvalidated write paths disagreeing about the header with
+    nothing positioned to notice.
+
+    ``today`` is a parameter rather than read here so the two store writes keep
+    reading the clock once, at their own call site, and so a caller can pin it.
+    """
+    if content.strip().startswith("# Active Projects"):
+        return content.strip() + "\n"
+    return f"# Active Projects\n\n_Updated: {today}_\n\n{content}\n"
+
+
 class MemoryStore:
     """Structured memory: preferences.md, projects.md, daily history, FTS5 search."""
 
@@ -422,12 +439,7 @@ class MemoryStore:
         """
         self._require_link_free_roots()  # gate before the first syscall
         self._memory_dir.mkdir(parents=True, exist_ok=True)
-        date = datetime.now().strftime("%Y-%m-%d")
-        # Don't double-wrap if content already has the header
-        if content.strip().startswith("# Active Projects"):
-            full = content.strip() + "\n"
-        else:
-            full = f"# Active Projects\n\n_Updated: {date}_\n\n{content}\n"
+        full = normalize_projects_document(content, today=datetime.now().strftime("%Y-%m-%d"))
         lock_fd = self._open_lock_nofollow(self._memory_dir / ".write.lock")
         try:
             with file_lock(lock_fd, exclusive=True):
@@ -454,11 +466,8 @@ class MemoryStore:
         self._require_link_free_roots()
         self._memory_dir.mkdir(parents=True, exist_ok=True)
         if filename == "projects.md":
-            date = datetime.now().strftime("%Y-%m-%d")
-            normalized = (
-                content.strip() + "\n"
-                if content.strip().startswith("# Active Projects")
-                else f"# Active Projects\n\n_Updated: {date}_\n\n{content}\n"
+            normalized = normalize_projects_document(
+                content, today=datetime.now().strftime("%Y-%m-%d")
             )
             target = self._projects_file
         else:

@@ -229,3 +229,66 @@ class TestRecentHistoryCache:
         prefs = store.read_preferences()
         # Empty pref should not add a blank bullet
         assert "\n- \n" not in prefs
+
+
+class TestActiveProjectsHeader:
+    """One normalizer owns the "Active Projects" header contract.
+
+    Three copies of the normalize-or-wrap branch grew separately: two in
+    ``MemoryStore`` (the plain write and the validated one) and one in the
+    dashboard handler that validates the document before handing it over. The
+    copies live in different packages, so a change to one would leave the
+    validated and unvalidated write paths disagreeing about the header with no
+    test positioned to notice.
+    """
+
+    def test_content_without_the_header_gains_one(self):
+        from kiro_crew.memory import normalize_projects_document
+
+        out = normalize_projects_document("just some notes", today="2026-09-15")
+        assert out.startswith("# Active Projects\n\n_Updated: 2026-09-15_\n\n")
+        assert out.endswith("just some notes\n")
+
+    def test_content_with_the_header_is_not_wrapped_again(self):
+        from kiro_crew.memory import normalize_projects_document
+
+        out = normalize_projects_document("# Active Projects\n\nnotes", today="2026-09-15")
+        assert out.count("# Active Projects") == 1
+        assert out == "# Active Projects\n\nnotes\n"
+
+    def test_the_two_branches_trim_asymmetrically(self):
+        """Preserved, not tidied: only the already-headed branch strips.
+
+        The pre-consolidation copies wrote ``content.strip()`` when the header was
+        already present but interpolated the RAW content when it was not, so
+        leading and trailing whitespace survives in exactly one of the two
+        branches. Trimming both would be a behaviour change riding along with a
+        refactor.
+        """
+        from kiro_crew.memory import normalize_projects_document
+
+        assert (
+            normalize_projects_document("# Active Projects\n\nnotes  ", today="2026-09-15")
+            == "# Active Projects\n\nnotes\n"
+        )
+        assert (
+            normalize_projects_document("  notes  ", today="2026-09-15")
+            == "# Active Projects\n\n_Updated: 2026-09-15_\n\n  notes  \n"
+        )
+
+    def test_the_injected_date_is_the_caller_s(self):
+        """The date is a parameter so the two writes can share one clock read."""
+        from kiro_crew.memory import normalize_projects_document
+
+        out = normalize_projects_document("notes", today="1999-01-02")
+        assert "_Updated: 1999-01-02_" in out
+
+    def test_both_store_paths_agree_on_the_document(self, tmp_path):
+        """The validated and unvalidated writes must produce the same bytes."""
+        store = MemoryStore(workspace=tmp_path)
+        store.write_projects("notes from the plain write")
+        plain = store.read_projects()
+
+        assert plain.count("# Active Projects") == 1
+        assert "# Active Projects\n\n_Updated: " in plain
+        assert plain.endswith("notes from the plain write\n")

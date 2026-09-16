@@ -394,7 +394,10 @@
         "kind": "tool_result",
         "tool_call_id": "run_command_toolu_bdrk_01Dy1LBxe4dxmHhheU59Spjq",
         "tool_final": true,
-        "tool_output": "{\"output\":\"hello-from-corpus\\n\",\"exitCode\":0,\"message\":\"Output:\\nhello-from-corpus\\n\\n\\nExit Code: 0\"}"
+        "tool_output": "{\"output\":\"hello-from-corpus\\n\",\"exitCode\":0,\"message\":\"Output:\\nhello-from-corpus\\n\\n\\nExit Code: 0\"}",
+        "tool_output_bytes": 102,
+        "tool_output_digest": "e3352f3a662730e17fd9d7e130610c1a2eb7a58abaad04bda95f3c20178cc93c",
+        "tool_status": "completed"
       },
       {
         "is_shell": true,

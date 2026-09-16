@@ -141,9 +141,15 @@ describe('useWebSocket tool-call refinement status detail', () => {
 
     act(() => { ws.simulateMessage(refinement()) })
     // The purpose survives; the refined title still lands on toolName so raw
-    // mode (simplifiedToolNames off) shows the real command, not the stub.
+    // mode (simplifiedToolNames off) shows the real command, not the stub — and
+    // the argument-derived title (utils/toolCallTitle) rides alongside it for
+    // the simplified-mode fallback.
     expect(label()).toBe('List the temp dir')
     expect(detail().toolName).toBe('ls /tmp')
+    // The template's language-neutral action is what is stored; the string is
+    // rendered at read time so a language switch re-renders the status line.
+    expect(detail().derivedAction).toEqual({ type: 'list_files', path: 'tmp' })
+    expect(detail().derivedTitle).toBe('')
     expect(toolStatusLabel(detail(), false, 'en')).toBe('ls /tmp')
   })
 
@@ -159,7 +165,9 @@ describe('useWebSocket tool-call refinement status detail', () => {
     expect(label()).toBe('Terminal')
 
     act(() => { ws.simulateMessage(refinement()) })
-    expect(label()).toBe('ls /tmp')
+    // Simplified mode with no purpose: the derived title, not the raw command.
+    expect(label()).toBe('List files in tmp')
+    expect(toolStatusLabel(detail(), false, 'en')).toBe('ls /tmp')
     expect(detail().text).toBe('')
   })
 
@@ -180,9 +188,10 @@ describe('useWebSocket tool-call refinement status detail', () => {
     const { ws } = mount(store)
 
     act(() => { ws.simulateMessage(initial()) })
-    act(() => { ws.simulateMessage(refinement({ tool: '' })) })
+    act(() => { ws.simulateMessage(refinement({ tool: '', input_preview: '' })) })
 
-    // A kind-only refinement must not blank the row into an empty label.
+    // A kind-only refinement (no title, no arguments to derive one from) must
+    // not blank the row into an empty label.
     expect(label()).toBe('List the temp dir')
     expect(detail().toolName).toBe('Terminal')
   })
@@ -197,8 +206,8 @@ describe('useWebSocket tool-call refinement status detail', () => {
     act(() => { ws.simulateMessage(refinement()) })
 
     // tc-1's purposeless refinement must not adopt tc-2's purpose; with no
-    // same-call base to merge into it falls back to its own title.
-    expect(label()).toBe('ls /tmp')
+    // same-call base to merge into it falls back to its own (derived) title.
+    expect(label()).toBe('List files in tmp')
     expect(detail().toolCallId).toBe('tc-1')
   })
 
