@@ -132,6 +132,11 @@ class _ActiveMeeting:
         if self.session is session:
             self.accepting_dispatches = True
             self.buffering_session = None
+            # Monotonic: records that this meeting finished init and became
+            # usable at least once, so `abandoned` can distinguish a
+            # never-ready mid-init retirement from an idle-reaped-but-resumable
+            # established meeting.
+            session.became_ready = True
 
     def set(self, session: MeetingSession | None) -> None:
         """Install *session*, replacing any current one.
@@ -562,6 +567,14 @@ async def dispatch_admission(
                 status=410,
                 code="meeting_session_replaced",
             )
+        # NOTE: only `expired` (a real TTL lapse) tears the meeting down here, NOT
+        # `abandoned`. A meeting whose agent slots were reclaimed (identity sweep, or
+        # an ordinary idle/cleanup sweep on a merely-quiet-but-valid meeting) is
+        # recoverable on this path: broadcast -> flush -> dispatch_to_agent ->
+        # get_or_create recreates the slot session and the line lands. Ending on
+        # `abandoned` here would drop that utterance and kill a healthy meeting, so
+        # abandoned is released only by the start latch (where the meeting is being
+        # replaced anyway).
         if session.expired:
             ACTIVE.suspend_dispatches(session)
             expired = session
