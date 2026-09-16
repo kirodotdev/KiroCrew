@@ -1402,8 +1402,7 @@ async def test_finished_run_injects_result_and_autoruns_agent_turn(monkeypatch) 
 
     svc = WorkflowService(sessions=FakeSessions([]), on_done=_on_done)
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="dashboard:chat-1")
-    await _wait_terminal(svc, out["run_id"])
-    await asyncio.sleep(0.05)  # let on_done fire
+    await _wait_durable_terminal(svc, out["run_id"])
 
     # (1) result summary injected as an assistant message into the ORIGINATING slot
     assert any(m["role"] == "assistant" and "demo" in m["content"] for m in origin.messages)
@@ -1432,8 +1431,7 @@ async def test_finished_run_busy_slot_queues_turn(monkeypatch) -> None:
         on_done=lambda rid, snap: inject_workflow_result(dstate, rid, snap, on_injected=_auto_turn),
     )
     out = await svc.start(GOOD_SCRIPT, name="demo", session_key="dashboard:chat-1")
-    await _wait_terminal(svc, out["run_id"])
-    await asyncio.sleep(0.05)
+    await _wait_durable_terminal(svc, out["run_id"])
     # Result still injected, but the turn was QUEUED (False), not started.
     assert any(m["role"] == "assistant" for m in origin.messages)
     assert started == [False]
