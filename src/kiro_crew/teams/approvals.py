@@ -34,6 +34,7 @@ import logging
 import secrets
 from typing import Any, Awaitable, Callable
 
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,8 @@ class TeamsApprovalDecider:
 
     def __init__(self, session_key: str = "") -> None:
         self.session_key = session_key
+        #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
+        self.last_deny_cause = ""
         self._futures: dict[str, asyncio.Future[bool]] = {}
         #: request id -> the nonce minted for the card now showing.
         self._nonces: dict[str, str] = {}
@@ -96,6 +99,7 @@ class TeamsApprovalDecider:
             future.set_result(False)
 
     async def __call__(self, event: Any) -> bool:
+        self.last_deny_cause = ""
         request_id = str(getattr(event, "request_id", ""))
         key = registry_key(self.session_key, request_id)
         if request_id in self._abandoned:
@@ -110,6 +114,9 @@ class TeamsApprovalDecider:
             return await asyncio.wait_for(future, timeout=APPROVAL_TIMEOUT_SECS)
         except asyncio.TimeoutError:
             logger.info("Teams: tool approval timed out for %s; denying", key)
+            # Recorded for the driver, which steers the cause into the turn
+            # before it rejects, so the model hears "expired" not "denied".
+            self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
             if self.on_expired is not None:
                 try:
                     await self.on_expired(request_id)

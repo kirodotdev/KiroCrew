@@ -22,7 +22,11 @@ from kiro_crew.acp.types import (
     AcpEvent,
     TurnUsage,
 )
-from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.constants import (
+    DENY_CAUSE_APPROVAL_TIMEOUT,
+    STEER_NOTICE_BOUND_SECS,
+    split_trailing_protocol_suffix,
+)
 from kiro_crew.messaging import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -487,6 +491,194 @@ class TestApprovalLadder:
 
         _run(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
         assert p.approved == ["rq1"]
+
+
+class _SteerRecordingProvider(_ScriptedProvider):
+    """A provider that can be steered; records every wire call in order."""
+
+    def __init__(self, events, *, supports_steer=True, steer_exc=None):
+        super().__init__(events)
+        self.supports_steer = supports_steer
+        self.calls: list[tuple[str, str]] = []
+        self._steer_exc = steer_exc
+
+    async def steer(self, message):
+        self.calls.append(("steer", message))
+        if self._steer_exc is not None:
+            raise self._steer_exc
+        return True
+
+    async def approve_tool(self, request_id, *, always=False):
+        self.calls.append(("approve_tool", request_id))
+        await super().approve_tool(request_id, always=always)
+
+    async def reject_tool(self, request_id):
+        self.calls.append(("reject_tool", request_id))
+        await super().reject_tool(request_id)
+
+
+class _ExpiringDecider:
+    """A decider whose prompt expired: denies and records the cause, as every
+    shipped channel decider does (see ``ApprovalDecider``)."""
+
+    def __init__(self, cause=DENY_CAUSE_APPROVAL_TIMEOUT):
+        self._cause = cause
+        self.last_deny_cause = ""
+
+    async def __call__(self, event):
+        self.last_deny_cause = self._cause
+        return False
+
+
+class TestApprovalTimeoutInbandNotice:
+    """The transport path's mirror of the native Slack handler's timeout arm.
+
+    ``messaging.use_transport`` defaults true, so this TurnDriver is what a
+    default install runs: when a channel decider lets its prompt expire, the
+    driver must steer the approval-timeout cause into the running turn BEFORE
+    it rejects, or the model is handed kiro-cli's "User denied tool execution"
+    for a call nobody answered. Ordering, capability gating, best-effort and
+    bound are pinned; cancellation mid-steer must still answer the wire.
+    """
+
+    def _perm_script(self):
+        return [
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                title="bash: rm -rf build",
+                options=[{"id": "approve"}],
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_expired_prompt_steers_the_cause_before_the_reject(self):
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script())
+        await TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider()).run(
+            "hi"
+        )
+        assert [c[0] for c in p.calls] == ["steer", "reject_tool"]
+        notice = p.calls[0][1]
+        # The approval-timeout wording, not the generic policy one.
+        assert "expired unanswered" in notice
+        assert "went unanswered until its window closed" in notice
+        assert "bash: rm -rf build" in notice
+        assert p.rejected == ["rq1"]
+        # The prompt itself was still rendered first (steer follows the ask).
+        assert r.events[0][0] == "prompt_choice"
+
+    @pytest.mark.asyncio
+    async def test_a_human_denial_is_not_explained_away(self):
+        """A person's Deny is a real decision the generic result describes
+        correctly; steering "expired" over it would be a lie."""
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script())
+        await TurnDriver(
+            p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider(cause="")
+        ).run("hi")
+        assert [c[0] for c in p.calls] == ["reject_tool"]
+
+    @pytest.mark.asyncio
+    async def test_a_plain_callable_decider_denies_without_a_cause(self):
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script())
+
+        async def decider(event):
+            return False
+
+        await TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=decider).run("hi")
+        assert [c[0] for c in p.calls] == ["reject_tool"]
+
+    @pytest.mark.asyncio
+    async def test_no_steer_when_the_provider_cannot_be_steered(self):
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script(), supports_steer=False)
+        await TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider()).run(
+            "hi"
+        )
+        assert [c[0] for c in p.calls] == ["reject_tool"]
+
+    @pytest.mark.asyncio
+    async def test_reject_still_sent_when_the_steer_raises(self):
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script(), steer_exc=RuntimeError("wire down"))
+        await TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider()).run(
+            "hi"
+        )
+        assert ("reject_tool", "rq1") in p.calls
+
+    @pytest.mark.asyncio
+    async def test_a_hanging_steer_is_cut_by_the_bound(self, monkeypatch):
+        """Only the bound can get past a steer that never returns, so this pins
+        the bound itself, not merely the swallow."""
+        monkeypatch.setattr(driver, "STEER_NOTICE_BOUND_SECS", 0.05)
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script())
+
+        async def _hanging_steer(message):
+            p.calls.append(("steer", message))
+            await asyncio.Event().wait()
+
+        p.steer = _hanging_steer  # type: ignore[method-assign]
+        await asyncio.wait_for(
+            TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider()).run(
+                "hi"
+            ),
+            timeout=2.0,
+        )
+        assert [c[0] for c in p.calls] == ["steer", "reject_tool"]
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_the_steer_still_answers_the_wire(self, monkeypatch):
+        """A REAL task cancel while parked in the steer: the shielded reject must
+        still reach the wire before the cancellation re-raises, or the
+        subprocess blocks on the unanswered permission forever -- and the denial
+        must still be audited, because the re-raise skips the normal path's
+        SEL row and a rejection that reached the wire but not the audit trail is
+        a gap in a security control."""
+        audited: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                audited.append(kw)
+
+        monkeypatch.setattr(driver, "sel", lambda: _Sel())
+        r = _RecordingRenderer()
+        p = _SteerRecordingProvider(self._perm_script())
+        parked = asyncio.Event()
+
+        async def _hanging_steer(message):
+            p.calls.append(("steer", message))
+            parked.set()
+            await asyncio.Event().wait()
+
+        p.steer = _hanging_steer  # type: ignore[method-assign]
+        task = asyncio.create_task(
+            TurnDriver(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=_ExpiringDecider()).run(
+                "hi"
+            )
+        )
+        await asyncio.wait_for(parked.wait(), timeout=2.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+        assert ("reject_tool", "rq1") in p.calls
+        denied = [a for a in audited if a.get("operation") == "tool_permission"]
+        assert len(denied) == 1
+        assert denied[0]["outcome"] == "denied"
+        assert "request_id=rq1" in denied[0]["resources"]
+
+    def test_the_bound_is_the_shared_constant(self):
+        """One number for the dashboard runner, the native Slack arm and this
+        driver, so the three surfaces cannot drift."""
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.slack import handler as slack_handler
+
+        assert driver.STEER_NOTICE_BOUND_SECS == STEER_NOTICE_BOUND_SECS
+        assert chat_runner._STEER_NOTICE_BOUND_SECS == STEER_NOTICE_BOUND_SECS
+        assert slack_handler._STEER_NOTICE_BOUND_SECS == STEER_NOTICE_BOUND_SECS
 
 
 class TestAutoApproveTool:

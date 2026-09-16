@@ -62,7 +62,7 @@ from kiro_crew.config.loader import (
     resolve_effective_model,
 )
 from kiro_crew.connections import get_visible_providers
-from kiro_crew.constants import strip_control_comments
+from kiro_crew.constants import STEER_NOTICE_BOUND_SECS, strip_control_comments
 from kiro_crew.context import prepare_store_vectors
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
@@ -747,7 +747,7 @@ async def _credential_tool_hint_for(reason: str, cause: str, subject: str = "") 
 #: stdin could hold the await until the turn deadline cancelled the coroutine —
 #: skipping both. Sized to a pipe write with margin, far below the 60s approval
 #: reporting margin, and applied inside the helper so every caller inherits it.
-_STEER_NOTICE_BOUND_SECS = 5.0
+_STEER_NOTICE_BOUND_SECS = STEER_NOTICE_BOUND_SECS
 
 
 async def _steer_policy_notice(

@@ -1428,6 +1428,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # paths in slack/gateway.py and the sub-agent completion path in
         # subagent.py), which are the registered sinks.
         "llm_helpers.py",
+        # Shared in-band deny-notice builder: redacts the provider-authored tool
+        # title ONCE, centrally, before the notice is steered back into the
+        # model's own turn (not to a person). It owns no egress — the steer goes
+        # to the ACP subprocess through the provider, and the display rows a
+        # human sees are appended by dashboard/chat_runner.py and slack/handler.py,
+        # the registered sinks for those surfaces.
+        "deny_notice.py",
         # The app-facing seam: it OWNS no output. It hands the redaction pass to
         # an installed app so the app can scrub content at its own boundary, and
         # the write that follows happens in app code this repo does not inventory.
