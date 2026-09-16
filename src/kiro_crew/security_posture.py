@@ -1907,6 +1907,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # masker -- `GET /api/agent/config` and `GET /api/agents/detail/{name}`
         # in `dashboard/handlers/agents.py`, an already-registered sink.
         "mcp_utils.py",
+        # Pure-type error-envelope constructor, not an egress boundary: the W01
+        # connector control plane's `redacted_detail` / `operation_error` scrub an
+        # error `detail` with `redact_and_truncate` as the typed `OperationError`
+        # is BUILT, so a credential a provider reflected can never enter the
+        # envelope unredacted. The module owns no output and crosses no transport
+        # -- the surface that eventually RENDERS a connector error is the egress
+        # boundary and is a registered sink there, not here.
+        "connections/control_plane/errors.py",
     }
 )
 
