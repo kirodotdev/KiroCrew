@@ -470,6 +470,8 @@ it('explains temporary recovery and terminal reload guidance in the UI', () => {
   pierre.poolState.current = { phase: 'unavailable', generation: 2 }
   mounted.rerender()
   expect(mounted.view.getByRole('alert')).toHaveTextContent('Syntax highlighting is unavailable. Save or copy your draft, then reload to restore syntax highlighting; editing remains available.')
+  expect(mounted.view.queryByRole('button', { name: 'Reload' })).toBeNull()
+  expect(mounted.view.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
 })
 
 it('mounts Pierre optimistically while the first generation initializes', () => {

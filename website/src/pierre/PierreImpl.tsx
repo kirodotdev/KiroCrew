@@ -5,7 +5,6 @@
  * of them resolve their options through `./config` — the single place the
  * look/behavior of code and diff rendering is decided.
  */
-import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { BaseCodeOptions, FileContents, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@pierre/diffs'
@@ -15,6 +14,7 @@ import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&u
 import { useIsDark } from '../hooks/useIsDark'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 import ErrorNotice from '../components/ErrorNotice'
+import { Btn } from '../components/ui'
 import { i18nT } from '../i18n/t'
 import { PlainCodeFallback, PlainFilePairFallback } from './PlainCodeFallback'
 import {
@@ -342,10 +342,9 @@ function dismissPassiveNotice() {
 }
 
 /** Mounted editor surfaces in this tab. While one exists the passive notice
- *  stays silent: telling a reader on a read-only surface to reload would risk
- *  a draft they cannot see, and the editor already shows its own save-first
- *  notice where the draft lives. The global notice returns once every editor
- *  has unmounted. */
+ *  stays silent: the editor already shows the save/copy guidance where the
+ *  draft lives, and the passive reload affordance would sit on some other
+ *  surface that cannot tell the user whether an edit session is at risk. */
 const editorSurfaceIds = new Set<symbol>()
 const editorSurfaceListeners = new Set<() => void>()
 
@@ -395,15 +394,24 @@ function PierreWorkerUnavailableNotice() {
     () => editorSurfaceIds.size > 0,
     () => false,
   )
-  if (!ownsNotice || editorMounted || typeof document === 'undefined') return null
-  return createPortal(
-    <ErrorNotice
-      askAgent
-      onDismiss={dismissPassiveNotice}
-      className="fixed bottom-safe-offset-4 right-safe-offset-4 z-[100] w-[min(32rem,calc(100vw-2rem))] shadow-lg"
-      message={i18nT('components.pierreEditorImpl.highlighting_unavailable_content_readable_reload')}
-    />,
-    document.body,
+  if (!ownsNotice || editorMounted) return null
+  return (
+    <div className="shrink-0 border-b border-border bg-bg-elevated">
+      <div className="flex items-center px-3 py-1">
+        <ErrorNotice
+          variant="inline"
+          className="min-w-0 flex-1 text-[11px]"
+          message={i18nT('components.pierreEditorImpl.highlighting_unavailable_content_readable_reload')}
+          onDismiss={dismissPassiveNotice}
+          askAgent
+        />
+      </div>
+      <div className="flex justify-end px-3 pb-1">
+        <Btn type="button" className="shrink-0" onClick={() => window.location.reload()}>
+          {i18nT('components.webPreviewPanel.reload')}
+        </Btn>
+      </div>
+    </div>
   )
 }
 
@@ -504,8 +512,8 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   }, [file, langHint, surfaceId])
   if (activePool === undefined) {
     const fallback = <>
-      <PlainCodeFallback text={resolvedFile.contents} />
       {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
+      <PlainCodeFallback text={resolvedFile.contents} />
     </>
     return scrollClassName ? <div className={scrollClassName}>{fallback}</div> : fallback
   }
@@ -573,8 +581,8 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
     // No header actions in the fallback (`max-two-buttons-per-row`); they
     // return with Pierre's own header when a generation is ready.
     return <>
-      <PlainCodeFallback text={patch} />
       {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
+      <PlainCodeFallback text={patch} />
     </>
   }
   return (
@@ -658,6 +666,7 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, fallb
   if (activePool === undefined) {
     return (
       <>
+        {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
         <PlainFilePairFallback
           oldFile={keyedOld}
           newFile={keyedNew}
@@ -669,7 +678,6 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, fallb
           renderHeaderPrefix={renderHeaderPrefix}
           renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
         />
-        {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice /> : null}
       </>
     )
   }

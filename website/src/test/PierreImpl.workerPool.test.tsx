@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, render } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 
@@ -119,6 +119,17 @@ async function startPool() {
   return { module, view }
 }
 
+async function failPoolToUnavailable() {
+  state.managers[0].workers[0].emit('error', { message: 'one' })
+  await vi.advanceTimersByTimeAsync(250)
+  state.managers[1].workers[0].emit('error', { message: 'two' })
+  await vi.advanceTimersByTimeAsync(1_000)
+  state.managers[2].workers[0].emit('error', { message: 'three' })
+  await vi.advanceTimersByTimeAsync(30_000)
+  state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
+  await Promise.resolve()
+}
+
 describe('Pierre highlight worker pool recovery', () => {
   it('versions the worker URL so pre-WASM response headers cannot survive an upgrade', async () => {
     await startPool()
@@ -148,9 +159,78 @@ describe('Pierre highlight worker pool recovery', () => {
     expect(view.queryByText(FILE.contents.trim(), { selector: 'pre' })).toBeNull()
   })
 
+  it('coalesces one inline reload notice across passive surfaces and reassigns it when the owner unmounts', async () => {
+    const { module, view } = await startPool()
+    view.rerender(<>
+      <module.PierreCodeImpl file={FILE} />
+      <module.PierrePatchImpl patch={'--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new'} />
+      <module.PierreFilePairImpl
+        oldFile={{ name: 'old.ts', contents: 'OLD' }}
+        newFile={{ name: 'new.ts', contents: 'NEW' }}
+      />
+    </>)
+
+    await act(async () => {
+      await failPoolToUnavailable()
+    })
+
+    const alert = view.getByRole('alert')
+    expect(view.getAllByRole('alert')).toHaveLength(1)
+    expect(view.container).toContainElement(alert)
+    expect(alert).not.toHaveClass('fixed')
+    expect(alert).toHaveTextContent(
+      'Syntax highlighting is unavailable until you reload. Content remains readable.',
+    )
+    const reload = view.getByRole('button', { name: 'Reload' })
+    expect(reload).toBeInTheDocument()
+    expect(view.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+    expect(view.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+    expect(alert.querySelectorAll('button')).toHaveLength(2)
+    expect(reload.parentElement).not.toBe(alert.parentElement)
+    expect(reload.parentElement?.querySelectorAll('button')).toHaveLength(1)
+    expect(view.container).toHaveTextContent(FILE.contents.trim())
+    expect(view.container).toHaveTextContent('old')
+    expect(view.container).toHaveTextContent('new')
+    expect(view.container).toHaveTextContent('OLD')
+    expect(view.container).toHaveTextContent('NEW')
+
+    view.rerender(<>
+      <module.PierrePatchImpl patch={'--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new'} />
+      <module.PierreFilePairImpl
+        oldFile={{ name: 'old.ts', contents: 'OLD' }}
+        newFile={{ name: 'new.ts', contents: 'NEW' }}
+      />
+    </>)
+    expect(view.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('keeps the passive notice dismissed across later passive surfaces', async () => {
+    const { module, view } = await startPool()
+    view.rerender(<>
+      <module.PierreCodeImpl file={FILE} />
+      <module.PierreCodeImpl file={{ ...FILE, name: 'second.ts' }} />
+    </>)
+
+    await act(async () => {
+      await failPoolToUnavailable()
+    })
+
+    fireEvent.click(view.getByRole('button', { name: 'Dismiss' }))
+    expect(view.queryByRole('alert')).toBeNull()
+
+    view.rerender(<>
+      <module.PierreCodeImpl file={FILE} />
+      <module.PierrePatchImpl patch={'--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new'} />
+      <module.PierreFilePairImpl
+        oldFile={{ name: 'old.ts', contents: 'OLD' }}
+        newFile={{ name: 'new.ts', contents: 'NEW' }}
+      />
+    </>)
+    expect(view.queryByRole('alert')).toBeNull()
+  })
+
   it('stays silent while an editor surface is mounted and returns once it unmounts', async () => {
     const { module, view } = await startPool()
-    // What `PierreEditorImpl` does on mount, without its Pierre edit imports.
     function EditorSurface() {
       module.useRegisterEditorSurface()
       return <textarea aria-label="draft" />
@@ -159,63 +239,37 @@ describe('Pierre highlight worker pool recovery', () => {
       <module.PierreCodeImpl file={FILE} />
       <EditorSurface />
     </>)
+
     await act(async () => {
-      state.managers[0].workers[0].emit('error', { message: 'one' })
-      await vi.advanceTimersByTimeAsync(250)
-      state.managers[1].workers[0].emit('error', { message: 'two' })
-      await vi.advanceTimersByTimeAsync(1_000)
-      state.managers[2].workers[0].emit('error', { message: 'three' })
-      await vi.advanceTimersByTimeAsync(30_000)
-      state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
-      await Promise.resolve()
+      await failPoolToUnavailable()
     })
-    // The editor shows its own save-first notice where the draft lives; a
-    // tab-wide "reload" instruction would risk a draft the reader cannot see.
+
     expect(view.queryByRole('alert')).toBeNull()
     expect(view.queryByRole('button', { name: 'Ask the agent' })).toBeNull()
+    expect(view.queryByRole('button', { name: 'Reload' })).toBeNull()
 
     view.rerender(<module.PierreCodeImpl file={FILE} />)
-    expect(view.getByRole('alert')).toHaveClass('fixed')
+    expect(view.getAllByRole('alert')).toHaveLength(1)
+    expect(view.getByRole('button', { name: 'Reload' })).toBeInTheDocument()
     expect(view.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
   })
 
-  it('shows one terminal hand-off across passive surfaces', async () => {
-    const { module, view } = await startPool()
-    view.rerender(<>
-      <module.PierreCodeImpl file={FILE} />
-      <module.PierreCodeImpl file={{ ...FILE, name: 'second.ts' }} />
-    </>)
+  it('reloads the tab from the passive notice recovery action', async () => {
+    const originalReload = window.location.reload
+    const reloadSpy = vi.fn()
+    Object.defineProperty(window.location, 'reload', { configurable: true, value: reloadSpy })
 
-    await act(async () => {
-      state.managers[0].workers[0].emit('error', { message: 'one' })
-      await vi.advanceTimersByTimeAsync(250)
-      state.managers[1].workers[0].emit('error', { message: 'two' })
-      await vi.advanceTimersByTimeAsync(1_000)
-      state.managers[2].workers[0].emit('error', { message: 'three' })
-      await vi.advanceTimersByTimeAsync(30_000)
-      state.managers[3].workers[0].emit('error', { message: 'half-open failed' })
-      await Promise.resolve()
-    })
+    try {
+      const { view } = await startPool()
+      await act(async () => {
+        await failPoolToUnavailable()
+      })
 
-    expect(view.getAllByRole('alert')).toHaveLength(1)
-    expect(view.getByRole('alert')).toHaveClass('fixed')
-    expect(view.getByRole('alert')).toHaveTextContent(
-      'Syntax highlighting is unavailable until you reload. Content remains readable.',
-    )
-    expect(view.getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
-
-    // Terminal is forever, so the notice is dismissible — once, for every
-    // surface in the tab, including ones mounted afterwards.
-    await act(async () => {
-      view.getByRole('button', { name: 'Dismiss' }).click()
-    })
-    expect(view.queryByRole('alert')).toBeNull()
-    view.rerender(<>
-      <module.PierreCodeImpl file={FILE} />
-      <module.PierreCodeImpl file={{ ...FILE, name: 'second.ts' }} />
-      <module.PierreCodeImpl file={{ ...FILE, name: 'third.ts' }} />
-    </>)
-    expect(view.queryByRole('alert')).toBeNull()
+      fireEvent.click(view.getByRole('button', { name: 'Reload' }))
+      expect(reloadSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window.location, 'reload', { configurable: true, value: originalReload })
+    }
   })
 
   it('switches mounted surfaces to complete plain text, terminates every worker, and remounts a replacement', async () => {
