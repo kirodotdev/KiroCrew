@@ -1,3 +1,4 @@
+import { downloadBlob } from '../../../utils/download'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, Copy, Download, Loader2 } from 'lucide-react'
 import {
@@ -11,7 +12,7 @@ import { copyToClipboard } from '../../../utils/clipboard'
 import ShareCard, { CARD_W } from './ShareCard'
 import {
   SHARE_REPO_URL, X_POST_LIMIT, buildIntentUrl, clampExcerpt, copyImageWithText,
-  downloadBlob, scanSensitive, type SensitiveKind,
+  scanSensitive, type SensitiveKind,
 } from './shareSupport'
 
 /**

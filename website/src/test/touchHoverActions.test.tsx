@@ -162,7 +162,7 @@ describe('MarkdownRenderer diagram action row on touch devices', () => {
   const renderRow = async () => {
     render(<MarkdownRenderer content={'```mermaid\ngraph TD;A-->B\n```'} />)
     const btn = await waitFor(() =>
-      screen.getByRole('button', { name: /enlarge diagram/i }),
+      screen.getByTestId('mermaid-more-actions'),
     )
     return btn.parentElement as HTMLElement
   }

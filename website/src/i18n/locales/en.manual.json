@@ -2326,6 +2326,10 @@
       "diff_status_failed": "Couldn’t check this file’s git changes."
     },
     "markdownRenderer": {
+      "download_failed": "Couldn't download the diagram. Try again.",
+      "diagram_actions": "More actions",
+      "download_svg": "Download SVG",
+      "download_png": "Download PNG",
       "click_to_browse_shift_click_to_open_in_file_explorer": "Click to browse / Shift+click to open in File Explorer",
       "click_to_browse_shift_click_to_reveal_in_finder": "Click to browse / Shift+click to reveal in Finder",
       "click_to_browse_shift_click_to_show_in_file_manager": "Click to browse / Shift+click to show in file manager",
