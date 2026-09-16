@@ -47,8 +47,11 @@ from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SEC
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
+from kiro_crew.messaging import privacy_mode
+from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.dispatch import admit_inbound_callback
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -77,6 +80,7 @@ from kiro_crew.slack.files import (
     voice_memo_notes,
 )
 from kiro_crew.slack.handler import (
+    _BANG_TO_SLASH,
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
     describe_grant_lifetime,
@@ -2038,6 +2042,69 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def _strip_leading_mention(text: str, is_mention: bool) -> str:
+    """The text the handler and the linked-thread router act on.
+
+    An ``app_mention`` event always starts with ``<@BOTID> ...``; the mention is
+    sliced off so the model, the bang-command table and the router all see the
+    same words. One function, so the persistence gate below classifies exactly
+    the string the router will classify -- a gate reading the raw text would take
+    ``<@BOTID>`` for the first word and mistake ``<@BOTID> !yolo`` for a message
+    the router routes.
+    """
+    if is_mention and text.startswith("<@"):
+        end = text.find(">")
+        if end != -1:
+            return text[end + 1 :].lstrip()
+    return text
+
+
+def _inbound_images_persist(
+    orch: "GatewayOrchestrator", text: str, reply_ts: str, *, is_mention: bool = False
+) -> bool:
+    """Whether a picture posted in this thread may outlive the turn.
+
+    A message bound for a linked dashboard slot ALWAYS promotes its picture. The
+    dashboard turn is the consumer, and it runs as its own task after this
+    handler's cleanup has already deleted every temp file -- a temp image there
+    is a dead path in the prompt, never a picture. Promotion is also what the
+    dashboard does for that session's own pasted pictures whatever its privacy
+    mode (``/api/upload`` writes to the uploads directory unconditionally), so a
+    restricted linked session's inbound picture lands exactly where its pasted
+    ones do. A bang command (``!yolo``, ``!stop``, ...) is not routed -- the
+    router lets it fall through to the native handler -- so it takes the native
+    rule below. The bang check reads the mention-stripped text, the same string
+    the router is handed (*is_mention* says whether a leading ``<@BOTID>`` is
+    present to strip).
+
+    A Slack-native turn consumes the file inside this handler's own task, so its
+    temp image is deleted after the turn, and a promoted one is refused for a
+    conversation that persists nothing: a thread whose durable ``temporary`` /
+    ``incognito`` flag is set (restored first, so a gateway restart cannot forget
+    it) or a message that carries the ``!incognito`` / ``!temporary`` token itself
+    (the flag is set later in the handler, after this ingestion has run). Fails
+    CLOSED on a lookup error: a temp file the turn cleans up is the safe default.
+    """
+    routed_text = _strip_leading_mention(text or "", is_mention).strip()
+    first_word = routed_text.split(maxsplit=1)[0] if routed_text else ""
+    session_key = canonical_key(reply_ts)
+    try:
+        ds = orch.dashboard_state
+        linked = ds.get_linked_slot(reply_ts) if ds is not None else None
+        if linked is not None and first_word not in _BANG_TO_SLASH:
+            return True
+        privacy_mode.hydrate(orch.sessions, session_key)
+        if privacy_mode.is_restricted(session_key):
+            return False
+        for mode in (privacy_mode.MODE_INCOGNITO, privacy_mode.MODE_TEMPORARY):
+            if privacy_mode.strip_token(routed_text, mode)[1]:
+                return False
+    except Exception:
+        logger.debug("inbound image persistence check failed; keeping temp", exc_info=True)
+        return False
+    return True
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -2452,18 +2519,27 @@ async def _route_message(
             text = _voice_memo_context(text, len(memos), len(transcripts), available=stt_ok)
 
         # ── Process non-audio files (images, text, opaque files, etc.) ──
-        attachment_paths, text_blocks = await process_slack_files(orch, files)
-        _attachment_temp_paths = attachment_paths
-
-        # Image paths are inlined by ACP; opaque paths remain available to agent tools.
-        if attachment_paths:
-            paths_text = "\n".join(attachment_paths)
-            text = f"{text}\n{paths_text}" if text else paths_text
-
-        # Inject text file contents
-        if text_blocks:
-            blocks_text = "\n\n".join(text_blocks)
-            text = f"{text}\n\n{blocks_text}" if text else blocks_text
+        # An image lands in the dashboard's uploads directory and is written into
+        # the text as ``![image](/abs/uploads/<file>)`` -- one string serves as
+        # the transcript row the dashboard renders AND the prompt the ACP encoder
+        # inlines from. Only the opaque temp files are the turn's to delete;
+        # a promoted image belongs to the transcript and survives it.
+        #
+        # EXCEPT for a Slack-native conversation that persists nothing: a thread
+        # marked temporary or incognito (by an earlier turn, or by a token in
+        # THIS message) keeps the image a temp file, so the turn's cleanup removes
+        # it like everything else that conversation touched. A message bound for
+        # a linked dashboard slot always promotes: that turn runs after this
+        # handler's cleanup, so a temp file there would be gone before it is read.
+        _ingested = await process_slack_files(
+            orch,
+            files,
+            persist_images=_inbound_images_persist(
+                orch, text, thread_ts or msg_ts, is_mention=is_mention
+            ),
+        )
+        _attachment_temp_paths = _ingested.temp_paths
+        text = append_attachment_context(text, _ingested)
 
     # Bail out if we still have no text after attempting transcription
     if not text:
@@ -2490,13 +2566,9 @@ async def _route_message(
         else:
             orch.channel_history.push(channel, sender_id, text, thread_ts=thread_ts, msg_ts=msg_ts)
 
-    # Strip the leading bot @mention so the LLM sees clean text.
-    # app_mention events always start with "<@BOTID> ..." — just slice past the first ">".
-    clean_text = text
-    if is_mention and text.startswith("<@"):
-        end = text.find(">")
-        if end != -1:
-            clean_text = text[end + 1 :].lstrip()
+    # Strip the leading bot @mention so the LLM sees clean text -- the same
+    # slice the persistence gate classified above.
+    clean_text = _strip_leading_mention(text, is_mention)
     if not clean_text:
         _cleanup_attachment_temps()
         return

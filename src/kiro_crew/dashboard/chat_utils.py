@@ -2904,14 +2904,20 @@ def carries_attachments(item: dict) -> bool:
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
-    A merge run stops at a system injection and at an attachment-bearing entry
-    (see :func:`carries_attachments`); an attachment-bearing entry at the head
+    A merge run stops at a system injection, at an attachment-bearing entry
+    (see :func:`carries_attachments`), and at an entry whose ingress differs
+    from the run's first entry: a Slack-routed message and a dashboard-typed one
+    never share a batch, so the turn's ingress is exact and the mirror's echo
+    decision (skip what already sits in the thread, echo what does not) applies
+    to every message in the batch alike. An attachment-bearing entry at the head
     of the queue pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
         for item in list(slot._queue):
             if is_system_injection_item(item) or carries_attachments(item):
+                break
+            if to_merge and item.get("_ingress", "") != to_merge[0].get("_ingress", ""):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

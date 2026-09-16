@@ -33,6 +33,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import executors, file_delivery_consent, pinned_fs, platform_compat
+from kiro_crew import uploads as _uploads
 from kiro_crew.atomic_write import (
     atomic_write,
     open_access_control_source,
@@ -1137,8 +1138,14 @@ def _screenshot_dir() -> Path:
 
 
 def _upload_dir() -> Path:
-    """Uploads directory, resolved against the live data home."""
-    return _UPLOAD_DIR if _UPLOAD_DIR is not None else data_home() / "uploads"
+    """Uploads directory, resolved against the live data home.
+
+    Delegates to :func:`kiro_crew.uploads.upload_dir`, the accessor the inbound
+    attachment pipeline and the outbound-upload gate read too, so every surface
+    agrees on where a user's files live. This module's own ``_UPLOAD_DIR``
+    override still wins first: the upload handler's tests pin it directly.
+    """
+    return _UPLOAD_DIR if _UPLOAD_DIR is not None else _uploads.upload_dir()
 
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
@@ -1524,8 +1531,9 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     status=400,
                 )
             fname = part.filename or "upload"
-            # Sanitize: strip path components to prevent traversal
-            safe_name = re.sub(r"[^\w.\-]", "_", Path(fname).name)
+            # Sanitize: strip path components to prevent traversal. The rule is
+            # shared with channel-promoted images so both name files alike.
+            safe_name = _uploads.safe_upload_name(fname)
             ext = Path(safe_name).suffix.lower()
             if ext not in allowed:
                 await _cleanup()
@@ -1550,7 +1558,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # UUID prefix guarantees uniqueness even within a single request.
             # Resolved BEFORE any byte is read because the video branch streams
             # straight to this destination rather than buffering the part first.
-            dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+            dest = upload_dir / _uploads.new_upload_path(fname).name
             if not dest.resolve().is_relative_to(upload_dir.resolve()):
                 await _cleanup()
                 _sel().log_api_access(

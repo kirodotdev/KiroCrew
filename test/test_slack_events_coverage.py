@@ -40,6 +40,8 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     MessagingConfig,
 )
+from kiro_crew.messaging.attachments import IngestResult
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.slack import events as ev
 
 # ---------------------------------------------------------------------------
@@ -2346,7 +2348,7 @@ class TestRouteMessageAttachments:
                     with patch(
                         "kiro_crew.slack.events.process_slack_files",
                         new_callable=AsyncMock,
-                        return_value=([], []),
+                        return_value=IngestResult(),
                     ):
                         with patch(
                             "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -2379,7 +2381,7 @@ class TestRouteMessageAttachments:
                     with patch(
                         "kiro_crew.slack.events.process_slack_files",
                         new_callable=AsyncMock,
-                        return_value=([], []),
+                        return_value=IngestResult(),
                     ):
                         with patch(
                             "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -2403,7 +2405,7 @@ class TestRouteMessageAttachments:
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([str(img)], ["file body"]),
+                    return_value=IngestResult(image_paths=[str(img)], text_blocks=["file body"]),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -2419,6 +2421,169 @@ class TestRouteMessageAttachments:
         assert not img.exists()
 
     @pytest.mark.asyncio
+    async def test_a_promoted_image_is_a_markdown_row_that_survives_the_turn(self, tmp_path):
+        # The uploads-directory copy belongs to the transcript: it is written into
+        # the text in the dashboard's ``![image](path)`` form and is NOT among the
+        # temp paths the done-callback unlinks. The opaque file beside it still is.
+        orch = _make_orch()
+        img = tmp_path / "uploads" / "0123abcd_shot.png"
+        img.parent.mkdir()
+        img.write_bytes(b"\x89PNG")
+        opaque = tmp_path / "bundle.bin"
+        opaque.write_bytes(b"zip")
+        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        ingested = IngestResult(
+            image_paths=[str(img)], persisted_paths=[str(img)], file_paths=[str(opaque)]
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.process_slack_files",
+                    new_callable=AsyncMock,
+                    return_value=ingested,
+                ):
+                    with patch(
+                        "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                    ) as hm:
+                        await ev._route_message(
+                            orch, _event(text="look", files=files), ev.SeenCache()
+                        )
+                        await _drain(orch)
+        body = hm.await_args[0][3]
+        # The row spells the destination the composer's way (forward slashes on
+        # Windows), so compare against that form rather than the raw path.
+        from kiro_crew.uploads import markdown_image_dest
+
+        assert f"![image]({markdown_image_dest(img)})" in body
+        assert str(opaque) in body
+        assert img.exists(), "a promoted image must survive the turn's cleanup"
+        assert not opaque.exists(), "an opaque temp file is still cleaned up"
+
+    @pytest.mark.asyncio
+    async def test_a_restricted_thread_keeps_its_images_temporary(self, tmp_path):
+        # A Slack-native conversation that persists nothing must not leave a
+        # picture in the uploads directory: the handler asks for temp images when
+        # the thread is flagged and when the message itself carries the token.
+        from kiro_crew.messaging import privacy_mode
+
+        orch = _make_orch()
+        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        seen: list[bool] = []
+
+        async def _process(_orch, _files, *, persist_images=True):
+            seen.append(persist_images)
+            return IngestResult()
+
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch("kiro_crew.slack.events.process_slack_files", side_effect=_process):
+                    with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock):
+                        # Plain thread: persisted.
+                        await ev._route_message(
+                            orch, _event(text="look", files=files), ev.SeenCache()
+                        )
+                        await _drain(orch)
+                        # The token in THIS message: temp (the flag is set later).
+                        await ev._route_message(
+                            orch, _event(text="!incognito look", files=files), ev.SeenCache()
+                        )
+                        await _drain(orch)
+                        # A thread flagged by an earlier turn: temp.
+                        privacy_mode.mark_temporary(canonical_key(_event().get("ts", "")))
+                        try:
+                            await ev._route_message(
+                                orch, _event(text="look again", files=files), ev.SeenCache()
+                            )
+                            await _drain(orch)
+                        finally:
+                            privacy_mode.reset()
+        assert seen == [True, False, False], seen
+
+    def test_a_message_bound_for_a_linked_dashboard_slot_always_promotes(self):
+        # The dashboard turn runs as its own task AFTER this handler's cleanup
+        # has deleted the temp files, so a temp image there is a dead path in the
+        # prompt. Promotion is also what the dashboard does for that session's
+        # own pasted pictures in every privacy mode, so a restricted linked slot
+        # is no exception.
+        orch = _make_orch()
+        orch.dashboard_state = MagicMock()
+        orch.dashboard_state.get_linked_slot.return_value = SimpleNamespace(is_restricted=True)
+        assert ev._inbound_images_persist(orch, "look", "1700.1") is True
+        orch.dashboard_state.get_linked_slot.return_value = SimpleNamespace(is_restricted=False)
+        assert ev._inbound_images_persist(orch, "look", "1700.1") is True
+        # A lookup failure fails closed: temp is the safe default.
+        orch.dashboard_state.get_linked_slot.side_effect = RuntimeError("boom")
+        assert ev._inbound_images_persist(orch, "look", "1700.1") is False
+
+    def test_a_bang_command_on_a_linked_thread_takes_the_native_rule(self):
+        # The router lets a bang command (``!yolo``, ``!stop``, ...) fall through
+        # to the native handler, so its picture is consumed inside this task and
+        # the thread's own privacy flag applies. ``!incognito`` is a privacy
+        # token, not a bang command: the router routes it, so it promotes.
+        from kiro_crew.messaging import privacy_mode
+
+        orch = _make_orch()
+        orch.dashboard_state = MagicMock()
+        orch.dashboard_state.get_linked_slot.return_value = SimpleNamespace(is_restricted=False)
+        assert ev._inbound_images_persist(orch, "!yolo on", "1700.1") is True
+        assert ev._inbound_images_persist(orch, "!incognito look", "1700.1") is True
+        privacy_mode.mark_temporary(canonical_key("1700.1"))
+        try:
+            assert ev._inbound_images_persist(orch, "!yolo on", "1700.1") is False
+        finally:
+            privacy_mode.reset()
+
+    def test_a_mentioned_bang_command_is_classified_on_the_stripped_text(self):
+        # ``<@BOT> !yolo`` in a mention channel: the router is handed the text
+        # with the mention sliced off, so ``!yolo`` IS the first word and the
+        # message is NOT routed. The gate must read the same string, or a
+        # temporary linked thread's picture would be promoted for a native turn.
+        from kiro_crew.messaging import privacy_mode
+
+        orch = _make_orch()
+        orch.dashboard_state = MagicMock()
+        orch.dashboard_state.get_linked_slot.return_value = SimpleNamespace(is_restricted=False)
+        privacy_mode.mark_temporary(canonical_key("1700.1"))
+        try:
+            assert (
+                ev._inbound_images_persist(orch, "<@U0BOT> !yolo on", "1700.1", is_mention=True)
+                is False
+            )
+            # Same words, not a mention event: the ``<@U0BOT>`` token is the
+            # first word, the router routes it, so it promotes.
+            assert ev._inbound_images_persist(orch, "<@U0BOT> !yolo on", "1700.1") is True
+            # The privacy token behind a mention is seen too.
+            orch.dashboard_state.get_linked_slot.return_value = None
+            privacy_mode.reset()
+            assert (
+                ev._inbound_images_persist(
+                    orch, "<@U0BOT> !incognito look", "1700.1", is_mention=True
+                )
+                is False
+            )
+        finally:
+            privacy_mode.reset()
+        assert ev._strip_leading_mention("<@U0BOT> hi there", True) == "hi there"
+        assert ev._strip_leading_mention("<@U0BOT> hi there", False) == "<@U0BOT> hi there"
+        assert ev._strip_leading_mention("hi <@U0BOT>", True) == "hi <@U0BOT>"
+
+    def test_a_linked_thread_ignores_the_slack_side_privacy_flag(self):
+        # The Slack-side thread flag governs the native turn; a routed message
+        # runs in the dashboard slot, whose own storage rule applies.
+        from kiro_crew.messaging import privacy_mode
+
+        orch = _make_orch()
+        orch.dashboard_state = MagicMock()
+        orch.dashboard_state.get_linked_slot.return_value = SimpleNamespace(is_restricted=False)
+        privacy_mode.mark_temporary(canonical_key("1700.1"))
+        try:
+            assert ev._inbound_images_persist(orch, "look", "1700.1") is True
+            orch.dashboard_state.get_linked_slot.return_value = None
+            assert ev._inbound_images_persist(orch, "look", "1700.1") is False
+        finally:
+            privacy_mode.reset()
+
+    @pytest.mark.asyncio
     async def test_no_recoverable_text_cleans_up_temp_images(self, tmp_path):
         orch = _make_orch()
         img = tmp_path / "empty.png"
@@ -2429,7 +2594,7 @@ class TestRouteMessageAttachments:
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([], []),
+                    return_value=IngestResult(),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
@@ -2612,7 +2777,7 @@ class TestRouteMessageTempCleanup:
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([str(ghost)], []),
+                    return_value=IngestResult(image_paths=[str(ghost)]),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
