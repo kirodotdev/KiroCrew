@@ -96,6 +96,8 @@ Closing a channel cancels live agent tasks, broadcasts the close, and removes it
 
 The handler does not take a per-channel lock. A post concurrent with an all-scope reset can be cleared by the reset, and an in-flight approval future is not cancelled by the handler; it resolves through the agent task after the session reset. This is the current concurrency gap, not a guarantee of serialized channel mutation.
 
+`post` takes the channel's log lock across resolution, append, delivery and persistence, so those four steps are one unit against another post — not against the lock-free clear above. Thread pointers resolve inside it, and a message carries `thread_id` and `reply_to` as a PAIR: both set, or neither. `reply_to` is knowable only from the parent, so a reply whose parent is absent from the index — evicted by the `_MAX_MESSAGES` rolloff, or wiped by an all-scope clear through the gap above — posts TOP-LEVEL with both fields cleared. Retaining the id there would store a pointer no reader can resolve beside an empty `reply_to`, and dropping the message would lose content its sender was told had been accepted. Pinned by `test_channel_orphan_thread.py`, whose third case asserts the pair is never half-set.
+
 ## Security
 
 - `_stream_task` redacts credentials and exfiltration URLs from streamed agent output, tool status, and approval content before channel publication.
