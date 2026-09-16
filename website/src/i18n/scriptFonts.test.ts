@@ -64,6 +64,7 @@ const SC_ALIASES = [
  */
 const REGIONAL = [
   { lang: 'zh-CN', body: 'KC Han Fallback', mono: 'KC Han Mono Fallback' },
+  { lang: 'zh-TW', body: 'KC Han TC Fallback', mono: 'KC Han TC Mono Fallback' },
   { lang: 'ja', body: 'KC Japanese Fallback', mono: 'KC Japanese Mono Fallback' },
   { lang: 'ko', body: 'KC Korean Fallback', mono: 'KC Korean Mono Fallback' },
 ] as const
@@ -74,9 +75,26 @@ const REGIONAL_ALIASES = REGIONAL.flatMap(r => [r.body, r.mono])
  * A code point only this locale's aliases must cover. Kana for Japanese, Hangul
  * for Korean — the scripts that are absent from the other's faces, so a swapped
  * or merged token fails here rather than rendering from the OS cascade.
+ *
+ * The two Chinese entries are the exception the docstring above cannot carry:
+ * Simplified and Traditional share their Han and punctuation ranges almost
+ * exactly, so no code point separates them. What separates them is the glyph
+ * drawn, which CSS cannot assert. Bopomofo (U+3105) is the closest thing to a
+ * discriminator available here — it is Taiwan's phonetic annotation script and
+ * has no role in Mainland typesetting — so it is pinned on zh-TW to keep the TC
+ * range from being trimmed down to a copy of the SC one.
  */
 const SCRIPT_PROBES: Record<string, ReadonlyArray<readonly [string, number]>> = {
   'zh-CN': [['CJK Unified Ideographs', 0x4e00], ['CJK punctuation', 0x3001]],
+  'zh-TW': [
+    ['CJK Unified Ideographs', 0x4e00],
+    ['CJK punctuation', 0x3001],
+    ['Bopomofo', 0x3105],
+    // 「 」 — Taiwan's primary quotation pair, and the glyphs qa-checks.mjs
+    // pins for every zh-TW destructive confirm. A range that cannot draw them
+    // would leave those confirms resolving from the OS cascade.
+    ['corner brackets', 0x300c],
+  ],
   ja: [['hiragana', 0x3042], ['katakana', 0x30a2]],
   ko: [['Hangul syllables', 0xac00], ['Hangul compatibility jamo', 0x3131]],
 }

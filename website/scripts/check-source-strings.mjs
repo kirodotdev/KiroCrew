@@ -54,7 +54,11 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { changedValueFindings, flatten as qaFlatten } from './lib/qa-checks.mjs'
-import { passthroughChecks, passthroughFindings } from './lib/passthrough-checks.mjs'
+import {
+  newCatalogPassthroughFindings,
+  passthroughChecks,
+  passthroughFindings,
+} from './lib/passthrough-checks.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -219,6 +223,7 @@ function catalogFiles() {
 
 function readFlat(paths, ref) {
   const out = {}
+  let present = 0
   for (const rel of paths) {
     let raw
     if (ref === null) {
@@ -229,16 +234,25 @@ function readFlat(paths, ref) {
           cwd: REPO,
           encoding: 'utf-8',
           maxBuffer: 32 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'ignore'],
         })
       } catch {
         // Absent at the base ref means the whole catalog is new on this branch.
         continue
       }
     }
+    present += 1
     Object.assign(out, qaFlatten(JSON.parse(raw)))
   }
+  // `present` is what lets the caller tell "unchanged catalog" from "catalog that
+  // did not exist yet". Both produce an empty diff-base for some keys; only the
+  // second means every key is new for a reason that is not the author's doing.
+  Object.defineProperty(out, Symbol.for('kc.presentAtRef'), { value: present > 0 })
   return out
 }
+
+/** Did this catalog exist at the base ref at all? See `readFlat`. */
+const existedAtBase = flat => flat[Symbol.for('kc.presentAtRef')] === true
 
 const byLang = catalogFiles()
 const enHead = readFlat(byLang.en ?? [], null)
@@ -248,13 +262,46 @@ const dnt = JSON.parse(
   fs.readFileSync(path.join(ROOT, 'src', 'i18n', 'glossary.json'), 'utf-8'),
 ).dnt ?? []
 const ptChecks = passthroughChecks(dnt)
+
+// Exact key/value invariants that the script and DNT stripping cannot infer. Keeping
+// both halves explicit prevents an English value at a different key, or changed prose
+// at the same key, from inheriting the exemption.
+const NEW_CATALOG_PASSTHROUGH_ALLOWLIST = new Map([
+  ['apps.codeReviewSage.components.addReposModal.gh_auth_login', new Set(['gh auth login'])],
+  ['apps.devFleet.manifest.display_name', new Set(['Dev Fleet'])],
+  ['apps.devFleet.manifest.page_label', new Set(['Dev Fleet'])],
+  ['apps.issueRadar.views.settings.generalSettings.auth_login', new Set(['auth login'])],
+  ['apps.issueRadar.welcomeCarousel.carl_sagan', new Set(['— Carl Sagan'])],
+  ['apps.opsMissionControl.settingsPanel.detached_head', new Set(['detached HEAD'])],
+  ['components.appstore.sourcesPopover.kirocrew_app_install_path',
+    new Set(['kirocrew app install <path>'])],
+  ['components.skillForm.skill_tool_aws', new Set(['skill, tool, aws'])],
+  ['components.themeEditor.name_my_theme_emoji_dark_bg_12141a_light_bg_fafa', new Set([
+    '{\n  "name": "My Theme",\n  "emoji": "✨",\n  "dark": { "--bg": "#12141a", ... },\n  "light": { "--bg": "#fafafa", ... }\n}',
+  ])],
+  ['pages.artifactDeployPage.aws_cli_v2', new Set(['AWS CLI v2'])],
+  ['pages.artifactDeployPage.aws_configure_set', new Set(['aws configure set'])],
+  ['pages.devFleetPage.dev_fleet', new Set(['Dev Fleet'])],
+  ['pages.hooksPage.echo_hook_fired', new Set(["echo 'hook fired'"])],
+  ['pages.overview.promptsTab.prompts_get_name', new Set(['/prompts get name'])],
+  ['pages.settings.instancesPanel.aws_ssm_session_manager',
+    new Set(['AWS SSM Session Manager'])],
+  ['pages.settings.shortcutsPanel.preset_mod_k', new Set(['⌘K / Ctrl+K'])],
+  ['privacyDisclosure.shellMacOSLinuxLabel', new Set(['macOS / Linux'])],
+])
 const qaFindings = []
 const ptFindings = []
-for (const [lang, paths] of Object.entries(byLang)) {
-  // Read each catalog once at each ref: both checks want the same two snapshots, and
-  // a second `git show` per locale doubles the I/O of the slowest part of this gate.
-  const catalogBase = readFlat(paths, BASE_REF)
-  const catalogHead = readFlat(paths, null)
+// Read each catalog once at each ref: both checks want the same two snapshots, and a
+// second `git show` per locale doubles the I/O of the slowest part of this gate.
+const snapshots = Object.entries(byLang).map(([lang, paths]) => ({
+  lang,
+  base: readFlat(paths, BASE_REF),
+  head: readFlat(paths, null),
+}))
+/** Languages judged as whole catalogs because they have no base snapshot. */
+const newCatalogs = []
+let allowlistedExemptions = 0
+for (const { lang, base: catalogBase, head: catalogHead } of snapshots) {
   qaFindings.push(
     ...changedValueFindings({
       lang,
@@ -265,6 +312,24 @@ for (const [lang, paths] of Object.entries(byLang)) {
   )
   // English is the source; there is nothing for it to be an untranslated copy of.
   if (lang === 'en') continue
+  // A new catalog has no base snapshot, so judge every value. The normal DNT and
+  // syntax stripping still apply; only exact reviewed key/value invariants receive an
+  // additional exemption.
+  if (!existedAtBase(catalogBase)) {
+    newCatalogs.push(lang)
+    const findings = newCatalogPassthroughFindings({
+      lang,
+      head: catalogHead,
+      enHead,
+      checks: ptChecks,
+      allowedExact: NEW_CATALOG_PASSTHROUGH_ALLOWLIST,
+    })
+    allowlistedExemptions += passthroughFindings({
+      lang, base: {}, head: catalogHead, enHead, checks: ptChecks,
+    }).length - findings.length
+    ptFindings.push(...findings)
+    continue
+  }
   ptFindings.push(
     ...passthroughFindings({
       lang,
@@ -301,6 +366,12 @@ if (qaFindings.length > 0) {
 console.log(
   `[changed-passthrough] ${ptFindings.length} untranslated value(s) among values changed vs ${BASE_REF}.`,
 )
+if (newCatalogs.length > 0) {
+  console.log(
+    `[changed-passthrough] ${newCatalogs.join(', ')} is new at ${BASE_REF}, so its WHOLE `
+    + `catalog was judged; ${allowlistedExemptions} exact invariant value(s) excused.`,
+  )
+}
 
 if (ptFindings.length > 0) {
   const byPassthroughId = {}
@@ -317,9 +388,9 @@ if (ptFindings.length > 0) {
     'These values are NEW or EDITED on this branch and still read as English, so they are\n'
     + 'not inherited debt and there is no ceiling to raise. Translate them.\n\n'
     + 'If a value is legitimately identical in this locale — a product name, a command, an\n'
-    + 'identifier — add the term to `dnt` in src/i18n/glossary.json instead of working around\n'
-    + 'the check. That list is what every locale is measured against, so registering it once\n'
-    + 'exempts it everywhere and documents why.',
+    + 'identifier — prefer `dnt` in src/i18n/glossary.json. If the invariant cannot be\n'
+    + 'expressed there or by syntax stripping, add its exact key/value pair to the new-catalog\n'
+    + 'allowlist above; never exempt the key or value on its own.',
   )
 }
 

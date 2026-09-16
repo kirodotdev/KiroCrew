@@ -15,7 +15,9 @@ import {
   FUNCTION_WORDS,
   MIN_WORDS,
   TARGET_SCRIPTS,
+  newCatalogPassthroughFindings,
   passthroughChecks,
+  passthroughFindings,
   strippedProse,
   tokenCount,
 } from '../../scripts/lib/passthrough-checks.mjs'
@@ -212,5 +214,71 @@ describe('stripping', () => {
     expect(tokenCount(strippedProse('E0123ABC456'))).toBe(1)
     expect(flagsScript('E0123ABC456', 'ko')).toBe(false)
     expect(flagsScript('U0123ABC456', 'ru')).toBe(false)
+  })
+})
+
+describe('a catalog new on this branch is judged, not skipped', () => {
+  const enHead = {
+    'settings.remote_host_1': 'Remote Host 1',
+    'settings.slack_bot_token': 'Slack bot token',
+    'addRepos.gh_auth_login': 'gh auth login',
+    'privacy.shell_label': 'macOS / Linux',
+    'shortcuts.preset_mod_k': '⌘K / Ctrl+K',
+    'labels.product_pair': 'Kiro GitHub',
+  }
+  const allowedExact = new Map([
+    ['addRepos.gh_auth_login', new Set(['gh auth login'])],
+    ['privacy.shell_label', new Set(['macOS / Linux'])],
+    ['shortcuts.preset_mod_k', new Set(['⌘K / Ctrl+K'])],
+  ])
+  const checks = passthroughChecks(DNT)
+  const findings = (head: Record<string, string>, allowlist = allowedExact) =>
+    newCatalogPassthroughFindings({
+      lang: 'zh-TW', head, enHead, checks, allowedExact: allowlist,
+    })
+      .map(f => f.key)
+
+  it('reports an ordinary English UI value left untranslated in the new catalog', () => {
+    expect(findings({
+      'settings.remote_host_1': 'Remote Host 1',
+      'settings.slack_bot_token': 'Slack 機器人 token',
+      'addRepos.gh_auth_login': 'gh auth login',
+      'privacy.shell_label': 'macOS / Linux',
+      'shortcuts.preset_mod_k': '⌘K / Ctrl+K',
+    })).toEqual(['settings.remote_host_1'])
+  })
+
+  it('accepts exact surveyed command, platform, and shortcut invariants', () => {
+    expect(findings({
+      'settings.remote_host_1': '遠端主機 1',
+      'settings.slack_bot_token': 'Slack 機器人 token',
+      'addRepos.gh_auth_login': 'gh auth login',
+      'privacy.shell_label': 'macOS / Linux',
+      'shortcuts.preset_mod_k': '⌘K / Ctrl+K',
+    })).toEqual([])
+  })
+
+  it('preserves normal DNT stripping without an allowlist entry', () => {
+    expect(findings({ 'labels.product_pair': 'Kiro GitHub' })).toEqual([])
+  })
+
+  it('allowlists per key, not per value', () => {
+    expect(findings({ 'settings.slack_bot_token': 'gh auth login' }))
+      .toEqual(['settings.slack_bot_token'])
+  })
+
+  it('allowlists per value, not every value at the key', () => {
+    expect(findings({ 'addRepos.gh_auth_login': 'Remote Host 1' }))
+      .toEqual(['addRepos.gh_auth_login'])
+  })
+
+  it('leaves an existing catalog judged against its own diff', () => {
+    expect(passthroughFindings({
+      lang: 'zh-TW',
+      base: { 'settings.remote_host_1': '遠端主機 1' },
+      head: { 'settings.remote_host_1': 'Remote Host 1' },
+      enHead,
+      checks,
+    }).map(f => f.key)).toEqual(['settings.remote_host_1'])
   })
 })

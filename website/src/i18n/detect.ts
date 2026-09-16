@@ -57,11 +57,13 @@ function matchTag(tag: string): string | null {
  * to confuse it with.
  *
  * It deliberately does NOT cover a variant that would cross into a different
- * script or region we ship separately: `zh-TW` is not a confident match for
- * `zh-CN`, because Traditional and Simplified are different scripts and
- * silently substituting one is the defect this distinction exists to prevent.
- * Those resolve only via the loose fallback in `matchTag`, and only when
- * nothing else matched.
+ * script or region we ship separately: `zh-HK` is not a confident match for
+ * either Chinese catalog, because Traditional and Simplified are different
+ * scripts and silently substituting one is the defect this distinction exists
+ * to prevent. Those resolve only via the loose fallback in `matchTag`, and
+ * only when nothing else matched. (`zh-TW` itself became an EXACT match when
+ * 繁體中文 shipped; the two-catalog case is what keeps `zh-Hant`/`zh-HK`/`zh-MO`
+ * out of the confident branch — see #1130.)
  */
 function matchConfident(tag: string): string | null {
   const normalized = tag.trim().toLowerCase()
@@ -94,10 +96,10 @@ function matchConfident(tag: string): string | null {
  * over-corrects the other way: `['en-GB', 'zh-CN']` would resolve to `zh-CN`
  * because it is exact, ignoring that the user ranked English first.
  *
- * So a tag that only matches LOOSELY (`zh-TW` → `zh-CN`, a script switch) is
+ * So a tag that only matches LOOSELY (`zh-Hant` → `zh-CN`, a script switch) is
  * remembered as a fallback rather than returned, letting a later CONFIDENT
- * match win. `['zh-TW', 'en']` → `en`; `['en-GB', 'zh-CN']` → `en` (en-GB is
- * confident for `en`); `['zh-TW']` alone still → `zh-CN`. See `matchConfident`
+ * match win. `['zh-Hant', 'en']` → `en`; `['en-GB', 'zh-CN']` → `en` (en-GB is
+ * confident for `en`); `['zh-Hant']` alone still → `zh-CN`. See `matchConfident`
  * for where that line is drawn.
  */
 export function detectBrowserLanguage(): string | null {
