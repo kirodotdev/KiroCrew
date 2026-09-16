@@ -14,6 +14,8 @@ class FakeWorker {
   sent: unknown[] = []
   terminated = false
 
+  constructor(readonly url: URL, readonly options: WorkerOptions) {}
+
   addEventListener(type: string, listener: (event: unknown) => void) {
     const listeners = this.listeners.get(type) ?? new Set()
     listeners.add(listener)
@@ -118,6 +120,15 @@ async function startPool() {
 }
 
 describe('Pierre highlight worker pool recovery', () => {
+  it('versions the worker URL so pre-WASM response headers cannot survive an upgrade', async () => {
+    await startPool()
+    expect(state.managers[0].workers.length).toBeGreaterThan(0)
+    for (const worker of state.managers[0].workers) {
+      expect(worker.url.searchParams.get('csp')).toBe('wasm-v1')
+      expect(worker.options).toEqual({ type: 'module' })
+    }
+  })
+
   it('keeps the bounded WASM engine in highlighterOptions', async () => {
     await startPool()
     expect(state.poolCalls).toHaveLength(1)
