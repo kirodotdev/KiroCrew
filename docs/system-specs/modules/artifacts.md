@@ -19,6 +19,17 @@ A typical flow:
 The dashboard provides a `/artifacts` library page for browse/search and a
 `/artifacts/<slug>` standalone view with a version dropdown.
 
+### Library scrolling
+
+Small galleries and single-column virtualized lists scroll with the page.
+A multi-column gallery with at least 30 entries fills the remaining page height
+when no discovery-capable provider is available. With an available discovery
+provider, the page keeps its scroll axis and the saved masonry uses a bounded
+60vh viewport. Chat documents and remote lists stay in normal page flow, so
+expanding a section cannot compress the toolbar or hide later provider rows.
+Provider capability selects the layout, not the result of a remote fetch.
+Loading, empty results, filtering, and read errors therefore keep the same mode.
+
 ## Storage Layout
 
 ```

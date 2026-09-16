@@ -73,9 +73,11 @@ async function renderWith(count: number) {
   await waitFor(() => expect(contentColumn()).toBeTruthy())
 }
 
-describe('ArtifactsPage owns exactly one vertical scroll axis', () => {
+describe('ArtifactsPage scroll ownership with and without remote providers', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({ providers: [] })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockResolvedValue({ artifacts: [] })
     localStorage.setItem('mc-artifacts-view', 'grid')
     localStorage.setItem('mc-artifacts-pinned-only', '0')
   })
@@ -127,6 +129,49 @@ describe('ArtifactsPage owns exactly one vertical scroll axis', () => {
     const col = contentColumn()
     expect(col.className).toMatch(/overflow-y-auto/)
     expect(col.className).not.toMatch(/overflow-hidden/)
+  })
+
+  it.each([VIRTUALIZE_AT, VIRTUALIZE_AT + 5])('keeps remote lists reachable at %i saved artifacts', async (count) => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({ providers: [{
+      name: 'remote', display_name: 'Remote Provider', available: true,
+      discovery_model: { list_mine: true },
+    }] })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockResolvedValue({ artifacts: [{
+      external_id: 'last', title: 'Remote document', local_slug: null,
+    }] })
+    await renderWith(count)
+    await waitFor(() => expect(screen.getByText('On Remote Provider')).toBeTruthy())
+    expect(contentColumn().className).toMatch(/overflow-y-auto/)
+    expect(contentColumn().className).not.toMatch(/overflow-hidden/)
+    const masonryRoot = screen.getByTestId('masonry').parentElement as HTMLElement
+    expect(masonryRoot.className).toContain('h-[60vh]')
+    expect(masonryRoot.className).not.toContain('flex-1')
+    expect(masonryRoot.parentElement?.className).not.toContain('flex-col')
+    // Normal page flow must not retain the capped pre-gallery scroll region.
+    expect(contentColumn().querySelector('[class*="max-h-["]')).toBeNull()
+  })
+
+  it('keeps provider-enabled scroll ownership when the remote read fails', async () => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({ providers: [{
+      name: 'remote', display_name: 'Remote Provider', discovery_model: { list_mine: true },
+    }] })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockRejectedValue(new Error('Unavailable'))
+    await renderWith(VIRTUALIZE_AT)
+    await waitFor(() => expect(screen.getByText('Unavailable')).toBeTruthy())
+    expect(contentColumn().className).toMatch(/overflow-y-auto/)
+    expect(screen.getByTestId('masonry').parentElement?.className).toContain('h-[60vh]')
+  })
+
+  it('does not reserve a remote-page layout for unavailable providers', async () => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({ providers: [{
+      name: 'remote', display_name: 'Remote Provider', available: false,
+      discovery_model: { list_mine: true },
+    }] })
+    await renderWith(VIRTUALIZE_AT)
+    await waitFor(() => expect(screen.getByTestId('masonry')).toBeTruthy())
+    expect(contentColumn().className).toMatch(/overflow-hidden/)
+    expect(screen.getByTestId('masonry').parentElement?.className).toContain('flex-1')
+    expect(api.browseRemoteArtifacts).not.toHaveBeenCalled()
   })
 
   it('keeps both decisions on the same threshold constant', async () => {
