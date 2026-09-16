@@ -347,6 +347,11 @@ export default function CommandPalette({
   // the setting between two opens leaves a running row on its pre-toggle label until
   // the next status tick or staleTime expiry.
   const simplifiedToolNames = useSimplifiedToolNames()
+  // The activity term below reads `last_activity_ts || last_ts`, not `??`: the
+  // backend spells "no activity yet" as the EMPTY STRING, so the field is always
+  // present and `??` pinned the term to "" for a session whose only rows are the
+  // user's own prompts — the fingerprint then stopped moving as those rows
+  // arrived. Same wire fact `recencyEpoch` documents in `recentsProvider`.
   const liveFingerprint = useMemo(
     () =>
       activeProvider.id === 'recents'
@@ -355,7 +360,7 @@ export default function CommandPalette({
               (s) =>
                 `${s.key}:${s.running ? 1 : 0}${s.pending_approval ? 1 : 0}${
                   s.pinned ? 1 : 0
-                }:${s.last_activity_ts ?? s.last_ts ?? ''}:${
+                }:${s.last_activity_ts || s.last_ts || ''}:${
                   slotStatusDetail[s.key]?.kind ?? ''
                 }:${slotStatusDetail[s.key]?.text ?? ''}:${slotStatusDetail[s.key]?.ts ?? ''}`,
             )

@@ -155,9 +155,19 @@ function fmtRelativeTime(ts: string | number | undefined): string | undefined {
   return fmtDateFields(d, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-/** Recency epoch (ms) for sorting live slots — last activity, else last msg, else created. */
+/** Recency epoch (ms) for sorting live slots — last activity, else last msg, else created.
+ *
+ * `||`, not `??`: the backend spells "no activity yet" as the EMPTY STRING, not
+ * as an absent key. `slot_projection.to_dict` initialises `last_activity_ts = ""`
+ * and assigns it only when the reverse walk finds an `assistant` / `tool_call` /
+ * `tool_result` row that is not a system notice, so the field is always PRESENT
+ * on the wire. Under `??` the ladder therefore stopped on its first rung for
+ * every projected slot and neither fallback was ever read: a session holding
+ * only the user's own prompt — the one being worked in right now — scored 0 and
+ * sorted below sessions untouched for weeks. `slotActivityTs` in
+ * `pages/chat/sessionOrder` reads the same rows with `||` for this reason. */
 function recencyEpoch(slot: ChatSlot): number {
-  const t = slot.last_activity_ts ?? slot.last_ts ?? slot.created
+  const t = slot.last_activity_ts || slot.last_ts || slot.created
   if (!t) return 0
   const ms = typeof t === 'number' ? (t as number) * 1000 : new Date(t).getTime()
   return isNaN(ms) ? 0 : ms
@@ -305,7 +315,9 @@ export function useRecentsProvider(): ResourceProvider {
             pinned: isNew ? undefined : s.pinned || undefined,
             folder: isNew ? undefined : folderName(s.folder_id),
             isNew: isNew || undefined,
-            timestamp: isNew ? undefined : fmtRelativeTime(s.last_activity_ts ?? s.last_ts),
+            // `||` for the reason `recencyEpoch` documents: "" is the wire's
+            // "no activity yet", and `??` left the row with no time at all.
+            timestamp: isNew ? undefined : fmtRelativeTime(s.last_activity_ts || s.last_ts),
             onActivate: () => {
               dispatch(switchSlot({ key: s.key, announceOnMissing: true }))
               navigate('/chat')

@@ -157,6 +157,46 @@ describe('prepareCurrentSlots — duplicate "+ New Session…" collapse', () => 
   })
 })
 
+/**
+ * The backend spells "no activity yet" as the EMPTY STRING, not as an absent
+ * key: `slot_projection.to_dict` initialises `last_activity_ts = ""` and only
+ * assigns it when the reverse walk finds an `assistant` / `tool_call` /
+ * `tool_result` row that is not a system notice. Every slot on the wire
+ * therefore CARRIES the field, and a session whose transcript holds only the
+ * user's own prompt — the one being worked in right now, or one whose agent
+ * only ever wrote system notices — ships `last_activity_ts: ""` next to a real
+ * `last_ts`.
+ *
+ * The cases above cannot separate the two readings: they leave
+ * `last_activity_ts` absent, where the nullish and the falsy ladder agree.
+ * Only the `""` the wire actually carries tells them apart.
+ */
+describe('prepareCurrentSlots — the wire spells "no activity yet" as ""', () => {
+  it('ranks an empty-string slot on its last_ts, not below every other row', () => {
+    // `live` was prompted two days after `stale` last did anything, and its
+    // prompt is the only row it has — so the wire hands it `last_activity_ts: ""`.
+    const slots = [
+      slot({ key: 'stale', title: 'Two days cold', last_activity_ts: '2026-07-20T10:00:00Z' }),
+      slot({ key: 'live', title: 'Just prompted', last_activity_ts: '', last_ts: '2026-07-22T10:00:00Z' }),
+    ]
+    const { ordered } = prepareCurrentSlots(slots)
+    expect(ordered.map((s) => s.key)).toEqual(['live', 'stale'])
+  })
+
+  it('falls through to created when the slot has no timestamps at all', () => {
+    // An empty-new slot has no messages, so BOTH `last_activity_ts` and
+    // `last_ts` arrive as "". `created` is the only instant it has, and the
+    // surviving row is documented to be the most recent one.
+    const slots = [
+      slot({ key: 'a', title: 'New Session…', messages: 0, last_activity_ts: '', last_ts: '', created: '2026-07-22T10:00:00Z' }),
+      slot({ key: 'b', title: 'New Session…', messages: 0, last_activity_ts: '', last_ts: '', created: '2026-07-22T12:00:00Z' }),
+      slot({ key: 'c', title: 'New Session…', messages: 0, last_activity_ts: '', last_ts: '', created: '2026-07-22T11:00:00Z' }),
+    ]
+    const { ordered } = prepareCurrentSlots(slots)
+    expect(ordered.map((s) => s.key)).toEqual(['b'])
+  })
+})
+
 describe('shouldShowHistorySession — dead "New Session…" rows in Older', () => {
   function hist(over: Partial<HistorySession> = {}): HistorySession {
     return { key: 'h1', ...over }
@@ -324,6 +364,28 @@ describe('useRecentsProvider — live status bridge', () => {
     expect(rows.find((row) => row.id === 'recents:cur:dashboard_live')).toMatchObject({
       statusLabel: 'fs_read /workspace/src/app.ts',
     })
+  })
+
+  it('timestamps a row whose last_activity_ts is the empty-string sentinel', async () => {
+    // Same instant, reached two ways: `control` has an assistant row so the
+    // backend filled `last_activity_ts`; `userturn` has only the user's prompt,
+    // so the backend sent "" and the instant is in `last_ts`. Both rows describe
+    // a session last touched at TS, so both must carry the same relative
+    // timestamp — asserting equality rather than a literal keeps this free of
+    // the app language and of how long ago TS is when the suite runs.
+    const TS = new Date(Date.now() - 90 * 60 * 1000).toISOString()
+    mocks.state.dashboard.slots = [
+      slot({ key: 'dashboard_control', title: 'Replied', last_activity_ts: TS }),
+      slot({ key: 'dashboard_userturn', title: 'Only prompted', last_activity_ts: '', last_ts: TS }),
+    ]
+
+    const { result } = renderHook(() => useRecentsProvider())
+    const rows = await result.current.search('')
+
+    const control = rows.find((row) => row.id === 'recents:cur:dashboard_control')
+    const userturn = rows.find((row) => row.id === 'recents:cur:dashboard_userturn')
+    expect(control?.timestamp).toBeTruthy()
+    expect(userturn?.timestamp).toBe(control?.timestamp)
   })
 })
 
