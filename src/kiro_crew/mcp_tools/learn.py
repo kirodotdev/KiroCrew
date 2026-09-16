@@ -396,8 +396,30 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
             if le.get("withheld_reason") == "volatile_session_fact"
             else ""
         )
-        lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}")
+        lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}{_scope_suffix(le)}")
     return "\n".join(lines)
+
+
+def _scope_suffix(row: dict[str, Any]) -> str:
+    """Render the row's ``repo_scope`` so same-rule rows in two scopes read apart.
+
+    A lesson's identity is ``(rule, repo_scope)``, and ``learn_remove`` below
+    takes that scope as its selector -- so a list that hid it showed two
+    distinct lessons as one duplicated line and gave the model nothing to pass.
+    Mirrors the route's per-row selector: a fragment names that scope, ``""``
+    is the global row (rendered bare, the common case), and ``null`` marks a
+    stored scope the store cannot use -- only the unselective remove reaches
+    such a row, which is worth saying where the model decides what to send.
+    An absent key (an older gateway) renders nothing.
+    """
+    if "repo_scope" not in row:
+        return ""
+    scope = row["repo_scope"]
+    if scope is None:
+        return " (scope: unusable)"
+    if isinstance(scope, str) and scope:
+        return f" (scope: {scope})"
+    return ""
 
 
 def learn_remove(name: str, args: dict[str, Any]) -> str:
