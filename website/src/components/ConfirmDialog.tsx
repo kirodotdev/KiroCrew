@@ -57,6 +57,7 @@ interface PendingConfirm {
  */
 export function useConfirm(): {
   confirm: (opts: ConfirmOptions) => Promise<boolean>
+  cancel: () => void
   confirmDialog: ReactNode
   confirmOpen: boolean
 } {
@@ -122,5 +123,7 @@ export function useConfirm(): {
     </Modal>
   ) : null
 
-  return { confirm, confirmDialog, confirmOpen: !!pending }
+  const cancel = useCallback(() => settle(false), [settle])
+
+  return { confirm, cancel, confirmDialog, confirmOpen: !!pending }
 }
