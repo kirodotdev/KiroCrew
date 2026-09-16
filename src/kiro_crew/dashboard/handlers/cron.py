@@ -619,6 +619,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # this handler dropped it, so a job created from the dashboard could not opt
     # out of that cost without a later edit from chat or the CLI.
     minimal_context = body.get("minimal_context", False)
+    # Whether every run resumes one long-lived ``cron:<job_id>`` session (the
+    # store's and the tool path's default) or gets a fresh one. Defaults to True
+    # here too, so a client that never sends the field keeps creating the same
+    # persistent jobs it always did; only an explicit False opts a job out.
+    persistent_session = body.get("persistent_session", True)
     # Same folder_id contract as PATCH /api/crons/{id}: string or null → "",
     # anything else is a 400 so the two entry points cannot diverge.
     folder_id = body.get("folder_id", "")
@@ -666,6 +671,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "strict_schedule": bool(strict_schedule),
         "hide_in_chat": bool(hide_in_chat),
         "minimal_context": bool(minimal_context),
+        "persistent_session": bool(persistent_session),
         "folder_id": folder_id,
         # Dashboard-only template provenance (see CronJob.source_preset). The
         # prompt SNAPSHOT is what makes the Schedule-page "template updated"
@@ -836,6 +842,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "strict_schedule",
         "hide_in_chat",
         "minimal_context",
+        "persistent_session",
         "folder_id",
     ):
         if key in body:
@@ -2717,6 +2724,10 @@ async def api_crons(request: web.Request) -> web.Response:
             # of defaulting the control to off and silently clearing the flag on
             # the next save.
             "minimal_context": j.minimal_context,
+            # Same reason: without it a form control for the flag would default
+            # to the store's True and a save would silently re-enable the
+            # persistent session on a job the user set to ephemeral.
+            "persistent_session": j.persistent_session,
             "folder_id": j.folder_id,
             # The Schedule-page template this job was seeded from, or None. A
             # stable catalog id (e.g. "error-digest"), not user free-text, so

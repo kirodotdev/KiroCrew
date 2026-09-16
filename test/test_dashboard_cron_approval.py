@@ -223,6 +223,7 @@ class TestCronListFields:
         mock_job.strict_schedule = False
         mock_job.hide_in_chat = False
         mock_job.minimal_context = False
+        mock_job.persistent_session = True
         mock_job.schedule = CronSchedule(kind="every", every_secs=300)
         mock_job.last_run_ts = None
         mock_job.last_result = None
@@ -267,6 +268,7 @@ class TestCronListFields:
         assert job_data["silent"] is True
         assert job_data["hide_in_chat"] is False
         assert job_data["minimal_context"] is False
+        assert job_data["persistent_session"] is True
         assert job_data["channel"] == "C123"
         assert job_data["skip_dates"] is None
         # server_tz top-level field exposes the dashboard's local TZ for client rendering
