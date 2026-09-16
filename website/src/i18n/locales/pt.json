@@ -10161,6 +10161,8 @@
         "content_placeholder": "Buscar nos arquivos…",
         "content_searching": "Buscando…",
         "ctx_add_to_chat": "Adicionar à conversa",
+        "ctx_upload_files": "Enviar arquivos…",
+        "drop_to_upload": "Solte os arquivos aqui para enviá-los",
         "filter_placeholder": "Filtrar arquivos…",
         "git_status_failed": "Não foi possível ler o status do git",
         "mode_content": "Conteúdo",
@@ -10172,7 +10174,11 @@
         "search_names": "Buscar nomes de arquivo",
         "tree_mode": "Modo de lista de arquivos",
         "content_engine_slow": "Este host não tem ripgrep, portanto a busca usou a varredura interna mais lenta.",
-        "content_one_row_per_file": "uma linha por arquivo"
+        "content_one_row_per_file": "uma linha por arquivo",
+        "overwrite_action": "Substituir",
+        "overwrite_body": "Já existe um arquivo chamado “{{name}}” nesta pasta. Substituir?",
+        "overwrite_title": "Substituir arquivo existente?",
+        "upload_failed": "Não foi possível enviar {{name}}"
       },
       "filesHome": {
         "no_project_dir": "Nenhum diretório de projeto definido para este chat",

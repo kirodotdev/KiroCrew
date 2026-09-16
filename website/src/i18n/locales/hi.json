@@ -10018,6 +10018,8 @@
         "content_placeholder": "फ़ाइलों में खोजें…",
         "content_searching": "खोज रहे हैं…",
         "ctx_add_to_chat": "चैट में जोड़ें",
+        "ctx_upload_files": "फ़ाइलें अपलोड करें…",
+        "drop_to_upload": "अपलोड करने के लिए फ़ाइलें यहां छोड़ें",
         "filter_placeholder": "फ़ाइलें फ़िल्टर करें…",
         "git_status_failed": "Git स्थिति पढ़ी नहीं जा सकी",
         "mode_content": "सामग्री",
@@ -10029,7 +10031,11 @@
         "search_names": "फ़ाइल नाम खोजें",
         "tree_mode": "फ़ाइल सूची मोड",
         "content_engine_slow": "इस होस्ट पर ripgrep नहीं है, इसलिए खोज धीमे अंतर्निहित स्कैन से की गई।",
-        "content_one_row_per_file": "प्रति फ़ाइल एक पंक्ति"
+        "content_one_row_per_file": "प्रति फ़ाइल एक पंक्ति",
+        "overwrite_action": "बदलें",
+        "overwrite_body": "इस फ़ोल्डर में “{{name}}” नाम की फ़ाइल पहले से मौजूद है। इसे बदलें?",
+        "overwrite_title": "मौजूदा फ़ाइल बदलें?",
+        "upload_failed": "{{name}} अपलोड नहीं हो सकी"
       },
       "filesHome": {
         "no_project_dir": "इस चैट के लिए कोई प्रोजेक्ट डायरेक्टरी सेट नहीं है",

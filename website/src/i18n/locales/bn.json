@@ -10018,6 +10018,8 @@
         "content_placeholder": "ফাইলের ভেতরে খুঁজুন…",
         "content_searching": "খোঁজা হচ্ছে…",
         "ctx_add_to_chat": "চ্যাটে যোগ করুন",
+        "ctx_upload_files": "ফাইল আপলোড করুন…",
+        "drop_to_upload": "আপলোড করতে ফাইল এখানে ছাড়ুন",
         "filter_placeholder": "ফাইল ফিল্টার করুন…",
         "git_status_failed": "Git স্ট্যাটাস পড়া যায়নি",
         "mode_content": "বিষয়বস্তু",
@@ -10029,7 +10031,11 @@
         "search_names": "ফাইলের নাম খুঁজুন",
         "tree_mode": "ফাইল তালিকা মোড",
         "content_engine_slow": "এই হোস্টে ripgrep নেই, তাই অনুসন্ধানটি ধীরগতির অন্তর্নির্মিত স্ক্যানে চালানো হয়েছে।",
-        "content_one_row_per_file": "প্রতি ফাইলে একটি সারি"
+        "content_one_row_per_file": "প্রতি ফাইলে একটি সারি",
+        "overwrite_action": "প্রতিস্থাপন করুন",
+        "overwrite_body": "এই ফোল্ডারে “{{name}}” নামের একটি ফাইল ইতিমধ্যে বিদ্যমান। এটি প্রতিস্থাপন করবেন?",
+        "overwrite_title": "বিদ্যমান ফাইল প্রতিস্থাপন করবেন?",
+        "upload_failed": "{{name}} আপলোড করা যায়নি"
       },
       "filesHome": {
         "no_project_dir": "এই চ্যাটের জন্য কোনো প্রজেক্ট ডিরেক্টরি সেট করা নেই",

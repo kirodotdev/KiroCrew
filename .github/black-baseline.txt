@@ -174,7 +174,6 @@ src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
 src/kiro_crew/dashboard/handlers/discover.py
-src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/kiro_usage_api.py
 src/kiro_crew/dashboard/handlers/knowledge.py
 src/kiro_crew/dashboard/handlers/mcp_apps.py

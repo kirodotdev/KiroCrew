@@ -9875,6 +9875,8 @@
         "content_placeholder": "파일에서 검색…",
         "content_searching": "검색 중…",
         "ctx_add_to_chat": "채팅에 추가",
+        "ctx_upload_files": "파일 업로드…",
+        "drop_to_upload": "업로드하려면 파일을 여기로 끌어다 놓으세요",
         "filter_placeholder": "파일 필터링…",
         "git_status_failed": "Git 상태를 읽을 수 없습니다",
         "mode_content": "내용",
@@ -9886,7 +9888,11 @@
         "search_names": "파일 이름 검색",
         "tree_mode": "파일 목록 모드",
         "content_engine_slow": "이 호스트에는 ripgrep이 없으므로 검색이 더 느린 내장 스캔으로 실행되었습니다.",
-        "content_one_row_per_file": "파일당 한 행"
+        "content_one_row_per_file": "파일당 한 행",
+        "overwrite_action": "바꾸기",
+        "overwrite_body": "이 폴더에 ‘{{name}}’이라는 파일이 이미 있습니다. 바꾸시겠습니까?",
+        "overwrite_title": "기존 파일을 바꾸시겠습니까?",
+        "upload_failed": "{{name}} 업로드에 실패했습니다"
       },
       "filesHome": {
         "no_project_dir": "이 채팅에는 프로젝트 디렉터리가 설정되어 있지 않습니다",

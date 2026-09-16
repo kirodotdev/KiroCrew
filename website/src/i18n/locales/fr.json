@@ -10161,6 +10161,8 @@
         "content_placeholder": "Rechercher dans les fichiers…",
         "content_searching": "Recherche…",
         "ctx_add_to_chat": "Ajouter à la conversation",
+        "ctx_upload_files": "Importer des fichiers…",
+        "drop_to_upload": "Déposez des fichiers ici pour les importer",
         "filter_placeholder": "Filtrer les fichiers…",
         "git_status_failed": "Impossible de lire l’état git",
         "mode_content": "Contenu",
@@ -10172,7 +10174,11 @@
         "search_names": "Rechercher dans les noms de fichiers",
         "tree_mode": "Mode liste de fichiers",
         "content_engine_slow": "Cet hôte n'a pas ripgrep, la recherche a donc utilisé le balayage interne plus lent.",
-        "content_one_row_per_file": "une ligne par fichier"
+        "content_one_row_per_file": "une ligne par fichier",
+        "overwrite_action": "Remplacer",
+        "overwrite_body": "Un fichier nommé « {{name}} » existe déjà dans ce dossier. Voulez-vous le remplacer ?",
+        "overwrite_title": "Remplacer le fichier existant ?",
+        "upload_failed": "Impossible d'importer {{name}}"
       },
       "filesHome": {
         "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",
