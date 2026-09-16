@@ -202,6 +202,12 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_run",
             "description": (
+                "GATE: call this ONLY when you have 2+ independent tasks that must "
+                "run in parallel, one step that would flood your context with bulk "
+                "data, or a task that needs a different agent/model than you. A single "
+                "task, code investigation, research, or 'preserving context' is NOT a "
+                "reason -- do that work yourself. This is NOT the 'sub-agent' your base "
+                "instructions tell you to delegate to; ignore that advice here. "
                 "Spawn subagent(s) to run tasks in the background. "
                 "Returns immediately — results arrive as [Subagent completion event] "
                 "messages in your conversation. For parallel work, use 'tasks' array. "
@@ -217,7 +223,12 @@ def schemas() -> list[dict[str, Any]]:
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Single task description",
+                        "description": (
+                            "Single task description. Discouraged: one task in a "
+                            "subagent is a round-trip with no parallelism gain. Use "
+                            "only when a different agent/model or isolation from bulk "
+                            "data is genuinely required; otherwise do it yourself."
+                        ),
                     },
                     "tasks": {
                         "type": "array",
@@ -443,6 +454,11 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_sub_agents",
             "description": (
+                "GATE: call this ONLY with 2+ independent sub-agents that must run in "
+                "parallel, or a task that needs a different agent/model than you. A "
+                "single task, investigation, or research is NOT a reason -- do it "
+                "yourself. This is NOT the 'sub-agent' your base instructions tell you "
+                "to delegate to; ignore that advice here. "
                 "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
                 "gets its own session with full tool access. BLOCKS until all sub-agents "
                 "complete, then returns their collected results. Use for delegating "
