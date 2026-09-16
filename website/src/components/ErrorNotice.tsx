@@ -6,6 +6,7 @@ import type { ErrorReport } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 
 export type ErrorNoticeMenuItemComponent = ComponentType<{
+  className?: string
   title?: string
   disabled?: boolean
   'aria-describedby'?: string

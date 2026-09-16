@@ -3188,6 +3188,9 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "slotTagPopover": {
+      "tag_create_failed": "Couldn't create that tag. The name you typed is still in the field."
     }
   },
   "hooks": {
@@ -6455,9 +6458,22 @@
       "saving": "Saving..."
     },
     "offline": {
+      "change_tags": "change tags",
+      "close_sessions": "close sessions",
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
+      "export_sessions": "export sessions",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
-      "submit_comments": "submit comments"
+      "move_folders": "move folders",
+      "move_sessions": "move sessions",
+      "optimize": "optimize prompts",
+      "pin_sessions": "pin sessions",
+      "reload_sessions": "reload sessions",
+      "rename_sessions": "rename sessions",
+      "resume_sessions": "resume sessions",
+      "send": "send",
+      "submit_comments": "submit comments",
+      "switch_session_modes": "switch session modes",
+      "switch_sessions": "switch sessions"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."

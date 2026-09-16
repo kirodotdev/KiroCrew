@@ -7597,6 +7597,7 @@
       "mark_as_read": "Marcar como leída",
       "mark_as_unread": "Marcar como no leída",
       "move_to_folder": "Mover a la carpeta…",
+      "offline_reason": "Gateway sin conexión — las acciones atenuadas necesitan conexión",
       "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
@@ -7833,6 +7834,7 @@
       "close_tag_picker": "Cerrar el selector de etiquetas",
       "new_tag": "Nueva etiqueta…",
       "no_tags_yet_create_one_below": "Aún no hay etiquetas. Crea una abajo.",
+      "tag_create_failed": "No se pudo crear la etiqueta. El nombre que escribiste sigue en el campo.",
       "tags": "Etiquetas"
     },
     "snipOverlay": {
@@ -15326,9 +15328,22 @@
       "saving": "Guardando…"
     },
     "offline": {
+      "change_tags": "cambiar las etiquetas",
+      "close_sessions": "cerrar sesiones",
       "disabled_gateway_offline": "{{label}} desactivado — gateway sin conexión",
+      "export_sessions": "exportar sesiones",
       "gateway_offline_reconnect": "Gateway sin conexión — reconéctate para {{action}}",
-      "submit_comments": "enviar comentarios"
+      "move_folders": "mover carpetas",
+      "move_sessions": "mover sesiones",
+      "optimize": "optimizar prompts",
+      "pin_sessions": "fijar sesiones",
+      "reload_sessions": "recargar sesiones",
+      "rename_sessions": "cambiar el nombre de las sesiones",
+      "resume_sessions": "reanudar sesiones",
+      "send": "enviar",
+      "submit_comments": "enviar comentarios",
+      "switch_session_modes": "cambiar los modos de sesión",
+      "switch_sessions": "cambiar de sesión"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Tu navegador bloqueó la ventana desacoplada. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."

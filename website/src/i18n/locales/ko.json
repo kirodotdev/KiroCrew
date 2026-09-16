@@ -7375,6 +7375,7 @@
       "mark_as_read": "읽음으로 표시",
       "mark_as_unread": "읽지 않음으로 표시",
       "move_to_folder": "폴더로 이동…",
+      "offline_reason": "게이트웨이가 오프라인입니다 — 흐리게 표시된 작업에는 연결이 필요합니다",
       "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
@@ -7609,6 +7610,7 @@
       "close_tag_picker": "태그 선택기 닫기",
       "new_tag": "새 태그…",
       "no_tags_yet_create_one_below": "아직 태그가 없습니다. 아래에서 만드세요.",
+      "tag_create_failed": "태그를 만들 수 없습니다. 입력한 이름은 입력란에 그대로 있습니다.",
       "tags": "태그"
     },
     "snipOverlay": {
@@ -14931,9 +14933,22 @@
       "saving": "저장 중…"
     },
     "offline": {
+      "change_tags": "태그를 변경",
+      "close_sessions": "세션을 종료",
       "disabled_gateway_offline": "{{label}}이(가) 비활성화되었습니다 — 게이트웨이가 오프라인입니다",
+      "export_sessions": "세션을 내보내기",
       "gateway_offline_reconnect": "게이트웨이가 오프라인입니다 — {{action}}하려면 다시 연결하세요",
-      "submit_comments": "댓글 제출"
+      "move_folders": "폴더를 이동",
+      "move_sessions": "세션을 이동",
+      "optimize": "프롬프트를 최적화",
+      "pin_sessions": "세션을 고정",
+      "reload_sessions": "세션을 다시 로드",
+      "rename_sessions": "세션 이름을 변경",
+      "resume_sessions": "세션을 재개",
+      "send": "전송",
+      "submit_comments": "댓글 제출",
+      "switch_session_modes": "세션 모드를 변경",
+      "switch_sessions": "세션을 전환"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "브라우저가 팝아웃 창을 차단했습니다. 이 사이트의 팝업을 허용한 다음 다시 시도하세요."

@@ -7375,6 +7375,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "offline_reason": "ゲートウェイがオフラインです — グレー表示の操作には接続が必要です",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -7609,6 +7610,7 @@
       "close_tag_picker": "タグピッカーを閉じる",
       "new_tag": "新しいタグ…",
       "no_tags_yet_create_one_below": "まだタグがありません。下記で作成してください。",
+      "tag_create_failed": "タグを作成できませんでした。入力した名前は入力欄に残っています。",
       "tags": "タグ"
     },
     "snipOverlay": {
@@ -14931,9 +14933,22 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_tags": "タグを変更",
+      "close_sessions": "セッションを終了",
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
+      "export_sessions": "セッションをエクスポート",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
-      "submit_comments": "コメントを送信"
+      "move_folders": "フォルダーを移動",
+      "move_sessions": "セッションを移動",
+      "optimize": "プロンプトを最適化",
+      "pin_sessions": "セッションをピン留め",
+      "reload_sessions": "セッションを再読み込み",
+      "rename_sessions": "セッション名を変更",
+      "resume_sessions": "セッションを再開",
+      "send": "送信",
+      "submit_comments": "コメントを送信",
+      "switch_session_modes": "セッションモードを変更",
+      "switch_sessions": "セッションを変更"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"
