@@ -9127,6 +9127,299 @@ async def test_pre_turn_drain_counts_discarded_frames_without_logging_content(ca
         assert _secret not in _drain_lines[0], f"{_secret!r} leaked into the drain warning"
 
 
+async def _drain_warning_lines(handle, caplog):
+    """Run one prompt through the pre-turn drain and return its warning lines."""
+    import contextlib
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.acp.session_handle"):
+        gen = handle.prompt("hi", timeout=0.2)
+        with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        await gen.aclose()
+    return [
+        rec.getMessage() for rec in caplog.records if "pre-turn drain discarded" in rec.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_names_a_discarded_terminal(caplog):
+    """A discarded response carrying a non-empty stopReason IS the abandoned
+    turn's terminal, and the warning must SAY so instead of hedging.
+
+    The structural fact: a JSON-RPC response has ``method is None``, so a
+    leftover prompt response can never reach the drain's permission branch —
+    it always lands in the discard arm. Whether the terminal was among the
+    discards is therefore decidable, and "possibly including that turn's
+    terminal" was speculation about data already in hand.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    # A leftover notification plus the abandoned turn's terminal response.
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "sA",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "SECRETALPHA"},
+                    },
+                },
+            }
+        )
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 4, "result": {"stopReason": "cancelled"}})
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "2 leftover frame(s)" in _drain_lines[0]
+    # The tally states the fact — 1 terminal — and names its closed stopReason.
+    assert "1 of them" in _drain_lines[0], _drain_lines[0]
+    assert "cancelled" in _drain_lines[0]
+    # The hedge is gone.
+    assert "possibly" not in _drain_lines[0]
+    assert "SECRETALPHA" not in _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_states_the_zero_terminal_case(caplog):
+    """When NO discarded frame was a terminal the warning says '0 of them' —
+    the reassuring reading an operator could not get from the old hedge.
+
+    The set here also pins the classification guards: a response with an empty
+    result dict, a response whose result is not a dict, and a REQUEST that
+    (malformed) carries a result with a stopReason must all count as zero —
+    only a response (``method is None``, ``id`` set) with a non-empty
+    ``stopReason`` is a terminal.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    # (a) response, empty result dict — no stopReason, not a terminal
+    q["sA"].put_nowait(JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 4, "result": {}}))
+    # (b) response, non-dict result — not a terminal
+    q["sA"].put_nowait(JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 5, "result": "done"}))
+    # (c) a REQUEST (method set) that malformedly carries a stopReason result:
+    # kills the mutant that drops the ``method is None`` condition
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "some/other_request",
+                "result": {"stopReason": "end_turn"},
+            }
+        )
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "3 leftover frame(s)" in _drain_lines[0]
+    assert "0 of them" in _drain_lines[0], _drain_lines[0]
+    # Zero terminals ⇒ no stopReason clause at all.
+    assert "stopReason" not in _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_never_logs_a_non_closed_stop_reason(caplog):
+    """A terminal whose stopReason is NOT a closed protocol value still counts,
+    but its value never reaches the log — an unrecognized wire string could
+    carry anything, and frame content never belongs in a log (the same
+    closed-values discipline as chat_runner's empty-turn line).
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {"jsonrpc": "2.0", "id": 4, "result": {"stopReason": "SECRETREASON"}}
+        )
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "1 of them" in _drain_lines[0]
+    assert "SECRETREASON" not in _drain_lines[0], "raw wire string leaked into the log"
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_classifies_alongside_an_answered_permission_request(caplog):
+    """A mixed leftover set: the permission request is still answered and
+    SEL-audited exactly as today, the terminal is counted, and the request is
+    NOT in the discard count. Discard behaviour itself is unchanged."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+    rt.send_response = AsyncMock()
+
+    audited: list[tuple[object, str, str]] = []
+    handle._audit_handle_reject = (  # type: ignore[method-assign]
+        lambda request_id, title, error, sub_session_id="": audited.append(
+            (request_id, title, error)
+        )
+    )
+
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 55,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "child-a",
+                    "toolCall": {"toolCallId": "tc-9", "title": "Running: rm -rf x"},
+                    "options": [
+                        {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}
+                    ],
+                },
+            }
+        )
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 4, "result": {"stopReason": "end_turn"}})
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert audited, "stranded permission request was not SEL-audited"
+    assert audited[0][2] == "stranded_request_pre_turn_drain"
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    # The answered request is not discarded: 1 frame, and it is the terminal.
+    assert "1 leftover frame(s)" in _drain_lines[0]
+    assert "1 of them" in _drain_lines[0]
+    assert "end_turn" in _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_survives_a_non_string_stop_reason(caplog):
+    """A JSON-valid response whose stopReason is not a string must neither
+    crash the drain nor count as a terminal.
+
+    The hazard is structural: the drain runs AFTER ``_turn_done.clear()`` and
+    BEFORE the BaseException guard that restores it, so an exception escaping
+    here leaves the handle permanently turn-active — every later prompt on it
+    is rejected. A truthy non-str stopReason (``[]``/``{}``) fed to a frozenset
+    membership test raises ``TypeError: unhashable type``; the classification
+    must type-guard the leaf exactly as ``_dispatch.py``'s wire-stopReason
+    reader does.
+    """
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {"jsonrpc": "2.0", "id": 4, "result": {"stopReason": ["end_turn"]}}
+        )
+    )
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict({"jsonrpc": "2.0", "id": 5, "result": {"stopReason": {"v": 1}}})
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    # The drain completed: the warning was emitted and the handle is NOT wedged.
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "2 leftover frame(s)" in _drain_lines[0]
+    assert "0 of them" in _drain_lines[0]
+    assert handle.is_turn_active is False, "drain crash left the handle turn-active"
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_counts_an_error_response_terminal(caplog):
+    """An abandoned turn that ended in an ERROR response was still terminated —
+    ``_run_turn`` treats an error response as the turn's terminal — so the
+    tally must count it, or the warning positively asserts none of the
+    discards was terminal-shaped where the old text only hedged. An error
+    terminal has no stopReason to name, the error payload must never leak,
+    and the warning must NOT attribute the frame to "that turn": a late error
+    response to a concurrently timed-out command call (send_command / compact /
+    set_config_option, re-injected by _wait_for_response's finally) is
+    indistinguishable here, so the line states the shape, not the owner."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "error": {"code": -32000, "message": "SECRETBOOM"},
+            }
+        )
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "1 of them" in _drain_lines[0]
+    assert "stopReason" not in _drain_lines[0]
+    assert "SECRETBOOM" not in _drain_lines[0], "error payload leaked into the drain warning"
+    # No attribution: the drain cannot know which caller owned this response.
+    assert "that turn's" not in _drain_lines[0], _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_normalizes_a_closed_stop_reason_spelling(caplog):
+    """A closed value arriving with stray whitespace still logs as the
+    canonical constant, not as the '<non-standard>' placeholder — the repo's
+    other wire-stopReason reader (``_dispatch.py``) normalizes before
+    comparing, and an operator reading a standard terminal as garbage defeats
+    the classification's purpose."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    q["sA"].put_nowait(
+        JsonRpcMessage.from_dict(
+            {"jsonrpc": "2.0", "id": 4, "result": {"stopReason": " cancelled "}}
+        )
+    )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "1 of them" in _drain_lines[0]
+    assert "cancelled" in _drain_lines[0]
+    assert "non-standard" not in _drain_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_pre_turn_drain_dedupes_stop_reasons_in_the_warning(caplog):
+    """The session queue is unbounded, so the stopReason clause must not grow
+    one token per discarded terminal — the count already carries multiplicity;
+    the clause names each DISTINCT closed value once."""
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    rt.send_request = AsyncMock(return_value=9)
+
+    for _rid in (4, 5, 6):
+        q["sA"].put_nowait(
+            JsonRpcMessage.from_dict(
+                {"jsonrpc": "2.0", "id": _rid, "result": {"stopReason": "cancelled"}}
+            )
+        )
+
+    _drain_lines = await _drain_warning_lines(handle, caplog)
+    assert len(_drain_lines) == 1, f"expected one drain warning, got {_drain_lines}"
+    assert "3 of them" in _drain_lines[0]
+    assert _drain_lines[0].count("cancelled") == 1, _drain_lines[0]
+
+
 @pytest.mark.asyncio
 async def test_prompt_warns_when_the_stream_ends_without_a_terminal_event(caplog):
     """A clean exhaustion with no EVENT_COMPLETE is reported; a consumer close is not.

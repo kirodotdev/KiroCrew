@@ -124,6 +124,9 @@ from kiro_crew.acp.types import (
     OUTCOME_SELECTED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
+    STOP_REASON_CONTENT_FILTERED_WIRE,
+    STOP_REASON_END_TURN,
+    STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
     UPDATE_CURRENT_MODE,
@@ -144,6 +147,24 @@ from kiro_crew.sel import sel
 logger = logging.getLogger(__name__)
 
 # ── Constants ──
+
+# The stopReason values the pre-turn drain may NAME in its warning: the closed
+# protocol values (``types.STOP_REASON_*``) only. A discarded terminal whose
+# stopReason is any other wire string still COUNTS, but its value is logged as
+# a placeholder — an unrecognized string could carry anything, and frame
+# content never belongs in a log (the closed-values discipline of
+# ``chat_runner``'s empty-turn line).
+_DRAIN_CLOSED_STOP_REASONS = frozenset(
+    (
+        STOP_REASON_CANCELLED,
+        STOP_REASON_COMPACTION_FAILED,
+        STOP_REASON_CONTENT_FILTERED_WIRE,
+        STOP_REASON_END_TURN,
+        STOP_REASON_REFUSAL,
+        STOP_REASON_STALE_RECOVER,
+        STOP_REASON_TOOL_STALL,
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -1113,9 +1134,13 @@ class AcpSessionHandle:
         # with no attributable cause. Count them and say how many, ONCE. Never
         # what they were: a frame carries model text, tool arguments and tool
         # results, and none of that belongs in a log — nor its size, which leaks
-        # response length. The count is bounded by the queue, and the log line is
-        # one per turn regardless of how many frames drained.
+        # response length. The one exception is a discarded terminal's
+        # stopReason, logged only as a closed protocol value (see
+        # _DRAIN_CLOSED_STOP_REASONS). The count is bounded by the queue, and
+        # the log line is one per turn regardless of how many frames drained.
         _stale_dropped = 0
+        _stale_terminals = 0
+        _stale_reasons: list[str] = []
         while True:
             try:
                 stale = self._queue.get_nowait()
@@ -1188,15 +1213,62 @@ class AcpSessionHandle:
             else:
                 # Everything that is not a permission request is DISCARDED, which
                 # is correct (it belongs to a turn nobody is reading any more) but
-                # was silent. Count it.
+                # was silent. Count it — and CLASSIFY it: a response (``method``
+                # is None, ``id`` set — a request can never have ``method`` None,
+                # so a terminal cannot reach the branch above) whose result
+                # carries a non-empty string ``stopReason`` is by construction
+                # the abandoned turn's terminal, read exactly as the live turn
+                # reads its own; an ERROR response is terminal-shaped too
+                # (_run_turn ends the turn on one), with no stopReason to name —
+                # but it is NOT attributed to the abandoned turn, because a late
+                # error answer to a concurrently timed-out command call
+                # (send_command / compact / set_config_option, re-injected by
+                # _wait_for_response's finally) is indistinguishable here. The
+                # warning below states the shape, never the owner. The isinstance
+                # guard on the leaf mirrors _dispatch.py's wire-stopReason
+                # reader: a truthy non-str here would raise on the set membership
+                # below, and this arm runs OUTSIDE the _turn_done restoration
+                # guard — an escape would wedge the handle permanently.
                 _stale_dropped += 1
+                if stale is not None and stale.method is None and stale.id is not None:
+                    _stale_result = stale.result or {}
+                    _stale_reason = ""
+                    if isinstance(_stale_result, dict):
+                        _stale_reason = _stale_result.get("stopReason", "")
+                    if isinstance(_stale_reason, str) and _stale_reason.strip():
+                        _stale_terminals += 1
+                        _stale_cleaned = _stale_reason.strip()
+                        if _stale_cleaned in _DRAIN_CLOSED_STOP_REASONS:
+                            _stale_reasons.append(_stale_cleaned)
+                        elif _stale_cleaned.upper() == STOP_REASON_CONTENT_FILTERED_WIRE:
+                            # The one spelling _dispatch.py also normalizes
+                            # case-insensitively; log the canonical constant.
+                            _stale_reasons.append(STOP_REASON_CONTENT_FILTERED_WIRE)
+                        else:
+                            _stale_reasons.append("<non-standard>")
+                    elif stale.error is not None:
+                        _stale_terminals += 1
 
         if _stale_dropped:
+            # One line per turn; count + terminal tally only. The stopReason
+            # clause names closed protocol values exclusively (see
+            # _DRAIN_CLOSED_STOP_REASONS), DISTINCT values once each (the queue
+            # is unbounded, so the clause must not grow per frame — the tally
+            # carries multiplicity), and is omitted when there were none — the
+            # explicit "0 of them" is the reassuring reading an operator could
+            # not get from the old hedge.
+            _stale_reason_note = (
+                " (stopReason: %s)" % ", ".join(sorted(set(_stale_reasons)))
+                if _stale_reasons
+                else ""
+            )
             logger.warning(
-                "pre-turn drain discarded %d leftover frame(s) from a prior "
-                "abandoned turn on this session; those frames — possibly "
-                "including that turn's terminal — reached no consumer",
+                "pre-turn drain discarded %d leftover frame(s) on this "
+                "session; %d of them were terminal-shaped responses%s — "
+                "those frames reached no consumer",
                 _stale_dropped,
+                _stale_terminals,
+                _stale_reason_note,
             )
 
         self.last_prompt_stats = self.last_prompt_stats.carry_over()

@@ -715,8 +715,20 @@ response length.
   which synthesize a terminal and return while the real kiro-cli turn keeps
   emitting). Permission REQUESTS are answered rather than dropped; everything else
   is discarded, which used to happen with no count and no log. It now counts the
-  discarded frames and emits **one** WARNING per turn carrying that count — one
+  discarded frames, classifies each one, and emits **one** WARNING per turn — one
   line regardless of how many frames drained, so a burst cannot flood the log.
+  The classification is structural: a JSON-RPC response (`method` is `None`, `id`
+  set) whose result carries a non-empty string `stopReason` is by construction
+  the abandoned turn's terminal — a response can never reach the permission
+  branch, which requires `method` — and an error response is terminal-shaped
+  too (a failed turn was still terminated). The warning states the total AND how
+  many of the discards were terminal-shaped (explicitly including zero), plus
+  their distinct `stopReason` values — closed protocol values (`STOP_REASON_*`)
+  only, whitespace-normalized before matching; any other wire string (including
+  a non-string) is never logged verbatim. It deliberately does NOT attribute a
+  counted response to the abandoned turn: a late error answer to a concurrently
+  timed-out command call (re-injected by `_wait_for_response`'s `finally`) is
+  indistinguishable in the drain, so the line states the shape, not the owner.
   This matters downstream: a turn whose terminal was destroyed here reaches the
   dashboard as an empty response with no attributable cause. The count is NOT
   bridged into `chat_runner` — see the note below.
