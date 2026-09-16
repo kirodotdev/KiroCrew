@@ -99,6 +99,8 @@ class _StubRevalidator:
 # --------------------------------------------------------------------------
 
 def test_sourceless_is_trusted_local_classifier():
+    # A sourceless item is trusted-local: no managed connector produces one
+    # (production always attaches a source). Under central review per the brief.
     assert is_managed_trust_class(has_source=False, trust_class=None) is False
     assert is_managed_trust_class(has_source=False, trust_class=TRUST_MANAGED) is False
 
@@ -301,7 +303,9 @@ def test_dangling_source_item_fails_closed(store):
 
 
 def test_sourceless_item_is_trusted_local(store):
-    """An item with NO source_id is trusted-local: the local library sees it."""
+    """A sourceless item is trusted-local: the local library sees it. No managed
+    connector produces a sourceless item (production always attaches a source),
+    so this does not open a managed-content leak. Under central review."""
     item = store.add_item("Pasted", "epsilon content", "doc")  # source_id=None
     r = _retriever(store, kw=[(item, 1)])
     assert item in _ids(r.search("epsilon", limit=10, access_context=LOCAL_LIBRARY))

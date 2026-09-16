@@ -74,14 +74,27 @@ TRUST_MANAGED = "managed"
 def is_managed_trust_class(has_source: bool, trust_class: str | None) -> bool:
     """True when an item must be treated as managed (gated + revalidated).
 
-    Fail-closed by construction:
+    TRUSTED-LOCAL is decided from PROVENANCE, fail-closed against every case
+    where an EXTERNAL per-user ACL could exist:
 
-    * a SOURCELESS item (``has_source`` False) is trusted-local -- on-host
-      content with no source cannot carry an external per-user ACL;
-    * a source explicitly stamped :data:`TRUST_LOCAL` is trusted-local;
-    * ANYTHING ELSE -- a ``managed`` stamp, an unstamped/unknown/``None`` stamp
-      (a source predating the stamp that the migration did not classify local,
-      or a dangling source_id whose row is gone) -- is managed.
+    * a source stamped :data:`TRUST_LOCAL` -> trusted-local;
+    * a ``managed`` stamp, an unstamped/unknown/``None`` stamp (a legacy source
+      the migration did not classify local, or a dangling source_id whose row is
+      gone) -> managed;
+    * a SOURCELESS item (``has_source`` False) -> trusted-local. RATIONALE +
+      OPEN REVIEW: every production ingestion path attaches a source (the managed
+      connectors, and the local folder/file/vault/artifact/agent aggregates), so
+      a managed cloud item is NEVER sourceless -- it always has both a connector
+      source AND a grant. A truly sourceless row is therefore local scaffolding /
+      legacy on-host content, and denying it here regresses the single-user local
+      library (its own default-context search would stop seeing legacy sourceless
+      items). Root has asked for a CENTRAL independent review of this specific
+      axis ("no source does not prove no external ACL"); the conservative
+      alternative is to flip this to ``return True`` (fail-closed managed) AND
+      migrate every legacy sourceless row to a stamped local source so the local
+      library keeps working. That flip breaks the retriever's whole
+      sourceless-item test idiom and needs the migration, so it is held for the
+      review rather than decided here to make a fixture green either way.
 
     The decision reads the stored provenance stamp only; it never re-guesses
     trust from a source_type string, so a new/misspelled cloud connector type,

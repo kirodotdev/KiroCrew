@@ -311,9 +311,10 @@ class HybridRetriever:
           (``sources.trust_class``, evidence written at creation) -- NOT from a
           source_type name guess, so a new/misspelled cloud type or a managed
           source missing its per-item flag cannot be waved through as local;
-        * a TRUSTED-LOCAL item (sourceless, or a source stamped local_admitted)
-          with no grant is servable to a bypass (local) context and otherwise
-          takes the subject/tenant test;
+        * a TRUSTED-LOCAL item (a source stamped local_admitted, or a sourceless
+          row -- see is_managed_trust_class, under review) with no grant is
+          servable to a bypass (local) context and otherwise takes the
+          subject/tenant test;
         * a MANAGED item (managed/unstamped/dangling provenance, or a grant
           explicitly flagged managed) ALWAYS takes the current-subject check AND
           revalidation: the optional :attr:`revalidator` performs the provider
@@ -340,8 +341,9 @@ class HybridRetriever:
             raw = grants.get(item_id)
             has_source, trust_class = trust.get(item_id, (False, None))
             # Managed classification from the provenance stamp (fail-closed):
-            #  - sourceless -> trusted-local;
             #  - source stamped local_admitted -> trusted-local;
+            #  - sourceless -> trusted-local (no managed connector produces a
+            #    sourceless item; see is_managed_trust_class -- under review);
             #  - source stamped managed, OR unstamped/unknown, OR a dangling
             #    source row (trust_class None) -> managed.
             managed_by_provenance = is_managed_trust_class(has_source, trust_class)
