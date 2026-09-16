@@ -106,32 +106,48 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
 )
 
 
-#: Glob syntax KAS's resource matcher honours, and Crew's auto-approve check does
-#: not. An entry carrying any of these means one thing to the list it was written
-#: on and something wider here, so it is never translated (see
+#: Glob syntax kiro-cli's ``allowedTools`` matcher documents for the TOOL part
+#: of an ``@server/tool`` entry (``@server/read_*``), and KAS's resource matcher
+#: reads the same way. Only these two travel; see :data:`_UNSHARED_GLOB_SYNTAX`.
+_SHARED_GLOB_SYNTAX = frozenset("*?")
+
+#: Glob syntax KAS's resource matcher honours and kiro-cli's does not document.
+#: An entry carrying any of these means one thing to the list it was written on
+#: and possibly something wider here, so it is never translated (see
 #: :func:`_mcp_pattern`).
-_GLOB_METACHARACTERS = frozenset("*?[]{}!")
+_UNSHARED_GLOB_SYNTAX = frozenset("[]{}!")
+
+#: Every character either matcher treats as a glob. A SERVER name carrying any of
+#: these is refused outright (see :func:`_mcp_pattern`).
+_GLOB_METACHARACTERS = _SHARED_GLOB_SYNTAX | _UNSHARED_GLOB_SYNTAX
 
 
 def _mcp_pattern(entry: str) -> str | None:
     """Resource glob for an ``@server`` / ``@server/tool`` entry.
 
     KAS addresses an MCP tool as ``<server>/<tool>``, so a bare server becomes a
-    one-level glob and a named action becomes an exact match.
+    one-level glob, a named action becomes an exact match, and a tool-part glob
+    (``@srv/query_*``) travels as written: kiro-cli documents ``*`` and ``?`` in
+    the tool part of an ``allowedTools`` entry with exactly the meaning KAS gives
+    the same text, so dropping it would make one line of text a grant on one
+    backend and a prompt on the other — the asymmetry this module exists to
+    avoid.
 
-    ``None`` for a reference that is not a plain name. Crew's own auto-approve
-    check compares ``allowedTools`` entries literally, so ``@*`` on that list
-    grants a server actually called ``*`` — nothing. Here it would become the
-    pattern ``*/*``, which KAS resolves as every tool on every server: the same
-    text would mean "no grant" on one backend and "grant everything" on the
-    other. Translation must not be the step that widens a grant, so an entry we
-    cannot read as one literal server (optionally one literal tool) is left to
-    prompt instead of being guessed at.
+    ``None`` when the SERVER part is not one literal name. ``@*`` would become
+    the pattern ``*/*``, which KAS resolves as every tool on every server, and a
+    server-part glob is the one shape kiro-cli's own reading is not pinned down
+    for. Translation must not be the step that widens a grant, so an entry we
+    cannot read as one literal server is left to prompt instead of being guessed
+    at. The tool part may carry only the shared syntax (``*``, ``?``); bracket,
+    brace and negation forms are refused for the same reason.
     """
     ref = entry[len(_MCP_PREFIX) :]
-    if _GLOB_METACHARACTERS.intersection(ref):
+    server, slash, tool = ref.partition("/")
+    if _GLOB_METACHARACTERS.intersection(server):
         return None
-    return ref if "/" in ref else f"{ref}/*"
+    if _UNSHARED_GLOB_SYNTAX.intersection(tool):
+        return None
+    return ref if slash else f"{ref}/*"
 
 
 def _collapse_mcp_patterns(patterns: set[str]) -> list[str]:
