@@ -56,6 +56,7 @@ from kiro_crew.knowledge.ingestion import (
     start_rebuild_job,
 )
 from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
+from kiro_crew.knowledge.acl import ALLOW_ALL
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.spend import source_spend
@@ -421,11 +422,17 @@ async def _search_until_exhausted(retriever, q: str, limit: int) -> list[dict]:
     matching item behind higher-ranked hits from other sources. Growing the
     window until the retriever returns fewer rows than requested means the
     caller has seen the whole ranking, so its filtered count is the true total.
+
+    Runs under the local single-user context (this is the on-host personal
+    Knowledge Library browse/search, which has no multi-identity boundary); a
+    shared source would pass a caller-derived AccessContext instead.
     """
     want = max(limit * 3, _SCOPED_SEARCH_START)
     results: list[dict] = []
     while True:
-        results = await run_in_embed_pool(retriever.search, q, limit=want)
+        results = await run_in_embed_pool(
+            retriever.search, q, limit=want, access_context=ALLOW_ALL
+        )
         # Short read means the ranking is exhausted; nothing further to fetch.
         if len(results) < want or want >= _SCOPED_SEARCH_MAX:
             return results
@@ -526,7 +533,7 @@ async def list_items(request: web.Request) -> web.Response:
             all_results = await _search_until_exhausted(retriever, q, limit)
         else:
             all_results = await run_in_embed_pool(
-                retriever.search, q, limit=limit * 3
+                retriever.search, q, limit=limit * 3, access_context=ALLOW_ALL
             )
         # Batch fetch all candidate items (avoid N+1). A scoped search escalates
         # its candidate pool, so this query and the row serialization can both be
@@ -2791,7 +2798,9 @@ async def search_for_context(request: web.Request) -> web.Response:
     # hands each thread its own sqlite connection, so all sqlite
     # access is thread-safe here. mc-embed bulkhead: the query embed occupies
     # the shared model.
-    results = await run_in_embed_pool(retriever.search, q, limit=limit)
+    results = await run_in_embed_pool(
+        retriever.search, q, limit=limit, access_context=ALLOW_ALL
+    )
 
     cards = []
     total_tokens = 0

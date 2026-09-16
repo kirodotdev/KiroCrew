@@ -15,6 +15,7 @@ except ImportError:
     import sqlite3
 
 from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
+from .acl import ALLOW_ALL, DEFAULT_POLICY, AccessContext, AclPolicy, ItemGrant
 from .embedder import embedder_signature
 from .store import KnowledgeStore
 
@@ -109,7 +110,8 @@ def vector_leg(embedder) -> tuple[Any, str | None]:
 class HybridRetriever:
     """FTS5 keyword + graph traversal + optional vector search, fused with RRF."""
 
-    def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None):
+    def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None,
+                 acl_policy: AclPolicy | None = None):
         """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float].
 
         ``embed_sig`` is the :func:`~kiro_crew.knowledge.embedder.embed_signature`
@@ -136,6 +138,7 @@ class HybridRetriever:
         self.store = store
         self.embedder = embedder
         self.embed_sig = embed_sig
+        self.acl_policy: AclPolicy = acl_policy or DEFAULT_POLICY
 
     def search(
         self,
@@ -143,6 +146,8 @@ class HybridRetriever:
         limit: int = 10,
         source_id: str | None = None,
         namespace: str | None = None,
+        *,
+        access_context: AccessContext | None = None,
     ) -> list[dict]:
         """Hybrid search with RRF fusion. Returns [{id, title, summary, content, score, source, match_type}].
 
@@ -159,9 +164,25 @@ class HybridRetriever:
         seeds, and the graph leg stays unfiltered for the same reason. The two
         filters compose (both applied when both are given).
 
+        ``access_context`` is the SECURITY boundary the two filters above are
+        not. It is the verified subject+tenant the query runs as (resolved from
+        the authenticated caller, never self-reported), and every returned row
+        -- from every leg, including the unfiltered graph leg and the protected
+        keyword rescue below, and everything the citation/location enrichment
+        passes then attach -- is gated against it by :attr:`acl_policy`
+        (fail-closed: an item with no readable grant is dropped). ``None`` means
+        the caller has NOT resolved an identity; that is treated as
+        :data:`acl.ALLOW_ALL` for backward compatibility with the single-user
+        local library, so a SHARED/multi-tenant caller MUST pass a real context
+        rather than relying on the default. The gate runs BEFORE the result
+        window is cut, so a denied item never occupies a slot a permitted one
+        could have taken, never triggers the keyword rescue, and is never
+        enriched or cited.
+
         Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
         row -- the keyword leg's protected top hit (see below).
         """
+        ctx = access_context if access_context is not None else ALLOW_ALL
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace
         )
@@ -174,6 +195,17 @@ class HybridRetriever:
         # keyword leg is weak. Weights align positionally
         # with (kw, gr, vec).
         fused = self._rrf_fuse(kw, gr, vec, weights=(1.0, 1.0, VECTOR_RRF_WEIGHT))
+
+        # ACL GATE. Drop every fused candidate the querying identity may not see
+        # BEFORE anything downstream reads it -- the result window, the recency
+        # tie-break, the keyword rescue, and both enrichment passes all operate
+        # only on this filtered list, so a denied item cannot leak through any of
+        # them (including via the deliberately-unfiltered graph leg, whose
+        # cross-source hits are exactly the ones this gate must catch). The gate
+        # is a single batched grant read (one query, chunked) + a pure policy
+        # decision per candidate: fail-closed, so an item with no readable grant
+        # is dropped. A bypass context (local single-user library) admits all.
+        fused = self._acl_filter(fused, ctx)
 
         # Resolve every fused candidate up front: both the recency tie-break below
         # and the result rows read the same item, so one lookup per id serves both.
@@ -250,6 +282,40 @@ class HybridRetriever:
         self._attach_source_locations(results)
         self._attach_citation_sources(results)
         return results
+
+    def _acl_filter(
+        self, fused: list[tuple[str, float]], ctx: AccessContext
+    ) -> list[tuple[str, float]]:
+        """Keep only fused candidates the querying identity may see (fail-closed).
+
+        One batched grant read for every candidate id, then a pure per-item
+        policy decision. An item with no grant row, or a grant whose stored JSON
+        cannot be decoded, is dropped -- absence or corruption of a grant is
+        never permission. A bypass context (local single-user library) skips the
+        grant read entirely and admits everything, so the personal library pays
+        nothing for the shared-library boundary.
+
+        Runs before any downstream read of ``fused``, so it is the ONE place the
+        gate needs to live: the result window, recency tie-break, keyword rescue
+        and enrichment passes all consume this filtered list.
+        """
+        if ctx.bypass_acl:
+            return fused
+        if not fused:
+            return fused
+        grants = self.store.get_item_grants(item_id for item_id, _ in fused)
+        kept: list[tuple[str, float]] = []
+        for item_id, score in fused:
+            raw = grants.get(item_id)
+            if raw is None:
+                # No grant row at all: fail-closed deny.
+                continue
+            grant = ItemGrant.from_row(
+                raw.get("subjects"), raw.get("tenant"), raw.get("acl_version")
+            )
+            if self.acl_policy.allows(ctx, grant):
+                kept.append((item_id, score))
+        return kept
 
     def _attach_source_locations(self, results: list[dict]) -> None:
         """Enrich results in place with citation metadata (section + line range).

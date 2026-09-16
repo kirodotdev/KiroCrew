@@ -847,6 +847,36 @@ class KnowledgeStore:
                 dismissed_at TEXT NOT NULL
             );
 
+            -- Query-time access-control grant for one item, written at INGEST
+            -- time from the source's own permission facts and read at QUERY
+            -- time by the retriever's ACL gate (knowledge/acl.py). This is the
+            -- security boundary the items.source_id / items.namespace filters
+            -- deliberately are NOT: those are relevance labels, this decides
+            -- who may see a row.
+            --
+            -- subjects: JSON array of subject ids allowed to see the item
+            --   (or the acl.PUBLIC_SUBJECT sentinel for tenant-public content).
+            -- tenant: the org/workspace boundary the grant belongs to
+            --   (acl.PUBLIC_TENANT for cross-tenant public).
+            -- acl_version: monotonic marker bumped on every rewrite, so a
+            --   revoke immediately invalidates any decision cached on
+            --   (item_id, acl_version) -- the mechanism that makes the NEXT
+            --   query after a revoke deny, without a re-crawl (ACL-02).
+            --
+            -- An item with NO row here is denied by the fail-closed policy:
+            -- absence of a grant is not permission. Rows are removed with their
+            -- item (see _delete_item_cascade / delete_items_batch_in_txn) so a
+            -- removed item's grant cannot outlive it (KB-10).
+            CREATE TABLE IF NOT EXISTS item_acl (
+                item_id TEXT PRIMARY KEY REFERENCES items(id),
+                subjects TEXT NOT NULL DEFAULT '[]',
+                tenant TEXT NOT NULL,
+                acl_version INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_acl_tenant ON item_acl(tenant);
+
         """)
         self.db.commit()
 
@@ -1412,6 +1442,112 @@ class KnowledgeStore:
             self.db.execute("ROLLBACK")
             raise
 
+    # ------------------------------------------------------------------
+    # Query-time access control (item_acl table)
+    #
+    # These are the store's half of the ACL contract: written at INGEST time
+    # from a source's real permission facts, read at QUERY time by the
+    # retriever's fail-closed gate. The DECISION (who may see what) lives in
+    # knowledge/acl.py; the store only persists and returns grant records.
+    # ------------------------------------------------------------------
+
+    def set_item_acl(self, item_id: str, subjects, tenant: str) -> int:
+        """Write (or overwrite) *item_id*'s ACL grant. Returns the new acl_version.
+
+        ``subjects`` is an iterable of subject ids (or the ``acl.PUBLIC_SUBJECT``
+        sentinel); ``tenant`` is the org/workspace the grant belongs to (or
+        ``acl.PUBLIC_TENANT``). Overwriting an existing grant BUMPS
+        ``acl_version`` monotonically, so any decision cached on the old version
+        is invalidated the moment the grant changes -- this is what makes a
+        narrowed grant take effect on the very next query rather than after a
+        re-crawl.
+
+        Idempotent in effect for an unchanged grant only in that it still bumps
+        the version; callers that re-ingest unchanged content should skip the
+        write (compare first) if they want to avoid a spurious cache flush.
+        """
+        subj_list = sorted({str(s) for s in subjects})
+        now = datetime.now().isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT acl_version FROM item_acl WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            next_version = (row["acl_version"] + 1) if row else 1
+            self.db.execute(
+                "INSERT INTO item_acl (item_id, subjects, tenant, acl_version, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(item_id) DO UPDATE SET "
+                "subjects = excluded.subjects, tenant = excluded.tenant, "
+                "acl_version = excluded.acl_version, updated_at = excluded.updated_at",
+                (item_id, json.dumps(subj_list), tenant, next_version, now))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return next_version
+
+    def revoke_item_acl(self, item_id: str) -> int:
+        """Revoke ALL access to *item_id* by clearing its subject set.
+
+        The grant row is kept (not deleted) with an EMPTY subject set and a bumped
+        ``acl_version``, so the next query denies it (empty set matches no subject
+        and is not public) AND any cached decision keyed on the prior version is
+        invalidated. This is distinct from deleting the item: the content is still
+        present, only its visibility is revoked -- exactly the ACL-02/ACL-03 case
+        where a group departure or link revocation must deny the next query
+        without removing the underlying document. Returns the new acl_version, or
+        0 if the item had no grant to revoke.
+        """
+        now = datetime.now().isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT acl_version FROM item_acl WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                self.db.execute("COMMIT")
+                return 0
+            next_version = row["acl_version"] + 1
+            self.db.execute(
+                "UPDATE item_acl SET subjects = '[]', acl_version = ?, updated_at = ? "
+                "WHERE item_id = ?",
+                (next_version, now, item_id))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return next_version
+
+    def get_item_grants(self, item_ids):
+        """Batch-fetch grant rows for *item_ids*, keyed by item_id.
+
+        Returns ``{item_id: {"subjects": <json str>, "tenant": str,
+        "acl_version": int}}`` for the ids that HAVE a grant row. Ids with no
+        row are simply absent from the dict -- the caller's fail-closed policy
+        treats absence as deny. Chunked under SQLITE_MAX_VARIABLE_NUMBER so a
+        large candidate set does not blow the bound-variable limit.
+        """
+        out: dict[str, dict] = {}
+        ids = list(item_ids)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.db.execute(
+                "SELECT item_id, subjects, tenant, acl_version "  # noqa: S608
+                f"FROM item_acl WHERE item_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                out[row["item_id"]] = {
+                    "subjects": row["subjects"],
+                    "tenant": row["tenant"],
+                    "acl_version": row["acl_version"],
+                }
+        return out
+
     def _delete_item_cascade(self, item_id):
         """Delete item and its dependents without commit/graph reload (for batch use)."""
         row = self.db.execute("SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -1420,6 +1556,7 @@ class KnowledgeStore:
         self.db.execute("DELETE FROM source_locations WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM mentions WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM entity_relations WHERE source_item_id = ?", (item_id,))
+        self.db.execute("DELETE FROM item_acl WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM items WHERE id = ?", (item_id,))
 
     def delete_item(self, item_id):
@@ -1729,6 +1866,7 @@ class KnowledgeStore:
                 self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
                 self.db.execute(
                     f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed)  # noqa: S608
+                self.db.execute(f"DELETE FROM item_acl WHERE item_id IN ({q})", doomed)  # noqa: S608
                 self.db.execute(f"DELETE FROM items WHERE id IN ({q})", doomed)  # noqa: S608
 
             # Documents that deferred to this source need their marker cleared, or the

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import mcp_core
+from kiro_crew.knowledge import acl
 from kiro_crew.knowledge import store as knowledge_store
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
@@ -246,7 +247,21 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     embed_fn, embed_sig = mcp_core.vector_leg(embedder if available else None)
     retriever = mcp_core.HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
 
-    results = retriever.search(query, limit=limit, source_id=source_id, namespace=namespace)
+    # Query-time ACL. This tool serves the on-host PERSONAL Knowledge Library
+    # (the single-user knowledge.db under the config workspace), which has no
+    # multi-identity boundary -- so it runs under the local single-user context,
+    # which admits every ingested item. A SHARED / multi-tenant knowledge source
+    # (per the connector production stack's ACL contracts) must instead resolve
+    # the querying subject+tenant from the authenticated caller and pass a real
+    # AccessContext here; the retriever then fail-closed-gates every leg against
+    # it. Passing the context explicitly (rather than relying on the parameter's
+    # default) keeps that boundary visible at the call site.
+    access_context = acl.ALLOW_ALL
+
+    results = retriever.search(
+        query, limit=limit, source_id=source_id, namespace=namespace,
+        access_context=access_context,
+    )
 
     # Filter by minimum confidence score
     min_score = 0.012

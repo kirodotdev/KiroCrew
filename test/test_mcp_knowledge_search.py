@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.knowledge import acl
 from kiro_crew.validation import ValidationError
 
 
@@ -129,7 +130,8 @@ class TestKnowledgeSearchResults:
 
         _call_tool_inner("local_knowledge_search", {"query": "test"})
         mock_retriever_cls.return_value.search.assert_called_once_with(
-            "test", limit=3, source_id=None, namespace=None
+            "test", limit=3, source_id=None, namespace=None,
+            access_context=acl.ALLOW_ALL,
         )
 
     @patch("kiro_crew.mcp_core.config_dir")
@@ -305,7 +307,8 @@ class TestKnowledgeSearchSourceFilter:
 
         _call_tool_inner("local_knowledge_search", {"query": "auth", "source_id": "src-1"})
         mock_retriever_cls.return_value.search.assert_called_once_with(
-            "auth", limit=3, source_id="src-1", namespace=None
+            "auth", limit=3, source_id="src-1", namespace=None,
+            access_context=acl.ALLOW_ALL,
         )
 
     def test_namespace_rejects_non_string(self):
@@ -337,7 +340,8 @@ class TestKnowledgeSearchSourceFilter:
 
         _call_tool_inner("local_knowledge_search", {"query": "auth", "namespace": "client-a"})
         mock_retriever_cls.return_value.search.assert_called_once_with(
-            "auth", limit=3, source_id=None, namespace="client-a"
+            "auth", limit=3, source_id=None, namespace="client-a",
+            access_context=acl.ALLOW_ALL,
         )
 
     @patch("kiro_crew.mcp_core.config_dir")
