@@ -1531,8 +1531,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // in normal page flow rather than shrinking them into a height-locked column.
   // Use provider capability, not asynchronously loaded rows, so pending, empty,
   // filtered, and failed remote reads all keep the same scroll ownership.
-  const galleryOwnsScroll = view === 'grid' && gridEntries.length >= VIRTUALIZE_AT
-    && cols > 1 && discoveryProviders.length === 0
+  const galleryOwnsScroll = view === 'grid' && gridEntries.length >= VIRTUALIZE_AT && cols > 1
+    && discoveryProviders.length === 0
   // Hide-on-scroll for the page's own chrome. At 390x844 the title, subtitle,
   // heading row and filter rows pin 317px — 38% of the viewport — above a 527px
   // gallery. This is only reachable when the masonry owns the axis (so, several
