@@ -44,7 +44,8 @@ from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     stream_and_collect,
 )
-from kiro_crew.security import StreamRedactor, redact
+from kiro_crew.platform import redact_via_context
+from kiro_crew.security import StreamRedactor
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,7 @@ async def _run_side_turn(
     # split across streaming chunk boundaries; StreamRedactor withholds a
     # trailing credential-class run until it's confirmed safe. Mirrors
     # chat_runner._wsred so /side has the same protection as the main chat.
-    _wsred = StreamRedactor()
+    _wsred = StreamRedactor(redact_via_context)
 
     def _on_chunk(text: str) -> None:
         chunks.append(text)
@@ -611,17 +612,16 @@ async def _run_side_turn(
             )
             # Redact the assembled text before it is stored/broadcast as the
             # terminal frame (which replaces the streamed deltas). Never trust
-            # LLM output on an external surface. redact() applies BOTH passes —
-            # redact_exfiltration_urls() then redact_credentials() (security.py)
-            # — so exfil URLs and credentials are both scrubbed here.
-            response_text = redact(response_text)
+            # LLM output on an external surface. The active platform policy
+            # includes both baseline passes plus companion-only credential rules.
+            response_text = redact_via_context(response_text)
         except PromptBusyExhaustedError:
             logger.warning(
                 "Side turn aborted (prompt busy exhausted): slot=%s run_id=%s",
                 slot.key,
                 run_id,
             )
-            response_text = redact("".join(chunks))
+            response_text = redact_via_context("".join(chunks))
             if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
                 slot._side.append_assistant(response_text)
             broadcast_side_result(
@@ -1264,7 +1264,7 @@ async def api_side_queue_cancel(request: web.Request) -> web.Response:
         resources=f"slot={slot.key},queue_id={queue_id},depth={len(slot._side.queue)}",
     )
     return web.json_response(
-        {"ok": True, "content": redact(content), "depth": len(slot._side.queue)}
+        {"ok": True, "content": redact_via_context(content), "depth": len(slot._side.queue)}
     )
 
 

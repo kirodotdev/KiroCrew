@@ -22,6 +22,9 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
+from kiro_crew.security import _redact_with_policy_findings
+from kiro_crew.security import redact as _security_redact
+
 if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
@@ -845,12 +848,13 @@ def redact_via_context(text: str) -> str:
     .redact / except PlatformCompositionError: raise / except Exception:
     fallback`` idiom.
 
-    Routes through ``current_context().credentials.redact`` so a loaded Amazon
-    companion's extra credential/cookie regexes apply.  The Default
-    ``CredentialPolicy.redact`` delegates to ``security.redact``, so a standalone
-    process gets byte-for-byte today's redaction.  Recursion-safe: the Default
-    delegates to the bare ``security.redact``, which never calls back into the
-    context — only *callers* route through this shim.
+    Routes through a pako-aware baseline boundary with
+    ``current_context().credentials.redact`` as its final policy. This lets a
+    loaded companion inspect decoded compressed state before the restoration
+    sentinel hides it, while the Default policy still delegates to
+    ``security.redact`` for byte-for-byte standalone behavior. Recursion-safe:
+    the policy callback delegates to the bare ``security.redact``, which never
+    calls back into the context.
 
     Fail-closed: a :class:`PlatformCompositionError` (a non-standalone host that
     could not compose its companion) is re-raised, never swallowed, so such a
@@ -862,16 +866,12 @@ def redact_via_context(text: str) -> str:
     (``mcp_core`` / ``mcp_cron``) whose stray writes would corrupt the JSON-RPC
     stream.
     """
-    # Deferred import: keep ``security`` (which pulls the redaction regex stack)
-    # off the platform module-load path; only the fallback path needs it, and
-    # the happy path never imports it.
     try:
-        return current_context().credentials.redact(text)
+        policy_redactor = current_context().credentials.redact
+        return _redact_with_policy_findings(text, final_redactor=policy_redactor)[0]
     except PlatformCompositionError:
         raise
     except Exception:
-        from kiro_crew.security import redact as _security_redact
-
         return _security_redact(text)
 
 
@@ -937,8 +937,6 @@ def redact_log_via_context(text: str) -> str:
     unmatchable fragment.
     """
     if installed_context() is None:
-        from kiro_crew.security import redact as _security_redact
-
         return _security_redact(text)
     try:
         return redact_via_context(text)
