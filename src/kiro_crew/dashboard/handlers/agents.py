@@ -69,6 +69,7 @@ from kiro_crew.config.loader import (
     _safe_color,
     coerce_dict_section,
     coerce_effort,
+    config_local_path,
     config_path,
     inject_kiro_cli_api_key,
     normalize_agent_model,
@@ -2668,7 +2669,16 @@ def _unlink_copy_unless_referenced(copy_file: Path, agents_dir: Path, *names: st
 
     Cleanup callers rebound their own crew away before asking, so any hit is a
     FOREIGN binding (pre-dating the bind-time guard) and deleting the file
-    would break that crew's sessions with "Mode not found". Returns the
+    would break that crew's sessions with "Mode not found". Bindings are read
+    from BOTH config layers: the ``config.json`` document the lock hands over
+    and the user-owned ``config.local.json`` overlay, which deep-merges over
+    it at load time and can therefore hold a crew's effective ``kiro_agent``
+    on its own. The overlay has its own sidecar lock (``config set --local``
+    writes under it, not under the base's), so it is read inside a nested hold
+    of that lock and the unlink runs while both are held — an overlay binding
+    cannot land between the check and the unlink. An unreadable overlay fails
+    closed like an unreadable base: a binding that cannot be ruled out keeps
+    the file. Returns the
     outcome — ``"deleted"``, ``"referenced"``, or ``"error"`` (unlink failure
     or unreadable config, both failing closed with the file kept) — because
     callers treat the retention reasons differently: a REFERENCED file is in
@@ -2678,25 +2688,49 @@ def _unlink_copy_unless_referenced(copy_file: Path, agents_dir: Path, *names: st
     outcome = "error"
     targets = set(names)
 
+    def _referenced(agents: object) -> bool:
+        if not isinstance(agents, dict):
+            return False
+        return any(
+            isinstance(entry, dict) and entry.get("kiro_agent") in targets
+            for entry in agents.values()
+        )
+
     def _check_then_unlink(data: dict) -> None:
         nonlocal outcome
-        for entry in data.get("agents", {}).values():
-            if isinstance(entry, dict) and entry.get("kiro_agent") in targets:
+        if _referenced(data.get("agents")):
+            logger.warning(
+                "another crew is still bound to private copy %r; leaving it in place",
+                copy_file.stem,
+            )
+            outcome = "referenced"
+            return None
+
+        def _check_overlay_then_unlink(local_data: dict) -> None:
+            nonlocal outcome
+            if _referenced(local_data.get("agents")):
                 logger.warning(
-                    "another crew is still bound to private copy %r; leaving it in place",
+                    "another crew is still bound to private copy %r via config.local.json; "
+                    "leaving it in place",
                     copy_file.stem,
                 )
                 outcome = "referenced"
                 return None
-        try:
-            with agents_spec_lock(agents_dir):
-                copy_file.unlink(missing_ok=True)
-        except OSError:
-            logger.debug("could not remove superseded copy %r", copy_file.stem, exc_info=True)
+            try:
+                with agents_spec_lock(agents_dir):
+                    copy_file.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("could not remove superseded copy %r", copy_file.stem, exc_info=True)
+                return None
+            outcome = "deleted"
             return None
-        outcome = "deleted"
-        # None: the reference check mutates nothing — the lock is held for
-        # isolation against binding writers, not for a config write.
+
+        # Nested hold of the overlay's own sidecar lock: the reference check
+        # and the unlink run with BOTH layers pinned. An absent overlay reads
+        # as {}; a malformed one raises and is caught below as an unreadable
+        # config. None from either mutate: nothing is written to either file —
+        # the locks are held for isolation against binding writers only.
+        update_config_locked(config_local_path(), mutate=_check_overlay_then_unlink)
         return None
 
     try:
@@ -5174,6 +5208,75 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
+    """Remove the private template copy that existed only for a now-deleted crew.
+
+    Corroborated on both sides before anything is touched: the agent_state
+    sidecar must name *crew* as the copy's ``private_to`` AND *bound_template*
+    (the crew's persisted binding at delete time) must be that copy. Lineage
+    alone is not enough — a copy the crew had already moved off may hold
+    another crew's customizations — and a binding alone would take a shared
+    template away. Best-effort throughout: an unreadable sidecar, an ambiguous
+    name, a foreign binding, or a file that will not unlink all leave the copy
+    (and its lineage, so private content never lists as shared) in place; the
+    crew's removal is already durable and must not fail on cleanup. Returns
+    True when the file was removed, so the caller can drop the template cache.
+    """
+    if not bound_template:
+        return False
+    agents_dir = kiro_agents_dir_path()
+    try:
+        _spec, copy_name, _taken, copy_path = _load_template_specs(
+            agents_dir, bound_template, "api_kirocrew_agent_delete"
+        )
+    except _AmbiguousTemplateName:
+        logger.debug(
+            "crew delete: private copy name %r is ambiguous; leaving file and lineage",
+            bound_template,
+        )
+        return False
+    # Lineage is keyed by the copy's declared name while a binding resolves by
+    # declared name OR file stem, so the record is looked up under every name
+    # that resolves this file — a stem/name divergence must not hide it.
+    lineage_keys: list[str] = []
+    for key in (bound_template, copy_name, copy_path.stem if copy_path else ""):
+        if key and key not in lineage_keys:
+            lineage_keys.append(key)
+    lineage_key = ""
+    for key in lineage_keys:
+        fork = agent_state.get_fork_info(key)
+        if fork and fork["private_to"] == crew:
+            lineage_key = key
+            break
+    if not lineage_key:
+        return False
+    if copy_path is None:
+        # The name resolved to no READABLE spec. That is not proof the file is
+        # gone: a malformed or unreadable copy still sits on disk (the spec
+        # reader documents these dirs as user-writable and shared), and with
+        # a divergent stem its real filename cannot even be named from here.
+        # Pruning lineage on a guess would surface private content as shared
+        # once the file is repaired, so the record is kept. A stale record
+        # for a file that truly is gone is inert: nothing lists a template
+        # without a spec.
+        logger.debug(
+            "crew delete: private copy %r did not resolve to a readable spec; "
+            "keeping its lineage",
+            lineage_key,
+        )
+        return False
+    if not _spec_path_is_safe(copy_path, agents_dir):
+        return False
+    # The deleted crew's record is gone from config, so any binding still
+    # resolving the copy is another crew's: the locked helper keeps file and
+    # lineage in that case, atomically against concurrent binding writes.
+    if _unlink_copy_unless_referenced(copy_path, agents_dir, *lineage_keys) != "deleted":
+        return False
+    with contextlib.suppress(Exception):
+        agent_state.prune(lineage_key)
+    return True
+
+
 async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
     """DELETE /api/agents/{name} — delete a KiroCrew agent."""
 
@@ -5192,13 +5295,14 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
             )
         created_archive = False
         retired_store = ""
+        bound_template = ""
 
         @memory_store_namespace_lock()
         def _delete_member() -> tuple[str, bool]:
-            nonlocal created_archive, retired_store
+            nonlocal created_archive, retired_store, bound_template
 
             def mutate(doc: dict) -> dict:
-                nonlocal created_archive, retired_store
+                nonlocal created_archive, retired_store, bound_template
                 agents = coerce_dict_section(doc, "agents")
                 if name not in agents:
                     raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
@@ -5218,6 +5322,11 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                         )
                     created_archive = archive_member_memory_store(store_name, name)
                     retired_store = store_name
+                # The PERSISTED binding at delete time, read inside the
+                # critical section: it is one half of the corroboration the
+                # private-copy cleanup below needs.
+                bound = entry.get("kiro_agent") if isinstance(entry, dict) else ""
+                bound_template = bound if isinstance(bound, str) else ""
                 del agents[name]
                 return doc
 
@@ -5250,6 +5359,17 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         # same-name recreation has already uploaded and committed a new
         # picture under the same digest stem.
         await _drained_to_thread(_remove_avatar_files, name)
+        # Likewise the crew's private template copy: a copy the sidecar marks
+        # private to THIS crew, and that the crew was bound to, has no reader
+        # left once the record is gone — kept, it lists in the Agent Templates
+        # tab under a dead crew's name. Same lock, for the same reason as the
+        # avatar: a same-name recreation must not fork a fresh copy only to
+        # have this cleanup remove it. Best-effort: a locked or unreadable
+        # file never blocks the crew's removal.
+        if await _drained_to_thread(_prune_private_copy_of_deleted_crew, name, bound_template):
+            clear_list_agents_cache()
+            if (state := request.app.get("state")) is not None:
+                state.push_refresh("agents")
     # A crew DISAPPEARING is the other half of the same invariant: the captured
     # config still holds the record, so a cron or messaging job still naming the
     # crew would keep resolving its old pin and binding.
