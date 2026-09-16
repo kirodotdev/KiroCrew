@@ -37,9 +37,18 @@ _LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 # can't drift from the dashboard/Slack copies and handles `]` inside a label.
 _OPTIONS_RE = OPTIONS_RE_LINE
 _HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
-_BLOCKQUOTE_RE = re.compile(r"^\s*>\s?", re.MULTILINE)
-_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
-_HR_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$", re.MULTILINE)
+# Line-anchored markers: leading whitespace is HORIZONTAL only (``[^\S\n]``,
+# i.e. ``\s`` minus newline). A MULTILINE ``^\s*`` lets the quantifier run
+# PAST the current line across a whole run of blank lines, so every ``^``
+# anchor in that run rescans the run's remainder — polynomial backtracking
+# (CWE-1333, py/polynomial-redos) that wedged the gateway event loop for
+# 25s+ on whitespace-heavy previews and crash-looped the watchdog. Matching
+# within one line keeps the scan linear and the semantics identical: ``^``
+# already matches at the marker's own line, and the trailing whitespace
+# collapse eats any newlines the old pattern happened to consume.
+_BLOCKQUOTE_RE = re.compile(r"^[^\S\n]*>\s?", re.MULTILINE)
+_BULLET_RE = re.compile(r"^[^\S\n]*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
+_HR_RE = re.compile(r"^[^\S\n]*([-*_])\1{2,}[^\S\n]*$", re.MULTILINE)
 _BOLD_RE = re.compile(r"(\*\*|__)(.+?)\1", re.DOTALL)
 _ITALIC_STAR_RE = re.compile(r"\*([^*\n]+)\*")
 _STRIKE_RE = re.compile(r"~~(.+?)~~", re.DOTALL)
