@@ -1073,3 +1073,153 @@ class TestIsSafeRepoIdentifier:
     )
     def test_rejects_ambiguous_forms(self, url):
         assert _is_safe_repo_identifier(url) is False
+
+
+class TestRegistryLabelAndReview:
+    """``label``/``review`` cross the API as BUILD claims only.
+
+    They tell the user which sources a team read and which contributors listed,
+    so an agent-writable ``config.json`` must not be able to make either claim —
+    the same reason ``trust: owner`` is refused. GET echoes them on a pinned row
+    and reports them empty on an operator row; PUT drops them.
+    """
+
+    @staticmethod
+    def _pin(monkeypatch, **kw):
+        row = SimpleNamespace(
+            name="internal",
+            repo="https://forge.example/o/internal.git",
+            branch="main",
+            trust="owner",
+            label="",
+            review="",
+        )
+        for key, value in kw.items():
+            setattr(row, key, value)
+        monkeypatch.setattr(routes, "_pinned_registries", lambda: [row])
+        return row
+
+    @pytest.mark.asyncio
+    async def test_get_echoes_label_and_review_on_a_pinned_row(self, tmp_path, monkeypatch):
+        _setup_env(tmp_path, monkeypatch)
+        self._pin(monkeypatch, label="Internal apps", review="curated")
+        async with TestClient(TestServer(_make_app())) as client:
+            data = await (await client.get("/api/apps/registries")).json()
+        (row,) = data["pinned"]
+        assert (row["name"], row["label"], row["review"]) == (
+            "internal",
+            "Internal apps",
+            "curated",
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_echoes_the_community_tier(self, tmp_path, monkeypatch):
+        _setup_env(tmp_path, monkeypatch)
+        self._pin(monkeypatch, name="community", label="Community apps", review="community")
+        async with TestClient(TestServer(_make_app())) as client:
+            data = await (await client.get("/api/apps/registries")).json()
+        assert data["pinned"][0]["review"] == "community"
+
+    @pytest.mark.asyncio
+    async def test_get_reports_both_empty_on_an_operator_row(self, tmp_path, monkeypatch):
+        """Even when config.json declares them — only the build may claim either."""
+        home, cfg = _setup_env(tmp_path, monkeypatch)
+        cfg.write_text(
+            json.dumps(
+                {
+                    "registries": [
+                        {
+                            "name": "mine",
+                            "repo": "MyApps",
+                            "branch": "main",
+                            "label": "Totally Official",
+                            "review": "curated",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            data = await (await client.get("/api/apps/registries")).json()
+        (row,) = data["registries"]
+        assert (row["label"], row["review"]) == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_put_drops_a_claimed_label_and_review(self, tmp_path, monkeypatch):
+        home, cfg = _setup_env(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={
+                    "registries": [
+                        {
+                            "name": "mine",
+                            "repo": "MyApps",
+                            "label": "Reviewed by the Kiro Crew team",
+                            "review": "curated",
+                        }
+                    ]
+                },
+            )
+            assert resp.status == 200
+            body = await resp.json()
+        # Not stored...
+        stored = json.loads(cfg.read_text(encoding="utf-8"))["registries"]
+        assert "label" not in stored[0] and "review" not in stored[0]
+        # ...and not echoed, so a client can tell the claim did not stick.
+        assert "label" not in body["registries"][0]
+        assert "review" not in body["registries"][0]
+
+    @pytest.mark.asyncio
+    async def test_put_still_succeeds_when_a_claim_is_dropped(self, tmp_path, monkeypatch):
+        """Dropped, not refused: unlike `trust: owner` there is no grant to withhold.
+
+        The fields are display text, so the save does what the operator asked and
+        simply carries no claim — a 400 here would block a legitimate add.
+        """
+        home, cfg = _setup_env(tmp_path, monkeypatch)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={"registries": [{"name": "mine", "repo": "MyApps", "review": "community"}]},
+            )
+            assert resp.status == 200
+        assert json.loads(cfg.read_text(encoding="utf-8"))["registries"][0]["name"] == "mine"
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_claim_is_audited(self, tmp_path, monkeypatch):
+        """A silent drop leaves nothing in the log; the audit event names the row."""
+        _setup_env(tmp_path, monkeypatch)
+        seen: list[str] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                seen.append(str(kw.get("resources", "")))
+
+        monkeypatch.setattr(routes, "sel", lambda: _Sel())
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={"registries": [{"name": "mine", "repo": "MyApps", "review": "community"}]},
+            )
+            assert resp.status == 200
+        assert any("stripped_build_claims=mine" in line for line in seen)
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_put_records_no_stripped_claim(self, tmp_path, monkeypatch):
+        _setup_env(tmp_path, monkeypatch)
+        seen: list[str] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                seen.append(str(kw.get("resources", "")))
+
+        monkeypatch.setattr(routes, "sel", lambda: _Sel())
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.put(
+                "/api/apps/registries",
+                json={"registries": [{"name": "mine", "repo": "MyApps"}]},
+            )
+            assert resp.status == 200
+        assert not any("stripped_build_claims" in line for line in seen)

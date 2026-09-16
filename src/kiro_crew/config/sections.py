@@ -3526,6 +3526,36 @@ class ExternalRegistryConfig:
         default="main",
         metadata=_meta("Branch", "Git branch to read from."),
     )
+    label: str = field(
+        default="",
+        metadata=_meta(
+            "Label",
+            "Display name shown instead of the registry id (e.g. 'Community apps' "
+            "for the id 'community'). DISPLAY ONLY: the id in `name` stays the "
+            "identity every cache path and every installed app's `_registry` tag "
+            "is keyed by, so a label change never moves an app or re-fetches an "
+            "index. Empty means the id is shown as-is. Setting it HERE has no "
+            "effect, for the same reason `trust` does not: this file is "
+            "agent-writable, so only a build-pinned row may claim one.",
+        ),
+    )
+    review: str = field(
+        default="",
+        metadata=_meta(
+            "Review",
+            "How thoroughly the listings in this registry were reviewed before "
+            "being published, which is what the UI tells the user. 'curated' "
+            "means the owning team reviewed each listing; 'community' means "
+            "contributors listed apps after a lighter review, so nothing here is "
+            "vetted; empty (the default) makes no claim either way and renders "
+            "exactly as it did before this field existed. It changes NO security "
+            "posture: `trust` alone selects the credential posture for cloning, "
+            "so a 'curated' registry at the untrusted index tier still clones "
+            "credential-free. Setting it HERE has no effect (see `label`): only a "
+            "build-pinned row may claim a tier.",
+            enum=["", "curated", "community"],
+        ),
+    )
     trust: str = field(
         default="index",
         metadata=_meta(

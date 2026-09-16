@@ -788,7 +788,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `apps/registry.py::_effective_registries`, which is the single list every
   registry consumer reads (index fetch/refresh, the trusted-host allowlist, row
   lookup, install, the blob-proxy allowlist). Rows are the field shape of
-  `ExternalRegistryConfig` (`{name, repo, branch, trust}`). Unlike
+  `ExternalRegistryConfig` (`{name, repo, branch, label, review, trust}`).
+  `label` (a display name shown instead of the `name` id) and `review` (`""` /
+  `"curated"` / `"community"`, which badge the dashboard renders) are display-only
+  and change no security posture; an unrecognised `review` degrades to `""` (no
+  claim) and is logged, never dropping the row, since a display field must not be
+  able to remove a registry from install and the security gates. `label` never replaces
+  the id: cache paths and installed apps' `_registry` tags are keyed by it. Unlike
   `registry_rows`, the **edition row wins** a `name` collision — and when the two
   rows name DIFFERENT repositories, **neither** is served, because the index cache
   is keyed by name and the displaced row's cache would otherwise be read under the

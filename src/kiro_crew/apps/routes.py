@@ -3865,12 +3865,16 @@ async def handle_registries(request: web.Request) -> web.Response:
         # FORCE for them: `registry._registry_trust_tier` resolves `owner` only
         # from build-pinned rows, since `config.json` is agent-writable. Echoing a
         # hand-edited `owner` back would report a grant the runtime does not honour.
+        # `label`/`review` are reported empty for the same reason: they are claims
+        # only the build may make, so an operator row makes neither.
         registries = [
             {
                 "name": r.name,
                 "repo": _strip_git_target_userinfo(r.repo),
                 "branch": r.branch,
                 "trust": _TRUST_INDEX,
+                "label": "",
+                "review": "",
             }
             for r in config.registries
         ]
@@ -3885,6 +3889,11 @@ async def handle_registries(request: web.Request) -> web.Response:
                 "repo": _strip_git_target_userinfo(r.repo),
                 "branch": r.branch,
                 "trust": r.trust,
+                # Display metadata the build owns. `label` never replaces `name`
+                # in the payload: the client needs the id to key its per-registry
+                # app counts and refresh calls, and shows the label beside it.
+                "label": r.label,
+                "review": r.review,
             }
             for r in _pinned_registries()
         ]
@@ -3917,6 +3926,9 @@ async def handle_registries(request: web.Request) -> web.Response:
 
     # Validate each entry
     validated: list[dict[str, str]] = []
+    # Names whose entry tried to claim `label`/`review`. Recorded, not refused —
+    # see the drop comment at the `validated.append` below.
+    stripped_claims: list[str] = []
     _blocked_repos = {"KiroCrew"}
     # Keyed the same way `_effective_registries` decides a contest — by the cache
     # file the registry would use, not the raw string. Comparing raw names here
@@ -3982,6 +3994,17 @@ async def handle_registries(request: web.Request) -> web.Response:
                 f"{name!r} is the name of a registry this build provides — choose another",
                 f"pinned_name_collision={name}",
             )
+        # `label` and `review` are DROPPED rather than stored, mirroring `trust`:
+        # both are claims about a registry that only the build may make, and
+        # `config.json` is agent-writable, so a value persisted here would let a
+        # hand-edited file relabel a source or stamp it "Reviewed by the Kiro Crew
+        # team" in the UI. Dropped rather than refused with a 400, because unlike
+        # `trust: owner` there is no grant to withhold — the fields are display
+        # text, so the save still does what the operator asked and simply carries
+        # no claim. The drop is recorded in the audit event below so it is not
+        # silent to anyone reading the log.
+        if str(entry.get("label", "")).strip() or str(entry.get("review", "")).strip():
+            stripped_claims.append(name)
         validated.append({"name": name, "repo": repo, "branch": branch, "trust": trust})
 
     # Update config file (atomic write to prevent corruption on crash)
@@ -4049,8 +4072,11 @@ async def handle_registries(request: web.Request) -> web.Response:
         resources=(
             f"count={len(validated)} repos="
             f"{','.join(_strip_git_target_userinfo(r['repo']) for r in validated)}"
+            + (f" stripped_build_claims={','.join(stripped_claims)}" if stripped_claims else "")
         ),
     )
+    # The response echoes exactly what was stored, so a client that sent a
+    # `label`/`review` sees them absent and can tell the claim did not stick.
     public_registries = [
         {**row, "repo": _strip_git_target_userinfo(row["repo"])} for row in validated
     ]

@@ -5663,7 +5663,9 @@
         "app_other": "{{count}} Apps",
         "categories": "KATEGORIEN",
         "first_party": "Erstanbieter",
-        "sources": "QUELLEN"
+        "sources": "QUELLEN",
+        "curated_reviewed_by_the_kiro_crew_team": "Vom {{productName}}-Team geprüft",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Von der Community aufgenommen, nicht vom {{productName}}-Team verifiziert"
       },
       "featuredSpotlight": {
         "collection": "KOLLEKTION",
@@ -5723,6 +5725,10 @@
         "working": "Vertrauen wird gewährt und aktiviert...",
         "failed": "„{{app}}“ konnte nicht eingeschaltet werden, aber das Vertrauen ist möglicherweise schon gespeichert. Wähle Erneut versuchen, oder öffne Einstellungen → Sicherheit → Vertrauenswürdige Apps von Drittanbietern, um es zu prüfen und zu entfernen.",
         "failed_generic": "„{{app}}“ konnte nicht eingeschaltet werden, und es wurde nichts geändert. Wähle Erneut versuchen, oder sieh in den Logs von {{productName}} nach."
+      },
+      "registryTier": {
+        "curated": "Vom Team geprüft",
+        "community": "Nicht verifiziert"
       }
     },
     "artifactBody": {
@@ -7348,7 +7354,12 @@
       "name_is_taken_by_a_build_pinned_registry": "„{{name}}“ ist der Name einer von diesem Build bereitgestellten Registry – bitte einen anderen wählen",
       "included_with_this_installation": "Mit dieser Installation ausgeliefert",
       "trusted_source": "Vertrauenswürdige Quelle",
-      "trusted_source_clones_with_your_git_credentials": "Vertrauenswürdige Quelle – Apps aus dieser Registry werden mit Ihren Git-Anmeldedaten geklont."
+      "trusted_source_clones_with_your_git_credentials": "Vertrauenswürdige Quelle – Apps aus dieser Registry werden mit Ihren Git-Anmeldedaten geklont.",
+      "curated_tip_credentialed": "Vor der Aufnahme vom {{productName}}-Team geprüft. Apps werden mit Ihren Git-Anmeldeinformationen geklont.",
+      "curated_tip_credential_free": "Vor der Aufnahme vom {{productName}}-Team geprüft. Apps werden ohne Ihre Git-Anmeldeinformationen geklont.",
+      "community_tip_credentialed": "Von Mitwirkenden nach einer leichteren Prüfung aufgenommen. Nicht vom {{productName}}-Team verifiziert. Apps werden weiterhin mit Ihren Git-Anmeldeinformationen geklont, installieren Sie also nur Apps, die Sie kennen.",
+      "community_tip_credential_free": "Von Mitwirkenden nach einer leichteren Prüfung aufgenommen. Nicht vom {{productName}}-Team verifiziert. Installieren Sie nur Apps, die Sie kennen.",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "Alle ablehnen — die übrigen ohne Rückfrage ablehnen",

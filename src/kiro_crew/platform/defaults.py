@@ -484,7 +484,9 @@ class DefaultAppsLoader:
     def default_registries(self) -> List[Dict[str, Any]]:
         # The public edition pins no external registry: the only registries are
         # the ones the operator typed into config.registries. A companion returns
-        # its organisation's official registry.
+        # its organisation's official registry, optionally with the display-only
+        # `label` (a human name shown instead of the `name` id) and `review`
+        # (`""` / `"curated"` / `"community"`, which badge the dashboard shows).
         return []
 
 
