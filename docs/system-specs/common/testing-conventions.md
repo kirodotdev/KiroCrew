@@ -1916,6 +1916,12 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+Two snapshots from different kernel accounting sources are this class too. Compare them
+with a bounded, measured slack, and keep allocation-growth observations in the failure
+message because a long-lived allocator may serve a probe from resident memory. Set the
+allowance above observed counter drift but far below unit/scale errors or a real
+multi-megabyte inversion.
+
 The commonest shape here is not a rate but **an unawaited task**: a handler that
 answers before its work finishes leaves the assertion racing the loop. There is a
 synchronisation point, so use it — `drain_background_tasks(state)` — and see the Rules
