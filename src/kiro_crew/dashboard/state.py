@@ -1152,6 +1152,11 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
 _MAX_PENDING_CONTEXT = 50
 
+MAX_CONTEXT_CONTENT = 40_000
+# 12 = a non-BMP character's ``\uXXXX\uXXXX`` escape, the worst a char-counted cap can cost.
+_JSON_WORST_CASE_BYTES_PER_CHAR = 12
+_MAX_PERSISTED_CONTEXT_BYTES = MAX_CONTEXT_CONTENT * _JSON_WORST_CASE_BYTES_PER_CHAR + 4096
+
 
 def context_entry_expired(entry: dict, now: float) -> bool:
     """True if a pending-context entry's TTL has elapsed.

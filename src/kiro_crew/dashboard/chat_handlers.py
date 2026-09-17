@@ -143,6 +143,7 @@ from kiro_crew.dashboard.slot_buffers import (
 )
 from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
 from kiro_crew.dashboard.state import (
+    MAX_CONTEXT_CONTENT,
     DashboardState,
     SlotOrigin,
     _ChatSlot,
@@ -11594,7 +11595,6 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
 
 
 _MAX_CONTEXT_PER_SOURCE = 10
-_MAX_CONTEXT_CONTENT = 40000
 # Default expiry for a note's context half: if the user never sends a follow-up
 # within 24h, the stale entry is dropped at drain rather than attaching itself to
 # some far-future unrelated message. The visible transcript line has no maxAge.
@@ -11634,10 +11634,10 @@ def _validate_content(content: object) -> web.Response | None:
             {"error": "content is required", "code": "empty_content"},
             status=400,
         )
-    if len(content) > _MAX_CONTEXT_CONTENT:
+    if len(content) > MAX_CONTEXT_CONTENT:
         return web.json_response(
             {
-                "error": f"content exceeds {_MAX_CONTEXT_CONTENT} char limit",
+                "error": f"content exceeds {MAX_CONTEXT_CONTENT} char limit",
                 "code": "content_too_long",
             },
             status=400,

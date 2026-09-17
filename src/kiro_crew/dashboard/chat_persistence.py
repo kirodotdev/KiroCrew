@@ -72,6 +72,7 @@ from kiro_crew.history import (
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
+    merge_pending_context,
     transcript_sort_key,
     update_metadata_off_loop,
 )
@@ -107,6 +108,48 @@ _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 # here rather than imported to avoid dragging the chat_title import graph into
 # the persistence module's load path).
 _TITLE_ORIGINS = ("auto", "user")
+
+
+def preserve_unaccounted_context(
+    exported: list[dict],
+    on_disk: object,
+    accounted_ids: set[str],
+    *,
+    final: bool = False,
+    archive_key: str = "",
+    archive_base: Path | None = None,
+) -> list[dict]:
+    """Union *on_disk* entries this slot never accounted for ahead of its own *exported* list.
+
+    ``pending_context`` is slot-owned, so OMITTING it from a save is what clears a delivered
+    queue. But omission speaks only for entries this slot hydrated, so absence clears only an
+    id in *accounted_ids*; anything else already on disk survives. A ``ctxId`` that is not a
+    plain string is unaccountable either way and is preserved -- the fail-safe direction.
+
+    The caller must set *final* whenever THIS save is the slot's last -- ``closed`` OR
+    ``rows_only``. *exported* sits on the deferrable side of the union, so without the flag a
+    terminal save defers the slot's own newest acknowledged entry and nothing retries it.
+
+    The union is ALWAYS taken, even when nothing is unaccounted for: it is the only caller of
+    the overflow sidecar's reconcile, so returning early left a shrunken queue's spill on disk.
+    """
+    unaccounted = (
+        [
+            e
+            for e in on_disk
+            if isinstance(e, dict)
+            and not (isinstance(e.get("ctxId"), str) and e["ctxId"] in accounted_ids)
+        ]
+        if isinstance(on_disk, list)
+        else []
+    )
+    return merge_pending_context(
+        unaccounted,
+        exported,
+        final=final,
+        archive_key=archive_key,
+        archive_base=archive_base,
+    )
 
 
 def _rehydrate_title_origin(titled: bool, stored: object) -> str:
