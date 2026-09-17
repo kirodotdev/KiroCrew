@@ -202,6 +202,23 @@ fetched as a tarball and verified against pinned digests, exactly like the
 wheel itself. When it finishes it prints the next step: `kirocrew gateway` to
 start now, or `kirocrew service install` to run it as a service.
 
+Dependencies are installed from **prebuilt wheels only** (`pip
+--only-binary=:all:`), so the install never needs a C compiler or `-dev`
+headers on the host. pip picks the newest release of each dependency that
+publishes a wheel the host can run; on a host where no release does (its glibc
+is older than every candidate's manylinux floor, or the architecture has no
+wheel), the installer stops before any build starts and names the platform and
+the packages, instead of failing deep inside a compiler run. Use a newer host,
+or — on a host that does have a toolchain and the headers — opt back into
+compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
+`install.sh`'s editable install (the dependency set only; the local kirocrew
+tree is still built) and to the update engine that builds the shadow venv for
+`kirocrew update` on a managed-venv install. The opt-in is not remembered: the
+update engine reads it from the environment the gateway runs under, so a host
+that installed with it must also carry it there (in the service unit for a
+`kirocrew service install`), or its next update that pulls a wheel-less
+dependency refuses with the same platform message.
+
 ### b. From source (development)
 
 Build the dashboard, install the backend into a local virtualenv (`.venv`), and

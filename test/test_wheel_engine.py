@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -1273,3 +1274,234 @@ class TestApplyWheelUpdateOrchestration:
                 expected_version="9.9.9",
             )
         assert not layout.stable_link.exists(), "a failed verification must not promote"
+
+
+class TestBinaryOnlyDependencies:
+    """The shadow install resolves dependencies from prebuilt wheels only.
+
+    A dependency with no wheel for the gateway host must fail the update up
+    front, not be compiled from its sdist inside the shadow tree: the host was
+    never required to carry a C toolchain, and the policy has to match cli.sh's
+    so an install that succeeded and its later update agree on what they will
+    accept.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        seen: list[list[str]] = []
+
+        def fake_subprocess_run(argv, *a: object, **k: object):  # type: ignore[no-untyped-def]
+            seen.append(list(argv))
+            return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+        monkeypatch.setattr(wheel_engine.subprocess, "run", fake_subprocess_run)
+        return seen
+
+    def test_the_wheel_install_is_binary_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        seen = self._capture(monkeypatch)
+        wheel = tmp_path / "w.whl"
+
+        wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0")
+
+        install = [argv for argv in seen if str(wheel) in argv]
+        assert len(install) == 1, seen
+        argv = install[0]
+        # The flag governs THIS resolution, so it sits on the install command,
+        # right before the wheel it constrains.
+        assert argv[-2:] == ["--only-binary=:all:", str(wheel)], argv
+        # The pip self-upgrade is a separate command; the policy is not smeared
+        # onto it (a pip wheel always exists, and its failure is already ignored).
+        others = [argv for argv in seen if str(wheel) not in argv]
+        assert others and all("--only-binary=:all:" not in argv for argv in others), seen
+
+    def test_the_opt_in_restores_the_compile_fallback(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_ALLOW_SOURCE_BUILDS", "1")
+        seen = self._capture(monkeypatch)
+        wheel = tmp_path / "w.whl"
+
+        wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0")
+
+        install = [argv for argv in seen if str(wheel) in argv]
+        assert len(install) == 1, seen
+        assert "--only-binary=:all:" not in install[0], install[0]
+        assert install[0][-1] == str(wheel)
+
+    @pytest.mark.parametrize("value", ["0", "", "true", "yes"])
+    def test_only_the_literal_one_opts_in(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """Same contract as cli.sh's `= "1"` test: anything else keeps the policy."""
+        monkeypatch.setenv("KIROCREW_ALLOW_SOURCE_BUILDS", value)
+        assert wheel_engine._pip_binary_policy() == ["--only-binary=:all:"]
+
+    def test_policy_matches_the_installer(self) -> None:
+        """cli.sh and the engine must accept the same wheels, or an install that
+        succeeded can be followed by an update that refuses (or compiles)."""
+        cli_sh = (_REPO_ROOT / "cli.sh").read_text(encoding="utf-8")
+        flag = re.search(r'^PIP_BINARY_ONLY="([^"]+)"$', cli_sh, re.MULTILINE)
+        assert flag is not None, "cli.sh no longer declares PIP_BINARY_ONLY"
+        assert flag.group(1) == wheel_engine._PIP_BINARY_ONLY
+        assert (
+            f'"${{{wheel_engine._ALLOW_SOURCE_BUILDS_ENV}:-0}}" = "1"' in cli_sh
+        ), "cli.sh's opt-in env var differs from the engine's"
+
+    # pip's tail on a host no candidate wheel runs on, as the report showed it.
+    _NO_WHEEL_TAIL = (
+        b"ERROR: Could not find a version that satisfies the requirement numpy>=2.0 "
+        b"(from kirocrew) (from versions: 2.2.6, 2.3.0)\n"
+        b"ERROR: No matching distribution found for numpy>=2.0\n"
+        b"ERROR: No matching distribution found for pillow>=10\n"
+    )
+
+    @staticmethod
+    def _failing_install(monkeypatch: pytest.MonkeyPatch, wheel: Path, stderr: bytes) -> None:
+        """Every build child succeeds except the wheel install, which fails with ``stderr``."""
+
+        def fake_subprocess_run(argv, *a: object, **k: object):  # type: ignore[no-untyped-def]
+            failing = str(wheel) in argv
+            return type(
+                "P",
+                (),
+                {
+                    "returncode": 1 if failing else 0,
+                    "stdout": b"",
+                    "stderr": stderr if failing else b"",
+                },
+            )()
+
+        monkeypatch.setattr(wheel_engine.subprocess, "run", fake_subprocess_run)
+
+    def test_a_no_wheel_failure_names_the_platform_and_the_opt_in(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The update refuses in the installer's words, not pip's: which packages
+        have no wheel, what host this is, and how to opt into compiling -- including
+        that the opt-in has to reach the gateway's own environment (the service
+        unit), which is the one fact an install-time success hides."""
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        wheel = tmp_path / "w.whl"
+        self._failing_install(monkeypatch, wheel, self._NO_WHEEL_TAIL)
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0")
+
+        text = str(info.value)
+        assert text.startswith(
+            "pip found no prebuilt wheel of numpy>=2.0, pillow>=10 it may install on this host"
+        ), text
+        assert f"{platform.system()} {platform.machine()}" in text
+        # The usual cause is stated as usual, and the other cause sits next to it.
+        assert "Usually this means the host is older than the wheels' floor" in text
+        assert "package index could not be reached or does not carry these releases" in text
+        assert "KIROCREW_ALLOW_SOURCE_BUILDS=1" in text
+        assert "service unit" in text
+        assert "kirocrew update" in text
+        # pip's own verdict is kept, so the operator can check the classification.
+        assert "No matching distribution found for numpy>=2.0" in text
+        # Nothing was compiled: the install command was the only pip install of
+        # the wheel, and it carried the policy.
+        assert isinstance(info.value.__cause__, wheel_engine.WheelUpdateError)
+
+    def test_the_message_matches_the_installers_platform_floor(self) -> None:
+        """Same supported-platform sentence as cli.sh's _report_pip_failure, so an
+        install and its later update do not describe two different floors."""
+        cli_sh = (_REPO_ROOT / "cli.sh").read_text(encoding="utf-8")
+        floor = (
+            "a newer Linux (Amazon Linux 2023, RHEL/Rocky 8+, Ubuntu 22.04+, "
+            "Debian 12+) on x86_64/aarch64, or macOS"
+        )
+        assert floor in cli_sh, "cli.sh's platform floor sentence changed; update both"
+        assert floor in wheel_engine._no_wheel_message(["numpy"])
+
+    def test_other_pip_failures_keep_pips_own_words(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failure that is not the no-wheel verdict (a dead index, a broken
+        wheel) must not be dressed up as an unsupported platform."""
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        wheel = tmp_path / "w.whl"
+        self._failing_install(
+            monkeypatch,
+            wheel,
+            b"ERROR: HTTPSConnectionPool(host='pypi.org'): Max retries exceeded\n",
+        )
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0")
+
+        text = str(info.value)
+        assert text.startswith("pip install into the shadow venv exited 1"), text
+        assert "Max retries exceeded" in text
+        assert "prebuilt wheel" not in text
+        assert "KIROCREW_ALLOW_SOURCE_BUILDS" not in text
+
+    def test_incompatible_wheels_read_as_versions_none_and_still_get_the_guidance(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """pip builds its `(from versions: ...)` list from the candidates that
+        survived its link filter, so a package whose every wheel targets a newer
+        libc or another arch reads `(from versions: none)` -- the pure no-wheel
+        host. That shape must get the same guidance as a numeric list, with the
+        index named as the other possible cause (pip's text cannot tell them
+        apart); pip's own words stay attached so the operator can check."""
+        monkeypatch.delenv("KIROCREW_ALLOW_SOURCE_BUILDS", raising=False)
+        wheel = tmp_path / "w.whl"
+        self._failing_install(
+            monkeypatch,
+            wheel,
+            b"ERROR: Could not find a version that satisfies the requirement numpy>=2.0 "
+            b"(from kirocrew) (from versions: none)\n"
+            b"ERROR: No matching distribution found for numpy>=2.0\n",
+        )
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0")
+
+        text = str(info.value)
+        assert text.startswith(
+            "pip found no prebuilt wheel of numpy>=2.0 it may install on this host"
+        ), text
+        assert "package index could not be reached or does not carry these releases" in text
+        assert "KIROCREW_ALLOW_SOURCE_BUILDS=1" in text
+        assert "from versions: none" in text
+
+    def test_the_opt_in_never_reports_a_platform_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """With compiling allowed, 'No matching distribution' means the release
+        genuinely does not exist, not that a wheel is missing: no dressing-up."""
+        monkeypatch.setenv("KIROCREW_ALLOW_SOURCE_BUILDS", "1")
+        wheel = tmp_path / "w.whl"
+        self._failing_install(monkeypatch, wheel, self._NO_WHEEL_TAIL)
+
+        with pytest.raises(wheel_engine.WheelUpdateError) as info:
+            wheel_engine.build_shadow_venv(wheel, tmp_path / "crew-venv-1.0.0")
+
+        text = str(info.value)
+        assert text.startswith("pip install into the shadow venv exited 1"), text
+        assert "prebuilt wheel" not in text
+
+    def test_no_wheel_packages_are_deduplicated_and_capped(self) -> None:
+        seen = (
+            "ERROR: Could not find a version that satisfies the requirement pkg0 "
+            "(from versions: 1.0, 2.0)\n"
+        )
+        text = (
+            seen
+            + "\n".join(f"ERROR: No matching distribution found for pkg{i % 3}" for i in range(9))
+            + "\n"
+            + "\n".join(f"ERROR: No matching distribution found for extra{i}" for i in range(9))
+        )
+        got = wheel_engine._no_wheel_packages(text)
+        assert got == ["pkg0", "pkg1", "pkg2", "extra0", "extra1"]
+        assert wheel_engine._no_wheel_packages("ERROR: something else") == []
+        # The verdict line is the whole signal: pip's release list cannot gate it
+        # (see _no_wheel_packages), so the bare line classifies too.
+        assert wheel_engine._no_wheel_packages(
+            "ERROR: No matching distribution found for pkg0"
+        ) == ["pkg0"]
