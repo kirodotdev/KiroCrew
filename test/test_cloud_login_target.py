@@ -598,6 +598,86 @@ class TestEngineForwarding:
         job.login_target = KiroLoginTarget()
         assert lj._begin_signin_with_target(LegacyEngine(), job).already_logged_in
 
+    def test_preflight_refuses_a_target_the_engine_declares_it_cannot_honour(self):
+        """An engine that receives ``login_target`` may still refuse one, at preflight.
+
+        Accepting the keyword only says the engine can be handed a target.
+        An engine whose instances never sign in (the Fargate engine) declares
+        the targets it cannot honour through ``login_target_refusal``, and
+        ``_check_signin_target_supported`` turns that reason into the same
+        preflight failure a legacy engine gets, so ``provision`` never runs and
+        nothing is billed. An engine without the hook, and one whose hook
+        returns ``""``, are unaffected.
+        """
+
+        class DeclaringEngine:
+            def login_target_refusal(self, target):
+                return "" if target.is_default else "this engine never signs in"
+
+            def begin_signin(self, *, instance_id, profile, region, login_target=None):
+                raise AssertionError("must not be reached: preflight refuses first")
+
+        class SilentEngine:
+            def begin_signin(self, *, instance_id, profile, region, login_target=None):
+                return None
+
+        class AcceptingEngine(SilentEngine):
+            def login_target_refusal(self, target):
+                return ""
+
+        job = lj.LaunchJob(
+            id="j",
+            profile="p",
+            region="r",
+            size_key="balanced",
+            instance_id="",
+            login_target=IDC,
+        )
+        with pytest.raises(RuntimeError, match="this engine never signs in"):
+            lj._check_signin_target_supported(DeclaringEngine(), job)
+        lj._check_signin_target_supported(SilentEngine(), job)
+        lj._check_signin_target_supported(AcceptingEngine(), job)
+        # The default target is never put to the hook.
+        job.login_target = KiroLoginTarget()
+        lj._check_signin_target_supported(DeclaringEngine(), job)
+
+    def test_run_launch_fails_a_declared_refusal_before_provision(self, tmp_path):
+        """End to end through the runner: the job fails at preflight with no provision call."""
+
+        class Engine:
+            calls: list = []
+
+            def preflight(self, profile, region):
+                self.calls.append("preflight")
+
+            def login_target_refusal(self, target):
+                return "" if target.is_default else "this engine never signs in"
+
+            def provision(self, *, tag, size_key, profile, region):
+                self.calls.append("provision")
+                return "i-1"
+
+            def begin_signin(self, *, instance_id, profile, region, login_target=None):
+                self.calls.append("begin_signin")
+
+            def register(self, *, instance_id, tag, profile, region):
+                self.calls.append("register")
+
+            def teardown(self, *, tag, profile, region):
+                self.calls.append("teardown")
+                return True
+
+        eng = Engine()
+        store = lj.LaunchJobStore(root=tmp_path / "launch-jobs")
+        job = lj.LaunchJob(
+            id="abcdef012345", profile="p", region="r", size_key="balanced", login_target=IDC
+        )
+        store.save(job)
+        out = lj.run_launch(job, store, engine=eng, cancel=threading.Event())
+        assert out.status == lj.FAILED
+        assert "this engine never signs in" in (out.error or "")
+        assert "provision" not in eng.calls
+
 
 # ── dashboard boundary ───────────────────────────────────────────────────────
 

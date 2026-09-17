@@ -123,9 +123,10 @@ def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
 def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     """The handle carries every member ``SigninHandle`` declares, attributes included.
 
-    ``SigninHandle`` declares four ATTRIBUTES (``already_logged_in``, ``url``,
-    ``code``, ``ports``) beside its two methods, and ``run_launch`` reads
-    ``handle.already_logged_in`` unconditionally before anything else. A check
+    ``SigninHandle`` declares five ATTRIBUTES (``already_logged_in``, ``url``,
+    ``code``, ``ports``, ``error``) beside its two methods, and ``run_launch``
+    reads ``handle.error`` and ``handle.already_logged_in`` unconditionally
+    before anything else. A check
     written against the Protocol's ``def`` lines alone would pass a handle with
     no attributes at all, and that handle raises ``AttributeError`` on every
     launch. So the member set is taken from the Protocol's annotations AND its
@@ -138,7 +139,7 @@ def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     handle = FargateSigninHandle(task_arn=ARN)
     attributes = set(typing.get_type_hints(SigninHandle))
     methods = {n for n, _ in inspect.getmembers(SigninHandle, inspect.isfunction) if n[0] != "_"}
-    assert attributes == {"already_logged_in", "url", "code", "ports"}
+    assert attributes == {"already_logged_in", "url", "code", "ports", "error"}
     assert methods == {"wait", "close"}
     for name in attributes | methods:
         assert hasattr(handle, name), f"FargateSigninHandle is missing {name}"
@@ -173,6 +174,84 @@ def test_signin_honours_a_cancel_already_set() -> None:
     cancelled.set()
     handle = FargateSigninHandle(task_arn=ARN)
     assert handle.wait(cancelled) is False
+
+
+def test_signin_honours_the_default_login_target() -> None:
+    """The Builder ID target, explicit or omitted, is the already-signed-in path.
+
+    ``login_target`` is the keyword the ``LaunchEngine`` Protocol gained for
+    Identity Center. The empty target is what every managed launch carried
+    before it existed, so passing it must change nothing: no ``error``, and the
+    handle still reports the step done without a prompt.
+    """
+    from kiro_crew.cloud.login_target import KiroLoginTarget
+
+    engine = FargateLaunchEngine()
+    for target in (None, KiroLoginTarget()):
+        handle = engine.begin_signin(
+            instance_id=ARN, profile="p", region="us-west-2", login_target=target
+        )
+        assert handle.error == ""
+        assert handle.already_logged_in is True
+
+
+def test_identity_center_target_is_refused_at_preflight_before_provision() -> None:
+    """A non-default identity fails the launch before anything is provisioned or billed.
+
+    The container is credentialed by its API key and never signs in, so an
+    Identity Center target has nothing to act on. The engine says so through
+    ``login_target_refusal``, which ``launch_job._check_signin_target_supported``
+    reads at PREFLIGHT: the job fails there, ``provision`` never runs, and no
+    task exists to strand. Refusing later, at the sign-in step, would land after
+    the task is billing, which is the shape this engine must never take.
+    """
+    from kiro_crew.cloud.login_target import KiroLoginTarget
+
+    target = KiroLoginTarget(
+        license="pro", start_url="https://example.awsapps.com/start", region="us-west-2"
+    )
+    assert not target.is_default
+    engine = FargateLaunchEngine()
+    reason = engine.login_target_refusal(target)
+    assert reason
+    assert "API key" in reason
+    assert engine.login_target_refusal(KiroLoginTarget()) == ""
+
+    job = lj.LaunchJob(
+        id="j",
+        profile="p",
+        region="us-west-2",
+        size_key="balanced",
+        instance_id="",
+        login_target=target,
+    )
+    with pytest.raises(RuntimeError, match="API key"):
+        lj._check_signin_target_supported(engine, job)
+    # And the runner's preflight is the same call, so the launch never provisions.
+    job.login_target = KiroLoginTarget()
+    lj._check_signin_target_supported(engine, job)
+
+
+def test_signin_time_identity_center_target_is_a_programming_error_guard() -> None:
+    """``begin_signin`` with a non-default target raises: preflight was skipped.
+
+    Through ``run_launch`` this path is unreachable, because the preflight check
+    above fails the job first. The raise is the guard for a caller that bypassed
+    preflight, mirroring the never-taken branch in
+    ``launch_job._begin_signin_with_target``; it is not a refusal channel, so
+    the handle's ``error`` stays empty on every path that returns one.
+    """
+    from kiro_crew.cloud.login_target import KiroLoginTarget
+
+    target = KiroLoginTarget(
+        license="pro", start_url="https://example.awsapps.com/start", region="us-west-2"
+    )
+    with pytest.raises(RuntimeError, match="API key"):
+        FargateLaunchEngine().begin_signin(
+            instance_id=ARN, profile="p", region="us-west-2", login_target=target
+        )
+    handle = FargateLaunchEngine().begin_signin(instance_id=ARN, profile="p", region="us-west-2")
+    assert handle.error == ""
 
 
 def test_register_is_a_silent_no_op() -> None:

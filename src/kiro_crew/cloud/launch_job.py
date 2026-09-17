@@ -552,18 +552,55 @@ def _target_unsupported_message(engine: "LaunchEngine", job: "LaunchJob") -> str
     )
 
 
+def _engine_login_target_refusal(engine: "LaunchEngine", target: "KiroLoginTarget") -> str:
+    """The engine's own reason it cannot sign in as ``target``, or ``""``.
+
+    Accepting the ``login_target`` keyword says an engine can RECEIVE a target,
+    not that it can honour every one: a Fargate task is credentialed by the API
+    key its container starts with and has no sign-in at all, so an Identity
+    Center target has nothing to act on there. An engine that knows this about
+    itself declares it through an optional ``login_target_refusal(target)``
+    method returning a non-empty reason; the built-in EC2 engine, which honours
+    every target, has none. Optional so that a downstream engine written before
+    this hook keeps its keyword-based contract unchanged.
+    """
+    probe = getattr(engine, "login_target_refusal", None)
+    if probe is None:
+        return ""
+    try:
+        return str(probe(target) or "")
+    except Exception:  # pragma: no cover - defensive; a broken probe must not hide the launch
+        logger.warning(
+            "login_target_refusal probe failed; treating target as accepted", exc_info=True
+        )
+        return ""
+
+
 def _check_signin_target_supported(engine: "LaunchEngine", job: "LaunchJob") -> None:
-    """Refuse, at preflight, a non-default target the engine cannot receive.
+    """Refuse, at preflight, a non-default target the engine cannot honour.
 
     Provisioning bills an instance the moment it succeeds; discovering only at
     the sign-in step that the engine cannot honour the requested identity would
     strand that instance — provisioned, running, unregistered, and outside
     every teardown arm (which fire only on a provision-step failure). Deciding
     here means the job fails before any resource exists.
+
+    Two engine shapes fail here. One written against the three-keyword
+    ``begin_signin`` cannot receive a target at all. One that receives the
+    keyword but declares, through ``login_target_refusal``, that this target has
+    nothing to act on (see :func:`_engine_login_target_refusal`) is refused with
+    its own reason.
     """
-    if job.login_target.is_default or _engine_accepts_login_target(engine):
+    if job.login_target.is_default:
         return
-    raise RuntimeError(_target_unsupported_message(engine, job))
+    if not _engine_accepts_login_target(engine):
+        raise RuntimeError(_target_unsupported_message(engine, job))
+    reason = _engine_login_target_refusal(engine, job.login_target)
+    if reason:
+        raise RuntimeError(
+            f"provisioner {job.provider_id!r} cannot sign in as "
+            f"{job.login_target.describe()}: {reason}"
+        )
 
 
 def _rollback_cancelled_stack(

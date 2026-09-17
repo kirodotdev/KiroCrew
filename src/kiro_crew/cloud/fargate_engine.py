@@ -72,6 +72,7 @@ from kiro_crew.cloud.fargate import (
     task_family,
     validated_region,
 )
+from kiro_crew.cloud.login_target import KiroLoginTarget
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,10 @@ class FargateSigninHandle:
         self.url: str = ""
         self.code: str = ""
         self.ports: list = []
+        # The Protocol's VERIFIED-refusal channel. Always empty here: the one
+        # identity this engine cannot honour is refused at preflight by
+        # ``login_target_refusal``, before anything is provisioned or billed.
+        self.error: str = ""
 
     def wait(self, cancel: threading.Event) -> bool:
         """Return immediately; there is no interactive step to wait for.
@@ -641,13 +646,55 @@ class FargateLaunchEngine:
         self._revisions[fingerprint] = revision
         return revision
 
-    def begin_signin(self, *, instance_id: str, profile: str, region: str) -> FargateSigninHandle:
+    #: Why this engine cannot sign in as an Identity Center identity. Read by
+    #: ``launch_job._check_signin_target_supported`` at PREFLIGHT, so the launch
+    #: fails before ``provision`` runs and nothing is billed.
+    _IDENTITY_CENTER_REFUSAL = (
+        "a Fargate crew is credentialed by the API key its container is started "
+        "with and has no interactive sign-in. Launch with the default Builder ID "
+        "identity, or use the EC2 provisioner for Identity Center."
+    )
+
+    def login_target_refusal(self, target: KiroLoginTarget) -> str:
+        """Return the reason a non-default ``target`` cannot be honoured, else ``""``.
+
+        The default (Builder ID) target is what every managed launch carried
+        before ``login_target`` existed and is honoured trivially: the container
+        never signs in, so there is no identity to get wrong. Any other target
+        names an Identity Center instance the container has no way to sign in
+        to, and saying so here, at preflight, is what keeps the refusal free.
+        """
+        if target.is_default:
+            return ""
+        return self._IDENTITY_CENTER_REFUSAL
+
+    def begin_signin(
+        self,
+        *,
+        instance_id: str,
+        profile: str,
+        region: str,
+        login_target: KiroLoginTarget | None = None,
+    ) -> FargateSigninHandle:
         """Return a handle that completes at once. See :class:`FargateSigninHandle`.
 
         Implemented rather than deferred because it depends on no AWS call and on
         no signature: the container's own code establishes that there is no
         interactive sign-in to perform.
+
+        ``login_target`` is accepted because the ``LaunchEngine`` Protocol
+        declares it. A non-default target never reaches this method through
+        ``run_launch``: :meth:`login_target_refusal` fails the launch at
+        preflight. Receiving one anyway means a caller skipped preflight, which
+        is a programming error; raising here is the same guard
+        ``launch_job._begin_signin_with_target`` keeps for its own
+        never-taken branch, and not a runtime path.
         """
+        target = login_target or KiroLoginTarget()
+        if not target.is_default:
+            raise RuntimeError(
+                f"cannot sign in as {target.describe()}: {self._IDENTITY_CENTER_REFUSAL}"
+            )
         return FargateSigninHandle(task_arn=instance_id)
 
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
