@@ -16,7 +16,7 @@ import secrets
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -3869,6 +3869,160 @@ def is_synthetic_recovery_item(item: dict) -> bool:
         SYNTHETIC_RECOVERY_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
     )
+
+
+class RecoveryProvenance(str, Enum):
+    """Host-minted ownership carried by a synthetic recovery queue entry.
+
+    Recovery text and payload describe what the next turn receives; neither can
+    identify why it was enqueued because independent retry mechanisms may use the
+    same continuation text. This tag is the authorization identity consumed at
+    queue drain. Its provider-budget value deliberately equals the corresponding
+    structural stop reason so the producer and consumer cannot drift.
+    """
+
+    PROVIDER_BUDGET_ARTIFACT = "provider_budget_artifact"
+    TRANSIENT_RETRY = "transient_retry"
+
+
+RECOVERY_PROVENANCE_META_KEY = "recoveryProvenance"
+
+
+def has_recovery_provenance(item: dict, provenance: RecoveryProvenance) -> bool:
+    """Return whether a queue entry carries one exact host-minted provenance."""
+    meta = item.get("meta")
+    return isinstance(meta, dict) and meta.get(RECOVERY_PROVENANCE_META_KEY) == provenance.value
+
+
+# Some model backends occasionally emit their private context-budget reminder as
+# answer text at the end of a long turn. Keep recognition deliberately exact and
+# suppression conservative: ordinary discussion of tokens and quoted/code text
+# survives without provenance. A capacity request the session's own human wrote
+# fails open regardless of request verb or turn kind; typed provider recovery is
+# host-minted provenance.
+# The prefix is recognized at a line break, at end of input, or glued directly to
+# an uppercase letter: the observed provider shapes are a banner-only message and
+# a banner fused to the reply's first word with no separator. A lowercase
+# continuation (``leftover``), punctuation before glued text, and quoted or
+# mid-text mentions are not recognized. Recognition proves only the shape; who
+# authored the bytes is decided by ``classify_provider_budget_banner``.
+_PROVIDER_BUDGET_BANNER_RE = re.compile(
+    r"\A[ \t]*You have (?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+) "
+    r"weighted tokens left"
+    r"(?:(?=[A-Z])|[.!]?(?:[ \t]*(?:\r?\n)+[ \t]*|[ \t]*\Z))"
+)
+_PROVIDER_BUDGET_TOPIC_RE = re.compile(
+    r"\b(?:weighted tokens?|token budget|model capacity|context window (?:capacity|usage))\b"
+    # Remaining-token questions in their ordinary forms: "how many" or a
+    # quantity phrase ("the number of", "what count of", "the amount of"), up to
+    # two qualifier words before "tokens" ("how many more tokens"), an optional
+    # subject with its auxiliary in either order ("I have", "do we have", "have
+    # I got"), the verb in any of its shapes ("remain", "are remaining", "left",
+    # "are left", "available", "usable"), and up to two modifier words before
+    # the remainder word or before "have" ("are still available", "do I
+    # currently have left"). The word that closes the question must still name
+    # a remainder: "how many tokens did the prompt use" and "how many tokens
+    # are in this file" stay outside.
+    r"|\b(?:how many|(?:the |what )?(?:number|count|amount) of) (?:\w+ ){0,2}tokens? "
+    r"(?:(?:do |did |have )?(?:i|we|you) (?:\w+ ){0,2}(?:have |got )?)?"
+    r"(?:are |is )?(?:\w+ ){0,2}(?:remain(?:ing)?|left|available|usable)\b"
+    # The ability form of the same question: a modal and a human subject, in
+    # either order, before "use", "spend" or "consume" ("how many tokens I can
+    # still use", "how many more tokens can I use"). The subject is the asker,
+    # so "how many tokens could this model use" and the past-tense usage
+    # question "how many tokens did the prompt use" stay outside.
+    r"|\b(?:how many|(?:the |what )?(?:number|count|amount) of) (?:\w+ ){0,2}tokens? "
+    r"(?:(?:i|we|you) (?:\w+ ){0,2}(?:can|could|may|might)"
+    r"|(?:can|could|may|might) (?:i|we|you)) (?:\w+ ){0,2}(?:use|spend|consume)\b"
+    r"|\bhow much budget (?:remains|is (?:left|available)"
+    r"|(?:do |can |could |have )?(?:i|we|you) (?:\w+ ){0,2}(?:have|got|use|spend)(?: left)?)\b"
+    r"|\b(?:remaining|available) (?:weighted )?tokens?\b",
+    re.IGNORECASE,
+)
+
+
+def strip_provider_budget_banner(text: str) -> tuple[str, bool]:
+    """Remove one leading provider-only weighted-token banner.
+
+    Returns ``(clean_text, removed)``. A leading-only rule is intentional: the
+    provider artifact arrives before answer prose, while the same words later in
+    an answer can be legitimate user-facing discussion.
+    """
+    match = _PROVIDER_BUDGET_BANNER_RE.match(text or "")
+    if match is None:
+        return text, False
+    return text[match.end() :], True
+
+
+def mentions_provider_budget(message: str) -> bool:
+    """Return whether an interactive prompt names model-capacity output.
+
+    A finite request-verb list would miss ``print``, ``quote``, ``return``, and
+    future wording, so explicit provider-capacity terms fail open regardless of
+    verb. The unqualified shorthand is limited to remaining-budget questions
+    such as "how much budget remains", "how many tokens are remaining", "how
+    many tokens I have left", "how many tokens are still available", "how many
+    tokens I can still use", "how many more tokens can I use", "how many
+    tokens have I got left" and "the number of tokens I have left"; token
+    counts that are not a remainder ("how many tokens did the prompt use", "the
+    number of tokens in this file") and project or financial budget phrases do not
+    disable suppression. Whitespace is folded before the search: a question
+    wrapped across lines or typed with repeated spaces is the same question.
+    Fixed synthetic provider-recovery text never consults this wording gate.
+    """
+    return _PROVIDER_BUDGET_TOPIC_RE.search(" ".join((message or "").split())) is not None
+
+
+def classify_provider_budget_banner(
+    text: str,
+    user_authority: str,
+    *,
+    is_provider_recovery: bool,
+    is_transient_recovery: bool,
+    prior_visible_output: bool,
+    tool_results: Iterable[str] = (),
+    tool_results_complete: bool = True,
+) -> tuple[str, bool]:
+    """Classify one exact leading banner using artifact-specific provenance.
+
+    ``bool`` means the matched prefix is provider metadata. The checks that keep
+    the text visible run before either strip, so they hold on every turn kind:
+    a typed transient retry may legitimately repeat the original answer, an
+    explicit capacity request in ``user_authority`` asked for the bytes, and a
+    banner phrase found in ``tool_results`` is an echo candidate. The caller
+    passes as ``user_authority`` only what the session's own human wrote this
+    turn, never a recovery's own continuation text, and as ``tool_results`` the
+    text of every tool result delivered to the model this turn.
+
+    Only then do the strips apply. Typed provider recovery has host-minted
+    ownership and removes the prefix. For an ordinary turn, grammar alone cannot
+    prove authorship: a leading prefix before semantic answer text remains
+    byte-for-byte visible, and a banner-only tail is an artifact only after the
+    turn already delivered visible model output AND the echo evidence is whole.
+    ``tool_results_complete`` is False when a result this turn was cut by the
+    transport's display bound, so the phrase may sit in text the check never
+    saw; the tail then stays visible as an echo the evidence cannot rule out.
+    The typed-recovery strip is not gated on it: that turn's ownership rests on
+    the recovery's provenance, not on what the echo check could read. A
+    banner-only turn with no such evidence is ambiguous and therefore stays
+    visible, including regenerated answers and echoes whose prompt uses wording
+    this classifier has never seen.
+    """
+    stripped, matched = strip_provider_budget_banner(text)
+    if not matched:
+        return text, False
+    if is_transient_recovery or mentions_provider_budget(user_authority):
+        return text, False
+    # The phrase the banner carries: the matched prefix without its indent and
+    # its optional trailing ``.``/``!`` and line break.
+    phrase = text[: len(text) - len(stripped)].strip().rstrip(".!")
+    if any(phrase in result for result in tool_results):
+        return text, False
+    if is_provider_recovery:
+        return stripped, True
+    if prior_visible_output and not stripped and tool_results_complete:
+        return stripped, True
+    return text, False
 
 
 class RecoveryPayload(str, Enum):

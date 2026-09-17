@@ -234,6 +234,7 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _current_turn_carries_image_ref,
     _drop_queued_replay,
     _drop_revoked_replays,
+    _drop_unauthorized_provider_recovery,
     _empty_auto_continue_enabled,
     _empty_max_auto_continues,
     _forget_swept_replays,
@@ -659,6 +660,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
+    RECOVERY_PROVENANCE_META_KEY,
     SESSION_START_FAILED_KIND,
     SUBAGENT_COMPLETION_KIND,
     SUBAGENT_DELIVERY_KINDS,
@@ -677,9 +679,12 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     USAGE_LIMIT_KIND,
     EmptyTurnActivity,
     RecoveryPayload,
+    RecoveryProvenance,
     app_inject_row,
     classify_empty_turn,
+    classify_provider_budget_banner,
     has_leaked_tool_call,
+    has_recovery_provenance,
     has_unfinished_progress_claim,
     is_false_current_tool_blocker,
     is_false_current_tool_blocker_near_miss,
@@ -694,6 +699,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
+    strip_provider_budget_banner,
     subagents_attached_async,
     synthesis_fire_verdict,
     tool_calls_are_read_only_preparation,
@@ -4076,6 +4082,22 @@ def _session_auto_approves(state: DashboardState, slot: _ChatSlot) -> bool:
     return _slot_is_trusted(slot) or state.is_yolo_active()
 
 
+# A banner-only turn publishes this structural stop reason; its value equals the
+# queued recovery's provenance tag so the producer and consumer cannot drift.
+_STOP_REASON_PROVIDER_BUDGET_ARTIFACT = RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT.value
+
+
+def _provider_recovery_is_authorized(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Allow model-triggered banner recovery only while tool approval stays interactive.
+
+    Banner text can request an ordinary continuation but cannot authorize one:
+    the continuation re-drives the request's remaining work, so YOLO, session
+    trust and scoped unattended trust all fail closed. The queue drain re-reads
+    this verdict at dispatch to cover a grant racing the enqueue.
+    """
+    return not _session_auto_approves(state, slot)
+
+
 async def _tool_risk_meta(
     state: DashboardState,
     slot: _ChatSlot,
@@ -4296,8 +4318,12 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
+    strip_provider_banner: bool = False,
 ) -> None:
     """Finalize current text block as a segment and persist it.
+
+    ``strip_provider_banner`` removes one leading provider-budget banner the
+    caller already classified as provider metadata.
 
     ``quiet_persist`` additionally suppresses the per-message ``chat_message``
     broadcast that ``slot.append`` emits for the finalized assistant message.
@@ -4352,6 +4378,11 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    stripped_budget_banner = False
+    if strip_provider_banner:
+        assistant_text, stripped_budget_banner = strip_provider_budget_banner(assistant_text)
+        if stripped_budget_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
     # Repair a glued option marker before persisting. A mid-turn steer reply (or
     # any concatenation seam upstream) can append prose directly after an
     # ``[OPTIONS: ...]`` line with no separator, producing a single line the render
@@ -4364,6 +4395,19 @@ def _flush_segment(
     # model that later re-reads the line must not take it for an instruction.
     assistant_text = _reflow_label_and_audit(slot, assistant_text)
     redacted, blocked_links, redactions = _redact_segment(slot, assistant_text)
+    # A banner-only segment (opted-in strip removed the whole text) has no
+    # user-facing text to persist. Gated on an actual strip so ordinary empty
+    # flushes keep their existing behaviour. File chips and stats are already
+    # scoped to this turn's own rows, so nothing lands on the preceding answer.
+    # Regeneration is different: fall through so the normal assistant-message
+    # path consumes and attaches pending variants; returning here would let its
+    # done callback discard prior answers.
+    if stripped_budget_banner and not redacted and not slot._pending_variants:
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
@@ -6934,6 +6978,12 @@ async def _start_next_queued_turn(
     if await _drop_revoked_replays(state, slot):
         return False
 
+    # A queued provider-budget banner recovery dispatches only while tool
+    # approval is still interactive; a trust or YOLO grant that raced its
+    # enqueue drops it here (see `_drop_unauthorized_provider_recovery`).
+    if await _drop_unauthorized_provider_recovery(state, slot):
+        return False
+
     try:
         merge = KiroCrewConfig.load().dashboard.merge_queued_messages
     except Exception:
@@ -8405,6 +8455,16 @@ async def _run_chat(
     # those bytes belong only in the current provider prompt and must never be
     # reclassified or mirrored as authenticated-human speech.
     _incoming_message = message
+    # What the provider-budget capacity gate may read as a request: the turn's
+    # own payload unless it is runner- or app-authored (a recovery's own
+    # continuation text is not), plus each consumed steer that this session's
+    # human typed (below). A payload another session or a scheduled job injected
+    # is read like typed text: an injected capacity phrase keeps a banner
+    # visible, the pre-suppression behaviour, and loses nothing. The
+    # user-origin flag is not the gate because a queue entry restored across a
+    # restart carries no such flag, and a human request replayed from it would
+    # lose its answer.
+    _user_authority_text = "" if _synthetic_payload else _incoming_message
 
     # Chokepoint invariant: a relay archive NEVER executes. Every dispatch entry
     # point (the primary send, regenerate, edit-resend, rewind, continue,
@@ -8456,6 +8516,32 @@ async def _run_chat(
             and _current_replay_message.get("content") != message
         ):
             _current_replay_message = None
+
+    # One recovery owner may act only on turns carrying host-minted provenance.
+    # Queue drain copies the queue entry's tag onto the persisted current row.
+    # The continuation text is deliberately shared with the ordinary post-token
+    # transient retry, so text equality cannot confer provider-banner stripping
+    # or provider-specific queue policy.
+    _provider_budget_recovery_owned = bool(
+        _synthetic_payload
+        and _current_replay_message is not None
+        and has_recovery_provenance(
+            _current_replay_message, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT
+        )
+    )
+    _transient_recovery_owned = bool(
+        _synthetic_payload
+        and _current_replay_message is not None
+        and has_recovery_provenance(_current_replay_message, RecoveryProvenance.TRANSIENT_RETRY)
+    )
+    if _provider_budget_recovery_owned:
+        _current_recovery_provenance: RecoveryProvenance | None = (
+            RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT
+        )
+    elif _transient_recovery_owned:
+        _current_recovery_provenance = RecoveryProvenance.TRANSIENT_RETRY
+    else:
+        _current_recovery_provenance = None
 
     session_key = effective_session_key(slot)
     sessions = getattr(state, "sessions", None)
@@ -9079,6 +9165,11 @@ async def _run_chat(
     # reset the buffer WITHOUT a tool boundary — steer cut, compaction, clear,
     # agent switch) is load-bearing for the promise-only guard below.
     _turn_flushed_visible_text = False
+    # True once a tool result this turn delivered was a head cut (the parser's
+    # ``tool_output_truncated``). The banner echo check reads this turn's tool
+    # rows for the banner phrase; a cut row cannot prove the phrase absent, so
+    # the ordinary-tail strip stands down for the rest of the turn.
+    _turn_tool_output_truncated = False
     # ── Content-free turn-end diagnostics (empty-response verdict) ──
     # Booleans only, by contract. The empty-response branch below reaches its
     # verdict from these, and a WARNING names the cause it derived; every field
@@ -9151,6 +9242,7 @@ async def _run_chat(
         kind: str,
         payload: str = "",
         extra_meta: dict | None = None,
+        provenance: RecoveryProvenance | None = None,
     ) -> str:
         """Queue a retry without losing a producer's consumption settlement.
 
@@ -9198,6 +9290,12 @@ async def _run_chat(
             # arrived as turn content stays turn content when its retry drains, or
             # the retry would run the words the original turn was told not to.
             _recovery_meta[COMMANDS_OFF_META_KEY] = True
+        # Host-minted recovery ownership (see RecoveryProvenance). Callers that
+        # requeue within the current recovery episode pass its recognized owner; a
+        # producer that starts a new episode omits it, and an intentional ownership
+        # change names its tag.
+        if provenance is not None:
+            _recovery_meta[RECOVERY_PROVENANCE_META_KEY] = provenance.value
         if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
             # ORIGINAL replays must preserve the triggering row's attachment
             # lists. The provider prompt already carries the full markers, but
@@ -9291,6 +9389,7 @@ async def _run_chat(
                 if _current_message is not None and isinstance(_current_message.get("meta"), dict)
                 else None
             ),
+            provenance=_current_recovery_provenance,
         )
 
     # The drain validated a claimed replay before spawning the guarded task, but
@@ -9564,6 +9663,12 @@ async def _run_chat(
     # _recovering_promise: the turn announced work it never did, so it must not
     # be recorded as a success or reset the retry budgets.
     _noticed_leak = False
+    # Set when a provider leaked its private weighted-token budget reminder as
+    # answer text (see the completion block below). ``_recovering_provider_artifact``
+    # is the banner-only subcase: no answer was given, so like _recovering_promise
+    # it must not record success, consolidate, or reset the retry budgets.
+    _provider_budget_banner = False
+    _recovering_provider_artifact = False
     # Set when a REAL mid-turn compaction terminal cleared `assistant_text`
     # while it held a leaked tool call. The turn-end gates read that
     # accumulator, so the fact has to be captured at the boundary or it is lost
@@ -11841,6 +11946,7 @@ async def _run_chat(
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=_replay_payload,
                 extra_meta=_replay_extra,
+                provenance=(_current_recovery_provenance if _turn_tool_calls == 0 else None),
             )
             # Stop-generation snapshots (slot + session) at ENQUEUE: the drain
             # purges the replay when either counter moved (a Stop landed while
@@ -12759,6 +12865,8 @@ async def _run_chat(
             elif event.kind == EVENT_TOOL_RESULT:
                 if event.tool_final and event.tool_call_id:
                     _turn_successful_tool_call_ids.add(event.tool_call_id)
+                if event.tool_output_truncated:
+                    _turn_tool_output_truncated = True
                 _out = _redact_tool_field(event.tool_output)
                 # Redact the join key once for the WS broadcast and the
                 # message-meta comparison below. `_tool_meta` stores the
@@ -15117,7 +15225,16 @@ async def _run_chat(
                     )
                     continue
             elif event.kind == EVENT_STEER_CONSUMED:
+                _user_steers = [s for s in slot._pending_steers if slot._steer_user_origin.get(s)]
                 _settle_consumed_steers(slot, event.text or "", state)
+                # The origin record was read above, before the settle releases it. A
+                # steer this echo consumed that the session's own human typed extends
+                # the user authority the provider-budget capacity gate reads; a peer's
+                # or app's steer never does. Consumed means what the settle itself
+                # releases: registered before, gone after.
+                for _consumed_user_steer in _user_steers:
+                    if _consumed_user_steer not in slot._pending_steers:
+                        _user_authority_text += f"\n{_consumed_user_steer}"
                 if _refusal_notices:
                     # Same echo, same parser as the user-steer ledger: an
                     # empty echo is no evidence, and treating it as delivery
@@ -16131,6 +16248,7 @@ async def _run_chat(
                     # was the user's own — on a recovery turn it is the
                     # runner's continuation.
                     payload=payload_for_replay(_is_synthetic),
+                    provenance=_current_recovery_provenance,
                 )
                 # A recovery IS queued, so this notice is not terminal: the tag
                 # stops the UI offering a retry that re-runs itself. The
@@ -16195,6 +16313,7 @@ async def _run_chat(
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
                 _emit_error(f"⟳ Connection lost{_rc_suffix} — retrying...", will_retry=True)
             elif _death_attempts >= SESSION_RECOVERY_MAX_ATTEMPTS:
@@ -16326,6 +16445,68 @@ async def _run_chat(
                 # the next turn. On failure/timeout `used` is unchanged and still
                 # valid, so the same call re-sends the real counts as-is.
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
+
+        # A model backend may leak its private weighted-token budget reminder as
+        # answer text. Classify it before answer detection, persistence, Stop
+        # hooks, and cross-surface delivery. If it was the whole final segment,
+        # finalize away the already-streamed chunks and recover below with a
+        # CONTINUE instruction rather than replaying completed tools. An explicit
+        # capacity topic fails open so a requested byte-identical answer stays
+        # visible, and a transient continuation may legitimately repeat the
+        # original answer, so only provider-budget ownership strips its prefix.
+        # A banner phrase in a tool result this turn delivered is an echo
+        # candidate too. The result text is read off this turn's own tool rows,
+        # where the tool-result branch above recorded it; lazily, so a turn with
+        # no banner never walks them. A result the parser cut makes that
+        # evidence incomplete: absence of the phrase then proves nothing, and
+        # the ordinary-tail strip stands down.
+        raw_assistant_text = assistant_text
+        assistant_text, _provider_budget_banner = classify_provider_budget_banner(
+            assistant_text,
+            _user_authority_text,
+            is_provider_recovery=_provider_budget_recovery_owned,
+            is_transient_recovery=_transient_recovery_owned,
+            prior_visible_output=_turn_flushed_visible_text,
+            tool_results=(
+                str((_m.get("meta") or {}).get("output") or "")
+                for _m in slot.messages
+                if _m.get("role") == "tool" and str(_m.get("ts") or "") not in _rows_before_turn
+            ),
+            tool_results_complete=not _turn_tool_output_truncated,
+        )
+        # A banner-only tail after an applied terminal directive is activity after
+        # the quiet end the model asked for (counted above), not a turn that gave
+        # no answer: the quiet end stands as a landed turn, so the unlanded mark
+        # is not set and the recovery arm below leaves it alone.
+        _recovering_provider_artifact = bool(
+            _provider_budget_banner and not assistant_text and not _terminal_directive_applied
+        )
+        if _provider_budget_banner:
+            _wsred.reset()
+            if assistant_text:
+                logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+            else:
+                # A regeneration still holding its prior answers persists its
+                # selector row through this flush, and that append's own frame
+                # replaces the streamed banner on the live client.
+                _regeneration_row_persisted = bool(slot._pending_variants)
+                _flush_segment(
+                    state,
+                    slot,
+                    raw_assistant_text,
+                    broadcast=False,
+                    strip_provider_banner=True,
+                )
+                if not _regeneration_row_persisted:
+                    # The live client may already hold the streamed banner. An
+                    # authoritative empty assistant frame replaces that streaming
+                    # row before the queue boundary's chat_segment can finalize or
+                    # speak it; the continuation's chat_done refresh removes the
+                    # temporary empty row because no such row is persisted server-side.
+                    state.broadcast_ws(
+                        "chat_message",
+                        {"slot": slot.key, "role": "assistant", "content": ""},
+                    )
 
         # What the turn produced OF ITS OWN: `assistant_text` minus any backend
         # control notice that arrived as assistant text (the claude adapter's
@@ -16463,6 +16644,69 @@ async def _run_chat(
                     "error",
                     _refusal_card,
                     "msg msg-err",
+                )
+        elif _provider_budget_banner and not assistant_text:
+            # The banner is provider metadata, not a user-facing answer. Publish
+            # a structural stop reason, then resume exactly once on the SAME live
+            # conversation using the established post-token continuation. An
+            # applied terminal directive (``nothing_to_do``) outranks all of it:
+            # the turn ended as sanctioned, so no stop reason, no recovery and no
+            # notice; the stripped banner is the only thing this arm does then.
+            if not _terminal_directive_applied:
+                slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+            _can_recover_budget_banner = (
+                not _terminal_directive_applied
+                and _stop_reason == STOP_REASON_END_TURN
+                and _prompt_depth == 0
+                and not _refusal_reasons
+                and not _should_suppress_requeue(slot)
+                and not _stop_pressed()
+                and not _has_user_queued_followup(slot)
+                and not getattr(slot, "_pending_steers", None)
+                and not slot._posttoken_retry_used
+            )
+            if _can_recover_budget_banner and _provider_recovery_is_authorized(state, slot):
+                slot._posttoken_retry_used = True
+                _queue_recovery(
+                    0,
+                    _POSTTOKEN_RECOVER_MSG,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                    provenance=RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT,
+                )
+                # Snapshot for the dispatch-point purge, same as the promise-only
+                # and compaction arms: a Stop, a rebind or a queued user message
+                # arriving before the drain purges it. The drain also re-checks
+                # interactive authorization, so a late trust/YOLO grant cannot turn
+                # this queued recovery unattended.
+                replays_of(slot).arm(
+                    ReplayFamily.CONTINUATION,
+                    entry_id="",
+                    session_key=effective_session_key(slot),
+                    stop_gen=getattr(slot, "_stop_generation", 0),
+                    session_stop_gen=_session_stop_generation(),
+                )
+            elif _can_recover_budget_banner:
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned an internal status instead of an answer. "
+                    "Auto-continue is skipped under auto-approve mode — press "
+                    "Continue to finish the request.",
+                    "msg msg-info",
+                )
+            elif (
+                not _terminal_directive_applied
+                and _stop_reason != STOP_REASON_CANCELLED
+                and not _should_suppress_requeue(slot)
+            ):
+                # One retry is the hard bound. If the recovery itself produces
+                # the same artifact, do not loop; make the missing answer explicit.
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned an internal status instead of an answer. "
+                    "The automatic continuation is unavailable or already spent — "
+                    "press Continue to finish the request.",
+                    "msg msg-info",
                 )
         elif should_continue_after_compaction(
             # The context window filled mid-turn, the backend summarized, and the
@@ -16605,6 +16849,7 @@ async def _run_chat(
                     # Verbatim replay: ORIGINAL only if the incoming text was the
                     # user's. On a recovery turn it is the runner's continuation.
                     payload=payload_for_replay(_is_synthetic),
+                    provenance=_current_recovery_provenance,
                 )
                 _retrying_empty = True
             elif (
@@ -17316,6 +17561,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _recovering_infra
         ):
@@ -17433,6 +17679,7 @@ async def _run_chat(
             not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _recovering_infra
             and not _is_monitor_wake
@@ -17446,6 +17693,7 @@ async def _run_chat(
             and not _retrying_empty
             and not _recovering_promise
             and not _recovering_compaction
+            and not _recovering_provider_artifact
             and not _noticed_leak
             and not _recovering_infra
         ):
@@ -17551,11 +17799,18 @@ async def _run_chat(
                 if not _nudge_cap
                 else max(0, _nudge_cap - slot._hook_continuation_depth - _pending)
             )
-            # queue_insert(0, …) prepends, so insert in reverse to keep several
-            # hooks' instructions in firing order.
+            # A provider-budget recovery may already be queued at the head. It
+            # finishes the interrupted answer before Stop-hook instructions.
+            _hook_insert_index = 0
+            for _index, _item in enumerate(slot._queue):
+                if has_recovery_provenance(_item, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT):
+                    _hook_insert_index = _index + 1
+                    break
+            # queue_insert at one fixed position prepends, so insert in reverse to
+            # keep several hooks' instructions in firing order.
             for _reason in reversed(_hook_reasons[:_room]):
                 _queue_recovery(
-                    0,
+                    _hook_insert_index,
                     f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\n{_reason}",
                     kind=SYNTHETIC_RECOVERY_KIND,
                 )
@@ -17811,6 +18066,7 @@ async def _run_chat(
             _turn_actor=_turn_actor,
             _consumed_reported=_consumed_reported,
             _current_message=_current_message,
+            _provenance=_current_recovery_provenance,
             _queue_recovery=_queue_recovery,
         )
         _auth_required = True
@@ -17891,6 +18147,7 @@ async def _run_chat(
                 _requeue_text,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=_requeue_payload,
+                provenance=(_current_recovery_provenance if not _turn_emitted else None),
             )
         elif _death_attempts > SESSION_RECOVERY_MAX_ATTEMPTS:
             # Two verdicts, because the user's next move differs. A session whose
@@ -17921,6 +18178,7 @@ async def _run_chat(
             _prompt_depth=_prompt_depth,
             _turn_emitted=_turn_emitted,
             _is_synthetic=_is_synthetic,
+            _provenance=_current_recovery_provenance,
             _queue_recovery=_queue_recovery,
         )
     except AcpError as exc:
@@ -18050,6 +18308,7 @@ async def _run_chat(
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
             else:
                 # depth>0 with budget remaining: session already reset + failure
@@ -18104,6 +18363,7 @@ async def _run_chat(
                     _requeue_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_requeue_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
                 replays_of(slot).arm(
                     ReplayFamily.SESSION_NOT_FOUND,
@@ -18192,6 +18452,7 @@ async def _run_chat(
                     _image_recovery_text,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=_image_recovery_payload,
+                    provenance=(_current_recovery_provenance if not _turn_emitted else None),
                 )
                 replays_of(slot).arm(
                     ReplayFamily.IMAGE_HISTORY,
@@ -18354,6 +18615,7 @@ async def _run_chat(
                         # the user's. On a recovery turn it is the runner's
                         # continuation.
                         payload=payload_for_replay(_is_synthetic),
+                        provenance=_current_recovery_provenance,
                     )
             else:
                 # depth>0 (nested turn): don't re-queue — surface a clean
@@ -18462,6 +18724,7 @@ async def _run_chat(
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay, same rule as the same-model retry above.
                     payload=payload_for_replay(_is_synthetic),
+                    provenance=_current_recovery_provenance,
                 )
         elif _turn_emitted and acp_error_is_transient(exc) and not slot._posttoken_retry_used:
             # Post-token transient 5xx: assistant tokens and/or tool calls
@@ -18844,6 +19107,7 @@ async def _run_chat(
                                     # transient/throttle retries.
                                     payload=payload_for_replay(_is_synthetic),
                                     extra_meta=_ma_replay_extra,
+                                    provenance=_current_recovery_provenance,
                                 )
                                 # Record THIS replay's queue id: it is the replay's
                                 # identity. The drain claims it for the replay turn
@@ -19034,8 +19298,15 @@ async def _run_chat(
                 )
                 # The verbatim requeue carries the retry identity forward via
                 # _queue_recovery itself (one mechanism for every recovery
-                # family), so this site needs no site-local re-stamp.
-                _queue_recovery(0, message, kind=SYNTHETIC_RECOVERY_KIND)
+                # family), so this site needs no site-local re-stamp. The
+                # recovery provenance is the current row's recognized owner,
+                # passed explicitly rather than reconstructed from the text.
+                _queue_recovery(
+                    0,
+                    message,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    provenance=_current_recovery_provenance,
+                )
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.
                 slot._transient_5xx_retries = 0
                 slot._infra_retries = 0

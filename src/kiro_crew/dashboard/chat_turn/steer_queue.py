@@ -202,6 +202,11 @@ def _settle_consumed_steers(
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
+        # Held past the steer RPC's acknowledgement until this settle: the running
+        # turn reads it at the consumption echo, before calling here. The channel
+        # mark rides in the same map lockstep, so a consumed steer leaves neither.
+        slot._steer_user_origin.pop(settled_msg, None)
+        slot._steer_channel_origin.pop(settled_msg, None)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:

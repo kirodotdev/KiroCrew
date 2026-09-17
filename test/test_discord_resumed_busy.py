@@ -1470,6 +1470,32 @@ async def test_a_requeued_channel_steer_keeps_its_channel_provenance(tmp_path) -
     assert slot._steer_channel_origin == {}, "popped in lockstep with the other maps"
 
 
+@pytest.mark.asyncio
+async def test_an_acked_but_unconsumed_channel_steer_requeues_as_a_channel_turn(tmp_path) -> None:
+    """The ack releases neither origin record, so the requeue sees both marks.
+
+    The transport acknowledgement precedes consumption. A Discord steer the client
+    accepted and the turn then never consumed is requeued at the turn's end; it
+    must run as a channel human's turn (user and channel marks together, commands
+    off), not as a dashboard human's, whose turn admits dashboard-only directives.
+    Releasing only the channel record at the ack produced exactly that promotion.
+    """
+    client, slot, enqueued, state = await _handler_cancelled_inside_the_steer_rpc(
+        tmp_path, accepted=True
+    )
+    assert slot._pending_steers == ["keep the old name"], "acked, not consumed"
+
+    cr._requeue_unconsumed_steers(state, slot)
+
+    (entry,) = slot._queue
+    assert entry["content"] == "keep the old name"
+    assert entry.get("_directive_user_origin") is True
+    assert entry.get("_directive_channel_origin") is True, "a channel steer stays a channel turn"
+    assert entry.get("meta", {}).get(cr.COMMANDS_OFF_META_KEY) is True
+    assert slot._steer_user_origin == {} and slot._steer_channel_origin == {}
+    assert enqueued == []
+
+
 @pytest.mark.parametrize("channel", [True, False])
 @pytest.mark.asyncio
 async def test_a_requeued_channel_steer_is_turn_content_never_a_dashboard_command(
@@ -1524,7 +1550,7 @@ async def _handler_cancelled_inside_the_steer_rpc(tmp_path, *, accepted: bool):
     # The hand-off task has no await left after the RPC; a few iterations let it finish.
     for _ in range(10):
         await asyncio.sleep(0)
-    return client, slot, enqueued
+    return client, slot, enqueued, state
 
 
 @pytest.mark.asyncio
@@ -1539,14 +1565,22 @@ async def test_a_cancelled_handler_still_reconciles_an_accepted_steer(tmp_path) 
     and strongly held, the hand-off task completes the reconciliation; the caller
     unwinds without the outcome, so no confirmation reaches the closing DM.
     """
-    client, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(tmp_path, accepted=True)
+    client, slot, enqueued, _state = await _handler_cancelled_inside_the_steer_rpc(
+        tmp_path, accepted=True
+    )
 
     steer_row = next((m for m in slot.messages if m.get("meta", {}).get("steer")), None)
     assert steer_row is not None, "the accepted steer has its transcript row"
     assert steer_row["content"] == "keep the old name"
     assert steer_row["meta"].get(HUMAN_TURN_META_KEY) is True
-    assert slot._steer_delivery_ids == {} and slot._steer_user_origin == {}
-    assert slot._steer_channel_origin == {} and slot._steer_admissions == {}
+    assert slot._steer_delivery_ids == {}
+    # Held while the steer is pending: the turn's consumption echo reads them and
+    # the settle releases them (or the teardown requeue does). The channel mark
+    # travels with the user mark, so a requeue of this Discord steer stays a
+    # channel turn.
+    assert slot._steer_user_origin == {"keep the old name": True}
+    assert slot._steer_channel_origin == {"keep the old name": True}
+    assert slot._steer_admissions == {}
     assert slot._pending_steers == ["keep the old name"], "delivered and live: the turn consumes it"
     assert len(slot._steer_audience_fences) == 1, "the audience's record stays for the turn"
     assert slot._queue == [] and enqueued == []
@@ -1565,7 +1599,9 @@ async def test_a_cancelled_handler_still_takes_the_queue_fallback_for_a_declined
     standing and the text nowhere: a pending entry the teardown requeues onto a
     queue the DM was never told about, or discards on a hard kill.
     """
-    client, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(tmp_path, accepted=False)
+    client, slot, enqueued, _state = await _handler_cancelled_inside_the_steer_rpc(
+        tmp_path, accepted=False
+    )
 
     assert [q["content"] for q in slot._queue] == ["keep the old name"]
     assert slot._pending_steers == [] and slot._steer_delivery_ids == {}

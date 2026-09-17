@@ -750,6 +750,7 @@ _AWAIT_FREE_PHASES = (
     "_checklist_resync",
     "_purge_superseded_continuations",
     "_drop_revoked_replays",
+    "_drop_unauthorized_provider_recovery",
     "_replay_vetoed_at_consume",
     "_requeue_auth_retry",
     "_requeue_after_prompt_busy",

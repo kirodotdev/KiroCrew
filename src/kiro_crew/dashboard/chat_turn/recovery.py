@@ -23,12 +23,15 @@ if TYPE_CHECKING:
         USAGE_LIMIT_KIND,
         DashboardState,
         KiroCrewConfig,
+        RecoveryProvenance,
         ResetCause,
         _ChatSlot,
         _has_user_queued_followup,
+        _provider_recovery_is_authorized,
         _remove_queued_by_id,
         build_recovery_requeue,
         effective_session_key,
+        has_recovery_provenance,
         is_synthetic_payload_item,
         logger,
         model_is_unusable,
@@ -596,19 +599,34 @@ async def _purge_superseded_continuations(state: DashboardState, slot: _ChatSlot
     # rebind signal.
     revocation = replays.revalidate(ReplayFamily.CONTINUATION, live)
     if _should_suppress_requeue(slot) or revocation.revoked:
-        # Both auto-continuations carry the same hazard and the same fix: the
-        # post-compaction resume would re-drive a request the user has since
-        # stopped or replaced. Purge either one, and reset whichever one-shot
-        # budget was spent (both resets are idempotent, so no need to tell them
-        # apart per item).
+        # Every head-inserted auto-continuation carries the same hazard and the
+        # same fix: the resume would re-drive a request the user has since
+        # stopped or replaced. Purge whichever one is queued, and reset whichever
+        # one-shot budget was spent (the resets are idempotent, so no need to
+        # tell them apart per item). The provider-budget banner recovery shares
+        # its text with the post-token transient retry, so it is identified by
+        # its host-minted provenance tag, never by content.
         _purgeable = (_PROMISE_ONLY_CONTINUE_MSG, _COMPACTION_CONTINUE_MSG)
         superseded = [
             q
             for q in slot._queue
             if q.get("kind") == FALSE_TOOL_BLOCKER_REPLAY_KIND
-            or (is_synthetic_payload_item(q) and q.get("content") in _purgeable)
+            or (
+                is_synthetic_payload_item(q)
+                and (
+                    q.get("content") in _purgeable
+                    or has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+                )
+            )
         ]
         if superseded:
+            if any(
+                has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+                for q in superseded
+            ):
+                # The banner recovery spent the post-token one-shot at enqueue; a
+                # later unrelated turn must not inherit the spent allowance.
+                slot._posttoken_retry_used = False
             for q in superseded:
                 _drop_queued_replay(state, slot, q["id"])
             # The one-shot budget was spent at enqueue but never dispatched — the
@@ -650,6 +668,49 @@ async def _purge_superseded_continuations(state: DashboardState, slot: _ChatSlot
     return False
 
 
+async def _drop_unauthorized_provider_recovery(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Drop a queued banner recovery once auto-approve is active; True if the queue emptied.
+
+    Banner text can request an ordinary continuation but cannot authorize one.
+    Trust or YOLO may have been granted after the enqueue, and dispatching then
+    would run model-triggered work with no fresh checkpoint, so the approval
+    boundary is re-read here. Only the host-minted provider-budget provenance is
+    eligible: another recovery may carry byte-identical continuation text and
+    keeps its own retry semantics and queue position. Nothing here suspends, so
+    the check-then-dequeue is atomic on the event loop.
+
+    The boundary is read only when such an entry is queued. A scoped-grant check
+    is not a pure read (it retires a lapsed grant and logs that), and a turn
+    already decided its trust once per permission request, so a drain with no
+    banner recovery to judge must not check the grant again.
+    """
+    unsafe = [
+        q
+        for q in slot._queue
+        if has_recovery_provenance(q, RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT)
+    ]
+    if not unsafe or _provider_recovery_is_authorized(state, slot):
+        return False
+    for q in unsafe:
+        _drop_queued_replay(state, slot, q["id"])
+    if not any(has_recovery_provenance(q, RecoveryProvenance.TRANSIENT_RETRY) for q in slot._queue):
+        # The dropped recovery spent the post-token one-shot without running.
+        slot._posttoken_retry_used = False
+    slot.append(
+        "notice",
+        "ℹ️ Auto-continue skipped because auto-approve became active — "
+        "press Continue to finish the request.",
+        "msg msg-info",
+    )
+    logger.info(
+        "Purged %d provider-banner recovery continuation(s) before auto-approved "
+        "dispatch for slot %s",
+        len(unsafe),
+        slot.key,
+    )
+    return not slot._queue
+
+
 async def _requeue_auth_retry(
     slot: _ChatSlot,
     message: str,
@@ -659,6 +720,7 @@ async def _requeue_auth_retry(
     _turn_actor: str,
     _consumed_reported: bool,
     _current_message: dict | None,
+    _provenance: RecoveryProvenance | None,
     _queue_recovery: Callable[..., str],
 ) -> None:
     """Put a runner-authored input that hit a signed-out CLI back at the queue head.
@@ -693,6 +755,7 @@ async def _requeue_auth_retry(
             message,
             kind=_auth_retry_kind,
             extra_meta=_current_meta,
+            provenance=_provenance,
         )
 
 
@@ -703,6 +766,7 @@ async def _requeue_after_prompt_busy(
     _prompt_depth: int,
     _turn_emitted: bool,
     _is_synthetic: bool,
+    _provenance: RecoveryProvenance | None,
     _queue_recovery: Callable[..., str],
 ) -> None:
     """Re-queue a turn whose provider was reset after prompt-busy retries ran out.
@@ -729,6 +793,7 @@ async def _requeue_after_prompt_busy(
             _requeue_text,
             kind=SYNTHETIC_RECOVERY_KIND,
             payload=_requeue_payload,
+            provenance=_provenance if not _turn_emitted else None,
         )
     elif slot._prompt_busy_retries > 3:
         slot.append("error", "Session stuck — please start a new chat.", "msg msg-err")
