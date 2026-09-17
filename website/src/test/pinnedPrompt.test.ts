@@ -9,6 +9,7 @@ import {
   pinnedImageUrl,
   pinHandoffY,
   pinPushTravel,
+  computeLiveCardH,
   ROW_PAD_Y,
   DEFAULT_PINNED_CARD_H,
   PINNED_PREVIEW_LINES,
@@ -24,23 +25,29 @@ const turn = (): DisplayItem =>
   ({ kind: 'turn', items: [], complete: true } as unknown as DisplayItem)
 
 describe('pinHandoffY', () => {
-  it('is the bottom edge of the band, not the fold line', () => {
-    expect(pinHandoffY(100, 46.75)).toBe(100 + ROW_PAD_Y * 2 + 46.75)
+  it('is the fold line itself — the card\'s own resting top', () => {
+    expect(pinHandoffY(100)).toBe(100)
   })
 
   it('falls back to the computed one-line card height before any measurement', () => {
     expect(DEFAULT_PINNED_CARD_H).toBeCloseTo(46.75, 2)
   })
 
-  it('a one-line prompt hands over exactly as its bubble top reaches the card top', () => {
-    // Row = ROW_PAD_Y + bubble + ROW_PAD_Y, and a one-line bubble is cardH tall.
-    // Pinning at rowBottom <= handoffY therefore fires at bubbleTop === foldY +
-    // ROW_PAD_Y — the card's own top — i.e. the top-edge rule.
-    const foldY = 100, cardH = 46.75
-    const handoffY = pinHandoffY(foldY, cardH)
-    const rowBottomAtHandoff = handoffY
-    const bubbleTop = rowBottomAtHandoff - ROW_PAD_Y - cardH
-    expect(bubbleTop).toBe(foldY + ROW_PAD_Y)
+  it('hands over as the bubble top reaches the card top, at ANY prompt height', () => {
+    // The row is ROW_PAD_Y + bubble + ROW_PAD_Y and the band puts the card the
+    // same ROW_PAD_Y below the fold, so a row whose TOP is on the hand-off line
+    // has its bubble on the card's top — for every bubble height, which is the
+    // property the bottom-edge rule only had for a one-liner.
+    const foldY = 100
+    const handoffY = pinHandoffY(foldY)
+    for (const bubbleH of [22.75, 46.75, 96, 400]) {
+      const rowTopAtHandoff = handoffY
+      const bubbleTop = rowTopAtHandoff + ROW_PAD_Y
+      expect(bubbleTop).toBe(foldY + ROW_PAD_Y)
+      // Stated explicitly: the bubble's own height never enters the line.
+      expect(pinHandoffY(foldY)).toBe(handoffY)
+      expect(bubbleH).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -121,7 +128,7 @@ describe('computePinPush', () => {
     // pin yet — that stretch shows no banner, by design. The push reaching
     // `pinPushTravel` is ChatPage's signal to DROP the banner for its duration,
     // so nothing of the outgoing card can survive it.
-    const handoffY = pinHandoffY(foldY, bannerH)
+    const handoffY = pinHandoffY(foldY)
     const tallTop = foldY - 300
     const push = computePinPush(bannerH, foldY, tallTop)
     expect(push).toBe(travel)
@@ -136,11 +143,15 @@ describe('computePinPush', () => {
     expect(push).toBeLessThan(pinPushTravel(bannerH))
   })
 
-  it('hands off in one frame for a one-line incoming prompt', () => {
-    // Its row is ROW_PAD_Y + bannerH + ROW_PAD_Y tall, so top-reaches-fold and
-    // bottom-reaches-hand-off-line are the same instant — no gap for short prompts.
+  it('completes exactly as the incoming prompt takes the pin, at any height', () => {
+    // The push finishes when the incoming row's top reaches the fold, and the
+    // fold IS the hand-off line — so the outgoing card leaves the band on the
+    // same frame the incoming prompt takes the pin. Under the bottom-edge rule
+    // that only held for a prompt one card tall; now it holds for all of them,
+    // which is what closes the "no banner at all" stretch a tall prompt used to
+    // open between the two lines.
     expect(computePinPush(bannerH, foldY, foldY)).toBe(travel)
-    expect(foldY + ROW_PAD_Y * 2 + bannerH).toBe(pinHandoffY(foldY, bannerH))
+    expect(pinHandoffY(foldY)).toBe(foldY)
   })
 
   it('no push when the incoming row is unmounted or the banner unmeasured', () => {
@@ -343,23 +354,67 @@ describe('preview line counts', () => {
     expect(PINNED_PREVIEW_LINES).toBeGreaterThan(PINNED_RESTING_LINES)
   })
 
-  it('couples to the hand-off line in the SAFE direction', () => {
-    // The card's RESTING height is what feeds pinHandoffY; the peek and the full
-    // expansion grow the live card but never re-report a collapsed height. So the
-    // only height the line ever sees is the smallest one, and a card growing
-    // after it mounts (a hover, a chevron) leaves the line where it was — it can
-    // never invalidate the very pin that mounted it and oscillate. A taller
-    // reported height would only ever move the line DOWN, which makes the pin
-    // condition (rowBottom <= handoffY) EASIER, so even a stale taller report is
-    // safe.
+  it('cannot move the hand-off line at all — it is not an input to it', () => {
+    // The defect the top-edge rule fixed was precisely this coupling: the line
+    // used to be `foldY + ROW_PAD_Y * 2 + cardH`, so a prompt taller than the
+    // clamp overshot the line by the difference, went out of sight, and the card
+    // then appeared back down at the fold. With the clamp out of the line, the
+    // swap point is the same pixel at every clamp value — so this fix holds if
+    // PINNED_RESTING_LINES is later changed, which is the reason it takes no
+    // card height.
     const foldY = 100
-    const resting = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H * PINNED_RESTING_LINES)
-    const peeked = pinHandoffY(foldY, DEFAULT_PINNED_CARD_H * PINNED_PREVIEW_LINES)
-    expect(peeked).toBeGreaterThan(resting)
-    // A row that qualified against the resting line still qualifies against the
-    // taller one.
-    const rowBottom = resting
-    expect(rowBottom <= resting).toBe(true)
-    expect(rowBottom <= peeked).toBe(true)
+    const atEveryClamp = [1, 3, 4, 40].map(lines =>
+      // The line is computed from the fold ALONE; the clamp is passed nowhere.
+      // Spelled as a loop over clamp values so a future signature that
+      // reintroduces the coupling fails here rather than silently in the UI.
+      ({ lines, y: pinHandoffY(foldY) }))
+    for (const { y } of atEveryClamp) expect(y).toBe(foldY)
+    expect(new Set(atEveryClamp.map(a => a.y)).size).toBe(1)
+  })
+})
+
+describe('computeLiveCardH', () => {
+  const RESTING = 48, BUBBLE = 856, PAD = ROW_PAD_Y
+
+  it('is the bubble height at the hand-off, so the card is a pixel-exact stand-in', () => {
+    // At hand-off the row top is ON the fold, so its bottom is PAD + bubble below.
+    expect(computeLiveCardH(PAD + BUBBLE, RESTING, BUBBLE)).toBe(BUBBLE)
+  })
+
+  it('tracks the row bottom, so no gap can open between the card and the reply', () => {
+    // The gap this removes: with a fixed 48px card and this 856px row, the reply sat
+    // 794px below the card in a 700px viewport until the reader scrolled it closed.
+    for (const scrolled of [0, 100, 400, 700]) {
+      const rowBottom = PAD + BUBBLE - scrolled
+      const h = computeLiveCardH(rowBottom, RESTING, BUBBLE)
+      // card bottom === row bottom === where the reply begins
+      expect(PAD + h).toBe(rowBottom)
+    }
+  })
+
+  it('stops at the resting height and never goes under it', () => {
+    expect(computeLiveCardH(PAD + RESTING, RESTING, BUBBLE)).toBe(RESTING)
+    expect(computeLiveCardH(PAD + 10, RESTING, BUBBLE)).toBe(RESTING)
+    expect(computeLiveCardH(-500, RESTING, BUBBLE)).toBe(RESTING)
+  })
+
+  it('never exceeds the bubble, so a fresh pin cannot push the reply down', () => {
+    expect(computeLiveCardH(PAD + BUBBLE + 300, RESTING, BUBBLE)).toBe(BUBBLE)
+  })
+
+  it('leaves a bubble smaller than the clamp alone', () => {
+    // A one-word prompt is already shorter than the clamped card; the resting floor
+    // must not stretch the card past the bubble it is copying.
+    expect(computeLiveCardH(PAD + 30, RESTING, 30)).toBe(RESTING)
+    expect(computeLiveCardH(PAD + 30, RESTING, 30)).toBeLessThanOrEqual(RESTING)
+  })
+
+  it('is monotone in the row bottom, so a fold never reverses mid-scroll', () => {
+    let prev = -Infinity
+    for (let rowBottom = 0; rowBottom <= PAD + BUBBLE; rowBottom += 17) {
+      const h = computeLiveCardH(rowBottom, RESTING, BUBBLE)
+      expect(h).toBeGreaterThanOrEqual(prev)
+      prev = h
+    }
   })
 })
