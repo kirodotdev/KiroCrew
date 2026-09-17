@@ -207,6 +207,19 @@ class GatewayLock:
             if not platform_compat.try_acquire_lock(fd, exclusive=True):
                 recorded = _read_pid(fd)
                 os.close(fd)
+                if (
+                    not platform_compat.IS_WINDOWS
+                    and attempt + 1 < _IDENTITY_ATTEMPTS
+                    and recorded is not None
+                    and platform_compat.pid_liveness(recorded) == platform_compat.PID_DEAD
+                ):
+                    # POSIX releases flock when the final inherited descriptor
+                    # closes, but a desktop relaunch can race that teardown.
+                    # Retry only when the stamp's process is confirmed dead: a
+                    # live incumbent must still be refused immediately. A true
+                    # orphaned-flock wedge remains held through every bounded
+                    # attempt and receives the existing diagnosis below.
+                    continue
                 holder, diagnosis = self._diagnose(recorded)
                 raise GatewayLockError(self._home, holder, diagnosis)
             if not _is_same_file(fd, self._path):
