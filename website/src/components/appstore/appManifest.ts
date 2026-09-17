@@ -66,6 +66,20 @@ type ManifestKeys = {
 }
 
 export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
+  'agentcore-observatory': {
+    displayName: 'apps.agentcoreObservatory.manifest.display_name',
+    description: 'apps.agentcoreObservatory.manifest.description',
+    pageLabel: 'apps.agentcoreObservatory.manifest.page_label',
+    highlights: [
+      'apps.agentcoreObservatory.manifest.highlight_1',
+      'apps.agentcoreObservatory.manifest.highlight_2',
+      'apps.agentcoreObservatory.manifest.highlight_3',
+      'apps.agentcoreObservatory.manifest.highlight_4',
+      'apps.agentcoreObservatory.manifest.highlight_5',
+    ],
+    useCases: ['apps.agentcoreObservatory.manifest.use_case_1'],
+    configuration: ['apps.agentcoreObservatory.manifest.configuration_1'],
+  },
   'agent-worlds': {
     displayName: 'apps.agentWorlds.manifest.display_name',
     description: 'apps.agentWorlds.manifest.description',
