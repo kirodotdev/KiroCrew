@@ -117,6 +117,13 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_test,
     api_mcp_oauth_relay,
 )
+
+# ── Session crew log (handlers/crew_log.py) ──
+from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
+    api_session_crew_log,
+    api_session_crew_log_projection,
+    install_crew_log_publisher,
+)
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
     api_cron_batch_delete,

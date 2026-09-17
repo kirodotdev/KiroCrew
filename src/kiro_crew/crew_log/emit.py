@@ -489,6 +489,11 @@ _warned_high_water = False
 #: again -- and by ``reset_caches``.
 _live_overage_reported = False
 
+#: Consumers to wake when a session's log grows. Registered by
+#: :func:`add_growth_listener`, held here rather than imported so this writer
+#: names no reader.
+_growth_listeners: "list[Callable[[str], None]]" = []
+
 
 _subsystem: Any = None
 
@@ -725,6 +730,39 @@ def _report(what: str, exc: BaseException) -> None:
         )
     else:
         logger.debug("session log %s failed", what, exc_info=True)
+
+
+def add_growth_listener(listener: "Callable[[str], None]") -> None:
+    """Call *listener* with a session id after that session's log GROWS.
+
+    The one signal a consumer of this stream needs and cannot get from the file:
+    that there is something new to read. It fires once per drained batch rather
+    than once per entry, because the write-behind already groups a turn's burst
+    into one pass, and a listener woken per entry would do the same work several
+    times over the same read.
+
+    Registered rather than imported: this module is imported BY the dashboard, so
+    calling into a dashboard publisher from here would close an import cycle and
+    would put a consumer's name in the writer's own code. A listener that raises
+    is reported like a failed write and cannot stop the drain.
+
+    It runs on the WRITER thread, so a listener that does real work must hand it
+    to its own loop. Registering the same callable twice registers it twice; the
+    gateway installs its publisher once, at startup.
+    """
+    with _lock:
+        _growth_listeners.append(listener)
+
+
+def _notify_growth(session_id: str) -> None:
+    """Tell every listener *session_id* has new entries. Never raises."""
+    with _lock:
+        listeners = list(_growth_listeners)
+    for listener in listeners:
+        try:
+            listener(session_id)
+        except Exception as exc:  # pragma: no cover - a listener's own failure
+            _report("growth listener", exc)
 
 
 def _on_event_loop() -> bool:
@@ -1463,42 +1501,52 @@ def _write_batch(session_id: str, jobs: "list[_PendingJob]") -> bool:
     global _pending_total_bytes
     landed = False
     loss_marker_landed = False
-    for index, job in enumerate(jobs):
-        if job.loss is None:
-            with _lock:
-                loss_waiting = session_id in _pending_loss
-            if loss_waiting:
-                if landed:
-                    _note_progress(session_id)
-                _retain_without_failure(session_id, jobs[index:])
-                return loss_marker_landed
-        failure = _run_job(job.job, job.what)
-        if failure is None:
-            with _lock:
-                if job.counted:
-                    _pending_total_bytes -= job.nbytes
-                    job.counted = False
-            _finish(job)
-            landed = True
-            loss_marker_landed = loss_marker_landed or job.loss is not None
-            continue
-        if _permanent(failure):
-            if job.loss is not None:
-                _drop(session_id, jobs[index:], mark=True)
-                return False
-            # A permanent refusal owes a marker like any other loss. `_permanent`
-            # cannot split a LedgerError into its two causes -- a malformed entry
-            # the format rejected, or a well-formed entry refused because another
-            # process owns this log -- and the second is a genuine hole. Marking
-            # unconditionally is what makes the distinction unnecessary.
-            _drop(session_id, [job], mark=True)
-            continue
-        if landed:
-            _note_progress(session_id)
-        _retain(session_id, jobs[index:])
+    # One notification per pass, on whichever way this returns. The four exits
+    # each mean something different to the buffer and nothing different to a
+    # reader, whose only question is whether there is anything new on disk -- so
+    # the signal belongs where every exit passes through rather than repeated at
+    # each of them, where an exit added later would silently miss it.
+    try:
+        for index, job in enumerate(jobs):
+            if job.loss is None:
+                with _lock:
+                    loss_waiting = session_id in _pending_loss
+                if loss_waiting:
+                    if landed:
+                        _note_progress(session_id)
+                    _retain_without_failure(session_id, jobs[index:])
+                    return loss_marker_landed
+            failure = _run_job(job.job, job.what)
+            if failure is None:
+                with _lock:
+                    if job.counted:
+                        _pending_total_bytes -= job.nbytes
+                        job.counted = False
+                _finish(job)
+                landed = True
+                loss_marker_landed = loss_marker_landed or job.loss is not None
+                continue
+            if _permanent(failure):
+                if job.loss is not None:
+                    _drop(session_id, jobs[index:], mark=True)
+                    return False
+                # A permanent refusal owes a marker like any other loss.
+                # `_permanent` cannot split a LedgerError into its two causes -- a
+                # malformed entry the format rejected, or a well-formed entry
+                # refused because another process owns this log -- and the second
+                # is a genuine hole. Marking unconditionally is what makes the
+                # distinction unnecessary.
+                _drop(session_id, [job], mark=True)
+                continue
+            if landed:
+                _note_progress(session_id)
+            _retain(session_id, jobs[index:])
+            return loss_marker_landed
+        _note_progress(session_id)
         return loss_marker_landed
-    _note_progress(session_id)
-    return loss_marker_landed
+    finally:
+        if landed:
+            _notify_growth(session_id)
 
 
 def _retain_without_failure(session_id: str, jobs: "list[_PendingJob]") -> None:

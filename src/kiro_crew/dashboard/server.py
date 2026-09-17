@@ -4416,6 +4416,12 @@ async def start_dashboard(
     # failed warm never blocks readiness.
     await warm_sel_singleton()
 
+    # Bind the crew-log push to this loop and register it with the session
+    # emitter. Installed here rather than lazily on a first request: the frame
+    # exists so a watching client learns of a growth it did not ask for, and a
+    # publisher armed by the first read would miss every growth before it.
+    handlers.install_crew_log_publisher(state)
+
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
         # Outermost: privacy-safe per-route latency. Times the FULL
