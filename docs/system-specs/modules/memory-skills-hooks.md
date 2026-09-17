@@ -1765,12 +1765,20 @@ returns its persisted receipt without another edit.
 ### Supersession retirement, and why it is bounded
 
 `_retire_stale_episodic` dispatches by algorithm version. Global V1 retains its
-original similarity/exact-phrase heuristic, including its original audit values
-and absence of a retirement count cap. The bounds below apply to private V2.
-An unchanged V2 semantic value does not trigger retirement.
+original similarity/exact-phrase heuristic and its original audit values; the
+heuristic decides WHICH episodes a write may retire. Two bounds are shared by
+both versions: the per-write ceiling below, and the trigger itself -- an
+unchanged semantic value (value-level JSON equality) retires nothing on either
+algorithm, because the episodes it would retire restate the still-current
+value. On V1 the ceiling is ONE budget across the vector arm and the text
+fallback, spent by the vector arm first (its `limit=50` pool is a search width,
+not a retirement width), and the fallback's `LIMIT` fetches only what the
+remaining budget can retire. The remaining bounds below apply to private V2.
 
 Three bounds make it acceptable, and each is pinned by
-[`test/test_episodic_retirement.py`](../../../test/test_episodic_retirement.py):
+[`test/test_episodic_retirement.py`](../../../test/test_episodic_retirement.py)
+(V2) and the V1 cases in
+[`test/test_member_memory_algorithm.py`](../../../test/test_member_memory_algorithm.py):
 
 - **An assertion linked to the full semantic key.** A candidate clause must
   start with the full key and its value assignment, for example `pref.color:
@@ -1780,7 +1788,8 @@ Three bounds make it acceptable, and each is pinned by
   ignores case and JSON quotes; word boundaries keep `redwood` from matching
   `red`. Negation, historical markers and uncertain paraphrases stay active.
   This conservative rule does not call an embedding model.
-- **A per-write ceiling**, `_MAX_EPISODIC_RETIRED_PER_WRITE` = 3. A candidate beyond the
+- **A per-write ceiling**, `_MAX_EPISODIC_RETIRED_PER_WRITE` = 3, on both versions. A
+  candidate beyond the
   cap stays **alive**: a stale episode is outranked by the newer semantic row that
   contradicts it, while a wrongly retired one is invisible to every reader, so the
   overflow direction is "keep" and the cap drops the DELETE rather than deferring it.

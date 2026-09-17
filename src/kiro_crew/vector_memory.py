@@ -2469,17 +2469,16 @@ class VectorMemoryStore:
         # (history consolidation writes N semantic + M episodic items in one
         # thread), and an exception raised after a successful commit discarded
         # every remaining item in the batch.
+        #
+        # A rewrite that changes nothing supersedes nothing, on EITHER algorithm:
+        # the episodes it would retire restate the still-current value. Value-level
+        # equality, not a byte compare: a legacy row can persist the escaped dump,
+        # so a byte compare sees an identical non-ASCII value as changed and
+        # retires episodes that assert the still-current value.
         if (
             existing
             and not existing["is_deleted"]
-            and (
-                self.algorithm_version != "v2"
-                # Value-level equality, not a byte compare: a legacy row can
-                # persist the escaped dump, so a byte compare sees an
-                # identical non-ASCII value as changed and retires episodes
-                # that assert the still-current value.
-                or not _json_value_equal(existing["value_json"], value_json)
-            )
+            and not _json_value_equal(existing["value_json"], value_json)
         ):
             old_val = existing["value_json"]
             try:
@@ -2602,7 +2601,11 @@ class VectorMemoryStore:
         )
 
     def _retire_stale_episodic(self, key: str, old_value: str) -> None:
-        """V1 keeps its original heuristic; member V2 requires literal evidence."""
+        """V1 keeps its original heuristic; member V2 requires literal evidence.
+
+        Both share ``_MAX_EPISODIC_RETIRED_PER_WRITE``: the heuristic decides WHICH
+        episodes a write may retire, the cap decides HOW MANY.
+        """
         if self.algorithm_version != "v2":
             self._retire_stale_episodic_v1(key, old_value)
             return
@@ -2631,6 +2634,13 @@ class VectorMemoryStore:
         Uses vector similarity search when embeddings are available (catches
         rephrased references like "User prefers red" for key "color", old "red").
         Falls back to exact phrase text matching otherwise.
+
+        ``_MAX_EPISODIC_RETIRED_PER_WRITE`` is ONE budget for the whole call, spent
+        by the vector arm first and then by the text fallback -- not a budget per
+        arm, which would let a write retire twice the cap. A candidate beyond the
+        cap stays alive; the vector arm's pool (``limit=50``) is a search width,
+        not a retirement width, and the fallback's ``LIMIT`` fetches only what the
+        remaining budget can retire.
         """
         seen: set[str] = set()
 
@@ -2651,11 +2661,14 @@ class VectorMemoryStore:
                 # cost ~71ms per superseding write at 1,000 pooled candidates
                 # per superseding write. mmr also SIZES the candidate pool
                 # (limit vs _MMR_MAX_POOL), so keep the limit wide: the 0.7
-                # threshold, not the pool cut, decides what gets retired.
+                # threshold, not the pool cut, decides WHICH rows are candidates;
+                # the per-write cap decides how many of them are retired.
                 results = self.search_episodic(
                     query_embedding=emb, query_text="", limit=50, mmr=False
                 )
                 for r in results:
+                    if len(seen) >= _MAX_EPISODIC_RETIRED_PER_WRITE:
+                        break
                     if r.get("cosine_sim", 0) > 0.7 and r["id"] not in seen:
                         seen.add(r["id"])
                         self.db.execute(
@@ -2671,12 +2684,18 @@ class VectorMemoryStore:
                             "semantic_update",
                         )
 
-            # Text fallback: exact phrase matching
+            # Text fallback: exact phrase matching. The rows the vector arm just
+            # tombstoned are already is_deleted=1 on this connection, so the
+            # ``seen`` check only guards the two patterns against each other.
             patterns = [f"%{key_suffix}: {old_value}%", f"%{key_suffix} {old_value}%"]
             for pat in patterns:
+                remaining = _MAX_EPISODIC_RETIRED_PER_WRITE - len(seen)
+                if remaining <= 0:
+                    break
                 for r in self.db.execute(
-                    "SELECT id, text FROM episodic_memories WHERE is_deleted = 0 AND text LIKE ?",
-                    (pat,),
+                    "SELECT id, text FROM episodic_memories WHERE is_deleted = 0 AND text LIKE ? "
+                    "ORDER BY created_at DESC, id LIMIT ?",
+                    (pat, remaining),
                 ).fetchall():
                     if r["id"] not in seen:
                         seen.add(r["id"])

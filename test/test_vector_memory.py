@@ -19,6 +19,7 @@ import kiro_crew.embeddings as embeddings_mod
 from kiro_crew.vector_memory import (
     _HAS_FAISS,
     _HAS_NUMPY,
+    _MAX_EPISODIC_RETIRED_PER_WRITE,
     _MMR_MAX_POOL,
     SemanticRejectCode,
     VectorMemoryStore,
@@ -3313,15 +3314,17 @@ class TestSharedConnectionLockDiscipline:
         assert row["is_deleted"] == 1
 
     def test_retire_recall_survives_without_the_mmr_pool(self, tmp_path: Path) -> None:
-        """Retirement recall must not collapse to ten rows when MMR is off.
+        """The vector arm alone fills the per-write cap when MMR is off.
 
         ``mmr`` does not only pick a reranker — it sizes the candidate pool
         (``_MMR_MAX_POOL`` vs ``limit``), so the retirement lookup keeps a wide
         ``limit``: the caller's own ``cosine_sim > 0.7`` threshold, not the pool
-        cut, decides what gets retired. The row texts avoid both text-LIKE
-        fallback patterns ("editor: vim" / "editor vim"), so only the vector
-        branch can retire them; with a limit of 10 (or the old MMR top-10) five
-        of the fifteen conflicting rows would escape retirement.
+        cut, decides which rows are candidates. The row texts avoid both
+        text-LIKE fallback patterns ("editor: vim" / "editor vim"), so only the
+        vector branch can retire them, and the write must retire exactly
+        ``_MAX_EPISODIC_RETIRED_PER_WRITE`` of the fifteen conflicting rows: fewer
+        means the vector branch under-delivered, more means the cap is not
+        applied on V1.
         """
         dim = 64
         store = VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=dim)
@@ -3360,7 +3363,9 @@ class TestSharedConnectionLockDiscipline:
         remaining = store.db.execute(
             "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted = 0"
         ).fetchone()[0]
-        assert remaining == 0, f"{remaining} superseded episodic rows escaped retirement"
+        assert (
+            remaining == len(texts) - _MAX_EPISODIC_RETIRED_PER_WRITE
+        ), f"{len(texts) - remaining} rows retired; the vector arm must spend exactly the cap"
 
 
 class TestLockedFetchHelpers:
