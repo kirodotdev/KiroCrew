@@ -31,6 +31,25 @@ describe('slotDraftStore', () => {
     })
   })
 
+  it('returns no inherited members for previously unseen slot keys', () => {
+    const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', sanitize: isString })
+    const loaded = s.load()
+
+    expect(Object.getPrototypeOf(loaded)).toBeNull()
+    for (const slot of ['toString', 'constructor', 'hasOwnProperty']) {
+      expect(loaded[slot]).toBeUndefined()
+    }
+  })
+
+  it('exposes only the surface its thin instances consume', () => {
+    // Every consumer re-exports load/set/save and discards save's result; a
+    // per-slot timestamp accessor or a boolean save has no caller, so neither
+    // is part of the factory. Persistence outcomes are observed through storage.
+    const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+    expect(Object.keys(s).sort()).toEqual(['__resetForTests', 'load', 'save', 'set'])
+    expect(s.save({ 'chat-1': 'hi' })).toBeUndefined()
+  })
+
   describe('corruption + emptiness guards', () => {
     it('returns {} on missing, corrupt, or non-object storage', () => {
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', sanitize: isString })
@@ -236,6 +255,42 @@ describe('slotDraftStore', () => {
       expect(s.load()).toEqual({ 'chat-fresh': 'recent' })
     })
 
+    it('retries pairing when another tab commits between sidecar and body reads', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-02-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const expiredAt = Date.now() - TTL - 1
+      const committedAt = Date.now()
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'expired body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': expiredAt }))
+
+      const originalGetItem = Storage.prototype.getItem
+      const originalSetItem = Storage.prototype.setItem
+      let firstBodyRead = true
+      Storage.prototype.getItem = function(key: string) {
+        if (key === 'k' && firstBodyRead) {
+          firstBodyRead = false
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ 'chat-1': committedAt }))
+          originalSetItem.call(this, 'k', JSON.stringify({ 'chat-1': 'concurrent body' }))
+        }
+        return originalGetItem.call(this, key)
+      }
+      try {
+        expect(s.load()).toEqual({ 'chat-1': 'concurrent body' })
+      } finally {
+        Storage.prototype.getItem = originalGetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'concurrent body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': committedAt,
+      })
+    })
+
     it('editing a stale entry refreshes its timestamp', () => {
       vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
@@ -254,6 +309,126 @@ describe('slotDraftStore', () => {
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
       localStorage.setItem('k', JSON.stringify({ 'chat-legacy': 'pre-ttl' }))
       expect(s.load()).toEqual({ 'chat-legacy': 'pre-ttl' })
+    })
+
+    it('keeps sparse legacy drafts whose slot names are inherited Object members', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const inherited = ['toString', 'constructor', 'hasOwnProperty']
+      localStorage.setItem('k', JSON.stringify(Object.fromEntries(
+        inherited.map(slot => [slot, `newest ${slot} draft`]),
+      )))
+
+      const loaded = s.load()
+      const issuedAt = Date.now()
+      const sidecar = () => JSON.parse(localStorage.getItem('k-ts') || '{}') as Record<string, number>
+      for (const slot of inherited) {
+        expect(loaded[slot]).toBe(`newest ${slot} draft`)
+        expect(sidecar()[slot]).toBe(issuedAt)
+      }
+
+      vi.setSystemTime(issuedAt + 1_000)
+      const reloaded = s.load()
+      for (const slot of inherited) {
+        expect(reloaded[slot]).toBe(`newest ${slot} draft`)
+        expect(sidecar()[slot]).toBe(issuedAt)
+      }
+    })
+
+    it('declines missing-timestamp repair after a concurrent body-only commit', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const priorSidecar = JSON.stringify({ keep: Date.now() })
+      localStorage.setItem('k', JSON.stringify({ keep: 'same', legacy: 'old body' }))
+      localStorage.setItem('k-ts', priorSidecar)
+
+      const originalGetItem = Storage.prototype.getItem
+      const originalSetItem = Storage.prototype.setItem
+      let bodyReads = 0
+      Storage.prototype.getItem = function(key: string) {
+        if (key === 'k' && ++bodyReads === 3) {
+          originalSetItem.call(this, 'k', JSON.stringify({ keep: 'same' }))
+        }
+        return originalGetItem.call(this, key)
+      }
+      try {
+        expect(s.load()).toEqual({ keep: 'same', legacy: 'old body' })
+      } finally {
+        Storage.prototype.getItem = originalGetItem
+      }
+
+      expect(localStorage.getItem('k-ts')).toBe(priorSidecar)
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({ keep: 'same' })
+    })
+
+    it('declines missing-timestamp repair after a concurrent sidecar-only commit', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const concurrentAt = Date.now() + 1_000
+      localStorage.setItem('k', JSON.stringify({ legacy: 'body' }))
+
+      const originalGetItem = Storage.prototype.getItem
+      const originalSetItem = Storage.prototype.setItem
+      let bodyReads = 0
+      Storage.prototype.getItem = function(key: string) {
+        if (key === 'k' && ++bodyReads === 3) {
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ legacy: concurrentAt }))
+        }
+        return originalGetItem.call(this, key)
+      }
+      try {
+        expect(s.load()).toEqual({ legacy: 'body' })
+      } finally {
+        Storage.prototype.getItem = originalGetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        legacy: concurrentAt,
+      })
+    })
+
+    it('does not roll back a failed repair over a concurrent complete pair', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const concurrentAt = Date.now() + 1_000
+      localStorage.setItem('k', JSON.stringify({ legacy: 'old body' }))
+
+      const originalSetItem = Storage.prototype.setItem
+      let injected = false
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k-ts' && !injected) {
+          injected = true
+          originalSetItem.call(this, key, value)
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ legacy: concurrentAt }))
+          originalSetItem.call(this, 'k', JSON.stringify({ legacy: 'concurrent body' }))
+          throw new Error('failed after side effect')
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        expect(s.load()).toEqual({ legacy: 'old body' })
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        legacy: 'concurrent body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        legacy: concurrentAt,
+      })
     })
 
     it('load persists stamped legacy timestamps so reload does not reset TTL', () => {
@@ -282,8 +457,42 @@ describe('slotDraftStore', () => {
       expect(s.load()).toEqual({})
     })
 
-    it('writes timestamps before drafts to survive partial quota failure', () => {
+    it('restores in-memory timestamps when the sidecar write fails', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const previousUpdatedAt = Date.now()
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'old body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': previousUpdatedAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'new body', previousUpdatedAt + 1)
+
+      const orig = Storage.prototype.setItem
+      Storage.prototype.setItem = function(k: string, v: string) {
+        if (k === 'k-ts') throw new Error('QuotaExceeded')
+        return orig.call(this, k, v)
+      }
+      try { s.save(drafts) }
+      finally { Storage.prototype.setItem = orig }
+
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({ 'chat-1': previousUpdatedAt })
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({ 'chat-1': 'old body' })
+      // The in-memory map was rolled back too: the next healthy save re-persists
+      // the prior stamp, not the one the failed attempt had issued. Observed
+      // before any load(), which would refresh the map from storage anyway.
+      s.save(drafts)
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({ 'chat-1': previousUpdatedAt })
+      expect(s.load()).toEqual({ 'chat-1': 'new body' })
+    })
+
+    it('restores timestamps when the body write fails after the sidecar write', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const previousUpdatedAt = Date.now()
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'old body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': previousUpdatedAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'new body', 456)
+
       const calls: string[] = []
       const orig = Storage.prototype.setItem
       Storage.prototype.setItem = function(k: string, v: string) {
@@ -291,10 +500,279 @@ describe('slotDraftStore', () => {
         if (calls.length === 2) throw new Error('QuotaExceeded')
         return orig.call(this, k, v)
       }
-      try { s.save({ 'chat-1': 'content' }) }
+      try { s.save(drafts) }
       finally { Storage.prototype.setItem = orig }
-      expect(calls[0]).toBe('k-ts')
-      expect(calls[1]).toBe('k')
+
+      expect(calls).toEqual(['k-ts', 'k', 'k-ts'])
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({ 'chat-1': 'old body' })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({ 'chat-1': previousUpdatedAt })
+      // In-memory rollback, observed before load() refreshes the map from storage.
+      s.save(drafts)
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({ 'chat-1': previousUpdatedAt })
+      expect(s.load()).toEqual({ 'chat-1': 'new body' })
+    })
+
+    it('rolls back a partially accepted sidecar write while the pair is still owned', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const previousUpdatedAt = Date.now()
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'old body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': previousUpdatedAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'new body', previousUpdatedAt + 1)
+
+      const originalSetItem = Storage.prototype.setItem
+      let failed = false
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k-ts' && !failed) {
+          failed = true
+          originalSetItem.call(this, key, value)
+          throw new Error('failed after side effect')
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'old body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': previousUpdatedAt,
+      })
+    })
+
+    it('does not roll back a partial sidecar write over a concurrent pair', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const previousUpdatedAt = Date.now()
+      const concurrentAt = previousUpdatedAt + 2
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'old body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': previousUpdatedAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'attempted body', previousUpdatedAt + 1)
+
+      const originalSetItem = Storage.prototype.setItem
+      let failed = false
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k-ts' && !failed) {
+          failed = true
+          originalSetItem.call(this, key, value)
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ 'chat-1': concurrentAt }))
+          originalSetItem.call(this, 'k', JSON.stringify({ 'chat-1': 'concurrent body' }))
+          throw new Error('failed after concurrent commit')
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'concurrent body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': concurrentAt,
+      })
+      expect(s.load()).toEqual({ 'chat-1': 'concurrent body' })
+    })
+
+    it('treats an accepted body write that throws afterward as committed', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const drafts: Record<string, string> = {}
+      s.set(drafts, 'chat-1', 'new body', 456)
+
+      const originalSetItem = Storage.prototype.setItem
+      let failed = false
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k' && !failed) {
+          failed = true
+          originalSetItem.call(this, key, value)
+          throw new Error('failed after side effect')
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'new body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': 456,
+      })
+    })
+
+    it('repairs a successful body whose same-stamp sidecar was rolled back', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const expiredAt = Date.now() - TTL - 1
+      const sharedUpdatedAt = Date.now()
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'expired body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': expiredAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'surviving body', sharedUpdatedAt)
+
+      const originalSetItem = Storage.prototype.setItem
+      let sidecarWasRolledBack = false
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k-ts' && !sidecarWasRolledBack) {
+          sidecarWasRolledBack = true
+          // Equivalent durable state to a failed same-stamp writer restoring
+          // the old sidecar after this writer's sidecar operation returned.
+          return
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'surviving body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': sharedUpdatedAt,
+      })
+      s.__resetForTests()
+      expect(s.load()).toEqual({ 'chat-1': 'surviving body' })
+    })
+
+    it('does not restore an old sidecar over a concurrent body using the same sidecar', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const previousUpdatedAt = Date.now()
+      const sharedUpdatedAt = previousUpdatedAt + 1
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'old body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': previousUpdatedAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'attempted body', sharedUpdatedAt)
+
+      const originalSetItem = Storage.prototype.setItem
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k') {
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ 'chat-1': sharedUpdatedAt }))
+          originalSetItem.call(this, 'k', JSON.stringify({ 'chat-1': 'concurrent body' }))
+          throw new Error('attempted body failed')
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'concurrent body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': sharedUpdatedAt,
+      })
+    })
+
+    it('lets a sidecar-first concurrent writer finish after failed-body rollback', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const previousUpdatedAt = Date.now()
+      const concurrentAt = previousUpdatedAt + 2
+      localStorage.setItem('k', JSON.stringify({ 'chat-1': 'old body' }))
+      localStorage.setItem('k-ts', JSON.stringify({ 'chat-1': previousUpdatedAt }))
+      const drafts = s.load()
+      s.set(drafts, 'chat-1', 'attempted body', previousUpdatedAt + 1)
+
+      const originalSetItem = Storage.prototype.setItem
+      Storage.prototype.setItem = function(key: string, value: string) {
+        if (key === 'k') {
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ 'chat-1': concurrentAt }))
+          throw new Error('body write failed')
+        }
+        return originalSetItem.call(this, key, value)
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+      originalSetItem.call(localStorage, 'k', JSON.stringify({ 'chat-1': 'concurrent body' }))
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'concurrent body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': concurrentAt,
+      })
+    })
+
+    it('keeps a later same-body concurrent pair after this save succeeds', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const drafts: Record<string, string> = {}
+      s.set(drafts, 'chat-1', 'shared body', 456)
+
+      const originalSetItem = Storage.prototype.setItem
+      Storage.prototype.setItem = function(key: string, value: string) {
+        const result = originalSetItem.call(this, key, value)
+        if (key === 'k') {
+          originalSetItem.call(this, 'k-ts', JSON.stringify({ 'chat-1': 789 }))
+          originalSetItem.call(this, 'k', JSON.stringify({ 'chat-1': 'shared body' }))
+        }
+        return result
+      }
+      try {
+        s.save(drafts)
+      } finally {
+        Storage.prototype.setItem = originalSetItem
+      }
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'shared body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': 789,
+      })
+
+      // Equal body bytes do not prove this writer still owns the pair. Adopt
+      // the newer durable sidecar before the next healthy save, or this write
+      // would downgrade 789 back to this writer's 456.
+      s.save({ 'chat-1': 'shared body' })
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'shared body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': 789,
+      })
+    })
+
+    it('legacy TTL mode keeps the raw body and timestamp sidecar contract', () => {
+      const s = createSlotDraftStore<string>({
+        key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString,
+      })
+      const drafts: Record<string, string> = {}
+      s.set(drafts, 'chat-1', 'legacy body', 456)
+      s.save(drafts)
+
+      expect(JSON.parse(localStorage.getItem('k') || '{}')).toEqual({
+        'chat-1': 'legacy body',
+      })
+      expect(JSON.parse(localStorage.getItem('k-ts') || '{}')).toEqual({
+        'chat-1': 456,
+      })
+      expect(localStorage.getItem('k')).not.toContain('__slotDraftStore')
     })
 
     it('no ttlMs = no timestamp sidecar written', () => {

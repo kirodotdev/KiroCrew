@@ -25,11 +25,13 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     resolve_stop_sentinel,
 )
 from kiro_crew.dashboard.handlers import source_providers
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
     stale_owner_session_response,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.goal_drafts import get_goal_draft_store
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_AGENT_TURNS,
     DEFAULT_MONITOR_CADENCE_SECS,
@@ -465,6 +467,82 @@ def _monitor_config(
         ),
         wake_instructions=wake.strip(),
     )
+
+
+async def api_goal_draft_get(request: web.Request) -> web.Response:
+    """GET /api/autonudge/draft/slot/{slot_key} — canonical goal form draft."""
+
+    denied = await _require_monitor_owner(request, "goal_draft_get")
+    if denied is not None:
+        return denied
+    try:
+        snapshot = await asyncio.to_thread(
+            get_goal_draft_store().get,
+            request.match_info["slot_key"],
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+    except OSError:
+        logger.warning("Could not read goal draft", exc_info=True)
+        return web.json_response(
+            {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+            status=503,
+        )
+    return web.json_response(snapshot.to_public_dict())
+
+
+async def api_goal_draft_put(request: web.Request) -> web.Response:
+    """PUT /api/autonudge/draft/slot/{slot_key} — reconcile one goal draft.
+
+    ``draft: null`` writes a tombstone rather than deleting the timestamp, so a
+    stale browser-local value cannot resurrect a goal cleared on another device.
+    Live edits use server-monotonic arrival ordering; first-sync migrations use
+    the bounded browser ``updated_at`` value.
+    """
+
+    denied = await _require_monitor_owner(request, "goal_draft_put")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None
+    try:
+        if "draft" not in body:
+            raise ValueError("draft is required")
+        draft = body["draft"]
+        if draft is not None and not isinstance(draft, dict):
+            raise ValueError("draft must be an object or null")
+        if draft is not None:
+            required = ("message", "idle_secs", "max_cycles")
+            if any(field not in draft for field in required):
+                raise ValueError("draft must include message, idle_secs, and max_cycles")
+            if draft["message"] is None:
+                raise ValueError("draft message must not be null")
+        updated_at = body.get("updated_at")
+        if isinstance(updated_at, bool) or not isinstance(updated_at, (int, float)):
+            raise ValueError("updated_at must be a finite timestamp")
+        migration = body.get("migration", False)
+        if not isinstance(migration, bool):
+            raise ValueError("migration must be a boolean")
+        snapshot = await asyncio.to_thread(
+            get_goal_draft_store().put,
+            request.match_info["slot_key"],
+            message=None if draft is None else draft["message"],
+            idle_secs=None if draft is None else draft["idle_secs"],
+            max_cycles=None if draft is None else draft["max_cycles"],
+            updated_at=updated_at,
+            migration=migration,
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+    except OSError:
+        logger.warning("Could not persist goal draft", exc_info=True)
+        return web.json_response(
+            {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+            status=503,
+        )
+    return web.json_response(snapshot.to_public_dict())
 
 
 async def api_autonudge_list(request: web.Request) -> web.Response:
