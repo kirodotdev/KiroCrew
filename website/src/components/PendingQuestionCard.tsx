@@ -14,17 +14,9 @@ interface PendingQuestionCardProps {
    *  `ask_id`, nothing is blocked on them) and when the wait has provably
    *  expired, so the user's input is not silently dropped. */
   onFallbackSend: (text: string) => void
-  /**
-   * Send the answer as a message IMMEDIATELY (no composer round-trip).
-   *
-   * Used only by the no-``ask_id`` card, where the card IS the primary
-   * interaction: nothing is blocked, so there is no expired wait to guard and
-   * no 404 to recover from, and pre-filling the composer would cost the user a
-   * second click for no safety benefit. ``onFallbackSend`` keeps its original
-   * job — recovering an answer whose blocked wait has already vanished, where
-   * an explicit retry IS the right behaviour. Optional so existing callers and
-   * tests that pass only ``onFallbackSend`` keep working unchanged.
-   */
+  /** Send a no-``ask_id`` card's answer as chat input. The owning surface
+   *  chooses ordinary next-turn delivery when idle and steer delivery when a
+   *  native AskUserQuestion card is waiting inside the active turn. */
   onDirectSend?: (text: string) => void
 }
 

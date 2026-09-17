@@ -65,13 +65,13 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
-function makeStore(slotKey: string, busy = false) {
+function makeStore(slotKey: string, busy = false, turnRunning = false) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: slotKey, messages: 0, running: false, subagents_running: busy, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: slotKey, messages: 0, running: turnRunning, subagents_running: busy, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -79,9 +79,9 @@ function makeStore(slotKey: string, busy = false) {
   })
 }
 
-function renderPane(slotKey: string, busy = false) {
+function renderPane(slotKey: string, busy = false, turnRunning = false) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const store = makeStore(slotKey, busy)
+  const store = makeStore(slotKey, busy, turnRunning)
   return renderWithStore(store, qc, slotKey)
 }
 
@@ -373,6 +373,30 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     // No response means no server reason, so the connectivity copy is correct here.
     await waitFor(() => expect(errorsIn(store, 'pane-generic')).toHaveLength(1))
     expect(errorsIn(store, 'pane-generic')[0].content).toBe(i18nT('pages.chatPage.send_failed_connection'))
+  })
+
+  it('steers a live native question answer into the waiting turn', async () => {
+    const { store } = renderPane('pane-live-question', false, true)
+    await screen.findAllByRole('textbox')
+    act(() => {
+      // Native AskUserQuestion emits its card while the ACP turn is still
+      // running. Model a reconnect before any local stream frame: the server
+      // slot row is the only positive running signal. With no card_id, the
+      // answer must enter that live turn instead of queueing behind it.
+      store.dispatch(setQuestionCard({
+        slot: 'pane-live-question',
+        questions: [{
+          question: 'Pick a trust model',
+          options: [{ label: 'Public only' }],
+        }],
+      }))
+    })
+
+    fireEvent.click(await screen.findByText('Public only'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(api.sendChat).mock.calls[0][5]).toBe(true)
   })
 
   it('reports a REFUSED question-card answer instead of losing it (#4217)', async () => {

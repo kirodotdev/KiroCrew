@@ -54,6 +54,8 @@ agent calls ask_question
 
 The tool result tells the agent to end its turn. The server records the card as `needs_input` so a reconnect can rehydrate it from `GET /api/ask-question/pending`.
 
+The dashboard also supports native `AskUserQuestion` cards emitted while an ACP turn is still waiting. For those live cards, Submit steers the answer into the active turn instead of queueing it behind that turn. An `ask_question` MCP card normally appears after its turn has ended, so its answer starts the next ordinary turn.
+
 ## Rendering and answers
 
 `PendingQuestionCard` is shared by the main chat view and session panes. `QuestionCard` renders an optional uppercase header badge, the question text, labeled options with optional descriptions, and a custom-answer field.
