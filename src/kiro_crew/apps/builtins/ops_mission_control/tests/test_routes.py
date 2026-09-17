@@ -641,6 +641,46 @@ class TestLedgerHygieneWiring(unittest.IsolatedAsyncioTestCase):
             result = routes._index_ledger_safely()
         self.assertEqual(result, {"scanned": 0, "written": 0, "skipped": 0, "embedded": 0})
 
+    async def test_index_helper_binds_the_shared_embedder(self):
+        """The production store must be able to run import_pending's backfill."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import ledger_index
+
+        class _Store:
+            embed_fn = None
+            embed_fn_factory = None
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def init(self):
+                pass
+
+            def close(self):
+                pass
+
+        store = _Store()
+        embed = lambda _text: [0.0]  # noqa: E731 — identity asserted below
+
+        def _constructor(**_kwargs):
+            return store
+
+        def _import_pending(bound_store):
+            self.assertIs(bound_store.embed_fn, embed)
+            self.assertIs(bound_store.embed_fn_factory, make_embedder)
+            return {"scanned": 1, "written": 1, "skipped": 0, "embedded": 1}
+
+        def make_embedder():
+            return embed
+
+        with (
+            mock.patch("kiro_crew.vector_memory.VectorMemoryStore", _constructor),
+            mock.patch("kiro_crew.embeddings.make_sync_embed_fn", make_embedder),
+            mock.patch.object(ledger_index, "import_pending", _import_pending),
+        ):
+            result = routes._index_ledger_safely()
+
+        self.assertEqual(result["embedded"], 1)
+
     async def test_a_prune_fault_cannot_cost_the_ledger_push(self):
         """`prune_closed` sits before the push, and making the index read strict gave it a
         new way to raise.
