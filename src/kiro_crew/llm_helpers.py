@@ -719,12 +719,40 @@ def slot_switch_session_lock(session_key: str) -> asyncio.Lock:
     A ``WeakValueDictionary`` so a session's lock is collected once no
     request holds it; unrelated sessions resolve different keys and so take
     different locks.
+
+    An ``asyncio.Lock`` binds to the loop it is first contended on and
+    raises ``RuntimeError`` when awaited from any other loop. A cached lock
+    that is still alive when a different loop asks for the same key (a test
+    holding a reference past its per-test loop, an embedder that runs the
+    gateway on a fresh loop) is therefore unusable to the caller, so it is
+    replaced rather than returned. Holders on the old loop keep their lock;
+    the two loops cannot contend with each other in any case.
     """
     lock = _slot_switch_session_locks.get(session_key)
+    if lock is not None and _bound_to_other_loop(lock):
+        lock = None
     if lock is None:
         lock = asyncio.Lock()
         _slot_switch_session_locks[session_key] = lock
     return lock
+
+
+def _bound_to_other_loop(lock: asyncio.Lock) -> bool:
+    """Whether ``lock`` is bound to a loop other than the running one.
+
+    ``asyncio.Lock`` records its loop in ``_loop`` on first contention and
+    leaves it ``None`` before that; an unbound lock is usable from any loop.
+    With no running loop the caller is synchronous setup code and the lock
+    is handed back unchanged.
+    """
+    bound = getattr(lock, "_loop", None)
+    if bound is None:
+        return False
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return bound is not running
 
 
 def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[None]] | None:
