@@ -185,3 +185,73 @@ async def test_inject_failure_falls_through_to_error(tmp_path) -> None:
 
     assert job.last_status == "error"
     assert getattr(job, "cli_injected", False) is False
+
+
+
+# -- boot wiring: the divert must be attached on the REAL boot order ----------
+#
+# P3 (phase-4 proof): ``_init_cron`` runs before ``dashboard_state`` exists, so
+# a hook wired only inside ``_init_cron`` is dead on a normal boot and every
+# supervised agent-message cron silently ran as an in-gateway LLM turn. The
+# wiring now lives in ``_wire_cron_dashboard_hooks``, called again post-dashboard.
+
+
+def _bare_orchestrator(cron_svc, dashboard_state):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(cron_svc=cron_svc, dashboard_state=dashboard_state)
+
+
+def test_wire_cron_hooks_noop_before_dashboard_exists(tmp_path) -> None:
+    """The boot-time call (dashboard not yet up) must attach nothing and not fail."""
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    svc = CronService(base_dir=tmp_path, on_job=None, _defer_initial_load=False)
+    GatewayOrchestrator._wire_cron_dashboard_hooks(_bare_orchestrator(svc, None))  # type: ignore[arg-type]
+    assert getattr(svc, "_on_kiro_cli_message", None) is None
+    # Symmetric: a dashboard without a scheduler (``--no-crons`` ordering) is a no-op too.
+    GatewayOrchestrator._wire_cron_dashboard_hooks(_bare_orchestrator(None, object()))  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_wire_cron_hooks_after_dashboard_diverts_supervised_job(tmp_path) -> None:
+    """Post-dashboard wiring attaches both hooks and the divert reaches the wake queue."""
+    from types import SimpleNamespace
+
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    called: list[str] = []
+    enqueued: list[tuple] = []
+
+    async def on_job(job: CronJob) -> None:
+        called.append(job.id)
+
+    class _Queue:
+        async def enqueue(self, owner, kind, handle, message):
+            enqueued.append((owner, kind, handle, message))
+            return "wake-1"
+
+    refreshed: list[str] = []
+    dashboard_state = SimpleNamespace(
+        push_refresh=lambda what: refreshed.append(what),
+        wake_queue=lambda: _Queue(),
+    )
+    svc = CronService(base_dir=tmp_path, on_job=on_job, _defer_initial_load=False)
+    orch = _bare_orchestrator(svc, dashboard_state)
+
+    # Boot order: cron first (no dashboard) ...
+    GatewayOrchestrator._wire_cron_dashboard_hooks(_bare_orchestrator(svc, None))  # type: ignore[arg-type]
+    assert svc._should_inject_to_cli(  # noqa: SLF001
+        CronJob(id="j", name="n", message="m", session_key="kiro-cli:s")
+    ) is False
+    # ... then the post-dashboard pass attaches the hooks.
+    GatewayOrchestrator._wire_cron_dashboard_hooks(orch)  # type: ignore[arg-type]
+    assert svc._push_refresh is dashboard_state.push_refresh  # noqa: SLF001
+
+    job = CronJob(id="j3", name="poll", message="check", session_key="kiro-cli:sess-3")
+    await svc._execute(job)  # noqa: SLF001
+
+    assert enqueued == [("kiro-cli:sess-3", "cron", "j3", "check")]
+    assert called == []
+    records, total = await svc._history.get_job_history("j3")  # noqa: SLF001
+    assert total == 1 and records[0]["outcome"] == "injected"

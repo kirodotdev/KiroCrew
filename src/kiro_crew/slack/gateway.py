@@ -6017,27 +6017,12 @@ class GatewayOrchestrator:
         self._cron_reconciled = False
         self._cron_armed = False
         self.cron_svc = await CronService.create(base_dir=data_home(), on_job=_cron_callback)
-        if self.dashboard_state:
-            self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
-
-            async def _cron_kiro_cli_inject(job: CronJob) -> bool:
-                """Enqueue an agent-message cron run as a wake for its CLI owner.
-
-                The Plane C counterpart of ``_cron_callback`` for a supervised
-                ``kiro-cli:<id>`` owner: the job's ``message`` becomes a wake the
-                supervising CLI runs in its own session, rather than an
-                in-gateway LLM turn. True once durably enqueued.
-                """
-                assert self.dashboard_state is not None
-                await self.dashboard_state.wake_queue().enqueue(
-                    job.session_key,
-                    "cron",
-                    job.id,
-                    job.message,
-                )
-                return True
-
-            self.cron_svc.set_kiro_cli_message_callback(_cron_kiro_cli_inject)
+        # Normal boot creates the cron service BEFORE the dashboard exists, so
+        # this call is a no-op there and ``_wire_cron_dashboard_hooks`` runs
+        # again once ``dashboard_state`` is up (see the boot sequence next to
+        # ``_wire_mcp_gateway_dashboard``). Kept here for the re-init path,
+        # where the dashboard already exists.
+        self._wire_cron_dashboard_hooks()
         if self._no_crons:
             logger.info("Cron scheduler disabled (--no-crons)")
         else:
@@ -10857,6 +10842,37 @@ class GatewayOrchestrator:
             "stub_servers": sorted(self._cfg.mcp_gateway.stub_servers),
         }
 
+    def _wire_cron_dashboard_hooks(self) -> None:
+        """Attach the dashboard-dependent cron hooks once both services exist.
+
+        ``_init_cron`` runs at boot before ``dashboard_state`` exists, so the
+        live-refresh push and the Plane C divert (an agent-message job owned by
+        a supervised ``kiro-cli:<id>`` session becomes a wake the CLI runs in
+        its own session instead of an in-gateway LLM turn) cannot be wired
+        inside it. Called from ``_init_cron`` for the re-init path and from the
+        boot sequence right after the dashboard is up; idempotent.
+        """
+        if self.cron_svc is None or self.dashboard_state is None:
+            return
+        dashboard_state = self.dashboard_state
+        self.cron_svc.set_refresh_callback(dashboard_state.push_refresh)
+
+        async def _cron_kiro_cli_inject(job: CronJob) -> bool:
+            """Enqueue an agent-message cron run as a wake for its CLI owner.
+
+            The Plane C counterpart of the in-gateway cron callback for a
+            supervised ``kiro-cli:<id>`` owner. True once durably enqueued.
+            """
+            await dashboard_state.wake_queue().enqueue(
+                job.session_key,
+                "cron",
+                job.id,
+                job.message,
+            )
+            return True
+
+        self.cron_svc.set_kiro_cli_message_callback(_cron_kiro_cli_inject)
+
     def _wire_mcp_gateway_dashboard(self) -> None:
         """Publish the broker + apply callbacks onto DashboardState.
 
@@ -12744,6 +12760,10 @@ class GatewayOrchestrator:
         # Publish the MCP-gateway broker + apply callbacks onto
         # DashboardState now that it exists (the broker started earlier).
         self._wire_mcp_gateway_dashboard()
+        # Same ordering constraint for the cron hooks: the scheduler was
+        # created above before the dashboard existed, so its live-refresh push
+        # and the supervised-CLI wake divert attach here.
+        self._wire_cron_dashboard_hooks()
 
         # Emit machine-readable READY line for test harnesses (--json-ready).
         # Printed BEFORE bg_session and other startup chatter so the harness
