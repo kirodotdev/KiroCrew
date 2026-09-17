@@ -72,6 +72,7 @@ from kiro_crew.cloud.fargate import (
     task_family,
     validated_region,
 )
+from kiro_crew.cloud.login_target import KiroLoginTarget
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,7 @@ class FargateSigninHandle:
         self.url: str = ""
         self.code: str = ""
         self.ports: list = []
+        self.error: str = ""
 
     def wait(self, cancel: threading.Event) -> bool:
         """Return immediately; there is no interactive step to wait for.
@@ -641,14 +643,28 @@ class FargateLaunchEngine:
         self._revisions[fingerprint] = revision
         return revision
 
-    def begin_signin(self, *, instance_id: str, profile: str, region: str) -> FargateSigninHandle:
+    def begin_signin(
+        self,
+        *,
+        instance_id: str,
+        profile: str,
+        region: str,
+        login_target: KiroLoginTarget | None = None,
+    ) -> FargateSigninHandle:
         """Return a handle that completes at once. See :class:`FargateSigninHandle`.
+
+        The ``login_target`` keyword is accepted for protocol parity. A non-default
+        target records a verified refusal because this engine does not yet pin a
+        Kiro identity.
 
         Implemented rather than deferred because it depends on no AWS call and on
         no signature: the container's own code establishes that there is no
         interactive sign-in to perform.
         """
-        return FargateSigninHandle(task_arn=instance_id)
+        handle = FargateSigninHandle(task_arn=instance_id)
+        if login_target is not None and not login_target.is_default:
+            handle.error = "The Fargate launch engine does not yet pin a Kiro identity."
+        return handle
 
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
         """Do nothing, deliberately.
