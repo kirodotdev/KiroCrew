@@ -4,7 +4,8 @@ Two reads and one push, which is the split RFC section 5 asks for: the backend
 folds and cuts pages, the frontend renders and pages and never folds (NFR-2).
 
 - ``GET /api/sessions/{id}/crew-log?from=&to=`` -- the entries in a seq range,
-  with every ``ref`` on the page resolved (FR-4).
+  with up to ``MAX_PAGE_REFS`` of the page's refs resolved and the rest reported
+  in ``refs_unresolved`` (FR-4).
 - ``GET /api/sessions/{id}/crew-log/projection/{name}`` -- one fold's value and
   the ``seq`` it was folded through (FR-5).
 - a ``session_projection`` frame per projection whose value moves, pushed when a
@@ -41,23 +42,31 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
 
+from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     require_owner_dashboard_request,
 )
 
+#: The variable that switches the crew log on, spelled here rather than read from
+#: the emitter's ``CREW_LOG_ENV``. This module sits on the gateway's boot path and
+#: importing that module to learn whether it is wanted is the very cost the flag
+#: exists to avoid. A test pins this string against the emitter's own constant, so
+#: the two cannot drift apart unnoticed.
+CREW_LOG_ENV: Final[str] = "KIROCREW_CREW_LOG"
+
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
-    from kiro_crew.crew_log import projection as crew_log_module
     from kiro_crew.crew_log.errors import LedgerError
 
 logger = logging.getLogger(__name__)
 
 
-def _crew_log() -> "crew_log_module":
+def _crew_log() -> ModuleType:
     """The projection module, loaded the first time a call actually needs it."""
     from kiro_crew.crew_log import projection
 
@@ -137,7 +146,23 @@ def _read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
         }
     # No vocabulary: a page renders history, so an unfamiliar line is shown
     # rather than made to refuse the lines around it.
-    entries = [entry for entry in handle.iter_from(start) if entry.seq <= end]
+    #
+    # ``handle.last_seq`` is this instance's own cached figure -- the store's
+    # docstring says it is authoritative only for its OWN appends -- and a reader
+    # handle never appends, so a writer that grows the file after this handle
+    # opened is invisible to it. The iteration below reads the file live and walks
+    # the whole tail from ``start``, discarding what is past ``end`` rather than
+    # never seeing it, so the true tail is observable here for free. Deriving
+    # ``next_from`` from the cached figure instead would let a page return rows up
+    # to ``end`` and still report that nothing follows, and a client that believes
+    # it stops paging with entries left unread.
+    observed_last = handle.last_seq
+    entries: list[Any] = []
+    for entry in handle.iter_from(start):
+        if entry.seq > observed_last:
+            observed_last = entry.seq
+        if entry.seq <= end:
+            entries.append(entry)
     resolutions: dict[tuple[Any, ...], dict[str, Any]] = {}
     unresolved = 0
     rows: list[dict[str, Any]] = []
@@ -165,7 +190,7 @@ def _read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
             # per entry.
             row["ref_resolution"] = dict(found)
         rows.append(row)
-    last_seq = handle.last_seq
+    last_seq = observed_last
     return {
         "session_id": session_id,
         "exists": True,
@@ -258,6 +283,13 @@ class CrewLogPublisher:
         self._dirty: set[str] = set()
         self._bundles: "OrderedDict[str, Any]" = OrderedDict()
         self._scheduled = False
+        # A flush pass runs to completion before the next one starts. Without
+        # this, a growth arriving during a slow fold would schedule a second
+        # overlapping pass, and two ``_publish`` for one session would share the
+        # same ``before`` bundle and race the cache write, so an older seq could
+        # land and be broadcast last. When a pass finishes with more work marked,
+        # it schedules the next pass itself.
+        self._flushing = False
 
     # -- writer thread ------------------------------------------------------ #
 
@@ -296,12 +328,27 @@ class CrewLogPublisher:
         loop = self._loop
         if loop is None:
             return
+        # A pass is already running. It will re-schedule when it finishes if the
+        # dirty set is non-empty, so starting a second, overlapping pass here is
+        # exactly the race that would let an older seq land last.
+        if self._flushing:
+            return
+        self._flushing = True
         task = loop.create_task(self._flush())
         # Held only so the loop keeps a reference while it runs; the callback
         # drops it and reports a failure rather than letting it be swallowed.
         task.add_done_callback(self._finished)
 
     def _finished(self, task: "asyncio.Task[None]") -> None:
+        self._flushing = False
+        # A growth that arrived mid-flush left the dirty set non-empty and found
+        # ``_scheduled`` still true (so it did not re-arm the timer); pick it up
+        # now that this pass is done, on the next coalesce tick.
+        if self._dirty and not self._scheduled:
+            self._scheduled = True
+            loop = self._loop
+            if loop is not None:
+                loop.call_later(COALESCE_SECONDS, self._run)
         if task.cancelled():
             return
         error = task.exception()
@@ -351,9 +398,17 @@ class CrewLogPublisher:
         self._bundles.move_to_end(session_id)
         while len(self._bundles) > MAX_CACHED_SESSIONS:
             self._bundles.popitem(last=False)
+        # A seq is only comparable WITHIN one file. ``fold_session`` refuses to
+        # reuse a bundle whose origin does not match the file and rebuilds from the
+        # start, so a log removed and recreated can come back with the same
+        # terminal seq and entirely different values. Comparing seqs alone would
+        # read that as "nothing moved" and suppress every frame, leaving each
+        # client holding the retired file's projection with no later growth able to
+        # dislodge it. When the origin changes, every projection is new.
+        rebuilt = before is None or before.origin != bundle.origin
         for name, checkpoint in bundle.checkpoints.items():
             previous = before.checkpoints.get(name) if before is not None else None
-            if previous is not None and previous.last_seq == checkpoint.last_seq:
+            if not rebuilt and previous is not None and previous.last_seq == checkpoint.last_seq:
                 continue
             if checkpoint.last_seq == 0:
                 continue
@@ -362,30 +417,60 @@ class CrewLogPublisher:
 
     # -- lifecycle ---------------------------------------------------------- #
 
-    def bind(self, loop: asyncio.AbstractEventLoop) -> None:
+    def bind(self, loop: asyncio.AbstractEventLoop, state: Any = None) -> None:
+        """Point this publisher at the loop, and the state, now serving.
+
+        The STATE is rebound too, not just the loop. A publisher reused across a
+        restart inside one process would otherwise keep broadcasting through the
+        retired state -- so ``_watchers`` counts the old hub's sockets and every
+        frame goes to a room nobody is in, which looks exactly like a session that
+        stopped updating.
+
+        Scheduling flags belong to the loop that is going away: a timer armed on it
+        will never fire, and a flush marked in flight there will never finish. Left
+        set, ``_scheduled`` makes ``_mark`` believe a pass is already coming and
+        ``_flushing`` makes ``_run`` yield to a pass that does not exist, so the
+        publisher goes quiet for good. The dirty set is KEPT -- those sessions did
+        grow, the entries are on disk, and the next pass folds them forward.
+        """
         self._loop = loop
+        if state is not None:
+            self._state = state
+        self._scheduled = False
+        self._flushing = False
 
 
 _publisher: CrewLogPublisher | None = None
 
 
-def install_crew_log_publisher(state: Any) -> CrewLogPublisher:
+def install_crew_log_publisher(state: Any) -> CrewLogPublisher | None:
     """Register the crew-log push with the emitter, once per process.
 
-    Returns the live publisher, and re-binds it to the running loop when it
-    already exists, so a gateway restarted inside one process pushes on the loop
-    that is actually serving rather than a closed one. The emitter keeps the
-    listener it was given: registering a second would fold each growth twice.
+    Returns ``None`` and does nothing when the crew log is switched off. This runs
+    on the gateway's boot path, so a launch without the flag must not pay for a
+    subsystem it will not use: the flag is read from the environment here, before
+    the emitter is imported and before a publisher is built. Importing the emitter
+    to ask it whether it is enabled would be the cost itself, which is why the
+    variable's name is spelled out below rather than read from that module.
+
+    Returns the live publisher, and re-points it at the running loop AND the state
+    now serving when it already exists, so a gateway restarted inside one process
+    pushes on the loop that is actually serving, through the hub that actually
+    holds the sockets, rather than a closed loop and a retired state. The emitter
+    keeps the listener it was given: registering a second would fold each growth
+    twice.
     """
     global _publisher
+    if not env_flag_enabled(CREW_LOG_ENV):
+        return None
     loop = asyncio.get_running_loop()
     if _publisher is not None:
-        _publisher.bind(loop)
+        _publisher.bind(loop, state)
         return _publisher
     from kiro_crew.crew_log import emit as crew_log_emit
 
     _publisher = CrewLogPublisher(state)
-    _publisher.bind(loop)
+    _publisher.bind(loop, state)
     crew_log_emit.add_growth_listener(_publisher.notify)
     return _publisher
 

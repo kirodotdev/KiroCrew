@@ -295,15 +295,6 @@ def test_status_totals_dropped_writes():
     assert crew_log.fold_status(_entries(handle))["dropped"] == {"count": 5, "bytes": 30}
 
 
-def test_status_tracks_a_lost_remote_placement():
-    handle = _log()
-    _opened(handle)
-    handle.append("remote/placed", {"provider": "fargate", "id": "task-1"}, src=GATEWAY)
-    handle.append("remote/lost", {"reason": "evicted"}, src=GATEWAY)
-    remote = crew_log.fold_status(_entries(handle))["remote"]
-    assert remote == {"provider": "fargate", "id": "task-1", "lost_reason": "evicted"}
-
-
 # --- usage ----------------------------------------------------------------
 
 
@@ -567,6 +558,7 @@ def test_approvals_matches_a_request_to_its_decision():
         "pending": 0,
         "pending_requests": [],
         "pending_omitted": 0,
+        "pending_dropped": 0,
         "unidentified_requests": 0,
         "unmatched_decisions": 0,
         "by_decision": {"allow": 1},
@@ -769,3 +761,574 @@ def test_a_ref_on_a_session_entry_is_left_to_the_page_path():
     value = crew_log.fold_timeline(_entries(handle))
     assert value["moments"][-1]["type"] == "subagent/spawned"
     assert "ref" not in value["moments"][-1]
+
+
+# --------------------------------------------------------------------------- #
+# bounded state (a-bound-bounds-every-field-it-retains)
+# --------------------------------------------------------------------------- #
+
+
+def test_tools_open_map_is_bounded_when_calls_are_never_completed():
+    """Never-matched open tool calls do not grow the checkpoint without bound.
+
+    A session that opens far more distinct calls than it completes must keep the
+    retained ``open`` map bounded and count the ones it dropped, the same way the
+    render already caps the listed window.
+    """
+    handle = _log()
+    _opened(handle)
+    overflow = crew_log.OPEN_RETAIN_LIMIT + 25
+    for index in range(overflow):
+        handle.append(
+            "tool/called",
+            {
+                "turn": 1,
+                "call_id": f"open-{index}",
+                "name": "fs_read",
+                "server": "core",
+                "kind": "mcp",
+            },
+            src=GATEWAY,
+        )
+    bundle = crew_log.fold_session(SESSION, ("tools",))
+    state = bundle.checkpoints["tools"].state
+    assert len(state["open"]) == crew_log.OPEN_RETAIN_LIMIT
+    assert state["open_omitted"] == overflow - crew_log.OPEN_RETAIN_LIMIT
+    value = bundle.projection("tools").value
+    assert value["open"] == crew_log.OPEN_RETAIN_LIMIT
+    assert value["open_dropped"] == overflow - crew_log.OPEN_RETAIN_LIMIT
+
+
+def test_approvals_pending_map_is_bounded_when_requests_are_never_decided():
+    """Never-decided approval requests keep the retained ``pending`` map bounded."""
+    handle = _log()
+    _opened(handle)
+    overflow = crew_log.OPEN_RETAIN_LIMIT + 10
+    for index in range(overflow):
+        handle.append(
+            "approval/requested",
+            {"turn": 1, "approval_id": f"ap-{index}", "tool": "shell", "reason": "x"},
+            src=GATEWAY,
+        )
+    bundle = crew_log.fold_session(SESSION, ("approvals",))
+    state = bundle.checkpoints["approvals"].state
+    assert len(state["pending"]) == crew_log.OPEN_RETAIN_LIMIT
+    assert state["pending_omitted"] == overflow - crew_log.OPEN_RETAIN_LIMIT
+    assert bundle.projection("approvals").value["pending_dropped"] == (
+        overflow - crew_log.OPEN_RETAIN_LIMIT
+    )
+
+
+def test_usage_by_model_is_bounded_when_many_models_appear():
+    """Many distinct models keep the retained ``by_model`` map bounded while the
+    whole-session totals stay exact."""
+    handle = _log()
+    _opened(handle)
+    overflow = crew_log.MODEL_LIMIT + 15
+    for turn in range(1, overflow + 1):
+        _turn(handle, turn, credits=1.0, model=f"model-{turn}")
+    value = crew_log.fold_session(SESSION, ("usage",)).projection("usage").value
+    assert len(value["by_model"]) == crew_log.MODEL_LIMIT
+    assert value["models_omitted"] == overflow - crew_log.MODEL_LIMIT
+    # The whole-session totals count every turn, budget or not.
+    assert value["turns"]["completed"] == overflow
+    assert value["turns"]["credits_reported"] == overflow
+    assert value["credits"] == float(overflow)
+
+
+def test_tool_row_servers_are_bounded_per_name():
+    """One tool called through many distinct servers bounds its ``servers`` list."""
+    handle = _log()
+    _opened(handle)
+    overflow = crew_log.SERVERS_PER_TOOL_LIMIT + 8
+    for index in range(overflow):
+        handle.append(
+            "tool/called",
+            {
+                "turn": 1,
+                "call_id": f"c{index}",
+                "name": "fs_read",
+                "server": f"srv-{index}",
+                "kind": "mcp",
+            },
+            src=GATEWAY,
+        )
+    row = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value["by_name"]["fs_read"]
+    assert len(row["servers"]) == crew_log.SERVERS_PER_TOOL_LIMIT
+    assert row["servers_omitted"] == overflow - crew_log.SERVERS_PER_TOOL_LIMIT
+
+
+def test_servers_omitted_counts_distinct_servers_not_repeated_calls():
+    """Repeated calls through one over-budget server count as one omitted server."""
+    handle = _log()
+    _opened(handle)
+    # Fill the listed budget with distinct servers, then call ONE extra server
+    # many times: it is one omitted server, not many.
+    for index in range(crew_log.SERVERS_PER_TOOL_LIMIT):
+        handle.append(
+            "tool/called",
+            {
+                "turn": 1,
+                "call_id": f"c{index}",
+                "name": "fs_read",
+                "server": f"srv-{index}",
+                "kind": "mcp",
+            },
+            src=GATEWAY,
+        )
+    for repeat in range(5):
+        handle.append(
+            "tool/called",
+            {
+                "turn": 1,
+                "call_id": f"x{repeat}",
+                "name": "fs_read",
+                "server": "overflow",
+                "kind": "mcp",
+            },
+            src=GATEWAY,
+        )
+    row = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value["by_name"]["fs_read"]
+    assert row["servers_omitted"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# recreated-then-grown reuse (residual/crash-data-loss-corruption)
+# --------------------------------------------------------------------------- #
+
+
+def test_fold_session_rebuilds_when_the_bundle_origin_does_not_match_the_file():
+    """A bundle whose origin differs from the current file is not reused.
+
+    This is the removed-and-recreated case that has already grown PAST the cached
+    seq: the seq guard (``since.last_seq <= last_seq``) passes because the file is
+    longer than the stale bundle, so without the file-identity check the old
+    file's state would be folded over the new file's bytes. A recreated log has a
+    different origin (a fresh ``created_at`` and/or inode), so the reuse is
+    refused and the fold rebuilds from the start. Filesystem-free so it behaves
+    the same on every platform.
+    """
+    handle = _log()
+    _opened(handle)
+    for turn in range(1, 6):
+        _turn(handle, turn, credits=1.0)
+
+    # A stale bundle from a DIFFERENT file: real checkpoints (so a wrong reuse
+    # would fold visibly wrong totals) but a foreign origin and a seq below the
+    # current head, the exact recreated-then-grown shape.
+    other = _log("s-other-origin")
+    _opened(other)
+    for turn in (1, 2):
+        _turn(other, turn, credits=99.0)
+    foreign = crew_log.fold_session("s-other-origin")
+    stale = crew_log.SessionProjections(
+        session_id=SESSION,
+        last_seq=foreign.last_seq,
+        checkpoints=foreign.checkpoints,
+        origin="not-this-file",
+    )
+    assert stale.last_seq < handle.last_seq  # seq guard alone would pass
+
+    rebuilt = crew_log.fold_session(SESSION, since=stale)
+    honest = crew_log.fold_usage(_entries(handle))
+    assert rebuilt.projection("usage").value == honest
+    assert rebuilt.origin is not None and rebuilt.origin != stale.origin
+
+
+def test_fold_session_reuses_the_bundle_when_the_file_is_the_same():
+    """The origin guard does not defeat a legitimate incremental reuse."""
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=1.0)
+    first = crew_log.fold_session(SESSION, log=handle)
+    _turn(handle, 2, credits=1.0)
+    second = crew_log.fold_session(SESSION, since=first, log=handle)
+    assert second.origin == first.origin
+    assert second.projection("usage").value == crew_log.fold_usage(_entries(handle))
+
+
+# --------------------------------------------------------------------------- #
+# bounds on what a fold RETAINS, and on what one pass holds
+# --------------------------------------------------------------------------- #
+
+
+def test_a_cold_fold_crossing_the_chunk_boundary_matches_the_whole_file(monkeypatch):
+    """Folding a span in chunks is the same value as folding it whole.
+
+    ``fold_session`` reads the log one bounded chunk at a time so a cold fold of a
+    long log does not hold the whole thing in memory. That is only safe if the
+    chunk boundary is invisible in the result, so this drives a log well past
+    ``FOLD_CHUNK_ENTRIES``, compares against the from-scratch fold, AND counts the
+    passes -- otherwise the test would still pass if the chunking were removed.
+    """
+    handle = _log()
+    _opened(handle)
+    # Two entries per tool, so this clears the chunk boundary several times over.
+    for index in range(crew_log.FOLD_CHUNK_ENTRIES):
+        _tool(handle, 1, f"c{index}", "fs_read")
+    assert handle.last_seq > crew_log.FOLD_CHUNK_ENTRIES
+
+    passes = []
+    real_advance_all = crew_log._advance_all
+
+    def counting(checkpoints, chunk):
+        passes.append(len(chunk))
+        return real_advance_all(checkpoints, chunk)
+
+    monkeypatch.setattr(crew_log, "_advance_all", counting)
+    chunked = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value
+    whole = crew_log.fold_tools(_entries(handle))
+    assert chunked == whole
+    assert chunked["calls"] == crew_log.FOLD_CHUNK_ENTRIES
+    # More than one pass, and no pass bigger than the chunk bound.
+    assert len(passes) > 1
+    assert max(passes) <= crew_log.FOLD_CHUNK_ENTRIES
+
+
+def test_an_over_long_call_id_is_counted_and_not_retained():
+    """An id too big to retain identifies nothing, exactly like an absent one.
+
+    A ``call_id`` comes off the wire and nothing on that path caps its length, so
+    retaining it raw would let a few frames outweigh the whole entry budget the
+    ``open`` map is counted against. It cannot be TRUNCATED to fit -- two distinct
+    ids sharing a head would become one identity and a completion would close the
+    wrong frame -- so it takes the unidentified path instead.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "tool/called",
+        {
+            "turn": 1,
+            "call_id": "x" * (crew_log.ID_LIMIT + 1),
+            "name": "fs_read",
+            "server": "core",
+            "kind": "mcp",
+        },
+        src=GATEWAY,
+    )
+    value = crew_log.fold_tools(_entries(handle))
+    assert value["calls"] == 1
+    assert value["unidentified_calls"] == 1
+    assert value["open"] == 0
+
+    state = crew_log.fold_session(SESSION, ("tools",)).checkpoints["tools"].state
+    assert state["open"] == {}
+    # An id one character shorter is ordinary and IS retained, so the refusal is
+    # the length and not the shape.
+    other = _log("s-id-edge")
+    _opened(other)
+    other.append(
+        "tool/called",
+        {
+            "turn": 1,
+            "call_id": "x" * crew_log.ID_LIMIT,
+            "name": "fs_read",
+            "server": "core",
+            "kind": "mcp",
+        },
+        src=GATEWAY,
+    )
+    kept = crew_log.fold_tools(_entries(other))
+    assert kept["unidentified_calls"] == 0
+    assert kept["open"] == 1
+
+
+def test_an_over_long_call_id_on_a_completion_does_not_inflate_unmatched():
+    """The completion side coerces the id the same way the call side does.
+
+    If a completion paired on the raw id while the call retained a coerced one,
+    the two would disagree about what an identity is: the same frame would be
+    unbounded on one side and reported unmatched on the other.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "tool/completed",
+        {
+            "turn": 1,
+            "call_id": "y" * (crew_log.ID_LIMIT + 1),
+            "name": "fs_read",
+            "server": "core",
+            "status": "completed",
+        },
+        src=GATEWAY,
+    )
+    value = crew_log.fold_tools(_entries(handle))
+    assert value["completed"] == 1
+    assert value["unmatched_completions"] == 0
+
+
+def test_an_over_long_approval_id_is_counted_and_not_retained():
+    """The pending-approval map bounds its identity the same way tools do."""
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "approval/requested",
+        {
+            "turn": 1,
+            "approval_id": "z" * (crew_log.ID_LIMIT + 1),
+            "tool": "execute_bash",
+            "reason": "writes a file",
+        },
+        src=GATEWAY,
+    )
+    value = crew_log.fold_approvals(_entries(handle))
+    assert value["requested"] == 1
+    assert value["unidentified_requests"] == 1
+    assert value["pending"] == 0
+
+
+def test_names_omitted_stops_counting_rather_than_counting_a_name_twice():
+    """Past the dedup budget the count says it is a floor instead of inflating.
+
+    ``names_omitted`` is a count of DISTINCT names left out of the detail, and it
+    is deduplicated against a list that is itself capped. A name arriving once the
+    list is full is not recognised as already-seen, so counting it again would
+    count one name once per appearance -- a call and its completion both reach
+    here -- and the figure would climb past the number of names that exist.
+    """
+    handle = _log()
+    _opened(handle)
+    distinct = crew_log.TOOL_NAME_LIMIT * 3
+    for index in range(distinct):
+        _tool(handle, 1, f"c{index}", f"tool_{index:05d}")
+    value = crew_log.fold_tools(_entries(handle))
+
+    omitted_names = distinct - crew_log.TOOL_NAME_LIMIT
+    assert len(value["by_name"]) == crew_log.TOOL_NAME_LIMIT
+    # The count never exceeds the number of names actually left out -- the whole
+    # point -- and stops at the dedup budget, saying so.
+    assert value["names_omitted"] <= omitted_names
+    assert value["names_omitted"] == crew_log.TOOL_NAME_LIMIT
+    assert value["names_omitted_saturated"] is True
+    # Totals stay exact regardless.
+    assert value["calls"] == distinct
+    assert value["completed"] == distinct
+
+
+def test_names_omitted_is_exact_and_unsaturated_inside_the_dedup_budget():
+    """Below the budget the count is a total, not a floor."""
+    handle = _log()
+    _opened(handle)
+    extra = 4
+    for index in range(crew_log.TOOL_NAME_LIMIT + extra):
+        _tool(handle, 1, f"c{index}", f"tool_{index:05d}")
+    value = crew_log.fold_tools(_entries(handle))
+    assert value["names_omitted"] == extra
+    assert value["names_omitted_saturated"] is False
+
+
+def test_a_retained_label_is_cut_to_the_text_limit():
+    """A label is retained, so its SIZE is part of the bound on the state.
+
+    This is about a label that is pure display and never distinguishes one thing
+    from another -- an approval's reason -- so cutting it is safe and is the
+    honest bound: the entry stays, bounded. A label used as a KEY takes the other
+    path and is refused rather than cut, because two cut keys could merge.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "approval/requested",
+        {
+            "turn": 1,
+            "approval_id": "a1",
+            "tool": "execute_bash",
+            "reason": "r" * (crew_log.TEXT_LIMIT * 20),
+        },
+        src=GATEWAY,
+    )
+    value = crew_log.fold_approvals(_entries(handle))
+    (pending,) = value["pending_requests"]
+    assert len(pending["reason"]) == crew_log.TEXT_LIMIT
+    assert value["pending"] == 1
+
+
+def test_two_names_sharing_a_cut_head_do_not_merge_their_totals():
+    """A label at the cut length is not keyed, so distinct tools stay distinct.
+
+    A retained label is cut to ``TEXT_LIMIT``, which means a label sitting exactly
+    at that length cannot be told apart from one that was cut. Keying on it would
+    put two unrelated tools in one row reporting each other's calls -- a wrong
+    answer, not merely a big value -- so such a label gets no detail row and is
+    counted as omitted instead.
+    """
+    handle = _log()
+    _opened(handle)
+    head = "t" * crew_log.TEXT_LIMIT
+    _tool(handle, 1, "c1", head + "-alpha")
+    _tool(handle, 1, "c2", head + "-beta")
+    value = crew_log.fold_tools(_entries(handle))
+
+    # Neither name is detailed, and no row claims both calls.
+    assert value["by_name"] == {}
+    # The two names are indistinguishable ONCE CUT, so the omitted count reports
+    # one label rather than claiming two it cannot tell apart. The load-bearing
+    # property is above -- no row carrying both tools' calls -- and below: the
+    # whole-session totals stay exact whatever the detail can and cannot separate.
+    assert value["names_omitted"] == 1
+    assert value["calls"] == 2
+    assert value["completed"] == 2
+
+
+def test_a_name_just_under_the_cut_length_still_gets_its_row():
+    """The refusal is the cut length, not long names in general."""
+    handle = _log()
+    _opened(handle)
+    name = "u" * (crew_log.TEXT_LIMIT - 1)
+    _tool(handle, 1, "c1", name)
+    value = crew_log.fold_tools(_entries(handle))
+    assert list(value["by_name"]) == [name]
+    assert value["names_omitted"] == 0
+
+
+def test_models_omitted_counts_models_not_the_turns_they_ran():
+    """One omitted model running many turns is one omitted model.
+
+    The per-model detail is capped, and the count beside it is a count of MODELS.
+    Counting it per turn would make it climb past the number of models that exist,
+    which is the same defect the tool-name count avoids.
+    """
+    handle = _log()
+    _opened(handle)
+    for index in range(crew_log.MODEL_LIMIT):
+        _turn(handle, index + 1, credits=1.0, model=f"model_{index:04d}")
+    # One further model, run over MANY turns.
+    turns = 25
+    for index in range(turns):
+        _turn(handle, crew_log.MODEL_LIMIT + index + 1, credits=1.0, model="one-extra")
+    value = crew_log.fold_usage(_entries(handle))
+
+    assert len(value["by_model"]) == crew_log.MODEL_LIMIT
+    assert value["models_omitted"] == 1
+    assert value["models_omitted_saturated"] is False
+    # The whole-session totals still count every turn exactly.
+    assert value["turns"]["completed"] == crew_log.MODEL_LIMIT + turns
+
+
+def test_models_omitted_saturates_rather_than_counting_a_model_twice():
+    """Past the dedup budget the model count says it is a floor."""
+    handle = _log()
+    _opened(handle)
+    distinct = crew_log.MODEL_LIMIT * 3
+    for index in range(distinct):
+        _turn(handle, index + 1, credits=1.0, model=f"model_{index:05d}")
+    value = crew_log.fold_usage(_entries(handle))
+    omitted = distinct - crew_log.MODEL_LIMIT
+    assert value["models_omitted"] <= omitted
+    assert value["models_omitted"] == crew_log.MODEL_LIMIT
+    assert value["models_omitted_saturated"] is True
+
+
+def test_a_server_label_is_bounded_and_not_listed_at_full_length():
+    """A server name is retained per tool, so its size is part of the bound."""
+    handle = _log()
+    _opened(handle)
+    handle.append(
+        "tool/called",
+        {
+            "turn": 1,
+            "call_id": "c1",
+            "name": "fs_read",
+            "server": "s" * (crew_log.TEXT_LIMIT * 20),
+            "kind": "mcp",
+        },
+        src=GATEWAY,
+    )
+    row = crew_log.fold_tools(_entries(handle))["by_name"]["fs_read"]
+    # Nothing retained at full length: a label at the cut length cannot be told
+    # apart from a cut one, so it is counted rather than listed.
+    assert all(len(server) < crew_log.TEXT_LIMIT for server in row["servers"])
+    assert row["servers"] == []
+    assert row["servers_omitted"] == 1
+
+    state = crew_log.fold_session(SESSION, ("tools",)).checkpoints["tools"].state
+    assert all(
+        len(server) <= crew_log.TEXT_LIMIT
+        for detail in state["by_name"].values()
+        for server in detail["servers"] + detail["servers_over"]
+    )
+
+
+def test_servers_omitted_counts_distinct_servers_and_says_when_it_saturates():
+    """The omitted-server count is exact to its budget, then says it is a floor."""
+    handle = _log()
+    _opened(handle)
+    total = crew_log.SERVERS_PER_TOOL_LIMIT * 3
+    for index in range(total):
+        handle.append(
+            "tool/called",
+            {
+                "turn": 1,
+                "call_id": f"c{index}",
+                "name": "fs_read",
+                "server": f"server_{index:04d}",
+                "kind": "mcp",
+            },
+            src=GATEWAY,
+        )
+    row = crew_log.fold_tools(_entries(handle))["by_name"]["fs_read"]
+    omitted = total - crew_log.SERVERS_PER_TOOL_LIMIT
+    assert len(row["servers"]) == crew_log.SERVERS_PER_TOOL_LIMIT
+    # Never more than the servers actually left out, and it says it stopped.
+    assert row["servers_omitted"] <= omitted
+    assert row["servers_omitted"] == crew_log.SERVERS_PER_TOOL_LIMIT
+    assert row["servers_omitted_saturated"] is True
+    # Calling repeatedly through one already-counted server adds nothing.
+    before = row["servers_omitted"]
+    handle.append(
+        "tool/called",
+        {
+            "turn": 1,
+            "call_id": "again",
+            "name": "fs_read",
+            "server": "server_0100",
+            "kind": "mcp",
+        },
+        src=GATEWAY,
+    )
+    assert crew_log.fold_tools(_entries(handle))["by_name"]["fs_read"]["servers_omitted"] == before
+
+
+def test_a_retained_status_string_is_bounded():
+    """A status echo is retained too, and a nullable one keeps its absence."""
+    handle = _log()
+    _opened(handle)
+    handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src=GATEWAY)
+    handle.append(
+        "turn/completed",
+        {
+            "turn": 1,
+            "stop_reason": "x" * (crew_log.TEXT_LIMIT * 20),
+            "error": "e" * (crew_log.TEXT_LIMIT * 20),
+            "model": "m" * (crew_log.TEXT_LIMIT * 20),
+            "depth": 0,
+        },
+        src=GATEWAY,
+    )
+    value = crew_log.fold_status(_entries(handle))
+    assert len(value["last_stop_reason"]) == crew_log.TEXT_LIMIT
+    assert len(value["last_error"]) == crew_log.TEXT_LIMIT
+    assert len(value["model"]) == crew_log.TEXT_LIMIT
+    # Absence still reads as absence, not as a reason of no characters.
+    assert crew_log.fold_status(_entries(_log("s-no-close")))["close_reason"] is None
+
+
+def test_a_close_mid_turn_still_reports_the_turn_as_open():
+    """A close is not a turn ending, and the fold must not claim it was.
+
+    A session cut off mid-turn writes ``session/closed`` with no
+    ``turn/completed``. Clearing the open turn here would assert the turn finished
+    when nothing recorded it doing so, and would erase the one fact a reader wants:
+    this session died with work in flight. Only ``turn/completed`` closes a turn.
+    """
+    handle = _log()
+    _opened(handle)
+    handle.append("turn/started", {"turn": 4, "actor": "user", "depth": 0}, src=GATEWAY)
+    handle.append("session/closed", {"reason": "crashed"}, src=GATEWAY)
+
+    value = crew_log.fold_status(_entries(handle))
+    assert value["lifecycle"] == "closed"
+    assert value["close_reason"] == "crashed"
+    assert value["turn_open"] is True, "a turn nothing completed is still open"

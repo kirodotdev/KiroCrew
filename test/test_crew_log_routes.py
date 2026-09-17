@@ -20,9 +20,9 @@ import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import crew_log as lg
-from kiro_crew.dashboard.handlers import crew_log as routes
 from kiro_crew.crew_log import Ledger, Ref
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.dashboard.handlers import crew_log as routes
 
 SESSION = "s-route"
 GATEWAY = "gateway"
@@ -466,9 +466,10 @@ def test_notify_before_the_publisher_is_bound_is_a_no_op():
 
 
 @pytest.mark.asyncio
-async def test_installing_the_publisher_registers_exactly_one_growth_listener():
+async def test_installing_the_publisher_registers_exactly_one_growth_listener(monkeypatch):
     from kiro_crew.crew_log import emit as crew_log_emit
 
+    monkeypatch.setenv(routes.CREW_LOG_ENV, "1")
     with (
         patch.object(routes, "_publisher", None),
         patch.object(crew_log_emit, "_growth_listeners", []),
@@ -497,10 +498,14 @@ def test_this_module_does_not_load_the_storage_package_at_import():
         "print(json.dumps(sorted(k for k in sys.modules if k.startswith('kiro_crew.crew_log'))))"
     )
     done = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [os.path.abspath(sys.executable), "-c", probe],
+        [os.path.abspath(sys.executable), "-B", "-c", probe],
+        # Inherit the full environment (Windows needs SYSTEMROOT and friends to
+        # start the interpreter at all) and layer the probe's own values on top.
+        # ``-B`` already stops the child writing bytecode into the checkout, so no
+        # env var is relied on for that.
         env={
+            **os.environ,
             "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
-            "PATH": os.environ.get("PATH", ""),
             "KIROCREW_HOME": os.environ.get("KIROCREW_HOME", ""),
         },
         capture_output=True,
@@ -510,3 +515,187 @@ def test_this_module_does_not_load_the_storage_package_at_import():
     )
     assert done.returncode == 0, done.stderr[-2000:]
     assert json.loads(done.stdout.strip().splitlines()[-1]) == []
+
+
+def test_run_does_not_start_an_overlapping_flush_while_one_is_in_flight():
+    """A second scheduled pass must not run concurrently with a slow flush.
+
+    Two overlapping ``_publish`` for one session would share the same ``before``
+    bundle and race the cache write, so an older seq could be broadcast last.
+    """
+    publisher = routes.CrewLogPublisher(_Sockets())
+    loop = MagicMock()
+    publisher.bind(loop)
+    publisher._flushing = True
+    publisher._scheduled = True
+    publisher._run()
+    loop.create_task.assert_not_called()
+
+
+def test_finished_reschedules_when_work_arrived_mid_flush():
+    """A growth marked during a flush is picked up once the pass finishes."""
+    publisher = routes.CrewLogPublisher(_Sockets())
+    loop = MagicMock()
+    publisher.bind(loop)
+    publisher._flushing = True
+    publisher._dirty.add(SESSION)
+    publisher._scheduled = False
+    done = MagicMock()
+    done.cancelled.return_value = False
+    done.exception.return_value = None
+    publisher._finished(done)
+    assert publisher._flushing is False
+    assert publisher._scheduled is True
+    loop.call_later.assert_called_once()
+
+
+def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():
+    """A page must not tell a client the history ends where its handle thinks.
+
+    ``Ledger.last_seq`` is the handle's own cached figure and its docstring says it
+    is authoritative only for that handle's own appends. A reader never appends, so
+    a writer growing the file after the handle opened is invisible to it. The pass
+    over the file is live and walks the whole tail, so the real end is observable;
+    deriving the metadata from the cached figure instead would return rows up to
+    ``to`` and still report that nothing follows, and a client that believes it
+    stops paging with entries left unread.
+    """
+    handle = _log()
+    _opened(handle)
+    for turn in (1, 2):
+        _turn(handle, turn)
+
+    # A handle opened NOW, then a writer that grows the file behind its back.
+    stale = crew_log.open_session_log(SESSION)
+    assert stale is not None
+    cached = stale.last_seq
+    writer = Ledger.open(lg.KIND_SESSION, SESSION)
+    for turn in (3, 4, 5):
+        _turn(writer, turn)
+    assert writer.last_seq > cached
+    assert stale.last_seq == cached  # the reader handle never learned
+
+    with patch.object(crew_log, "open_session_log", return_value=stale):
+        page = routes._read_page(SESSION, 1, cached)
+
+    # The page stops at the range it was asked for, but it does NOT claim the log
+    # ends there: next_from points at the entries the writer added.
+    assert page["last_seq"] == writer.last_seq
+    assert page["next_from"] == cached + 1
+    assert max(row["seq"] for row in page["entries"]) == cached
+
+
+@pytest.mark.asyncio
+async def test_a_recreated_log_at_the_same_seq_still_pushes_its_new_values():
+    """A seq is only comparable within one file.
+
+    ``fold_session`` refuses a bundle whose origin does not match the file and
+    rebuilds from the start, so a log removed and recreated can come back at the
+    same terminal seq carrying entirely different values. Comparing seqs alone
+    reads that as nothing having moved and suppresses every frame, leaving each
+    client holding the retired file's projection with no later growth able to
+    dislodge it.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1)
+    state = _Sockets()
+    publisher = routes.CrewLogPublisher(state)
+    publisher.bind(asyncio.get_running_loop())
+    await publisher._publish(SESSION)
+    before = publisher._bundles[SESSION]
+    state.frames.clear()
+
+    # Same session id, a DIFFERENT file, folded to the same terminal seq. Handing
+    # the publisher that cached bundle is the recreated-log shape without touching
+    # the filesystem, so it behaves the same on every platform.
+    other = _log("s-recreated-src")
+    _opened(other)
+    _turn(other, 1)
+    fresh = crew_log.fold_session("s-recreated-src", crew_log.PROJECTION_NAMES)
+    assert fresh.last_seq == before.last_seq  # seq-only check would suppress
+    assert fresh.origin != before.origin
+    publisher._bundles[SESSION] = crew_log.SessionProjections(
+        session_id=SESSION,
+        last_seq=fresh.last_seq,
+        checkpoints=fresh.checkpoints,
+        origin="a-retired-file",
+    )
+
+    await publisher._publish(SESSION)
+    assert state.frames, "a rebuilt bundle must push, not be read as unchanged"
+
+
+@pytest.mark.asyncio
+async def test_rebinding_the_publisher_repoints_it_at_the_state_now_serving():
+    """A restart inside one process must not keep broadcasting to the retired hub.
+
+    The publisher is a per-process singleton, so a second install returns the same
+    object. Rebinding only the loop would leave it counting the old hub's sockets
+    and sending every frame to a room nobody is in, which looks exactly like a
+    session that quietly stopped updating.
+    """
+    handle = _log()
+    _opened(handle)
+    retired = _Sockets()
+    publisher = routes.CrewLogPublisher(retired)
+    publisher.bind(asyncio.get_running_loop())
+
+    serving = _Sockets()
+    publisher.bind(asyncio.get_running_loop(), serving)
+    await publisher._publish(SESSION)
+
+    assert serving.frames, "frames must reach the state now serving"
+    assert retired.frames == [], "and none must reach the retired one"
+
+
+@pytest.mark.asyncio
+async def test_rebinding_clears_scheduling_flags_left_on_the_retired_loop():
+    """A timer armed on a closed loop never fires and a flush there never ends.
+
+    Left set, ``_scheduled`` makes a growth believe a pass is already coming and
+    ``_flushing`` makes the runner yield to a pass that does not exist, so the
+    publisher would go quiet permanently after a restart. The dirty set is kept:
+    those sessions did grow and the next pass folds them forward.
+    """
+    publisher = routes.CrewLogPublisher(_Sockets())
+    publisher.bind(asyncio.get_running_loop())
+    publisher._scheduled = True
+    publisher._flushing = True
+    publisher._dirty.add(SESSION)
+
+    publisher.bind(asyncio.get_running_loop(), _Sockets())
+
+    assert publisher._scheduled is False
+    assert publisher._flushing is False
+    assert publisher._dirty == {SESSION}
+
+
+def test_the_flag_name_matches_the_emitters_own_constant():
+    """The boot path spells the variable itself, so a test keeps the two in step.
+
+    Importing the emitter to ask whether the crew log is wanted is the cost the
+    flag exists to avoid, so the name is spelled in the handler. That is only safe
+    while something proves the spelling still matches.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    assert routes.CREW_LOG_ENV == crew_log_emit.CREW_LOG_ENV
+
+
+@pytest.mark.asyncio
+async def test_installing_with_the_flag_off_builds_nothing(monkeypatch):
+    """A launch without the flag must not pay for the subsystem it will not use.
+
+    The installer runs on the gateway's boot path. With the crew log off it returns
+    without importing the emitter and without constructing a publisher, so a
+    disabled launch does no optional work and registers no listener.
+    """
+    monkeypatch.delenv(routes.CREW_LOG_ENV, raising=False)
+    monkeypatch.setattr(routes, "_publisher", None)
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    with patch.object(crew_log_emit, "_growth_listeners", []):
+        assert routes.install_crew_log_publisher(_Sockets()) is None
+        assert crew_log_emit._growth_listeners == []
+    assert routes._publisher is None
