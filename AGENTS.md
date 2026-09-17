@@ -71,6 +71,7 @@ in the **same commit** when you change what it documents.
 | the GitHub connector's operation data or wire parsing (pagination, rate limits, error mapping) | [connector-github](docs/system-specs/modules/connector-github.md) |
 | `connections/vendors/microsoft/graph/`, the Microsoft Graph runtime base (locator, payload shaping, `@odata.nextLink` paging) | [microsoft-graph-runtime](docs/system-specs/modules/microsoft-graph-runtime.md) |
 | `connections/vendors/zoom/` — Zoom identity/paging/processing/errors contract logic | [connector-zoom](docs/system-specs/modules/connector-zoom.md) |
+| the offline OOXML engine (`office_documents/`): docx/pptx read, template create, in-place edit, format rejection | [office-document-engine](docs/system-specs/modules/office-document-engine.md) |
 | a POSIX call: locks, signals, PIDs, chmod, RSS | [platform-compat](docs/system-specs/common/platform-compat.md) + [windows-install](docs/guides/windows-install.md) |
 | injected `[Cron notification]` / `[Subagent completion event]` | [injected-messages](docs/system-specs/common/injected-messages.md) |
 | build, install, dev mode | [CONTRIBUTING.md](CONTRIBUTING.md) + [install](docs/guides/install.md) |
