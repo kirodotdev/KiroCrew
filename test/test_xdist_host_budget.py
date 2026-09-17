@@ -78,6 +78,24 @@ def _deterministic_live_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ct._XDIST_ENV_CAP, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_platform_reservation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the per-worker reservation to the Linux/Windows figure for every test here.
+
+    The reservation is the fourth input to the budget math, and the only one the
+    ``budget_host`` fixture did not pin: it follows ``platform_compat.IS_MACOS``, so on
+    a macOS shard every "10-core / 32 GiB host" below divides by 16 GiB instead of 3 and
+    reads 2 workers where the arithmetic written into the assertions expects 10. The
+    tests are about the DIVISION, not about which platform the shard happens to be, so
+    the divisor is pinned like the cores and the RAM are. The one test that IS about the
+    platform switch sets ``IS_MACOS`` itself, on top of this pin.
+
+    Patched at ``IS_MACOS`` rather than at ``_gib_per_worker`` so the production
+    selection path still runs and the pinned value is the one the constants define.
+    """
+    monkeypatch.setattr(ct.platform_compat, "IS_MACOS", False, raising=False)
+
+
 @pytest.fixture
 def budget_host(slot_dir: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
     """A deterministic 10-core / 32 GiB host, so only contention varies."""
