@@ -935,6 +935,21 @@ _SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS = frozenset(
         # exists to run in its own session; without it a monitor/cron wake for a
         # ``kiro-cli:`` owner has no path to the CLI at all.
         "/api/crew/wakes",
+        # Phase-5 Plane B. The sidecar serves its own managed MCP spec and the
+        # memory/lessons/ledger injection blocks to the supervising CLI, so KAS
+        # registers the servers and injects the context itself — no shared-agent-
+        # home rewrite (which the sidecar worktree would refuse) is ever needed.
+        #
+        # ``GET /api/crew/mcp-servers`` — the managed ``mcpServers`` block a fresh
+        # spec build would emit (always-on core/cron, computer only when gated
+        # open, opt-ins excluded), ``env.KIROCREW_HOME`` pinned so foreign-host
+        # proxies resolve the sidecar's home. Terminal GET, read-only, no secrets.
+        "/api/crew/mcp-servers",
+        # ``GET /api/crew/injection-context`` — the memory/lessons/ledger blocks
+        # rendered exactly as ``build_session_context`` emits them, for the
+        # caller's own ``X-Session-Key`` (the ledger is keyed by it). Terminal
+        # GET, read-only over the caller's own stores.
+        "/api/crew/injection-context",
         # Auto-nudge CRUD for ``monitor/start|update|stop|inspect``. GET
         # ``/api/autonudge`` (list, presence-reduced), GET ``/api/autonudge/
         # {loop_id}`` and ``.../slot/{slot_key}`` (inspect), POST (arm), PATCH
@@ -1773,6 +1788,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     # supervised session key; no body-supplied owner.
     app.router.add_get("/api/crew/wakes", api_crew_wakes_poll)
     app.router.add_post("/api/crew/wakes/{wake_id}/ack", api_crew_wakes_ack)
+    # Plane B (Phase 5): the sidecar's managed MCP spec + injection blocks.
+    # Supervised-only reads (the allowlist gates that); GET only.
+    from kiro_crew.dashboard.handlers_system import api_crew_mcp_servers
+
+    app.router.add_get("/api/crew/mcp-servers", api_crew_mcp_servers)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
     app.router.add_post("/api/autonudge/{loop_id}/fire", api_autonudge_fire)

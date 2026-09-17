@@ -286,6 +286,56 @@ async def api_sidecar_status(request: web.Request) -> web.Response:
     )
 
 
+async def api_crew_mcp_servers(request: web.Request) -> web.Response:
+    """GET /api/crew/mcp-servers — the managed ``mcpServers`` block (Plane B).
+
+    The sidecar is the single source of truth for the KiroCrew MCP servers KAS
+    should register for the live session (``_MANAGED_MCP_SERVERS`` resolved live
+    via :func:`managed_mcp_spec_entry`). No shared-agent-home rewrite happens —
+    the whole point of Plane B is that the supervised sidecar never triggers
+    ``_decline_shared_agent_home``; it serves the spec over HTTP and KAS
+    registers the servers itself.
+
+    Membership mirrors what a fresh spec build would EMIT: the two always-on
+    servers (``kirocrew-core``, ``kirocrew-cron``) always; ``kirocrew-computer``
+    only when its ``spec_gate`` is open; the ``opt_in`` sets (``dashboard``,
+    ``work``) never. ``managed_mcp_spec_entry`` already returns ``None`` for an
+    ``opt_in`` or a gate-closed server, so iterating the managed keys yields
+    exactly the eligible set with no separate predicate here.
+
+    ``env.KIROCREW_HOME`` is pinned to :func:`config_dir` whenever the gateway is
+    supervised. ``_managed_mcp_env`` already yields it on a NON-DEFAULT home, but
+    a supervised sidecar on the DEFAULT home yields ``{}`` there — and a foreign
+    host (KAS/node) spawns the stdio proxies, so without the pin they resolve the
+    default home's port + secret and every managed call 403s. Supervised is
+    exactly the mode where a foreign spawner exists, so the pin is unconditional
+    in that mode.
+
+    Admitted only to a supervised internal-secret caller (the allowlist gates
+    that), so reaching this handler without ``internal_auth`` still refuses.
+    """
+    from kiro_crew.agent import _MANAGED_MCP_SERVERS, managed_mcp_spec_entry
+
+    if request.get("internal_auth") is not True:
+        return web.json_response(
+            {"error": "internal caller required", "code": "internal_required"}, status=403
+        )
+    supervised = bool(request.app.get("supervised", False))
+    home = str(config_dir()) if supervised else None
+
+    servers: dict[str, dict] = {}
+    for name in _MANAGED_MCP_SERVERS:
+        entry = managed_mcp_spec_entry(name)
+        if entry is None:
+            continue
+        if home is not None:
+            env = dict(entry.get("env") or {})
+            env["KIROCREW_HOME"] = home
+            entry["env"] = env
+        servers[name] = entry
+    return web.json_response({"mcpServers": servers})
+
+
 async def api_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     uptime = time.time() - state.start_time
