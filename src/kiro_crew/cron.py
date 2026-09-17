@@ -67,7 +67,12 @@ from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
 from kiro_crew.metrics.events import CRON_FIRES, emit_counter
 from kiro_crew.resource_status import admission_check
-from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
+from kiro_crew.validation import (
+    CHANNEL_MAX_LEN,
+    MAX_CRON_MESSAGE,
+    MAX_SHORT_STRING,
+    SUPERVISOR_SESSION_KEY_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2107,6 +2112,16 @@ class CronService:
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
+        # Plane C divert for agent-message jobs owned by a supervised
+        # ``kiro-cli:<id>`` session. Set externally (like ``_push_refresh``) by
+        # the gateway wiring; when set AND a firing job is an agent-message job
+        # (no ``command``/``script``) whose ``session_key`` is a supervised key,
+        # ``_execute`` calls this INSTEAD of the LLM callback: the turn is handed
+        # to the CLI's own session via the wake queue, never run in a gateway
+        # session. Signature ``(job) -> Awaitable[bool]``; True means the wake
+        # was durably enqueued. Unset on every loop-less/standalone caller, so a
+        # non-supervised job path is byte-for-byte unchanged.
+        self._on_kiro_cli_message: Callable[[CronJob], Awaitable[bool]] | None = None
         _cfg = KiroCrewConfig.load().cron_history
         _history_dir = base_dir if base_dir is not None else _default_dir()
         # Execution history is BEST-EFFORT and must never be load-bearing for
@@ -4361,6 +4376,17 @@ class CronService:
         """Set the dashboard refresh callback."""
         self._push_refresh = cb
 
+    def set_kiro_cli_message_callback(
+        self, cb: "Callable[[CronJob], Awaitable[bool]] | None"
+    ) -> None:
+        """Wire the Plane C divert for supervised agent-message jobs.
+
+        See ``_on_kiro_cli_message``. Left unset means every agent-message job
+        runs in-gateway as before; set only by a supervised gateway that has a
+        wake queue to enqueue into.
+        """
+        self._on_kiro_cli_message = cb
+
     async def run_job(self, job_id: str) -> bool:
         """Manually trigger a job via _run_job_isolated (records history)."""
         # Refresh the store off the loop, then resolve + claim on the loop.
@@ -4959,32 +4985,36 @@ class CronService:
                     await asyncio.to_thread(self._merge_job_result, job)
                 except Exception:
                     logger.exception("Failed to merge result for job '%s'", job.name)
-                # Record history
+                # Record history — UNLESS this run was diverted to a supervised
+                # CLI wake, in which case ``_inject_to_cli`` already wrote the
+                # authoritative ``outcome='injected'`` record and a second append
+                # here would duplicate it under a bare ``success`` status.
                 try:
-                    status = "success" if job.last_status == "ok" else "failure"
-                    # Attribute last_result to this run only if the run
-                    # actually produced it (set_run_result sets the marker).
-                    # Reading it unconditionally recorded the PREVIOUS run's
-                    # result as this run's summary/trace whenever the run
-                    # ended without producing one (observed in the wild: a
-                    # timed-out run's history row carried the prior success's
-                    # summary verbatim — fabricated history on a
-                    # status=failure record).
-                    run_result = job.last_result if job.result_produced else None
-                    record = CronRunRecord(
-                        job_id=job.id,
-                        trigger=trigger,
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration_ms=int((finished_at - exec_started_at) * 1000),
-                        status=status,
-                        summary=(run_result or job.last_error or "")[:200],
-                        trace=run_result or "",
-                        error=job.last_error or "",
-                    )
-                    await self._history.append(record)
-                    if self._push_refresh:
-                        self._push_refresh("cron_history")
+                    if not getattr(job, "cli_injected", False):
+                        status = "success" if job.last_status == "ok" else "failure"
+                        # Attribute last_result to this run only if the run
+                        # actually produced it (set_run_result sets the marker).
+                        # Reading it unconditionally recorded the PREVIOUS run's
+                        # result as this run's summary/trace whenever the run
+                        # ended without producing one (observed in the wild: a
+                        # timed-out run's history row carried the prior success's
+                        # summary verbatim — fabricated history on a
+                        # status=failure record).
+                        run_result = job.last_result if job.result_produced else None
+                        record = CronRunRecord(
+                            job_id=job.id,
+                            trigger=trigger,
+                            started_at=started_at,
+                            finished_at=finished_at,
+                            duration_ms=int((finished_at - exec_started_at) * 1000),
+                            status=status,
+                            summary=(run_result or job.last_error or "")[:200],
+                            trace=run_result or "",
+                            error=job.last_error or "",
+                        )
+                        await self._history.append(record)
+                        if self._push_refresh:
+                            self._push_refresh("cron_history")
                 except Exception:
                     logger.exception("Failed to record history for job '%s'", job.name)
             # Re-arm now rather than waiting for whatever wake was already
@@ -5142,6 +5172,70 @@ class CronService:
                 job.record_failure()
             logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
 
+    def _should_inject_to_cli(self, job: CronJob) -> bool:
+        """True iff this run must be diverted to a supervised CLI wake queue.
+
+        Only an AGENT-MESSAGE job (no ``command``/``script`` body) owned by a
+        supervised ``kiro-cli:<id>`` session diverts, and only when the divert
+        hook is wired. A zero-token script/command job runs in-gateway as always
+        — its work is deterministic and has nothing to run in the CLI's model
+        session.
+        """
+        # ``getattr`` guard: a partially-constructed service (tests build one
+        # via ``CronService.__new__`` and set only ``_on_job``) has no divert
+        # hook, which is the same as "not wired" — the ordinary path runs.
+        return (
+            getattr(self, "_on_kiro_cli_message", None) is not None
+            and not (job.command or job.script)
+            and (job.session_key or "").startswith(SUPERVISOR_SESSION_KEY_PREFIX)
+        )
+
+    async def _inject_to_cli(self, job: CronJob, started_at: float, trigger: str) -> None:
+        """Enqueue this agent-message run as a wake and record it ``injected``.
+
+        Replaces the in-gateway LLM turn for a supervised owner: the enqueue is
+        the delivery, and the history record's ``outcome='injected'`` is what a
+        reader (and the KAS ``cron/fired`` pump) uses to tell "handed to the CLI"
+        from an in-gateway run. Writes the record HERE (not in the shared finally
+        of ``_run_job_isolated``) and marks the run so that finally does not also
+        append a duplicate; the finally still settles ``last_run_ts`` and re-arms
+        the timer. An enqueue failure falls through to ``error`` like any other
+        delivery failure, so a broken queue does not silently swallow a fire.
+        """
+        assert self._on_kiro_cli_message is not None
+        try:
+            delivered = await self._on_kiro_cli_message(job)
+        except Exception as exc:
+            job.last_status = "error"
+            job.last_error = str(exc)
+            logger.error("Cron job '%s' CLI-inject failed: %s", job.name, exc)
+            return
+        if not delivered:
+            job.last_status = "error"
+            job.last_error = "CLI wake enqueue reported not delivered"
+            return
+        job.last_status = "ok"
+        job.last_error = None
+        # Written here rather than in the shared finally, and the run is marked
+        # so the finally skips its own append (see ``cli_injected``).
+        job.cli_injected = True  # type: ignore[attr-defined]
+        try:
+            record = CronRunRecord(
+                job_id=job.id,
+                trigger=trigger,
+                started_at=started_at,
+                finished_at=time.time(),
+                duration_ms=int((time.time() - started_at) * 1000),
+                status="success",
+                outcome="injected",
+                summary="turn injected into supervised CLI session",
+            )
+            await self._history.append(record)
+            if self._push_refresh:
+                self._push_refresh("cron_history")
+        except Exception:
+            logger.exception("Failed to record injected history for job '%s'", job.name)
+
     async def _execute(self, job: CronJob) -> None:
         """Run the job callback and update runtime fields (last_run_ts, last_status)."""
         logger.info("Cron: executing '%s' (%s)", job.name, job.id)
@@ -5150,6 +5244,15 @@ class CronService:
         job.last_status = None
         job.fire_time_denied = False
         job.run_never_started = False
+        job.cli_injected = False  # type: ignore[attr-defined]
+        # Plane C divert: an agent-message job owned by a supervised
+        # ``kiro-cli:`` session hands its turn to the CLI's own session via the
+        # wake queue instead of running the LLM callback in a gateway session.
+        # Done before the callback so the gateway session is never created.
+        if self._should_inject_to_cli(job):
+            await self._inject_to_cli(job, time.time(), "scheduled")
+            job.last_run_ts = time.time()
+            return
         # Transient retries the callback took this run. The gateway callback only
         # INCREMENTS `_transient_attempts` (a runtime attribute on the live job);
         # this method is the one owner of reading it, clearing it and persisting

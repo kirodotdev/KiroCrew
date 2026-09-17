@@ -81,6 +81,7 @@ from kiro_crew.monitoring.models import (
 from kiro_crew.monitoring.registry import REVIEW_READY, kind_supports_objective
 from kiro_crew.probes import targets
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.validation import SUPERVISOR_SESSION_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -816,11 +817,22 @@ class AutoNudgeService:
         base_dir: Path | None = None,
         on_fire: Callable[[NudgeLoop], Awaitable[bool]] | None = None,
         on_monitor_tick: Callable[[NudgeLoop], Awaitable[None]] | None = None,
+        on_kiro_cli_wake: Callable[[NudgeLoop], Awaitable[bool]] | None = None,
     ) -> None:
         self._base_dir = base_dir or config_dir()
         self._path = self._base_dir / _NUDGES_FILE
         self._on_fire = on_fire
         self._on_monitor_tick = on_monitor_tick
+        # Plane C divert (Phase 4). When set AND a loop's binding ``slot_key`` is
+        # a supervised ``kiro-cli:<id>`` session, a fire ENQUEUES a wake for that
+        # owner instead of injecting a prompt into a gateway slot the CLI does
+        # not own. Returning True from this hook counts as delivered, so the same
+        # cycle/backoff bookkeeping applies as an ordinary fire; a supervised
+        # loop with the hook unset (a standalone gateway) simply falls back to
+        # the normal ``_on_fire`` path. Every non-``kiro-cli:`` owner is
+        # untouched — the divert is gated on the key prefix, not the hook's mere
+        # presence.
+        self._on_kiro_cli_wake = on_kiro_cli_wake
         self._loops: dict[str, NudgeLoop] = {}
         self._timers: dict[str, asyncio.Task] = {}
         # Loop ids whose re-arm was requested while their fire window was open.
@@ -4727,7 +4739,20 @@ class AutoNudgeService:
         Runs entirely inside the caller's ``_firing`` window so a concurrent
         ``update()`` never cancels this task between delivery and persistence.
         """
-        if self._on_fire is None:
+        # Plane C divert: a loop bound to a supervised ``kiro-cli:<id>`` session
+        # must NOT inject into a gateway slot — that session's turns are the
+        # CLI's own. Enqueue a wake for the owner and let the CLI run the turn.
+        # Falls through to the ordinary ``_on_fire`` path when the hook is unset
+        # (a standalone gateway) so a supervised loop still degrades to the
+        # legacy behaviour rather than silently dropping its fire. Chosen here,
+        # the single delivery site, so the cycle/backoff bookkeeping below treats
+        # an enqueue exactly like an injected turn.
+        fire_cb: Callable[[NudgeLoop], Awaitable[bool]] | None = self._on_fire
+        if self._on_kiro_cli_wake is not None and loop.slot_key.startswith(
+            SUPERVISOR_SESSION_KEY_PREFIX
+        ):
+            fire_cb = self._on_kiro_cli_wake
+        if fire_cb is None:
             return
         # Mark the fire window so a concurrent update() defers its re-arm
         # instead of cancelling this task mid-turn (see update()). The window
@@ -4738,7 +4763,7 @@ class AutoNudgeService:
         # loop could run extra cycles after a restart. _run_fire_cycle owns the
         # window; this method is the body.
         try:
-            delivered = await self._on_fire(loop)
+            delivered = await fire_cb(loop)
         except Exception:
             delivered = False
             # Full traceback only on the first failure of a streak; subsequent

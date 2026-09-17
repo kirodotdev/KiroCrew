@@ -6019,6 +6019,25 @@ class GatewayOrchestrator:
         self.cron_svc = await CronService.create(base_dir=data_home(), on_job=_cron_callback)
         if self.dashboard_state:
             self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
+
+            async def _cron_kiro_cli_inject(job: CronJob) -> bool:
+                """Enqueue an agent-message cron run as a wake for its CLI owner.
+
+                The Plane C counterpart of ``_cron_callback`` for a supervised
+                ``kiro-cli:<id>`` owner: the job's ``message`` becomes a wake the
+                supervising CLI runs in its own session, rather than an
+                in-gateway LLM turn. True once durably enqueued.
+                """
+                assert self.dashboard_state is not None
+                await self.dashboard_state.wake_queue().enqueue(
+                    job.session_key,
+                    "cron",
+                    job.id,
+                    job.message,
+                )
+                return True
+
+            self.cron_svc.set_kiro_cli_message_callback(_cron_kiro_cli_inject)
         if self._no_crons:
             logger.info("Cron scheduler disabled (--no-crons)")
         else:
@@ -7370,10 +7389,35 @@ class GatewayOrchestrator:
                     },
                 )
 
+        async def _kiro_cli_wake(loop: NudgeLoop) -> bool:
+            """Enqueue a Plane C wake for a supervised ``kiro-cli:<id>`` owner.
+
+            The reverse of ``_fire``: instead of injecting into a gateway slot,
+            hand the loop's armed ``message`` to the wake queue keyed by the
+            loop's own session key, and let the supervising CLI run the turn in
+            its own session. Returning True counts the cycle as delivered — the
+            wake is durably queued, so the turn WILL run (or be redelivered)
+            unless the CLI acks it dropped. Requires the dashboard state (the
+            wake queue lives there); without it there is nowhere to enqueue, so
+            report not-delivered and let the loop re-arm.
+            """
+            if self.dashboard_state is None:
+                return False
+            await self.dashboard_state.wake_queue().enqueue(
+                loop.slot_key,
+                "monitor",
+                loop.id,
+                loop.message,
+                cycle=loop.cycle_count,
+                reason=loop.stopped_reason or "",
+            )
+            return True
+
         self.autonudge_svc = AutoNudgeService(
             base_dir=data_home(),
             on_fire=_fire,
             on_monitor_tick=_monitor_tick,
+            on_kiro_cli_wake=_kiro_cli_wake,
         )
         controller = MonitorController(self.autonudge_svc, _fire_monitor)
         # Timers can complete while start() awaits store repair. Install the
