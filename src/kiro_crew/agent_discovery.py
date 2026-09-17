@@ -1052,6 +1052,99 @@ def agent_skill_globs(agent: str, agents_dir: Path | None = None) -> list[str]:
     return []
 
 
+#: Ceiling on a ``welcomeMessage`` rendered into a chat transcript. The field is
+#: authored in a user-writable, tool-shared directory, so its length is not a
+#: trusted quantity: an unbounded value would be persisted into the slot window
+#: and re-broadcast to every open tab on each restore. Truncated rather than
+#: refused — a long hint is still the author's intent, and dropping it silently
+#: reproduces exactly the "accepted but invisible" behaviour this reader exists
+#: to remove.
+WELCOME_MESSAGE_MAX_CHARS = 2000
+
+
+def spec_welcome_message(data: dict[str, Any]) -> str:
+    """The display-ready ``welcomeMessage`` of a parsed agent spec, or ``""``.
+
+    Coerced through :func:`spec_str` for the reason documented there: this key
+    is read from ``~/.kiro/agents``, a directory other tools also write, so a
+    structured or ``null`` value is "absent" rather than an error. Surrounding
+    whitespace is stripped and a whitespace-only value collapses to ``""``, so
+    a blank hint renders nothing instead of an empty bubble.
+
+    Truncated at :data:`WELCOME_MESSAGE_MAX_CHARS` with an ellipsis, so the
+    caller can append the result without re-checking its size.
+    """
+    text = spec_str(data, "welcomeMessage").strip()
+    if len(text) > WELCOME_MESSAGE_MAX_CHARS:
+        # The ellipsis is part of the budget, not an addition to it: the ceiling
+        # is what callers are promised, so a result of cap+1 would break the one
+        # guarantee this function makes.
+        text = text[: WELCOME_MESSAGE_MAX_CHARS - 1].rstrip() + "\u2026"
+    return text
+
+
+def agent_welcome_message(
+    agent: str,
+    *,
+    project: str | Path | None = None,
+    agents_dir: Path | None = None,
+) -> str:
+    """*agent*'s ``welcomeMessage`` as display-ready text, or ``""``.
+
+    The one reader of the field. Blocking (it scans agent directories), so an
+    event-loop caller must offload it — the dashboard chat runner does.
+
+    WHICH spec is live is answered by :func:`list_agents`, not re-decided here.
+    That roster is what the agent picker shows and what the backend activates, so
+    the hint has to come from the row it selected or the greeting describes an
+    agent that is not running. Every rule that choice needs already lives there
+    and nowhere else: project scope shadowing the user directory, a declared
+    ``name`` outranking a matching filename, package-installed winning a
+    duplicate name, and last-seen winning among duplicate project specs. Reading
+    the winner instead of reproducing the rules is what keeps the two from
+    drifting; a second copy of the precedence, however well tested, is a copy
+    that can disagree.
+
+    Only the winning file is then parsed, through the same hardened reader under
+    this function's own *operation* label, so a denial is attributed to the hint
+    rather than to a listing. That read applies the full guard set again (size
+    cap, sidecars, sensitive symlink targets, non-object JSON), so reopening by
+    name is not an unguarded second read.
+
+    Best-effort and never raises: an unknown agent, an unreadable or oversized
+    spec, or a roster row whose file is gone all yield ``""``. A missing hint and
+    an unreadable one are deliberately the same answer — the field is decoration,
+    and no chat turn should fail over it.
+    """
+    if not agent:
+        return ""
+    project_dir = str(project) if project else None
+    try:
+        rows = list_agents(agents_dir=agents_dir, project_dir=project_dir)
+    except Exception:  # noqa: BLE001 - decoration must never fail a turn
+        logger.debug("Agent roster unreadable for welcomeMessage %r", agent, exc_info=True)
+        return ""
+    winner = next((row for row in rows if row.name == agent), None)
+    if winner is None or not winner.filename:
+        return ""
+    # The roster records a bare filename plus the scope it was found in, which is
+    # what says which of the two directories to reopen it from.
+    if winner.scope == SCOPE_PROJECT:
+        if not project_dir:
+            return ""
+        directory = project_agents_dir(project_dir)
+    else:
+        directory = agents_dir if agents_dir is not None else _kiro_agents_dir()
+    data = _read_agent_spec(
+        directory / winner.filename,
+        operation="agent_welcome_message",
+        source="unknown",
+    )
+    if data is None:
+        return ""
+    return spec_welcome_message(data)
+
+
 def _dir_signature(d: Path) -> _ListAgentsSig:
     """Cheap stat-only signature of the agents dir.
 

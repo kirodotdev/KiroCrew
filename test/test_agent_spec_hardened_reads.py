@@ -895,6 +895,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/agent_capabilities.py": [("capability_publish", "dashboard")],
     "kiro_crew/agent_discovery.py": [
+        # ``agent_welcome_message`` reads the PROJECT checkout's specs itself
+        # (project scope shadows the user level, as `list_agents` resolves it),
+        # so it names the hint read rather than forwarding: a refused checkout
+        # spec is attributed to the greeting, not to whichever surface asked.
+        ("agent_welcome_message", "unknown"),
         ("forward:operation", "forward:source"),
         ("forward:operation", "forward:source"),
         # ``spec_by_declared_name`` scans specs it did not name for whichever

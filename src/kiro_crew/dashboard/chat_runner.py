@@ -54,7 +54,7 @@ from kiro_crew.acp.types import (
     classify_stop_reason,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
-from kiro_crew.agent_discovery import warm_project_agent_names
+from kiro_crew.agent_discovery import agent_welcome_message, warm_project_agent_names
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -648,6 +648,65 @@ def _redact_display_text(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+async def _surface_agent_welcome(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    agent: str,
+) -> None:
+    """Render *agent*'s ``welcomeMessage`` into *slot*, at most once per activation.
+
+    The one consumer of the agent-config field. An agent JSON may carry a
+    ``welcomeMessage`` — a usage hint its author wants the user to read when the
+    agent takes over — and this is the only place it reaches a user. Kiro Crew's
+    own bundled agents ship one, so the field is not a niche extension point.
+
+    Three properties are the whole design, and each one rules out an
+    alternative that looks simpler:
+
+    * **A transcript row, not prompt context.** Role ``notice``: durable (not in
+      ``_TRANSIENT_ROLES``, so it persists and survives a reload) but NOT one of
+      the ``user``/``assistant`` roles the history replay feeds back to the
+      model. Inlining the hint into the system prompt is the workaround the
+      issue reports as the thing to remove — it re-sends the text every turn.
+    * **One shot per activation.** Both call sites clear through
+      ``slot._welcomed_agent``, because a switch and the session start its own
+      reset produces are two events for ONE activation, and each path would
+      otherwise emit for the other.
+    * **Untrusted text.** The field is read from a user-writable, tool-shared
+      directory. ``NoticeCard`` renders a ``notice`` row as plain text (no
+      markdown, no HTML), the reader caps its length, and it is passed through
+      the same display redactors as any other foreign string reaching a
+      transcript — so a hint carrying a credential or an exfil URL cannot ship
+      one into the persisted window.
+
+    Best-effort: the disk read is offloaded (this runs on the gateway's shared
+    event loop) and a failure renders nothing rather than failing the turn.
+    """
+    if not agent:
+        # The default crew has no spec, so there is nothing to render — but the
+        # claim is RELEASED rather than merely skipped: leaving it set made
+        # A -> default -> A read as "already welcomed A" and swallow A's second
+        # activation, which the one-shot rule is per activation, not per slot.
+        slot._welcomed_agent = ""
+        return
+    if slot._welcomed_agent == agent:
+        return
+    # Claimed BEFORE the await: two events for one activation can both reach
+    # this point, and the offload yields the loop between the guard and the
+    # append. Recording the failure case as "welcomed" too is deliberate — a
+    # hint that could not be read is not worth retrying on every later event
+    # for the same agent.
+    slot._welcomed_agent = agent
+    try:
+        text = await asyncio.to_thread(agent_welcome_message, agent, project=slot.project or None)
+    except Exception:  # noqa: BLE001 - decoration must never fail a turn
+        logger.debug("Failed to read welcomeMessage for agent %r", agent, exc_info=True)
+        return
+    if not text:
+        return
+    append_and_surface(state, slot, "notice", _redact_display_text(text), "msg msg-info")
 
 
 def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
@@ -8635,6 +8694,18 @@ async def _run_chat(
                 needs_reinjection=False,
             ).delivers_section
         )
+        # Session start on a named agent: the greeting belongs to the moment
+        # the agent becomes the one answering, which for a cold start is here.
+        # `kiro_agent` FIRST, because that is the spec that answers: a crew
+        # alias's `slot.agent` is the member the human picked, which names no
+        # agent spec, so the roster lookup finds nothing and the running
+        # template's hint is dropped. Falls back to `slot.agent` for an ordinary
+        # slot, where no template resolution happened and the two are the same
+        # name. Both empty means the default crew, which has no spec to carry a
+        # hint. Guarded per activation, so the cold start that an agent switch's
+        # own session reset produces does not re-emit the row it appended.
+        if is_new:
+            await _surface_agent_welcome(state, slot, kiro_agent or slot.agent)
         # Member activity pointer — once per SESSION, not per turn: the log
         # answers "which sessions did this member take part in", so a per-turn
         # append would inflate every count taken from it. `slot.agent` is the
@@ -12240,6 +12311,11 @@ async def _run_chat(
                         f"🔄 Switched to agent: {new_agent}",
                         "msg msg-a",
                     )
+                    # The new agent's own greeting, beside the line announcing
+                    # it. After the switch row so the two read in causal order,
+                    # and after `slot.agent` is set so the guard is keyed on the
+                    # agent now active.
+                    await _surface_agent_welcome(state, slot, new_agent)
                     state.broadcast_ws(
                         "slot_agent_switch",
                         {"slot": slot.key, "agent": new_agent},

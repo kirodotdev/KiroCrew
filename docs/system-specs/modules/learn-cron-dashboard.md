@@ -1216,6 +1216,40 @@ condition: a boundary where no successor dispatches (empty queue, dropped
 entry, synthesis not eligible) emits nothing here -- `_finish_queue_cycle`'s
 `chat_done` stays that path's sole finalizer, so no path double-finalizes.
 
+### Agent welcome message (`welcomeMessage`)
+
+An agent spec may carry `welcomeMessage`, a hint its author wants read when that
+agent starts answering. `agent_discovery.agent_welcome_message` is its ONE reader
+and `chat_runner._surface_agent_welcome` its ONE emitter; before them the field
+had no reader at all, which is why the bundled `pptx_maker` agents ship a value
+nothing rendered.
+
+Contract:
+
+- **Two activation points, dashboard only.** A cold session start on a non-empty
+  `slot.agent`, and a provider-side `EVENT_AGENT_SWITCHED` -- there the row lands
+  immediately AFTER `Switched to agent: <name>`. The channels are deliberately
+  out of scope.
+- **Row shape.** `role="notice"`: outside `_TRANSIENT_ROLES`, so it persists and
+  survives a reload; neither `user` nor `assistant`, so the history replay never
+  feeds it back to the model; drawn by `NoticeCard` as plain text, so config copy
+  cannot render as instructions.
+- **One shot per ACTIVATION**, via `slot._welcomed_agent`. Both call sites clear
+  through that one field, since a switch and the cold start its own reset
+  produces are two events for one activation. The claim is taken before the
+  offloaded read, and released when the agent is empty so returning to an agent
+  after the default greets again. Not persisted: the row is.
+- **Which spec is live is `list_agents`' answer, not this reader's.** It takes the
+  roster row matching the name and parses only that row's file, from the scope
+  directory the row names. No precedence is restated here.
+- **Untrusted input.** Absent, empty, whitespace-only and non-string values
+  render nothing (`spec_str`'s rule); the text is capped at
+  `WELCOME_MESSAGE_MAX_CHARS` (2000) including its ellipsis, and passes through
+  `_redact_display_text`. The read is offloaded and total -- an unreadable spec
+  renders nothing rather than failing the turn.
+
+Rationale for each choice is in the three docstrings, not repeated here.
+
 ### Mid-Turn Steer (dashboard transcript contract)
 
 A steer (`POST /api/chat` with `steer: true` while the slot is running) injects
