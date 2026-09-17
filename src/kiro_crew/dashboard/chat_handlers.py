@@ -4364,6 +4364,16 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
+        # Re-authorize after the await above (see _slot_replaced_while_queued):
+        # ``name`` can be recreated for a different app while this request
+        # queued, and every read of ``slot`` below would be of the stale one.
+        # This path is not a reset but a DISPATCH -- _start_next_queued_turn
+        # runs the turn under ``effective_session_key``, which an unlinked
+        # replacement resolves to the same ``dashboard:<name>`` -- so the stale
+        # request's authorization would start an agent turn, running tools and
+        # writing to the repo, on the replacement's session.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_continue"):
+            return _slot_not_found()
         if slot.running:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
@@ -8767,6 +8777,16 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     # reset is awaited while holding the lock beyond what the other switch
     # handlers already hold.
     async with slot._lock:
+        # Re-authorize after the await above (see _slot_replaced_while_queued):
+        # ``name`` can be recreated for a different app while this request
+        # queued, and every read of ``slot`` below would be of the stale one.
+        # It has to precede the session-key resolve as well as the app gate: the
+        # key this request would arm ``_pending_reset_history_key`` with is the
+        # shared ``dashboard:<name>``, so a stale request lands its deferred
+        # reset on the REPLACEMENT's session and records an allowed
+        # ``chat_slot_project`` row naming it.
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+            return _slot_not_found()
         # The session the deferred reset will address — ``effective_session_key``,
         # never ``_history_key_for`` (see api_chat_slot_model): a channel- or
         # cron-born slot runs its turns under its linked key, and the
