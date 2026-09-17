@@ -357,13 +357,33 @@ async def api_member_thread(request: web.Request) -> web.Response:
     slot_key, generation = "", ""
     if member_name:
         try:
+            # Opening a member's DM is the first hop of a member turn, and the
+            # binding resolver below fails closed while the gateway's memory
+            # preparation is still running. Give this open the same bounded
+            # grace a turn gets at its admission seam, so the page's first
+            # open after a restart lands once preparation completes instead
+            # of failing on a fence that clears seconds later. The wait is
+            # shielded: a closed request cannot cancel shared preparation.
+            from kiro_crew.memory_startup import wait_for_memory_preparation
+
+            await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
             slot_key, generation = await asyncio.to_thread(
                 _member_thread_slot, cfg, member_name, slug
             )
         except Exception as exc:
-            from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+            from kiro_crew.dashboard.handlers.memory import (
+                _memory_preparing_response,
+                _store_unavailable_response,
+            )
+            from kiro_crew.memory_startup import memory_preparation_pending
 
-            return _store_unavailable_response(cfg.agents[member_name].memory_store, exc)
+            store = cfg.agents[member_name].memory_store
+            # Preparation outlasting the grace is the one refusal a client can
+            # clear by asking again; every other cause (a failed restore, a
+            # broken binding) needs the owner, so it keeps the fail-closed code.
+            if memory_preparation_pending():
+                return _memory_preparing_response(store, exc)
+            return _store_unavailable_response(store, exc)
     if binding is not None:
         if binding.get("member") not in slug_owners:
             # The binding names a crew absent from the registry (renamed, or
