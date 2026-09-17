@@ -3590,6 +3590,45 @@ async def handle_message(
                 logger.warning("Failed to post chat.update placeholder", exc_info=True)
                 stream_ts = None
 
+    # Whether the user-visible "working" indicators have already been torn down.
+    # Guards _clear_working_indicators so it runs its side effects at most once,
+    # even though it is invoked both from the finally block (every exit path,
+    # including asyncio.CancelledError) and from the post-turn straight-line code.
+    _indicators_cleared = False
+
+    async def _clear_working_indicators() -> None:
+        """Tear down the two user-visible 'working' affordances, idempotently.
+
+        The native ``assistant.threads.setStatus`` label and the inline
+        "⏳ Working… / ⏹ Stop" block (``_working_ts``) must be cleared on EVERY
+        turn-exit path. Previously they were cleared only by straight-line code
+        after the try/finally, so an ``asyncio.CancelledError`` (warm-pool
+        session reclaimed mid-turn, gateway shutdown, Stop enforced by task
+        cancellation) — which is a ``BaseException``, not caught by the
+        ``except Exception`` handler — propagated out and left both indicators
+        stuck showing "KiroCrew is working…" after the turn was over. Calling
+        this from ``finally`` closes that leak. Each call is individually
+        guarded so one failing Slack API request cannot block the others.
+
+        Review mode is the one path that deliberately KEEPS a thread-status
+        label ("Awaiting review…"), so the status clear is skipped there; the
+        inline Stop block is still removed (review mode never relies on it).
+        """
+        nonlocal _indicators_cleared
+        if _indicators_cleared:
+            return
+        _indicators_cleared = True
+        if channel_activation != ACTIVATION_REVIEW:
+            try:
+                await slack.set_thread_status(channel, reply_ts, "")
+            except Exception:
+                logger.debug("Failed to clear thread status", exc_info=True)
+        if _working_ts:
+            try:
+                await slack.delete_message(channel, _working_ts)
+            except Exception:
+                logger.debug("Failed to remove inline stop button", exc_info=True)
+
     task = Task(id=msg_ts)
     _acquired = False
 
@@ -3840,7 +3879,7 @@ async def handle_message(
         # ── Early cancellation check: bail before expensive LLM call ──
         if sessions.is_cancelled(session_key, msg_ts):
             logger.info("Message %s cancelled before LLM call — skipping", msg_ts)
-            await slack.set_thread_status(channel, reply_ts, "")
+            # The finally clears the working indicators (status + Stop button).
             return
 
         # Lease-dispatch race gate: the session lease was taken by
@@ -3857,7 +3896,7 @@ async def handle_message(
             sessions.begin_turn(session_key)
         except SessionClosingError:
             logger.info("Aborting Slack dispatch for %s — gateway shutting down", session_key)
-            await slack.set_thread_status(channel, reply_ts, "")
+            # The finally clears the working indicators (status + Stop button).
             return
 
         async for event in client.stream(full_message):
@@ -4364,14 +4403,25 @@ async def handle_message(
         Stats().inc_message_failed()
     finally:
         if _acquired:
-            sessions.release(session_key)
+            try:
+                sessions.release(session_key)
+            except Exception:
+                # A raising release() must not skip the indicator teardown below,
+                # or the "working" status/Stop button would leak on this path too.
+                logger.debug("Failed to release session %s", session_key, exc_info=True)
         status_ctrl.finalize(error=_had_error)
         await asyncio.sleep(0)  # let finalize fire
+        # Tear down the user-visible "working" indicators on EVERY exit path,
+        # including asyncio.CancelledError (a BaseException the handlers above do
+        # not catch). Idempotent: the post-turn code below is a no-op after this.
+        await _clear_working_indicators()
 
     # ── Cancelled check: suppress response if message was deleted mid-flight ──
     if sessions.is_cancelled(session_key, msg_ts):
         logger.info("Message %s cancelled (deleted) — suppressing response", msg_ts)
-        await slack.set_thread_status(channel, reply_ts, "")
+        # Thread status + inline Stop button were already torn down in the
+        # finally via _clear_working_indicators; only the streamed answer and
+        # thinking placeholder remain to delete here.
         if stream_ts:
             try:
                 await slack.delete_message(channel, stream_ts)
@@ -4382,23 +4432,11 @@ async def handle_message(
                 await slack.delete_message(channel, thinking_ts)
             except Exception:
                 logger.debug("Failed to delete thinking placeholder", exc_info=True)
-        if _working_ts:
-            try:
-                await slack.delete_message(channel, _working_ts)
-            except Exception:
-                pass
         return
 
-    # Clear assistant thread status (skip in review mode — keep indicator until button press)
-    if channel_activation != ACTIVATION_REVIEW:
-        await slack.set_thread_status(channel, reply_ts, "")
-
-    # Remove inline stop button
-    if _working_ts:
-        try:
-            await slack.delete_message(channel, _working_ts)
-        except Exception:
-            pass
+    # Working indicators (thread status + inline Stop button) were cleared in the
+    # finally on every exit path; this is a defensive no-op after that.
+    await _clear_working_indicators()
 
     # Suppress error replies for trusted bot messages to prevent echo loops
     if from_trusted_bot and _had_error:
