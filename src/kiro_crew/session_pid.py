@@ -646,22 +646,70 @@ def _pgroup_still_ours(
     back to the verified descendants it can still name individually.
 
     A held zombie counts, and deliberately so: it is still a group member and its
-    ``/proc`` identity is still readable, which is the whole point of not reaping
-    the root until the last signal is out.
+    identity is still readable, which is the whole point of not reaping the root
+    until the last signal is out. Membership is read through
+    :func:`_pid_in_pgroup` for that reason -- see there for why ``getpgid`` alone
+    would drop the zombie root on macOS. The ungated ``_proc`` shape has no
+    recorded start id, so its owned live handle supplies a fresh identity read for
+    the listing comparison.
     """
     if platform_compat.IS_WINDOWS:
         return False
     if _root_identity_holds(root_pid, recorded_start, gated=gated):
-        if platform_compat.pgroup_of(root_pid) == pgid:
+        root_start = (
+            recorded_start
+            if recorded_start is not None
+            else platform_compat.get_process_start_id(root_pid)
+        )
+        if _pid_in_pgroup(root_pid, pgid, root_start):
             return True
     for cpid, (start, _basename) in records.items():
         if start is None:
             continue
         if platform_compat.get_process_start_id(cpid) != start:
             continue
-        if platform_compat.pgroup_of(cpid) == pgid:
+        if _pid_in_pgroup(cpid, pgid, start):
             return True
     return False
+
+
+def _pid_in_pgroup(pid: int, pgid: int, start_id: str | None) -> bool:
+    """Whether *pid* is a member of process group *pgid*, zombie or not.
+
+    ``getpgid`` answers for a live member on every POSIX host, and on Linux for a
+    zombie too. macOS refuses it for a zombie (``ESRCH``: the kernel looks the
+    pid up among running processes only), which is exactly the member
+    :func:`_pgroup_still_ours` needs to see -- the exited-but-unreaped root is
+    the one verified member left in the group once its children have been
+    SIGTERMed, and losing it there suppresses the group SIGKILL, so a child that
+    ignored SIGTERM outlives the teardown. ``sysctl KERN_PROC_PGRP`` lists the
+    group's zombies alongside its live members, so it settles the question
+    ``getpgid`` cannot.
+
+    The listing is consulted ONLY when ``getpgid`` had no answer. A definite
+    answer naming another group is final: the pid has left the group, or the
+    number has moved on to a stranger's tree, and a second oracle must not be
+    allowed to overrule that verdict in the direction of signalling. Unreadable
+    on both is "not a member": the caller must not signal a group it cannot
+    prove it owns.
+
+    A listed member counts only when its ``start_id`` matches *start_id* as well
+    as its pid. The caller verified the identity before asking, but the listing
+    is a separate read: a zombie collected by another reaper in between frees the
+    pid, and under wraparound a stranger's new group leader can hold it by the
+    time the listing runs. Matching the start instant refuses that recycled pid;
+    a caller with no identity to offer (``None``) gets "not a member" for the
+    same reason.
+    """
+    answer = platform_compat.pgroup_of(pid)
+    if answer is not None:
+        return answer == pgid
+    if sys.platform != "darwin" or start_id is None:
+        return False
+    members = platform_compat.darwin_pgroup_members(pgid)
+    if members is None:
+        return False
+    return any(m.pid == pid and m.start_id == start_id for m in members)
 
 
 def _provider_descendant_records(
@@ -821,14 +869,19 @@ def _pid_exited_but_unreaped(pid: int) -> bool:
     handed to an unrelated new leader. So the escalation has to be able to say
     "the root has exited" without also making its pgid ambiguous.
 
-    Conservative on an unreadable stat: returns False, i.e. "still running", so
-    a caller waits out its grace rather than exiting early on a guess. Off Linux
-    there is no zombie state to read, so this falls back to plain liveness --
-    which on macOS still feeds a real group escalation (``_isolated_provider_group``
-    resolves a pgid there too), so the fallback is a loss of precision, not a
-    disabled path: an exited-but-unreaped root simply reads as alive and the
-    caller waits out the grace instead of exiting early.
+    Conservative on an unreadable state: returns False, i.e. "still running", so
+    a caller waits out its grace rather than exiting early on a guess. On macOS
+    the state comes from ``sysctl KERN_PROC_PID``, which lists zombies where
+    libproc refuses them; a liveness probe would not do, because a zombie
+    answers ``kill(pid, 0)`` as present and the root would read as running until
+    someone else reaped it -- which this teardown deliberately does not, until
+    the last group signal is sent. On other non-Linux platforms there is no
+    zombie state to read, so this falls back to plain liveness: an
+    exited-but-unreaped root reads as alive and the caller waits out the grace.
     """
+    if sys.platform == "darwin":
+        zombie = platform_compat.darwin_pid_is_zombie(pid)
+        return bool(zombie) if zombie is not None else False
     if sys.platform != "linux":
         return not platform_compat.pid_exists(pid)
     try:
@@ -859,7 +912,17 @@ def _pgroup_has_member_besides(pgid: int, root_pid: int) -> bool:
     Conservative on a scan failure: returns True, i.e. "assume the group still
     holds something", so the caller escalates rather than declaring the tree
     gone on unread evidence.
+
+    macOS lists the group with ``sysctl KERN_PROC_PGRP`` and applies the same
+    rule -- a zombie member is not holding the group open. Other non-Linux
+    platforms can only ask whether the group exists, which a retained zombie
+    leader keeps answering yes to, so there the caller waits out its grace.
     """
+    if sys.platform == "darwin":
+        members = platform_compat.darwin_pgroup_members(pgid)
+        if members is None:
+            return True
+        return any(m.pid != root_pid and not m.zombie for m in members)
     if sys.platform != "linux":
         return platform_compat.pgroup_exists(pgid)
     try:

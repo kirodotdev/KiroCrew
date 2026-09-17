@@ -1262,6 +1262,31 @@ _DARWIN_CTL_KERN = 1
 _DARWIN_KERN_PROCARGS2 = 49
 _DARWIN_PROCARGS_BUFSIZE = 64 * 1024
 
+# ``sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID, pid)`` answers for a ZOMBIE where
+# ``proc_pidinfo`` refuses: the kernel walks its zombie list for this query as
+# well as the live one, and a zombie's ``proc`` still carries its start instant.
+# The record is a ``kinfo_proc`` whose leading ``extern_proc`` holds the same
+# ``p_start`` the ``PROC_PIDTBSDINFO`` probe reports -- ``p_starttime`` (offset
+# 0: int64 seconds, int32 microseconds) -- and the BSD state code ``p_stat``
+# (offset 36; ``SZOMB`` above). The kernel writes exactly ``sizeof(kinfo_proc)``
+# bytes per process, 648 on every 64-bit macOS; any other length means the
+# layout these offsets assume does not hold, so the answer is refused rather
+# than sliced out of the wrong place (the rule the libproc probes follow). A pid
+# that does not exist is not an error: the call succeeds with a zero-length
+# answer. ``KERN_PROC_PGRP`` lists every member of a process group the same way.
+_DARWIN_KERN_PROC = 14
+_DARWIN_KERN_PROC_PID = 1
+_DARWIN_KERN_PROC_PGRP = 2
+_DARWIN_KINFO_PROC_SIZE = 648
+_DARWIN_KP_START_TVSEC_OFFSET = 0
+_DARWIN_KP_START_TVUSEC_OFFSET = 8
+_DARWIN_KP_STAT_OFFSET = 36
+_DARWIN_KP_PID_OFFSET = 40
+# Headroom for processes that join a group between the size query and the read,
+# doubled on each of the retries a still-growing group is given.
+_DARWIN_KINFO_PGRP_SLACK = 16
+_DARWIN_KINFO_PGRP_ATTEMPTS = 4
+
 # ``proc_listchildpids`` writes ``pid_t`` values and returns HOW MANY it wrote.
 # A childless parent and a pid that does not exist both answer 0, so a caller
 # that needs to tell them apart reads the parent's own facts first.
@@ -1447,6 +1472,153 @@ def darwin_process_argv(pid: int) -> list[str] | None:
         return None
 
 
+class DarwinKinfoProc(NamedTuple):
+    """One process as ``sysctl KERN_PROC`` describes it -- zombies included.
+
+    ``start_id`` is formatted exactly as :func:`get_process_start_id` formats
+    the libproc answer for the same process, so the two are comparable: both
+    read the kernel's ``p_start`` instant.
+    """
+
+    pid: int
+    zombie: bool
+    start_id: str
+
+
+def _darwin_kinfo_proc_parse(raw: bytes) -> DarwinKinfoProc | None:
+    """One ``kinfo_proc`` record, or None when its start instant is implausible."""
+    sec = struct.unpack_from("<q", raw, _DARWIN_KP_START_TVSEC_OFFSET)[0]
+    usec = struct.unpack_from("<i", raw, _DARWIN_KP_START_TVUSEC_OFFSET)[0]
+    stat = struct.unpack_from("<b", raw, _DARWIN_KP_STAT_OFFSET)[0]
+    pid = struct.unpack_from("<i", raw, _DARWIN_KP_PID_OFFSET)[0]
+    if sec <= 0 or usec < 0 or pid <= 0:
+        return None
+    return DarwinKinfoProc(pid=pid, zombie=stat == _DARWIN_SZOMB, start_id=f"{sec}.{usec:06d}")
+
+
+_darwin_kinfo_size_mismatch_logged = False
+
+
+def _darwin_kinfo_query(selector: int, arg: int, capacity: int) -> bytes | None:
+    """Raw ``sysctl KERN_PROC/<selector>/<arg>`` bytes, or None when unreadable.
+
+    Empty bytes is a real answer ("no such process / empty group"); None is
+    "could not ask". A result that is not a whole number of records means the
+    struct size assumed by the offsets is wrong, and is refused the same way --
+    with one warning per process, because that refusal silently disables every
+    zombie reader on this host and the teardown falls back to waiting out its
+    grace on an exited leader. The callers poll, so it is not logged per call.
+    """
+    global _darwin_kinfo_size_mismatch_logged
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    try:
+        mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, selector, arg)
+        buf = ctypes.create_string_buffer(capacity)
+        size = ctypes.c_size_t(capacity)
+        if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[: size.value]
+        if len(raw) % _DARWIN_KINFO_PROC_SIZE:
+            if not _darwin_kinfo_size_mismatch_logged:
+                _darwin_kinfo_size_mismatch_logged = True
+                logger.warning(
+                    "sysctl KERN_PROC returned %d bytes, not a multiple of the %d-byte "
+                    "kinfo_proc this build expects; the macOS zombie readers are "
+                    "disabled and an exited provider root is read as still running",
+                    len(raw),
+                    _DARWIN_KINFO_PROC_SIZE,
+                )
+            return None
+        return raw
+    except Exception:
+        return None
+
+
+def darwin_kinfo_proc(pid: int) -> DarwinKinfoProc | None:
+    """``sysctl KERN_PROC_PID`` facts for *pid*, or None when it cannot be read.
+
+    Unlike :func:`darwin_process_facts` this ANSWERS for a zombie, which is the
+    one state the teardown code needs to see: an exited-but-unreaped child still
+    owns its pid (and, for a group leader, its pgid), and its identity must stay
+    readable so the reaper can prove the pid was not recycled before waiting on
+    it. None covers "gone" and "unreadable" alike; callers that must tell those
+    apart use :func:`darwin_pid_is_zombie`.
+    """
+    if pid <= 0:
+        return None
+    raw = _darwin_kinfo_query(_DARWIN_KERN_PROC_PID, pid, _DARWIN_KINFO_PROC_SIZE)
+    if not raw:
+        return None
+    facts = _darwin_kinfo_proc_parse(raw)
+    if facts is None or facts.pid != pid:
+        return None
+    return facts
+
+
+def darwin_pid_is_zombie(pid: int) -> bool | None:
+    """Whether *pid* is a zombie: True / False, or None when it cannot be read.
+
+    "Gone" is reported as None by :func:`darwin_kinfo_proc`; here it is
+    distinguished, because a caller asking "has this process finished running"
+    needs a pid the kernel does not list to read as finished, not as unknown.
+    """
+    if pid <= 0:
+        return None
+    raw = _darwin_kinfo_query(_DARWIN_KERN_PROC_PID, pid, _DARWIN_KINFO_PROC_SIZE)
+    if raw is None:
+        return None
+    if not raw:
+        return True  # the kernel has no such process: it exited and was reaped
+    facts = _darwin_kinfo_proc_parse(raw)
+    if facts is None or facts.pid != pid:
+        return None
+    return facts.zombie
+
+
+def darwin_pgroup_members(pgid: int) -> list[DarwinKinfoProc] | None:
+    """Every process the kernel lists in group *pgid*, or None when unreadable.
+
+    Zombies are included and flagged, so a caller can tell a group that is
+    genuinely empty from one held open only by its retained zombie leader --
+    ``killpg(pgid, 0)`` cannot make that distinction. Sized by a first query
+    with slack for processes that join between the two calls. A group that
+    outgrows the slack fails the read (``ENOMEM``), and that failure is retried
+    with the slack doubled each time rather than reported: the caller reads None
+    as "cannot prove the group is ours" and withholds the group SIGKILL, so a
+    tree forking fast enough during the teardown must not be able to make its
+    own group unreadable. An answer still overflowing after the last attempt is
+    refused (None) rather than returned truncated.
+    """
+    if pgid <= 0:
+        return None
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, _DARWIN_KERN_PROC_PGRP, pgid)
+    slack = _DARWIN_KINFO_PGRP_SLACK
+    for _attempt in range(_DARWIN_KINFO_PGRP_ATTEMPTS):
+        try:
+            size = ctypes.c_size_t(0)
+            if libc.sysctl(mib, 4, None, ctypes.byref(size), None, 0) != 0:
+                return None
+        except Exception:
+            return None
+        raw = _darwin_kinfo_query(
+            _DARWIN_KERN_PROC_PGRP, pgid, size.value + slack * _DARWIN_KINFO_PROC_SIZE
+        )
+        if raw is not None:
+            members: list[DarwinKinfoProc] = []
+            for start in range(0, len(raw), _DARWIN_KINFO_PROC_SIZE):
+                facts = _darwin_kinfo_proc_parse(raw[start : start + _DARWIN_KINFO_PROC_SIZE])
+                if facts is not None:
+                    members.append(facts)
+            return members
+        slack *= 2
+    return None
+
+
 def process_cwd(pid: int) -> str | None:
     """Current working directory of *pid*, or None when no source can answer.
 
@@ -1589,30 +1761,63 @@ def get_process_start_id(pid: int) -> str | None:
             return None
     if sys.platform == "darwin":
         try:
-            path = ctypes.util.find_library("proc")
-            if path is None:
-                return None
-            lib = ctypes.CDLL(path)
-            lib.proc_pidinfo.argtypes = [
-                ctypes.c_int,
-                ctypes.c_int,
-                ctypes.c_uint64,
-                ctypes.c_void_p,
-                ctypes.c_int,
-            ]
-            lib.proc_pidinfo.restype = ctypes.c_int
-            buf = ctypes.create_string_buffer(_DARWIN_BSDINFO_SIZE)
-            ret = lib.proc_pidinfo(pid, 3, 0, buf, _DARWIN_BSDINFO_SIZE)  # PROC_PIDTBSDINFO=3
-            if ret <= 0:
-                return None
-            sec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVSEC)[0]
-            usec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVUSEC)[0]
-            if sec == 0:
-                return None  # implausible — treat as unknown rather than a value
-            return f"{sec}.{usec:06d}"
-        except Exception:
+            start = _darwin_libproc_start_id(pid)
+        except _DarwinLibprocUnavailable:
+            # No libproc at all is an unrecognised host, not a zombie: the
+            # identity stays unknown, and identity-sensitive callers refuse.
             return None
+        if start is not None:
+            return start
+        # libproc refuses a zombie outright, yet a zombie still owns its pid and
+        # must stay identifiable: the teardown compares this value before it
+        # waits on the exited leader, and an unreadable identity would leave
+        # that zombie unreaped for good. sysctl reads the same ``p_start`` from
+        # the kernel's zombie list, in the same format.
+        facts = darwin_kinfo_proc(pid)
+        return facts.start_id if facts is not None else None
     return None
+
+
+class _DarwinLibprocUnavailable(Exception):
+    """``libproc`` could not be loaded -- distinct from it refusing one pid."""
+
+
+def _darwin_libproc_start_id(pid: int) -> str | None:
+    """macOS start instant of *pid* via ``proc_pidinfo``, or None when refused.
+
+    Refused for a zombie (the kernel has no task to describe) and for another
+    user's process alike; :func:`get_process_start_id` owns the zombie fallback.
+    Raises :class:`_DarwinLibprocUnavailable` when the library itself cannot be
+    loaded, so the caller can tell "this pid was refused" (fall back) from
+    "nothing here can be asked" (no identity).
+    """
+    try:
+        path = ctypes.util.find_library("proc")
+        lib = ctypes.CDLL(path) if path is not None else None
+    except Exception:
+        lib = None
+    if lib is None:
+        raise _DarwinLibprocUnavailable
+    try:
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        buf = ctypes.create_string_buffer(_DARWIN_BSDINFO_SIZE)
+        ret = lib.proc_pidinfo(pid, 3, 0, buf, _DARWIN_BSDINFO_SIZE)  # PROC_PIDTBSDINFO=3
+        if ret <= 0:
+            return None
+        sec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVSEC)[0]
+        usec = struct.unpack_from("<Q", buf.raw, _DARWIN_OFF_START_TVUSEC)[0]
+        if sec == 0:
+            return None  # implausible — treat as unknown rather than a value
+        return f"{sec}.{usec:06d}"
+    except Exception:
+        return None
 
 
 def process_namespaces_match(pid: int, reference_pid: int) -> bool | None:
