@@ -447,12 +447,13 @@ async def test_queue_passes_exact_inject_row_to_runner(tmp_path, monkeypatch, ki
     run = AsyncMock()
 
     def capture(state, slot, coroutine):
-        coroutine.close()
-        return Mock()
+        return asyncio.create_task(coroutine)
 
     monkeypatch.setattr(chat_runner, "_run_chat", run)
     monkeypatch.setattr(chat_runner, "spawn_guarded_turn", capture)
     assert await chat_runner._start_next_queued_turn(state, slot)
+    assert slot.task is not None
+    await slot.task
     current = run.call_args.kwargs["_current_message"]
     assert current is slot.messages[-1]
     assert current["role"] == "inject"

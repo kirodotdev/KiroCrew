@@ -153,6 +153,21 @@ class TerminalCoordinator(ManagerComponent):
         )
         if not self._manager._on_done:
             return
+
+        async def _retain_failure(reason: str) -> None:
+            retained = self._manager.notify_injection_failed(info, reason=reason)
+            if retained is None:
+                return
+            try:
+                await asyncio.shield(retained)
+            except Exception:
+                logger.debug(
+                    "%s: failed to retain completion fallback for %s",
+                    source,
+                    info.id,
+                    exc_info=True,
+                )
+
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further
@@ -241,9 +256,10 @@ class TerminalCoordinator(ManagerComponent):
                     info.parent_session_key,
                     exc_info=True,
                 )
-            self._manager.notify_injection_failed(info, reason=injection_timeout_reason)
+            await _retain_failure(injection_timeout_reason)
         except Exception:
             logger.exception("%s: announce failed for %s", source, info.id)
+            await _retain_failure("completion delivery failed before acceptance")
 
     async def _run_terminal_report_impl(
         self,
@@ -319,6 +335,73 @@ class TerminalCoordinator(ManagerComponent):
 
         task.add_done_callback(_forget)
         return task
+
+    def retain_completion_delivery_impl(self, parent_session_key: str, agent_id: str) -> None:
+        """Transfer one accepted completion from report-task to parent ownership."""
+        if not parent_session_key or not agent_id:
+            return
+        owners = self._manager._retained_completion_owners.setdefault(parent_session_key, {})
+        owners[agent_id] = owners.get(agent_id, 0) + 1
+
+    def mark_completion_delivery_recovery_required_impl(
+        self, parent_session_key: str, agent_id: str
+    ) -> None:
+        """Mark a one-shot discard that now needs restart orphan recovery."""
+        owners = self._manager._retained_completion_owners.get(parent_session_key)
+        if not owners or owners.get(agent_id, 0) <= 0:
+            return
+        required = self._manager._retained_completion_recovery_required.setdefault(
+            parent_session_key, set()
+        )
+        required.add(agent_id)
+
+    def release_completion_delivery_impl(self, parent_session_key: str, agent_id: str) -> None:
+        """Release one transferred completion after consumption or durable discard."""
+        owners = self._manager._retained_completion_owners.get(parent_session_key)
+        if not owners:
+            return
+        count = owners.get(agent_id, 0)
+        if count <= 1:
+            owners.pop(agent_id, None)
+            required = self._manager._retained_completion_recovery_required.get(parent_session_key)
+            if required is not None:
+                required.discard(agent_id)
+                if not required:
+                    self._manager._retained_completion_recovery_required.pop(
+                        parent_session_key, None
+                    )
+        else:
+            owners[agent_id] = count - 1
+        if not owners:
+            self._manager._retained_completion_owners.pop(parent_session_key, None)
+
+    def completion_delivery_recovery_required_for_impl(self, parent_session_key: str) -> bool:
+        """Whether an owned discard can recover only through restart reconciliation."""
+        owners = self._manager._retained_completion_owners.get(parent_session_key, {})
+        required = self._manager._retained_completion_recovery_required.get(
+            parent_session_key, set()
+        )
+        return any(owners.get(agent_id, 0) > 0 for agent_id in required)
+
+    def terminal_delivery_inflight_for_impl(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns an unsettled terminal delivery.
+
+        ``info.done`` becomes true before ``_on_done`` injects the completion,
+        so the running-agent registry alone cannot represent this interval.
+        Rejections that never enter ``_run`` are started through the same
+        terminal-report helper, so they also have an owner here. The task map
+        retains the parent identity through callback acceptance or the awaited
+        failure fallback. Once the callback accepts an asynchronous dashboard
+        handoff, the counted manager-owned ledger retains the same fence beyond
+        report-task completion and slot removal until consumption or durable
+        discard settlement.
+        """
+        if self._manager._retained_completion_owners.get(parent_session_key):
+            return True
+        return any(
+            not task.done() and info.parent_session_key == parent_session_key
+            for task, info in self._manager._report_owners.items()
+        )
 
     def _release_slot_impl(self, info: SubagentInfo) -> bool:
         """Claim the exclusive right to free ``info``'s concurrency slot.
@@ -616,7 +699,7 @@ class TerminalCoordinator(ManagerComponent):
 
     def notify_injection_failed_impl(
         self, info: SubagentInfo, reason: str = "delivery timed out"
-    ) -> None:
+    ) -> "asyncio.Task | None":  # type: ignore[type-arg]
         """Notify UI and queue failure for LLM when injection times out.
 
         Appends a synthetic error to the dashboard slot (UI) and queues a
@@ -639,7 +722,7 @@ class TerminalCoordinator(ManagerComponent):
             # to and nothing to drain on the next turn.
             slot_name = dashboard_slot_key(info.parent_session_key)
             if not slot_name:
-                return
+                return None
 
             # Build failure message the LLM will see on next turn
             task_preview = _redact((info.task or "")[:100])
@@ -676,5 +759,7 @@ class TerminalCoordinator(ManagerComponent):
                     )
                 )
                 _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                return _task
         except Exception:
             logger.debug("notify_injection_failed failed for %s", info.id, exc_info=True)
+        return None

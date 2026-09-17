@@ -174,7 +174,9 @@ class TestChatSlotContinue:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s/continue")
             assert resp.status == 409
-            assert (await resp.json())["code"] == "slot_subagents_running"
+            body = await resp.json()
+            assert body["code"] == "slot_subagents_running"
+            assert "(running child work)" in body["error"]
         # Refused on the RUNNING child alone, with an empty queue.
         state.subagents.running_agents_for.assert_called_with("dashboard:s")
         assert not slot._queue
@@ -216,6 +218,39 @@ class TestChatSlotContinue:
             assert resp.status == 409
             assert (await resp.json())["code"] == "slot_subagents_running"
         assert not slot._queue
+        _patched.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retained_completion_names_restart_recovery(self, _patched):
+        """A one-shot failed discard cannot be cleared by waiting or direct Stop."""
+
+        class _Subagents:
+            def running_agents_for(self, _session_key):
+                return []
+
+            def _queued_depth(self, _session_key):
+                return 0
+
+            def terminal_delivery_inflight_for(self, _session_key):
+                return True
+
+            def completion_delivery_recovery_required_for(self, _session_key):
+                return True
+
+        slot = _ChatSlot("s")
+        slot.append("user", "spawn some agents", "msg msg-u")
+        state = _mock_state(slot)
+        state.subagents = _Subagents()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            body = await resp.json()
+
+        assert resp.status == 409
+        assert body["code"] == "slot_subagents_running"
+        assert "retained completion requires restart recovery" in body["error"]
+        assert "restart Kiro Crew" in body["error"]
+        assert "wait for it to settle" not in body["error"]
         _patched.assert_not_awaited()
 
     @pytest.mark.asyncio

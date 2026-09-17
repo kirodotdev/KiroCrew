@@ -52,9 +52,11 @@ def home_patch(tmp_path):
     def fake_expanduser(p):
         return p.replace("~", str(tmp_path))
 
-    with patch("os.path.expanduser", side_effect=fake_expanduser), patch(
-        "os.path.realpath", side_effect=real_realpath
-    ), patch("pathlib.Path.home", return_value=tmp_path):
+    with (
+        patch("os.path.expanduser", side_effect=fake_expanduser),
+        patch("os.path.realpath", side_effect=real_realpath),
+        patch("pathlib.Path.home", return_value=tmp_path),
+    ):
         yield tmp_path
 
 
@@ -443,8 +445,7 @@ class TestFileWrite:
         # decide, and None there (Windows) is what keeps os.replace working
         # while any other handle is open. The kwarg itself must always be passed.
         handler_pins = (
-            files_mod.pinned_fs.supports_pinned_walk()
-            and aw.pinned_parent_replace_supported()
+            files_mod.pinned_fs.supports_pinned_walk() and aw.pinned_parent_replace_supported()
         )
         assert "preserve_access_control_from" in kwargs
         if handler_pins or aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
@@ -555,7 +556,12 @@ class TestSendMessage:
             resp = await client.post("/api/send-message", json={"text": "hello"})
             assert resp.status == 200
             data = await resp.json()
-            assert data == {"ok": True, "slack": False, "session": False, "delivered_to": "notification"}
+            assert data == {
+                "ok": True,
+                "slack": False,
+                "session": False,
+                "delivered_to": "notification",
+            }
             state.notify.assert_called_once_with("agent", "Agent Message", "hello")
 
     @pytest.mark.asyncio
@@ -571,7 +577,13 @@ class TestSendMessage:
             )
             assert resp.status == 200
             data = await resp.json()
-            assert data == {"ok": True, "slack": True, "session": False, "delivered_to": "slack", "ts": "1712793600.000001"}
+            assert data == {
+                "ok": True,
+                "slack": True,
+                "session": False,
+                "delivered_to": "slack",
+                "ts": "1712793600.000001",
+            }
             state.notify.assert_called_once_with("agent", "Test", "hello")
             slack.open_dm.assert_called_once_with("U123")
             slack.post_message.assert_called_once_with(
@@ -630,7 +642,13 @@ class TestSendMessage:
             )
             assert resp.status == 200
             data = await resp.json()
-            assert data == {"ok": True, "slack": True, "session": False, "delivered_to": "slack", "ts": "1712793600.000001"}
+            assert data == {
+                "ok": True,
+                "slack": True,
+                "session": False,
+                "delivered_to": "slack",
+                "ts": "1712793600.000001",
+            }
             slack.post_blocks.assert_called_once_with(
                 "C123",
                 blocks,
@@ -707,11 +725,12 @@ class TestSendMessage:
         mock_job.session_key = "dashboard:chat-1-1712793600"
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
-        with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch(
-            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
-        ) as mock_rehydrate:
+        with (
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock) as mock_run,
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
+            ) as mock_rehydrate,
+        ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -723,7 +742,12 @@ class TestSendMessage:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
+                assert data == {
+                    "ok": True,
+                    "slack": False,
+                    "session": True,
+                    "delivered_to": "session",
+                }
                 # Hot-path: in-memory slot found, no rehydrate needed.
                 state.get_slot.assert_called_once_with("chat-1-1712793600")
                 mock_rehydrate.assert_not_called()
@@ -779,6 +803,101 @@ class TestSendMessage:
                 state.notify.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_message_queue_cap_preserves_completion_and_evicts_ordinary_head(self):
+        """Capacity pressure keeps callback-owned completion rows deliverable."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        state = _mock_state()
+        slot = _ChatSlot("chat-1-1712793600")
+        slot._task = MagicMock(done=MagicMock(return_value=False))
+        discarded: list[str] = []
+        ordinary_id = slot.queue_append("ordinary-0")
+        completion_id = slot.queue_insert(
+            1,
+            "completion",
+            on_consumed=lambda _consumed: None,
+            on_discarded=lambda: discarded.append("completion"),
+        )
+        for i in range(2, 50):
+            slot.queue_append(f"ordinary-{i}")
+        state.get_slot = MagicMock(return_value=slot)
+        state.push_slots_update = MagicMock()
+        mock_job = MagicMock()
+        mock_job.id = "abc12345"
+        mock_job.name = "monitor build"
+        mock_job.session_key = "dashboard:chat-1-1712793600"
+        state.crons.list_jobs = MagicMock(return_value=[mock_job])
+
+        async with TestClient(TestServer(_make_send_app(state))) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={
+                    "text": "build failed",
+                    "session": "origin",
+                    "caller_session": "cron:abc12345",
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data["session"] is True
+        assert len(slot._queue) == 50
+        assert slot._queue[0]["id"] == completion_id
+        assert ordinary_id not in {item["id"] for item in slot._queue}
+        assert "build failed" in slot._queue[-1]["content"]
+        assert discarded == []
+        state.notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_message_queue_cap_falls_back_when_every_row_is_owned(self):
+        """An all-owned queue stays bounded and the new notification falls back."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        state = _mock_state()
+        slot = _ChatSlot("chat-1-1712793600")
+        slot._task = MagicMock(done=MagicMock(return_value=False))
+        discarded: list[str] = []
+        for i in range(50):
+            slot.queue_insert(
+                i,
+                f"completion-{i}",
+                on_discarded=lambda i=i: discarded.append(f"completion-{i}"),
+            )
+        state.get_slot = MagicMock(return_value=slot)
+        state.push_slots_update = MagicMock()
+        mock_job = MagicMock()
+        mock_job.id = "abc12345"
+        mock_job.name = "monitor build"
+        mock_job.session_key = "dashboard:chat-1-1712793600"
+        state.crons.list_jobs = MagicMock(return_value=[mock_job])
+
+        async with TestClient(TestServer(_make_send_app(state))) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={
+                    "text": "build failed",
+                    "session": "origin",
+                    "caller_session": "cron:abc12345",
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data == {
+            "ok": True,
+            "slack": False,
+            "session": False,
+            "delivered_to": "notification",
+        }
+        assert len(slot._queue) == 50
+        assert all("build failed" not in item["content"] for item in slot._queue)
+        assert discarded == []
+        state.notify.assert_called_once()
+        notification = state.notify.call_args.args[2]
+        assert "session queue full" in notification
+        assert "session closed" not in notification
+
+    @pytest.mark.asyncio
     async def test_send_message_session_origin_revives_missing_slot(self):
         """When slot isn't in memory (e.g. after gateway restart), rehydrate via
         _rehydrate_slot_from_history and still trigger an agent turn on the revived
@@ -814,12 +933,13 @@ class TestSendMessage:
         mock_job.session_key = "dashboard:chat-1-1712793600"
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
-        with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch(
-            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
-            return_value=mock_slot,
-        ) as mock_rehydrate:
+        with (
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock) as mock_run,
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
+                return_value=mock_slot,
+            ) as mock_rehydrate,
+        ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -828,7 +948,12 @@ class TestSendMessage:
                 assert resp.status == 200
                 data = await resp.json()
                 # Session delivery succeeded — no Slack DM fallback.
-                assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
+                assert data == {
+                    "ok": True,
+                    "slack": False,
+                    "session": True,
+                    "delivered_to": "session",
+                }
                 # Hot-path miss: get_slot called first, then rehydrate helper.
                 state.get_slot.assert_called_once_with("chat-1-1712793600")
                 mock_rehydrate.assert_called_once_with(state, "chat-1-1712793600")
@@ -903,7 +1028,8 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async", return_value=None
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
+            return_value=None,
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -913,12 +1039,18 @@ class TestSendMessage:
                 assert resp.status == 200
                 data = await resp.json()
                 # No session delivery — fell through to notification.
-                assert data["session"] is False
+                assert data == {
+                    "ok": True,
+                    "slack": False,
+                    "session": False,
+                    "delivered_to": "notification",
+                }
                 mock_rehydrate.assert_called_once_with(state, "chat-1-1712793600")
                 state.notify.assert_called_once()
                 call_args = state.notify.call_args[0]
                 assert call_args[1] == "⏰ test-cron"
                 assert "session closed" in call_args[2]
+                assert "session queue full" not in call_args[2]
 
     @pytest.mark.asyncio
     async def test_send_message_session_origin_no_cron(self):
@@ -956,9 +1088,10 @@ class TestSendMessage:
         mock_job.session_key = "dashboard:chat-1-1712793600"
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
-        with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
+        with (
+            patch("kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock) as mock_run,
+            patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"),
+        ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -970,7 +1103,12 @@ class TestSendMessage:
                 )
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
+                assert data == {
+                    "ok": True,
+                    "slack": False,
+                    "session": True,
+                    "delivered_to": "session",
+                }
                 state.get_slot.assert_called_once_with("chat-1-1712793600")
                 mock_run.assert_called_once()
 

@@ -24,11 +24,12 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
-from kiro_crew.dashboard import create_rate_limit
+from kiro_crew.dashboard import chat_handlers, create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
+from kiro_crew.subagent import SubagentManager
 
 # The autouse fixture below replaces ``sc.session_control_enabled`` so every
 # other test runs in the shipped (enabled) state without reading config. Keep a
@@ -4057,6 +4058,50 @@ def test_close_archives_a_peer_and_removes_the_slot(tmp_path):
     assert target.key not in state._slots
     # The per-tab kiro-cli session is torn down through the shared close path.
     state.sessions.remove.assert_awaited()
+
+
+@pytest.mark.parametrize(
+    "parent_key",
+    (
+        "dashboard:chat-2",
+        "slack:123.456",
+        "discord:kirocrew:direct:user-1",
+        "webex:person@example.com:room-1",
+    ),
+    ids=("dashboard", "slack", "discord", "webex"),
+)
+def test_close_discards_counted_completion_ownership(parent_key, tmp_path):
+    """A removed slot retires every queued completion-owner count exactly once."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-2")
+    if not parent_key.startswith("dashboard:"):
+        slot.linked_session_key = parent_key
+
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    agent_id = "terminal-agent"
+    manager.retain_completion_delivery(parent_key, agent_id)
+    manager.retain_completion_delivery(parent_key, agent_id)
+    slot._subagent_completion_pending[agent_id] = 2
+
+    def _release_one() -> None:
+        count = slot._subagent_completion_pending.get(agent_id, 0)
+        if count <= 1:
+            slot._subagent_completion_pending.pop(agent_id, None)
+        else:
+            slot._subagent_completion_pending[agent_id] = count - 1
+        manager.release_completion_delivery(parent_key, agent_id)
+
+    slot.queue_insert(0, "completion-1", on_discarded=_release_one)
+    slot.queue_insert(1, "completion-2", on_discarded=_release_one)
+
+    asyncio.run(chat_handlers.close_slot(state, slot, slot.key))
+
+    assert slot.key not in state._slots
+    assert slot._subagent_completion_pending == {}
+    assert manager.terminal_delivery_inflight_for(parent_key) is False
+    assert manager._retained_completion_owners == {}
+    # A later cleanup pass cannot double-release either count.
+    assert slot.queue_discard_all() == []
 
 
 def test_close_refuses_a_self_target(tmp_path):

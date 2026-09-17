@@ -111,8 +111,33 @@ tests in `test_autonudge_stop_auth.py` pin those distinctions.
 `autonudge_stop` is deliberately non-confirming at tool-call time because the
 consumer applies it after the turn result is processed. The applier removes an
 ordinary monitor loop on the calling binding and reports an idempotent local
-miss. It never exposes a cross-session target; `test_autonudge_stop_auth.py`
-pins both the request wording and the local-binding behavior.
+miss. Before removal, both it and the structured `monitor_stop` directive call
+the shared `chat_utils.subagent_attachment_detail` evaluation and refuse while the session
+has running or queued children, an owned terminal report (including a spawn
+rejection), an accepted completion turn not yet consumed, or a failed delivery
+retained for the next-turn retry; the refusal names the holding probe in the
+same bounded phrase the dashboard's 409 surface reports (for example `(running
+child work)` or `(completion awaiting parent consumption)`), from one
+evaluation, so an agent can tell a child it must wait for from its own
+unconsumed completion turn. The terminal probe includes completion
+ownership transferred from a finished report task into the manager, so a
+slot-less Slack, Discord, or Webex directive remains fenced after the dashboard
+slot disappears. Completion consumption owns a retractable callback, so the
+first empty-response requeue keeps the fence and a landed retry releases it
+exactly once. An explicit queue discard carries a separate terminal callback: it
+releases the fence and retires delivery debt because no consumer or retry remains,
+but only after every delivered tombstone reads back durable. A one-shot discard
+settlement failure retains the manager fence, records a `subagent_completion_discard`
+/ `retained` SEL row on the parent session with the reason, and marks the manager-owned delivery as `retained completion requires restart
+recovery`. Shared refusal surfaces name restart orphan recovery, or session
+close when abandoning the goal is intentional; waiting or another Stop is not
+presented as a recovery for this state. This keeps a goal driver active until its delegated work has
+settled; the dashboard's direct Stop/Delete control remains the user-owned
+override and deliberately does not consult this agent-only fence. It never
+exposes a cross-session target; `test_autonudge_stop_auth.py`,
+`test_monitor_directive_apply.py`, and `test_autonudge_handlers_cov80.py` pin the
+request wording, local-binding behavior, child-work refusal, and direct-user
+opposite case.
 
 ## PR watch probe
 

@@ -935,6 +935,235 @@ def test_applier_autonudge_stop_records_tombstone_for_loop_resolved_by_binding(m
     assert "done" in result
 
 
+@pytest.mark.parametrize("slot", (_fake_slot(), None), ids=("dashboard", "channel"))
+def test_applier_autonudge_stop_refuses_while_subagent_work_is_attached(monkeypatch, slot):
+    """An agent cannot strand child work by removing its parent goal driver."""
+
+    class _Subagents:
+        def __init__(self):
+            self.probed: list[str] = []
+
+        def running_agents_for(self, session_key):
+            self.probed.append(session_key)
+            return ["child-1"]
+
+        def _queued_depth(self, session_key):
+            return 0
+
+    class _State:
+        pass
+
+    state = _State()
+    state.subagents = _Subagents()
+    svc = _FakeSvc(_FakeLoop("loop-with-child"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            slot,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "subagents will report automatically"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "sub-agent work is still attached" in result
+    # The refusal names the probe that holds the fence, through the same shared
+    # evaluation the dashboard's 409 surface reports (no second probe copy).
+    assert "(running child work)" in result
+    assert state.subagents.probed == [_SESSION]
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+def test_applier_autonudge_stop_refuses_slotless_terminal_delivery(monkeypatch):
+    """A completed child stays attached until its channel report lands."""
+
+    class _Subagents:
+        def running_agents_for(self, session_key):
+            return []
+
+        def _queued_depth(self, session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, session_key):
+            return True
+
+    class _State:
+        pass
+
+    state = _State()
+    state.subagents = _Subagents()
+    svc = _FakeSvc(_FakeLoop("loop-with-delivery"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            None,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "child already finished"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "(terminal child report delivery)" in result
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+@pytest.mark.parametrize(
+    "session_key",
+    (
+        "slack:1755000000.1",
+        "discord:kirocrew:direct:42",
+        "webex:person@example.com:room-1",
+    ),
+    ids=("slack", "discord", "webex"),
+)
+@pytest.mark.parametrize("retained", (True, False), ids=("retained", "settled"))
+def test_slotless_channel_stop_observes_transferred_completion_ownership(
+    monkeypatch, session_key, retained
+):
+    """Channel stop follows manager ownership even with no materialized slot."""
+
+    class _Subagents:
+        def running_agents_for(self, _session_key):
+            return []
+
+        def _queued_depth(self, _session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, _session_key):
+            return retained
+
+    state = type("_State", (), {"subagents": _Subagents()})()
+    svc = _FakeSvc(_FakeLoop("loop-with-transferred-delivery"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            None,
+            session_key,
+            "autonudge_stop",
+            {"reason": "completion handoff settled"},
+            producer_is_channel=True,
+        )
+    )
+
+    if retained:
+        assert result.startswith("Error:")
+        assert svc.removed == []
+        assert svc.updated == []
+    else:
+        assert "stopped" in result.lower()
+        assert svc.removed == ["loop-with-transferred-delivery"]
+
+
+def test_applier_autonudge_stop_names_retained_restart_recovery(monkeypatch):
+    """A failed one-shot discard names the only in-process recovery boundary."""
+
+    class _Subagents:
+        def running_agents_for(self, _session_key):
+            return []
+
+        def _queued_depth(self, _session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, _session_key):
+            return True
+
+        def completion_delivery_recovery_required_for(self, _session_key):
+            return True
+
+    state = type("_State", (), {"subagents": _Subagents()})()
+    svc = _FakeSvc(_FakeLoop("loop-with-retained-discard"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            None,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "the completion should settle by itself"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "retained completion requires restart recovery" in result
+    assert "restart Kiro Crew" in result
+    assert "settle, then stop" not in result
+    assert svc.removed == []
+    assert svc.updated == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "holding_probe"),
+    (
+        (
+            "_subagent_completion_pending",
+            {"rejected": 1},
+            "completion awaiting parent consumption",
+        ),
+        (
+            "_pending_subagent_failures",
+            ["retry retained completion"],
+            "completion delivery retry",
+        ),
+    ),
+    ids=("accepted-completion", "failed-delivery-retry"),
+)
+def test_applier_autonudge_stop_refuses_until_completion_retry_settles(
+    monkeypatch, field, value, holding_probe
+):
+    """A handed-off completion stays child work until consumed or retried.
+
+    The refusal distinguishes the two retained states so the agent knows
+    whether its own next turn (consumption) or a retry is what settles them.
+    """
+
+    class _Subagents:
+        def running_agents_for(self, _session_key):
+            return []
+
+        def _queued_depth(self, _session_key):
+            return 0
+
+        def terminal_delivery_inflight_for(self, _session_key):
+            return False
+
+    class _State:
+        pass
+
+    slot = _fake_slot()
+    setattr(slot, field, value)
+    state = _State()
+    state.subagents = _Subagents()
+    svc = _FakeSvc(_FakeLoop("loop-with-retained-completion"))
+    _install_svc(monkeypatch, svc)
+
+    result = asyncio.run(
+        apply_session_directive(
+            state,
+            slot,
+            _SESSION,
+            "autonudge_stop",
+            {"reason": "completion is already handled"},
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "sub-agent work is still attached" in result
+    assert f"({holding_probe})" in result
+    assert svc.removed == []
+    assert svc.updated == []
+
+
 def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):
     """Loops without a tombstone consumer retain the historical remove UX."""
     svc = _FakeSvc(_FakeLoop("loop-ordinary"))

@@ -2194,6 +2194,7 @@ async def _remove_slot_for_history_key(
             popped = state._slots.pop(claim.registry_key, None)
             if popped is claim.slot:
                 slot = claim.slot
+                slot.queue_discard_all()
         else:
             logger.info(
                 "History delete: slot %s was replaced, rerouted, or reclaimed; preserving it",

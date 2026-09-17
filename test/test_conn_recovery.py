@@ -11,6 +11,7 @@ from kiro_crew.dashboard.chat_utils import (
     _BUSY_RECOVER_MSG,
     _CONN_RECOVER_MSG,
     CRON_NOTIFICATION_KIND,
+    LIFECYCLE_RECOVERY_KIND,
     SYNTHETIC_RECOVERY_KIND,
     RecoveryPayload,
     ResetCause,
@@ -89,6 +90,7 @@ def test_connection_recovery_uses_structural_system_injection_provenance() -> No
     ("kind", "expected_recovery", "expected_role"),
     [
         (SYNTHETIC_RECOVERY_KIND, True, "inject"),
+        (LIFECYCLE_RECOVERY_KIND, True, "inject"),
         ("", False, "user"),
     ],
 )

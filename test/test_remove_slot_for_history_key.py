@@ -144,6 +144,7 @@ class TestRemoveSlotForHistoryKey:
         state = _make_state({"dashboard_chat-1-100": slot})
         await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
         assert "dashboard_chat-1-100" not in state._slots
+        slot.queue_discard_all.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_stripped_key_match(self):

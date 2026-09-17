@@ -134,6 +134,7 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        dispatcher.subagent_manager = getattr(orch, "subagent_mgr", None)
         client = DiscordClient(
             token=bot_token,
             on_interaction=dispatcher.on_interaction,

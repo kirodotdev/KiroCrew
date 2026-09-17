@@ -103,6 +103,8 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     history_corpus_unreadable,
     slot_history_key,
+    subagent_attachment_detail_async,
+    subagent_attachment_recovery_guidance,
     subagents_attached_async,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -3429,9 +3431,17 @@ async def _subagents_attached_response(
     the probe block is how the two would diverge. This wrapper only shapes the
     refusal.
     """
-    if await subagents_attached_async(state, slot, session_key, operation):
+    # Evaluate the shared fence exactly once so the diagnostic identifies the
+    # same attachment state that caused this refusal, rather than re-probing a
+    # completion that can settle between two reads.
+    attachment_detail = await subagent_attachment_detail_async(state, slot, session_key, operation)
+    if attachment_detail is not None:
+        guidance = subagent_attachment_recovery_guidance(attachment_detail)
         return web.json_response(
-            {"error": "sub-agents are running", "code": "slot_subagents_running"},
+            {
+                "error": (f"sub-agent work is still attached ({attachment_detail}); {guidance}"),
+                "code": "slot_subagents_running",
+            },
             status=409,
         )
     return None
@@ -4117,7 +4127,7 @@ async def stop_slot_turn(
         # this hard kill a clean stop. Scoped to this card so it cannot defer
         # a later card's ack.
         slot._stop_escalated_card_id = slot._stop_event_id
-        slot._queue.clear()
+        slot.queue_discard_all()
         # Hard kill = "discard everything": drop unconsumed steers too, so the
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
         # Mirrors the queue clear above; a soft stop preserves both.
@@ -5485,6 +5495,10 @@ async def _close_slot(
         # thing that can persist its tail — as an OPEN-key write, which is the
         # single difference from the archival save this exit declines.
         drained = await _persist_handover_tail(state, name, slot)
+        # The original slot has no consumer after this handoff. Retire every
+        # lifecycle-owned queue row now; each completion keeps its manager fence
+        # until its discard callback proves durable settlement.
+        slot.queue_discard_all()
         # The key belongs to the replacement now, and so does every KEY-SCOPED
         # marker sitting on it. Hand the restricted flag over before letting go:
         # the discard below the save is the only thing that would have cleared the
@@ -5542,6 +5556,7 @@ async def _close_slot(
             # arm already ends in `SlotCloseError`, so a lost tail is reported to the
             # caller either way. The drain only decides whether the rows survived.
             await _persist_handover_tail(state, name, slot)
+            slot.queue_discard_all()
         # Whichever way that went, the key-scoped restricted marker has to describe
         # whoever holds `name` when this frame ends — the restored original, or the
         # replacement that kept the key. This arm never reaches the discard below
@@ -5594,6 +5609,10 @@ async def _close_slot(
         state.push_slots_update()
         raise SlotCloseError("failed to save history", code="history_save_failed")
     else:
+        # The archival write is the close commit point. Queue rows are transient
+        # and have no consumer once the slot is gone, so explicitly discard them
+        # before releasing the remaining session resources.
+        slot.queue_discard_all()
         # Through the shared postcondition rather than a bare discard: on the
         # ordinary close the key is gone and this drops the marker, and a recreate
         # that landed during the save gets the marker re-derived from ITSELF instead
@@ -5833,6 +5852,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # held notes live nowhere but this popped object. The drain flushes them
             # into the window and writes the whole tail as an OPEN-key save.
             drained = await _persist_handover_tail(state, name, removed)
+            removed.queue_discard_all()
             # Hand the KEY-SCOPED restricted marker to the replacement on the way
             # out: this exit skips the discard below the save, which is the only
             # thing that would otherwise have cleared the original's.
@@ -5890,6 +5910,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 # is also why the drain's answer needs no branch here, unlike at the
                 # pre-save exit above: this key reaches ``failed`` regardless.
                 await _persist_handover_tail(state, name, removed)
+                removed.queue_discard_all()
             # Either way the key-scoped restricted marker must describe whoever holds
             # `name` now — the restored original, or the replacement that kept it.
             # This arm never reaches the discard below, so it settles it here.
@@ -5913,6 +5934,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             failed.append(name)
             continue
         else:
+            removed.queue_discard_all()
             # Through the shared postcondition rather than a bare discard, for the
             # same reason as the single-tab close: an archive that succeeded onto a
             # key a recreate has since taken must leave the marker describing the

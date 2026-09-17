@@ -75,6 +75,7 @@ async def maybe_start_webex(orch: "GatewayOrchestrator") -> "WebexClient | None"
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        dispatcher.subagent_manager = getattr(orch, "subagent_mgr", None)
         webex_cfg = orch._cfg.webex
         client = WebexClient(
             token=bot_token,

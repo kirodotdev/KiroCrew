@@ -1321,6 +1321,29 @@ async def test_delete_removes_and_audits_the_owning_slot(
 
 
 @pytest.mark.asyncio
+async def test_direct_user_delete_overrides_attached_child_work(
+    monkeypatch: pytest.MonkeyPatch, sel_mock: MagicMock
+) -> None:
+    """The child-work fence applies to agent directives, never human Stop."""
+
+    class _HostileSubagents:
+        def running_agents_for(self, _session_key: str) -> list[str]:
+            raise AssertionError("direct user Stop must not consult the agent fence")
+
+    svc = _svc(monkeypatch, _FakeSvc([_loop("lp-1", "chat-5-555")]))
+    request = _mk(
+        "DELETE",
+        "/api/autonudge/lp-1",
+        match={"loop_id": "lp-1"},
+        state=MagicMock(subagents=_HostileSubagents()),
+    )
+
+    assert _body(await h.api_autonudge_delete(request)) == {"ok": True}
+    assert svc.removed == ["lp-1"]
+    assert sel_mock.log_tool_invocation.call_args.kwargs["outcome"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_legacy_delete_of_structured_monitor_audits_before_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

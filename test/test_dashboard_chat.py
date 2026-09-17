@@ -10959,7 +10959,13 @@ class TestRunChatRefusalFallback:
         slot._refusal_replay_stop_gen = slot._stop_generation
         slot._refusal_replay_session_stop_gen = 0
         # The correction the refusal card asked for, queued while the replay waited.
-        slot.queue_insert(1, "actually, do this instead")
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        slot.queue_insert(
+            1,
+            "actually, do this instead",
+            meta=containment_meta(state, slot),
+        )
 
         _seen: list[str] = []
 
@@ -10974,6 +10980,8 @@ class TestRunChatRefusalFallback:
         monkeypatch.setattr(chat_runner, "_run_chat", _fake_run_chat)
 
         assert await _start_next_queued_turn(state, slot) is True
+        if slot.task is not None:
+            await slot.task
         assert _seen == [
             "actually, do this instead"
         ], "the correction must dispatch, never the purged replay"
@@ -13837,6 +13845,8 @@ class TestBulkCleanup:
         stale = state.get_or_create_slot("stale1")
         stale.append("user", "old msg", ts=old_ts)
         stale.drain()
+        discarded: list[str] = []
+        stale.queue_insert(0, "completion", on_discarded=lambda: discarded.append("completion"))
 
         fresh = state.get_or_create_slot("fresh1")
         fresh.append("user", "new msg", ts=fresh_ts)
@@ -13860,6 +13870,7 @@ class TestBulkCleanup:
         assert "stale1" not in state._slots
         assert "fresh1" in state._slots
         assert "pinned1" in state._slots
+        assert discarded == ["completion"]
 
     @pytest.mark.asyncio
     async def test_cleanup_skips_active_slot(self, tmp_path, monkeypatch):
@@ -17853,7 +17864,14 @@ class TestStopTurnSlotState:
         slot = state.get_or_create_slot("s1")
         slot.task = asyncio.ensure_future(asyncio.sleep(999))
         slot._stop_state = "soft_pending"
-        slot._queue.extend(["msg1", "msg2", "msg3"])
+        discarded: list[str] = []
+        slot.queue_insert(
+            0,
+            "completion",
+            on_discarded=lambda: discarded.append("completion"),
+        )
+        slot.queue_append("msg2")
+        slot.queue_append("msg3")
 
         async def fake_stop_turn(
             key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
@@ -17869,6 +17887,7 @@ class TestStopTurnSlotState:
             resp = await client.post("/api/chat/slots/s1/stop")
             assert resp.status == 200
         assert len(slot._queue) == 0
+        assert discarded == ["completion"]
         slot.task.cancel()
 
     @pytest.mark.asyncio
@@ -18855,14 +18874,17 @@ class TestEmptyResponseRetry:
         # behavior the test name promises) — not merely that the counter ticked.
         calls = []
         callbacks = []
+        discard_callbacks = []
         directive_origins = []
         directive_channel_origins = []
         on_consumed = MagicMock()
+        on_discarded = MagicMock()
         orig = _ChatSlot.queue_insert
 
         def spy(self_slot, *a, **kw):
             calls.append(a)
             callbacks.append(kw.get("on_consumed"))
+            discard_callbacks.append(kw.get("on_discarded"))
             directive_origins.append(kw.get("directive_user_origin"))
             directive_channel_origins.append(kw.get("directive_channel_origin"))
             return orig(self_slot, *a, **kw)
@@ -18889,6 +18911,7 @@ class TestEmptyResponseRetry:
                 _directive_user_origin=True,
                 _directive_channel_origin=True,
                 _on_consumed=on_consumed,
+                _on_discarded=on_discarded,
             )
             background_tasks = list(state._background_tasks)
             for _bg_task in background_tasks:
@@ -18900,9 +18923,11 @@ class TestEmptyResponseRetry:
         # The message must be re-queued at the front of the queue.
         assert (0, "test message") in calls
         assert callbacks[0] is on_consumed
+        assert discard_callbacks[0] is on_discarded
         assert directive_origins == [True]
         assert directive_channel_origins == [True]
         assert [args.args for args in on_consumed.call_args_list] == [(True,), (False,)]
+        on_discarded.assert_not_called()
         # No notice card shown on first attempt — the empty is silently re-queued
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert not any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
@@ -18932,14 +18957,211 @@ class TestEmptyResponseRetry:
         re-queue and risk a runaway loop)."""
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
         self._make_empty_stream(client)
+        on_discarded = MagicMock()
 
-        await _run_chat(state, slot, "test message", _prompt_depth=1)
+        await _run_chat(
+            state,
+            slot,
+            "test message",
+            _prompt_depth=1,
+            _on_discarded=on_discarded,
+        )
 
         # depth>0: the `if _prompt_depth == 0 ...` guard is false, so the else fires —
         # terminal card immediately, no silent retry, no increment of the counter.
         notice_msgs = [m for m in slot.messages if m.get("role") == "notice"]
         assert any("returned nothing this turn" in m.get("content", "") for m in notice_msgs)
         assert slot._empty_response_retries == 0
+        # The real end_turn consumed the completion even though no answer text
+        # followed, so it is neither retried nor discarded.
+        on_discarded.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_holds_completion_for_post_login_retry(self, tmp_path: Path) -> None:
+        """Signing out cannot retire a completion the model never consumed."""
+        from kiro_crew.acp.client import AcpAuthRequired
+        from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+        from kiro_crew.dashboard.chat_utils import LIFECYCLE_RECOVERY_KIND
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        on_discarded = MagicMock()
+
+        async def _stream(_message):
+            raise AcpAuthRequired("Sign in to continue", backend=ACP_BACKEND_KIRO)
+            yield  # pragma: no cover
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "completion", _on_discarded=on_discarded)
+        await self._cancel_background_tasks(state)
+
+        assert len(slot._queue) == 1
+        queued = slot._queue[0]
+        assert queued["content"] == "completion"
+        assert queued["kind"] == LIFECYCLE_RECOVERY_KIND
+        assert queued["_on_discarded"] is on_discarded
+        on_discarded.assert_not_called()
+        state.sessions.reset.assert_awaited_once()
+
+        # The queued row now owns the one-shot callback. A user removing that
+        # exact retry remains authoritative and retires it once.
+        assert slot.queue_remove_by_id(queued["id"]) == "completion"
+        on_discarded.assert_called_once_with()
+        assert slot.queue_remove_by_id(queued["id"]) is None
+        on_discarded.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_kind", ["approval", "tool_authorization"])
+    async def test_non_explicit_authorization_exit_holds_completion_without_auto_retry(
+        self, tmp_path: Path, error_kind: str
+    ) -> None:
+        """Authorization failures retain ownership but do not spin a retry loop."""
+        from kiro_crew.acp.client import AcpPermissionNeeded, AcpToolGateUnroutable
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        on_discarded = MagicMock()
+        error = (
+            AcpPermissionNeeded("Approve this tool")
+            if error_kind == "approval"
+            else AcpToolGateUnroutable("Tool authorization is unavailable")
+        )
+
+        async def _stream(_message):
+            raise error
+            yield  # pragma: no cover
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "completion", _on_discarded=on_discarded)
+        await self._cancel_background_tasks(state)
+
+        assert len(slot._queue) == 1
+        assert slot._queue[0]["content"] == "completion"
+        assert slot._queue[0]["_on_discarded"] is on_discarded
+        on_discarded.assert_not_called()
+        assert slot.task is None
+
+    @pytest.mark.asyncio
+    async def test_turn_timeout_holds_completion_without_auto_draining(
+        self, tmp_path: Path
+    ) -> None:
+        """A deadline cancellation retains the exact completion for a later turn."""
+        from kiro_crew.dashboard.chat_utils import LIFECYCLE_RECOVERY_KIND
+        from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
+
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        on_discarded = MagicMock()
+        on_lifecycle_recovery_retained = MagicMock()
+        started = asyncio.Event()
+
+        async def _stream(_message):
+            started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+        client.stream = _stream
+        client.stream_command = _stream
+        start_next = AsyncMock(return_value=False)
+        loop = asyncio.get_running_loop()
+        real_call_later = loop.call_later
+        deadline_secs = 86400.125
+        armed_deadlines = []
+
+        def capture_deadline(delay, callback, *args, context=None):
+            if delay == deadline_secs:
+                armed_deadlines.append((callback, args))
+                return MagicMock()
+            if context is None:
+                return real_call_later(delay, callback, *args)
+            return real_call_later(delay, callback, *args, context=context)
+
+        with (
+            patch("kiro_crew.dashboard.chat_runner._start_next_queued_turn", start_next),
+            patch.object(loop, "call_later", side_effect=capture_deadline),
+        ):
+            task = spawn_guarded_turn(
+                state,
+                slot,
+                _run_chat(
+                    state,
+                    slot,
+                    "completion",
+                    _on_discarded=on_discarded,
+                    _on_lifecycle_recovery_retained=on_lifecycle_recovery_retained,
+                ),
+                timeout_secs=deadline_secs,
+            )
+            slot.task = task
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert len(armed_deadlines) == 1
+            deadline_callback, deadline_args = armed_deadlines[0]
+            deadline_callback(*deadline_args)
+            with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+                await task
+
+        await asyncio.sleep(0)
+        await self._cancel_background_tasks(state)
+
+        assert len(slot._queue) == 1
+        queued = slot._queue[0]
+        assert queued["content"] == "completion"
+        assert queued["kind"] == LIFECYCLE_RECOVERY_KIND
+        assert queued["_on_discarded"] is on_discarded
+        on_lifecycle_recovery_retained.assert_called_once_with()
+        on_discarded.assert_not_called()
+        start_next.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_explicit_stop_discards_popped_completion_once(self, tmp_path: Path) -> None:
+        """A direct Stop remains an explicit one-shot discard boundary."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        on_discarded = MagicMock()
+        started = asyncio.Event()
+
+        async def _stream(_message):
+            started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+        client.stream = _stream
+        client.stream_command = _stream
+        task = asyncio.create_task(_run_chat(state, slot, "completion", _on_discarded=on_discarded))
+        slot.task = task
+        await asyncio.wait_for(started.wait(), timeout=1)
+        slot._stop_state = "soft_pending"
+        task.cancel()
+        await task
+        await self._cancel_background_tasks(state)
+
+        on_discarded.assert_called_once_with()
+        assert not slot._queue
+
+    @pytest.mark.asyncio
+    async def test_slot_teardown_discards_popped_completion_once(self, tmp_path: Path) -> None:
+        """A removed slot owns cancellation as teardown, not recoverable failure."""
+        state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        on_discarded = MagicMock()
+        started = asyncio.Event()
+
+        async def _stream(_message):
+            started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+
+        client.stream = _stream
+        client.stream_command = _stream
+        task = asyncio.create_task(_run_chat(state, slot, "completion", _on_discarded=on_discarded))
+        slot.task = task
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert state._slots.pop(slot.key) is slot
+        task.cancel()
+        await task
+        await self._cancel_background_tasks(state)
+
+        on_discarded.assert_called_once_with()
+        assert not slot._queue
 
     @pytest.mark.asyncio
     async def test_second_empty_response_auto_continues(self, tmp_path: Path) -> None:
@@ -23229,6 +23451,10 @@ class TestSessionReload:
 
         assert resp.status == 409
         assert data["code"] == "slot_subagents_running"
+        assert data["error"] == (
+            "sub-agent work is still attached (running child work); wait for it to settle, or "
+            "use the direct Stop control before retrying"
+        )
         state.sessions.reset.assert_not_awaited()
         assert len(slot.messages) == before
         eager.assert_not_called()

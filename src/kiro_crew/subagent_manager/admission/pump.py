@@ -384,12 +384,7 @@ class _PumpMixin(ManagerComponent):
             and not drained.batch_id
             and self._manager._on_done
         ):
-            try:
-                self._manager._tasks[f"reject-{drained.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(drained)
-                )
-            except RuntimeError:
-                pass  # no running loop (sync/test context)
+            self._manager._start_rejection_delivery(drained)
         # Top the window back up after the pop, so the chip's depth and the
         # next drain both see the oldest rows already in memory. On the
         # coroutine path *refill* is a no-op here and the follow-up pass
