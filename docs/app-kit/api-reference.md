@@ -434,8 +434,8 @@ class DeployProbe(Probe):
             ])
         obs = []
         if status.rolled_back:
-            # Nothing improves by waiting -> NMI bypasses coalescing.
-            obs.append(Observation("rollback", Severity.NMI,
+            # Nothing improves by waiting -> IMMEDIATE bypasses coalescing.
+            obs.append(Observation("rollback", Severity.IMMEDIATE,
                                    f"{self.env} rolled back."))
         for stage in status.failed_stages:
             obs.append(Observation(f"stage:{stage}", Severity.WAKE,
@@ -460,8 +460,8 @@ Rules:
   It is the only place a verdict is raised.
 - A failed observation returns `Tick(fetch_ok=False)`, never an empty `Tick` —
   an empty tick reads as "nothing is wrong".
-- Use `Severity.NMI` only for what genuinely cannot improve by waiting. Using
-  it to mean "important" defeats coalescing.
+- Use `Severity.IMMEDIATE` only for what genuinely cannot improve by waiting.
+  Using it to mean "important" defeats coalescing.
 - Supply an `epoch` when the subject has an identity token. Without one there
   are no resets, so a re-triggered subject inherits the previous run's masks.
 - Filter out conditions the operator already knows about (a check red on the

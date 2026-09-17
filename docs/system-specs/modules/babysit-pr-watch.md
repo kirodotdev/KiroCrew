@@ -134,7 +134,7 @@ it does not make the script crash.
 * A merged PR or a closed unmerged PR is `Severity.TERMINAL`, so `irq.run`
   reports it and removes the cron job. `test_merged_pr_completes_the_watch` and
   `test_closed_unmerged_completes_the_watch` pin both terminal paths.
-* A conflicting or dirty PR is `Severity.NMI`. `irq.run` bypasses coalescing
+* A conflicting or dirty PR is `Severity.IMMEDIATE`. `irq.run` bypasses coalescing
   delay but still deduplicates it, because waiting cannot produce checks on a
   dirty PR and unmasked repetition would wake every tick. The conflict and
   re-alert tests pin this behavior.
@@ -169,9 +169,9 @@ fails while a coalescing window is open, `irq.run` reports immediately with a
 warning rather than delaying an observation into state it cannot recover.
 
 A `Tick.epoch` changes when the PR head changes. `irq.run` clears
-epoch-scoped dedupe and coalescing state on that change, so failures on the new
-head can wake again. Conversation observations set `epoch_scoped=False`, so a
-force-push does not replay an already-seen comment or review. These distinct
+`REVISION` dedupe and coalescing state on that change, so failures on the new
+head can wake again. Conversation observations set `resets_on=ResetsOn.NEVER`, so
+a force-push does not replay an already-seen comment or review. These distinct
 key spaces are load-bearing: treating every signal as head-scoped loses
 conversation dedupe, while treating every signal as sticky hides failures on a
 new head.
@@ -181,7 +181,7 @@ elapsed and the check rollup settles, or until its hard wall elapses. The hard
 wall ensures a permanently pending check delays a wake instead of losing it.
 Sticky conversation observations can fire once the floor elapses even while
 checks remain pending; they do not become more informative by waiting for CI.
-`Severity.NMI` and `Severity.TERMINAL` bypass the ordinary window. The
+`Severity.IMMEDIATE` and `Severity.TERMINAL` bypass the ordinary window. The
 coalescing and sticky-observation tests in `test_irq.py` pin these cases.
 
 Dedupe is time-bounded. The kernel re-alerts a persistent condition after its

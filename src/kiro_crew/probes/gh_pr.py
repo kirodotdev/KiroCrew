@@ -14,7 +14,7 @@ genuinely GitHub knowledge: how to observe a PR, and what counts as an anomaly.
 
 Wake reasons:
 
-- ``conflict``   -- the PR became CONFLICTING/DIRTY. Classified NMI so it
+- ``conflict``   -- the PR became CONFLICTING/DIRTY. Classified IMMEDIATE so it
                     bypasses the coalescing window: a dirty PR dispatches no
                     checks, so ``pending`` never drains and waiting observes
                     nothing at all.
@@ -71,6 +71,7 @@ from kiro_crew.irq import (
     DEFAULT_REALERT_SECS,
     Observation,
     Probe,
+    ResetsOn,
     Severity,
     Tick,
     sanitize_label,
@@ -394,10 +395,10 @@ class PrWatchProbe(Probe):
     def _conversation(self, data: dict) -> list[Observation]:
         """Observations for things said about the PR rather than run on it.
 
-        These carry ``epoch_scoped=False``: a comment belongs to the pull
+        These carry ``resets_on=ResetsOn.NEVER``: a comment belongs to the pull
         request, not to the commit under review, so it must survive the epoch
-        reset a force-push triggers. Left epoch scoped, pushing a fix five
-        minutes after a reviewer commented would replay that comment.
+        reset a force-push triggers. Scoped to the revision instead, pushing a fix
+        five minutes after a reviewer commented would replay that comment.
 
         The brief names WHO and WHEN and never quotes the body. That boundary is
         the whole point of the split: the probe is the detector, so it reports
@@ -439,7 +440,7 @@ class PrWatchProbe(Probe):
                         "arrived. Read it and reply -- a reviewer verdict can "
                         "sit in a comment body while its check reports success.",
                     ),
-                    epoch_scoped=False,
+                    resets_on=ResetsOn.NEVER,
                 )
             )
 
@@ -462,7 +463,7 @@ class PrWatchProbe(Probe):
                         f"{item.get('submittedAt')}. Read it and disposition "
                         "every point before calling the PR ready.",
                     ),
-                    epoch_scoped=False,
+                    resets_on=ResetsOn.NEVER,
                 )
             )
 
@@ -518,7 +519,7 @@ class PrWatchProbe(Probe):
             observations.append(
                 Observation(
                     "conflict",
-                    Severity.NMI,
+                    Severity.IMMEDIATE,
                     self._brief(
                         head,
                         "merge conflict",

@@ -123,8 +123,8 @@ Retirement is downstream of layer 3, not of the coalescing window the pure
 decision engine gained. That window folds successive changes to one subject over
 time, which is not the mechanism the cron path depends on. What that path uses,
 and the shared engine cannot yet express, is already named in layers 3 and 4
-below: the urgency claim layer 3 calls `IMMEDIATE` and the kernel implements as
-`Severity.NMI`, for a condition where waiting observes nothing further; and the
+below: the urgency claim layer 3 and the kernel now both call `IMMEDIATE`, for a
+condition where waiting observes nothing further; and the
 per-entry `resets_on` distinction, which decides whether a new revision clears an
 entry or the entry outlives it. One fingerprint per subject can express neither.
 It has no per-entry identity to scope and no severity to raise, so an entry that
@@ -234,23 +234,35 @@ Rules:
 
 ### 3. Observation
 
-An observation is a named entry. The type already exists in the kernel as
-`Observation(key, severity, brief, epoch_scoped)` in `irq.py`, with `Severity`
-carrying `WAKE`, `TERMINAL` and `NMI`. What this spec asks for is a **rename, not
-a new type**:
+An observation is a named entry, and the kernel type is now the one this layer
+asks for. `irq.py` carries it as:
 
 ```
-Observation(key, severity, resets_on, brief="")
+Observation(key, severity, brief="", resets_on=ResetsOn.REVISION)
 ```
 
-`epoch_scoped: bool` becomes `resets_on`, and `NMI` becomes `IMMEDIATE`. Naming
-that plainly matters, because a rename has existing callers -- `PrWatchProbe` in
-`probes/gh_pr.py` constructs these today -- so the migration is a mechanical
-rewrite of live code rather than a greenfield addition. The reason for each new
-name is that the old one describes the implementation and the new one describes
-the condition: `epoch_scoped` says which bookkeeping bucket an entry falls in,
-while `resets_on` says what clears it, and `NMI` borrows an interrupt term for
-what is really an urgency claim.
+with `Severity` carrying `WAKE`, `TERMINAL` and `IMMEDIATE`. This landed as a
+**rename of the existing type, not a new one**: `epoch_scoped: bool` became
+`resets_on: ResetsOn`, and `NMI` became `IMMEDIATE`. `PrWatchProbe` in
+`probes/gh_pr.py` constructs these, so it was a mechanical rewrite of live code
+rather than a greenfield addition.
+
+Each new name describes the condition where the old one described the
+implementation. `epoch_scoped` said which bookkeeping bucket an entry fell in;
+`resets_on` says what clears it. `NMI` borrowed an interrupt term for what is
+really an urgency claim.
+
+`resets_on` is an enum rather than a renamed boolean, because the field answers
+*what clears this* and a boolean can only answer *yes or no*: read as a flag,
+`resets_on=False` would have to mean "does not reset on -- nothing", the opposite
+of what `NEVER` says. The kernel already stored the distinction as one of two
+named key spaces, so a two-member enum is also what makes the in-memory type and
+the persisted encoding the same shape.
+
+`brief` stays ahead of `resets_on` positionally, which is not the order this
+section first sketched. Both fields have defaults, so nothing is gained by moving
+`resets_on` forward, and reordering would silently redirect every existing
+three-positional call rather than fail at it.
 
 - **`key`** is a semantic string, stable across ticks, never a hash. `conflict`,
   `red:<check>`, `ready`, `comment:<id>` -- the vocabulary `PrWatchProbe` emits. A
@@ -261,12 +273,12 @@ what is really an urgency claim.
   state: deliver and retire the watch), or `IMMEDIATE` (bypasses the coalescing
   delay but not the budget, for a condition where waiting observes nothing
   further -- a conflicted pull request dispatches no checks, so a pending count
-  never drains). The kernel already implements this behaviour under the name
-  `NMI`.
-- **`resets_on`** is `REVISION` when a new revision clears the condition, or
-  `NEVER` when it belongs to the subject rather than the revision. A comment
-  survives a force-push; a failing check does not. `epoch_scoped` is the same
-  distinction expressed as a boolean over the kernel's epoch.
+  never drains).
+- **`resets_on`** is `ResetsOn.REVISION` when a new revision clears the condition,
+  or `ResetsOn.NEVER` when it belongs to the subject rather than the revision. A
+  comment survives a force-push; a failing check does not. The kernel stores a
+  `REVISION` key in its epoch space and a `NEVER` key in its sticky one, which is
+  the distinction `epoch_scoped` expressed as a boolean over the epoch.
 - **`brief`** is operator-facing text, delivered only if the entry wakes someone.
 
 A subject's fingerprint, where one is still needed, is **derived from** the
@@ -304,10 +316,10 @@ fail safe:
 
 The engine is **level-triggered**, not edge-triggered, on both paths. `irq.py`
 level-triggers on the live cron path: per-key `alerted` timestamps in its loaded
-state, `_dedupe_key` distinguishing epoch-scoped from sticky entries, a re-alert
+state, `_dedupe_key` distinguishing `REVISION` from `NEVER` entries, a re-alert
 window defaulting to six hours through `DEFAULT_REALERT_SECS`, a coalescing
-window through `coalesce_secs`, and `Severity.NMI` documented as bypassing the
-delay but not the mask. `monitoring/decision.py` now level-triggers too: it
+window through `coalesce_secs`, and `Severity.IMMEDIATE` documented as bypassing
+the delay but not the mask. `monitoring/decision.py` now level-triggers too: it
 re-asserts an unresolved actionable change once its re-alert interval has elapsed
 and coalesces a burst of successive changes to one subject, through a window on
 `MonitorState`. So re-assertion-after-a-window is available on both paths rather

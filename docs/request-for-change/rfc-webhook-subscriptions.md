@@ -90,7 +90,7 @@ The pull side has already been made cheap. `irq.py` — Kiro Crew's interrupt
 controller for script crons — states the thesis in its first line, "cheap
 polling, expensive wakes", and implements it: a probe polls one subject with no
 model call and raises a wake only on an unexpected observation, with
-time-bounded dedupe, per-subject coalescing, an NMI severity that skips
+time-bounded dedupe, per-subject coalescing, an `IMMEDIATE` severity that skips
 coalescing, and an epoch reset when the subject changes. The structured monitor
 in `monitoring/` does the same for one typed subject, a pull request. Both are
 still polling: the latency floor is the cron interval, every watched subject
@@ -136,7 +136,7 @@ Verified at `6163d9a9ca`. Paths are relative to `src/kiro_crew/`.
 | `webhooks.py` `context_freshness`, `register_hook` contexts in `hooks.json` | Three-horizon decay of a caller-supplied restored context | Unchanged for `hook:*` sessions; a subscription's standing instruction replaces it for subscription-targeted wakes. |
 | `dashboard/token_auth.py` `_BYPASS_EXACT_METHODS`, `AGENT_HOOK_PATH`, `TEAMS_WEBHOOK_PATH` | Dashboard-auth bypass for self-authenticating webhooks: **exact path plus POST only**, two entries today — the agent webhook and the Microsoft Teams inbound webhook. The method scope is load-bearing: the literal `agent` also matches the `{hook_id}` wildcard of the dashboard's own PUT/DELETE `/api/hooks/{hook_id}` CRUD routes, which authenticate by dashboard token | Gains exactly one more exact-path, POST-only entry, `POST /api/hooks/in` (§7.1). No wildcard or prefix bypass; every other method and path under `/api/hooks/` keeps the dashboard token. |
 | `dashboard/handlers/messaging.py` cron-notify injection; slot `queue_append` (`dashboard/state.py`, `dashboard/slot_queue_repository.py`); `dashboard/chat_runner.py` `_start_next_queued_turn` | A message for a busy slot is appended to the slot queue and drained by the runner when the turn ends; an idle slot gets an immediate guarded turn | **The wake's delivery path.** The buffer in front of it is what makes it durable across a restart. |
-| `irq.py` — `Probe`, `Observation`, `Severity`, `run`, `DEFAULT_COALESCE_SECS`, `DEFAULT_REALERT_SECS` | Interrupt kernel for script crons: dedupe, per-subject coalescing, NMI, epoch reset, stuck-probe backstop | The **semantics** of the buffer's coalescing, and the runtime for pull-side sources and reconcile probes (§8). |
+| `irq.py` — `Probe`, `Observation`, `Severity`, `ResetsOn`, `run`, `DEFAULT_COALESCE_SECS`, `DEFAULT_REALERT_SECS` | Interrupt kernel for script crons: dedupe, per-subject coalescing, `IMMEDIATE`, epoch reset, stuck-probe backstop | The **semantics** of the buffer's coalescing, and the runtime for pull-side sources and reconcile probes (§8). |
 | `monitoring/` — `controller.py`, `decision.py` `decide_monitor`, `models.MonitorBudgets`; `probes/__init__.py` `build` | Typed pull-request probes with runtime/turn/token/error budgets | Budget vocabulary reused; Phase 7 moves its wake onto the buffer per [rfc-consolidated-monitor.md](rfc-consolidated-monitor.md). |
 | `autonudge.py` | Timer loop re-injecting an instruction into the same session | The mechanism this RFC retires for signal-driven work. |
 | `subagent.py` `SubagentManager` | Spawn with admission queue, concurrency cap, completion events delivered to the parent session | The `spawn` consumer's execution path. |

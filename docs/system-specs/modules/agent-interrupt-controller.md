@@ -65,11 +65,11 @@ A probe implements:
   `irq.run`, `test_probe_tuning_raising_does_not_kill_the_tick`, and
   `test_the_wake_footer_is_emitted_once_not_once_per_observation`.
 
-`Severity.TERMINAL` ends the watch with `Done`. `Severity.NMI` reports
+`Severity.TERMINAL` ends the watch with `Done`. `Severity.IMMEDIATE` reports
 immediately but still participates in deduplication. `Severity.WAKE` enters
-the regular coalescing path. Terminal handling precedes NMI and coalescing in
-`irq.run`; `test_terminal_wins_over_an_open_window` and
-`test_nmi_bypasses_the_coalescing_window` pin the ordering.
+the regular coalescing path. Terminal handling precedes `IMMEDIATE` and coalescing
+in `irq.run`; `test_terminal_wins_over_an_open_window` and
+`test_immediate_bypasses_the_coalescing_window` pin the ordering.
 
 ## State identity and recovery
 
@@ -95,12 +95,12 @@ fire condition. See `irq.save_state`, `irq.run`,
 
 ## Dedupe and epochs
 
-`irq.run` stores epoch-scoped and epoch-independent keys in separate sentinel
+`irq.run` stores `REVISION` and `NEVER` keys in separate sentinel
 spaces. The same probe key in both spaces remains two signals; see
 `test_the_two_key_spaces_do_not_collide`.
 
-When a nonempty `Tick.epoch` changes, `irq.run` removes epoch-scoped alerts and
-open-window entries, then retains epoch-independent alerts and open-window
+When a nonempty `Tick.epoch` changes, `irq.run` removes `REVISION` alerts and
+open-window entries, then retains `NEVER` alerts and open-window
 entries. Check-derived observations must not survive a head change, or an old
 head can be reported as current. Conversation-derived observations must survive,
 or a head change replays already-reported discussion. Each carried entry keeps
@@ -109,7 +109,7 @@ the floor again. A fresh head observation is a separate entry with a fresh open
 time, so it still receives the full settling floor; on the transition tick it
 cannot ride on a carried entry that is already ready to fire.
 These invariants are pinned by
-`test_an_open_epoch_scoped_window_is_dropped_by_an_epoch_change`,
+`test_an_open_revision_window_is_dropped_by_an_epoch_change`,
 `test_a_sticky_key_survives_an_epoch_change`,
 `test_a_fresh_epoch_anomaly_still_gets_a_full_settling_floor`, and
 `test_a_carried_sticky_entry_keeps_its_served_floor_across_epoch_change`.
@@ -125,9 +125,10 @@ the only reporting value. See `irq.run`,
 
 ## Coalescing
 
-A non-NMI `WAKE` observation opens a persisted window, and each entry records its
+A `WAKE` observation that is not `IMMEDIATE` opens a persisted window, and each
+entry records its
 own open time. An entry triggers delivery when its own age has passed the
-convergence floor and `Tick.pending` is zero, or, for an epoch-independent entry,
+convergence floor and `Tick.pending` is zero, or, for a `NEVER` entry,
 when its own age has passed the floor alone. Separately, when the oldest entry's
 age passes the hard cap the whole window flushes; the hard cap is independent of
 the floor and remains window level. The floor prevents a newly changed subject
@@ -161,20 +162,20 @@ survivor. That is a bound rather than a reset: an entry is flushed no later than
 the cap measured from its own arrival. See
 `test_an_entry_left_by_a_partial_fire_still_reaches_the_cap`.
 
-While pending work remains after the floor, epoch-independent entries fire and
-epoch-scoped entries remain in the window. The remaining entries keep their own
+While pending work remains after the floor, `NEVER` entries fire and
+`REVISION` entries remain in the window. The remaining entries keep their own
 open times, so repeated discussion cannot keep postponing a check-derived
 observation. See
 `test_a_sticky_wake_fires_at_the_floor_while_checks_are_still_pending` and
-`test_the_sticky_half_fires_while_the_epoch_scoped_half_keeps_waiting`.
+`test_the_sticky_half_fires_while_the_revision_half_keeps_waiting`.
 
-`irq.run` prunes an epoch-scoped entry when the probe no longer observes it,
-which prevents a cleared check from appearing in a later wake. It retains an
-epoch-independent entry that the probe stops observing, because a conversation
+`irq.run` prunes a `REVISION` entry when the probe no longer observes it,
+which prevents a cleared check from appearing in a later wake. It retains a
+`NEVER` entry that the probe stops observing, because a conversation
 horizon means "not currently inspected," not "cleared." See
 `test_cleared_anomaly_is_pruned_from_an_open_window`,
 `test_an_open_sticky_wake_is_not_pruned_when_the_probe_stops_reporting_it`, and
-`test_an_open_epoch_scoped_wake_is_still_pruned_when_it_clears`.
+`test_an_open_revision_wake_is_still_pruned_when_it_clears`.
 
 A zero coalescing floor uses immediate `WAKE` delivery. The behavior is pinned
 by `test_coalesce_secs_zero_restores_fire_on_first_anomaly`.
@@ -189,7 +190,7 @@ override. `watch` constructs the probe and calls `irq.run`.
 `PrWatchProbe.observe`:
 
 * returns terminal observations for merged and closed pull requests;
-* emits an NMI observation for conflicting or dirty pull requests;
+* emits an `IMMEDIATE` observation for conflicting or dirty pull requests;
 * collapses duplicate check rows, filters known inherited failures, and emits
   `WAKE` observations for unexpected failures;
 * emits a review-ready observation only when checks are present, no checks are
