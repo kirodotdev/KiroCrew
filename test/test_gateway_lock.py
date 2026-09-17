@@ -259,6 +259,37 @@ def test_stale_lock_is_reclaimed(tmp_path):
         lock.release()
 
 
+def test_posix_dead_holder_contention_is_retried(tmp_path, monkeypatch):
+    """A dying POSIX gateway may release its flock just after our first probe."""
+    from kiro_crew import gateway_lock
+
+    lock_file = tmp_path / LOCK_FILENAME
+    lock_file.write_text("999999\n", encoding="utf-8")
+    attempts = 0
+
+    def acquire_after_teardown(_fd, *, exclusive):
+        nonlocal attempts
+        assert exclusive is True
+        attempts += 1
+        return attempts > 1
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(platform_compat, "try_acquire_lock", acquire_after_teardown)
+    monkeypatch.setattr(
+        platform_compat,
+        "pid_liveness",
+        lambda _pid: platform_compat.PID_DEAD,
+    )
+    monkeypatch.setattr(gateway_lock.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(GatewayLock, "_acquire_home_anchor", lambda _self: os.dup(0))
+
+    lock = GatewayLock(tmp_path).acquire()
+    try:
+        assert attempts == 2
+    finally:
+        lock.release()
+
+
 def test_distinct_homes_both_acquire(tmp_path):
     home_a = tmp_path / "a"
     home_b = tmp_path / "b"
