@@ -312,6 +312,12 @@ async def api_crew_mcp_servers(request: web.Request) -> web.Response:
     exactly the mode where a foreign spawner exists, so the pin is unconditional
     in that mode.
 
+    ``env.KIROCREW_PROFILE`` is likewise pinned when supervised, to the gateway's
+    own effective profile (``current_context().profile``), so a foreign-host
+    proxy composes the same edition the gateway did instead of re-resolving it in
+    its own process (R3). An unreadable context leaves the pin off rather than
+    failing the spec.
+
     Admitted only to a supervised internal-secret caller (the allowlist gates
     that), so reaching this handler without ``internal_auth`` still refuses.
     """
@@ -323,6 +329,22 @@ async def api_crew_mcp_servers(request: web.Request) -> web.Response:
         )
     supervised = bool(request.app.get("supervised", False))
     home = str(config_dir()) if supervised else None
+    # R3: pin the gateway's own effective profile so a foreign-host (KAS/node)
+    # proxy composes the SAME edition the supervised gateway did. Without it a
+    # proxy on a host that resolves ``enterprise`` (an installed companion, or the
+    # opt-in SSO-marker probe) would re-resolve the profile in its own process
+    # from scratch, and a mismatch there means a different admission policy than
+    # the gateway serving this spec. ``current_context().profile`` is the value
+    # ``resolve_profile`` settled at boot (``platform/profile.py``). Read
+    # defensively: a context that cannot compose is not a reason to fail the whole
+    # spec, so an unreadable profile simply leaves the pin off (the proxy falls
+    # back to its own resolution, the pre-R3 behaviour).
+    profile: str | None = None
+    if supervised:
+        try:
+            profile = current_context().profile
+        except Exception:
+            logger.debug("effective profile unavailable; omitting KIROCREW_PROFILE pin", exc_info=True)
     # Session identity for the proxies (P5-2). When the gateway spawns kiro-cli
     # itself it injects ``KIROCREW_SESSION_KEY`` into that process tree and the
     # stdio proxies inherit it; a foreign spawner (KAS) has no such ancestor, so
@@ -342,12 +364,14 @@ async def api_crew_mcp_servers(request: web.Request) -> web.Response:
         entry = managed_mcp_spec_entry(name)
         if entry is None:
             continue
-        if home is not None or pin_session is not None:
+        if home is not None or pin_session is not None or profile is not None:
             env = dict(entry.get("env") or {})
             if home is not None:
                 env["KIROCREW_HOME"] = home
             if pin_session is not None:
                 env["KIROCREW_SESSION_KEY"] = pin_session
+            if profile is not None:
+                env["KIROCREW_PROFILE"] = profile
             entry["env"] = env
         servers[name] = entry
     return web.json_response({"mcpServers": servers})

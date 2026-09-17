@@ -119,6 +119,45 @@ async def test_bundle_fallback_serves_interpreter_dash_m_kiro_crew(monkeypatch) 
         assert entry["args"][2] == sub, (name, entry["args"])
 
 
+async def test_supervised_pins_effective_profile(monkeypatch) -> None:
+    """R3: a foreign-host proxy must compose the SAME edition the gateway did, so
+    the served spec pins ``env.KIROCREW_PROFILE`` to ``current_context().profile``
+    when supervised. Patched to a known value so the assert does not depend on the
+    test host's own resolution."""
+    import kiro_crew.dashboard.handlers_system as hs
+
+    monkeypatch.setattr(
+        hs, "current_context", lambda: SimpleNamespace(profile="enterprise")
+    )
+    servers = (await _body(_request(supervised=True)))["mcpServers"]
+    assert servers  # non-empty
+    for name, entry in servers.items():
+        assert entry["env"]["KIROCREW_PROFILE"] == "enterprise", name
+
+
+async def test_unsupervised_does_not_pin_profile() -> None:
+    servers = (await _body(_request(supervised=False)))["mcpServers"]
+    for entry in servers.values():
+        assert "KIROCREW_PROFILE" not in (entry.get("env") or {})
+
+
+async def test_unreadable_profile_omits_pin_without_failing(monkeypatch) -> None:
+    """A context that cannot compose must not fail the whole spec — the pin is
+    simply omitted (proxy falls back to its own resolution)."""
+    import kiro_crew.dashboard.handlers_system as hs
+
+    def _boom():
+        raise RuntimeError("no context")
+
+    monkeypatch.setattr(hs, "current_context", _boom)
+    servers = (await _body(_request(supervised=True)))["mcpServers"]
+    assert set(servers) == {"kirocrew-core", "kirocrew-cron"}
+    for entry in servers.values():
+        assert "KIROCREW_PROFILE" not in (entry.get("env") or {})
+        # HOME pin still applied — the profile failure is isolated.
+        assert entry["env"]["KIROCREW_HOME"] == str(config_dir())
+
+
 async def test_opt_in_and_gated_servers_are_absent() -> None:
     servers = (await _body(_request(supervised=True)))["mcpServers"]
     # Opt-in sets are never auto-emitted; computer is gated off in a test process
