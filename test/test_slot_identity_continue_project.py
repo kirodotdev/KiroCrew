@@ -8,18 +8,19 @@ resolves both objects to the same ``dashboard:<name>`` session. Everything the
 handler does after the await reads the STALE object, so the authorization taken
 against it lands its effect on the REPLACEMENT's session.
 
-#11191 gave the check to reload and the five switch handlers. Two siblings with
-the same shape did not get it:
+Both handlers below have exactly that shape -- resolve the slot by name, await
+the lock, then act on it -- so both need the re-check immediately after the
+await, before any read of ``slot`` that feeds an authorization:
 
 * ``api_chat_slot_continue`` takes ``slot._lock`` and then DISPATCHES a turn --
   ``_start_next_queued_turn`` runs it under ``effective_session_key``, so the
   stale request's authorization starts an agent turn, running tools and writing
-  to the repo, on the replacement's session. Its own docstring already says this
+  to the repo, on the replacement's session. Its own docstring states that this
   path "is not a read".
 * ``api_chat_slot_project`` takes ``slot._lock`` and then arms
   ``slot._pending_reset_history_key`` -- a DEFERRED session reset carrying that
   same shared key -- and records a ``chat_slot_project`` **allowed** SEL row
-  naming ``slot=<name>``, which is now the replacement.
+  naming ``slot=<name>``, which resolves to the replacement.
 
 Each test parks the request on the lock-acquisition await, swaps in a same-named
 replacement, releases, and asserts the handler refuses without reaching its
