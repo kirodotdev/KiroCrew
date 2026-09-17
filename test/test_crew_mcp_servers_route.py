@@ -94,6 +94,31 @@ async def test_non_supervisor_caller_key_is_not_pinned() -> None:
         assert "KIROCREW_SESSION_KEY" not in (entry.get("env") or {})
 
 
+async def test_bundle_fallback_serves_interpreter_dash_m_kiro_crew(monkeypatch) -> None:
+    """R1 (`python -m kiro_crew` parity): when no standalone ``kirocrew`` console
+    script resolves — the packaged-bundle / systemd-user case where
+    ``_resolve_kirocrew_bin`` returns the bare ``"kirocrew"`` sentinel —
+    ``_kirocrew_mcp_invocation`` falls back to ``sys.executable -m kiro_crew``.
+    The served spec must therefore carry the running interpreter as ``command``
+    and ``["-m", "kiro_crew", <sub>]`` as ``args``, since ``python -m kiro_crew``
+    dispatches the same CLI as the console script."""
+    import sys
+
+    from kiro_crew import agent
+
+    # The resolver memoizes into ``_KIROCREW_BIN``; patch the function itself so
+    # the cache is bypassed and the unresolved-sentinel branch is taken.
+    monkeypatch.setattr(agent, "_resolve_kirocrew_bin", lambda: "kirocrew")
+
+    servers = (await _body(_request(supervised=True)))["mcpServers"]
+    assert set(servers) == {"kirocrew-core", "kirocrew-cron"}
+    for name, entry in servers.items():
+        sub = name.replace("kirocrew-", "mcp-")
+        assert entry["command"] == sys.executable, name
+        assert entry["args"][:2] == ["-m", "kiro_crew"], (name, entry["args"])
+        assert entry["args"][2] == sub, (name, entry["args"])
+
+
 async def test_opt_in_and_gated_servers_are_absent() -> None:
     servers = (await _body(_request(supervised=True)))["mcpServers"]
     # Opt-in sets are never auto-emitted; computer is gated off in a test process
