@@ -48,7 +48,7 @@ def _loop(**over: Any) -> NudgeLoop:
 
 
 async def _run_armed_cycle(svc: AutoNudgeService, loop_id: str) -> None:
-    task = svc._timers[loop_id]  # noqa: SLF001
+    task = svc._timers[loop_id]
     await asyncio.gather(task, return_exceptions=True)
 
 
@@ -67,7 +67,7 @@ async def test_kiro_cli_owner_enqueues_instead_of_injecting(svc_base_dir) -> Non
 
     svc = AutoNudgeService(base_dir=svc_base_dir, on_fire=on_fire, on_kiro_cli_wake=on_wake)
     loop = _loop()
-    svc._loops[loop.id] = loop  # noqa: SLF001
+    svc._loops[loop.id] = loop
 
     _armed, error, status = await svc.fire_now(loop.id)
     assert (error, status) == ("", 200)
@@ -96,7 +96,7 @@ async def test_non_kiro_cli_owner_still_injects(svc_base_dir) -> None:
 
     svc = AutoNudgeService(base_dir=svc_base_dir, on_fire=on_fire, on_kiro_cli_wake=on_wake)
     loop = _loop(id="lp-2", slot_key="chat-1-111")
-    svc._loops[loop.id] = loop  # noqa: SLF001
+    svc._loops[loop.id] = loop
 
     await svc.fire_now(loop.id)
     await _run_armed_cycle(svc, loop.id)
@@ -118,7 +118,7 @@ async def test_supervised_owner_falls_back_to_inject_when_hook_unset(svc_base_di
 
     svc = AutoNudgeService(base_dir=svc_base_dir, on_fire=on_fire)  # no on_kiro_cli_wake
     loop = _loop(id="lp-3", slot_key="kiro-cli:sess-9")
-    svc._loops[loop.id] = loop  # noqa: SLF001
+    svc._loops[loop.id] = loop
 
     await svc.fire_now(loop.id)
     await _run_armed_cycle(svc, loop.id)

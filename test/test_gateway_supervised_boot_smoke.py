@@ -99,7 +99,7 @@ def _read_ready(proc: subprocess.Popen[bytes]) -> tuple[dict, float, str]:
     deadline. Raises AssertionError with the stderr tail on early exit/timeout.
     """
     start = time.monotonic()
-    q: "queue.Queue[bytes | None]" = queue.Queue()
+    q: queue.Queue[bytes | None] = queue.Queue()
     err: list[bytes] = []
 
     def _pump(stream, sink):

@@ -209,9 +209,9 @@ async def test_expired_wakes_dropped_on_load(tmp_path) -> None:
     # backdated queue: mutate and force a rewrite via another enqueue+ack.
     w.created_at = time.time() - (DEFAULT_MAX_AGE_SECS + 100)
     # Directly rewrite the file to reflect the backdated wake.
-    wq._queues[OWNER] = [w]  # noqa: SLF001 - test drives persistence directly
-    async with wq._lock:  # noqa: SLF001
-        wq._rewrite_locked(OWNER)  # noqa: SLF001
+    wq._queues[OWNER] = [w]  # test drives persistence directly
+    async with wq._lock:
+        wq._rewrite_locked(OWNER)
     wq2 = WakeQueue(tmp_path, max_age_secs=3600)
     wq2.load()
     assert await wq2.peek(OWNER) == []
@@ -243,7 +243,7 @@ def test_wake_from_dict_ignores_unknown_keys() -> None:
 async def test_empty_queue_file_is_removed_after_last_ack(tmp_path) -> None:
     wq = WakeQueue(tmp_path)
     w = await wq.enqueue(OWNER, "monitor", "loop1", "m")
-    path = wq._path_for(OWNER)  # noqa: SLF001
+    path = wq._path_for(OWNER)
     assert path.exists()
     await wq.ack(OWNER, w.id, "submitted")
     assert not path.exists()

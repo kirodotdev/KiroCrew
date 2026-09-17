@@ -16,10 +16,10 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Coroutine, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 from aiohttp import web
 
@@ -91,6 +91,7 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
+    from kiro_crew.crew_wakes import WakeQueue
     from kiro_crew.dashboard._types import (  # noqa: F401
         ContextBuilder,
         ConversationLog,
@@ -102,7 +103,6 @@ if TYPE_CHECKING:
         TaskRunner,
     )
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
-    from kiro_crew.crew_wakes import WakeQueue  # noqa: F401
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
     from kiro_crew.power import SleepInhibitor  # noqa: F401
     from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
@@ -3899,7 +3899,7 @@ class DashboardState:
         # supervising CLI long-polls it to run the turn in its OWN session. Lazy
         # so a loop-less or standalone caller pays nothing: constructed on first
         # access via ``wake_queue`` below, rooted at ``<home>/crew-wakes``.
-        self._wakes: "WakeQueue | None" = None
+        self._wakes: WakeQueue | None = None
         self.memory_startup_task: "asyncio.Task[None] | None" = None
         # Wired by server.py after the gateway-owned prerequisite service is
         # constructed. The central chat runner reads this latch so every turn
@@ -4287,7 +4287,7 @@ class DashboardState:
                 self, key
             )
 
-    def wake_queue(self) -> "WakeQueue":
+    def wake_queue(self) -> WakeQueue:
         """The Plane C wake queue, constructed and loaded on first access.
 
         Lazy so a process that never has a supervised owner (standalone

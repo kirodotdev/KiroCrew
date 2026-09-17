@@ -90,7 +90,7 @@ async def api_crew_wakes_ack(request: web.Request) -> web.Response:
     wake_id = request.match_info["wake_id"]
     try:
         body = await request.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - any parse failure on an untrusted body is a 400
         return web.json_response({"error": "invalid JSON"}, status=400)
     if not isinstance(body, dict):
         return web.json_response({"error": "body must be an object"}, status=400)

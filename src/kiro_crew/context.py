@@ -3420,7 +3420,7 @@ class ContextBuilder:
         *,
         private: bool,
         essentials: bool,
-        caps: "_ResolvedCaps",
+        caps: _ResolvedCaps,
         query_text: str,
     ) -> list[str]:
         """The memory block fragments ``build_session_context`` appends.
@@ -3482,7 +3482,7 @@ class ContextBuilder:
         memory: MemoryStore,
         *,
         private: bool,
-        caps: "_ResolvedCaps",
+        caps: _ResolvedCaps,
         query_text: str,
         project: str | None,
         memory_store: str | None,

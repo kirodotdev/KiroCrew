@@ -82,7 +82,7 @@ async def test_script_job_not_gated_on_shell(monkeypatch) -> None:
     monkeypatch.setattr(cron_handler, "_resolve_command_shell", lambda: None)
     monkeypatch.setattr(cron_handler, "resolve_script_path", lambda s: ("/tmp/ok.py", "run"))
     monkeypatch.setattr(cron_handler, "_vet_script_file", lambda p: None)
-    req, add = _shell_request(
+    req, _add = _shell_request(
         {"name": "poll", "script": "~/.kiro/crew/crons/x.py:run", "every": 3600}
     )
     resp = await api_crons_create(req)
@@ -114,7 +114,7 @@ async def test_kiro_cli_message_job_enqueues_and_skips_callback(tmp_path) -> Non
     svc = _svc_with_hooks(tmp_path, enqueued, on_job)
     job = CronJob(id="j1", name="poll", message="check", session_key="kiro-cli:sess-1")
 
-    await svc._execute(job)  # noqa: SLF001
+    await svc._execute(job)
 
     # Enqueued, not run in a gateway session.
     assert enqueued == ["j1"]
@@ -123,7 +123,7 @@ async def test_kiro_cli_message_job_enqueues_and_skips_callback(tmp_path) -> Non
     # Marked so _run_job_isolated's finally does not double-record.
     assert getattr(job, "cli_injected", False) is True
     # The authoritative record carries outcome='injected'.
-    records, total = await svc._history.get_job_history("j1")  # noqa: SLF001
+    records, total = await svc._history.get_job_history("j1")
     assert total == 1
     assert records[0]["outcome"] == "injected"
     assert records[0]["status"] == "success"
@@ -140,7 +140,7 @@ async def test_non_supervised_message_job_runs_callback(tmp_path) -> None:
     svc = _svc_with_hooks(tmp_path, enqueued, on_job)
     job = CronJob(id="j2", name="poll", message="check", session_key="cron:j2")
 
-    await svc._execute(job)  # noqa: SLF001
+    await svc._execute(job)
 
     assert enqueued == []
     assert called == ["j2"]
@@ -162,7 +162,7 @@ async def test_command_job_owned_by_cli_still_runs_in_gateway(tmp_path) -> None:
         id="j3", name="poll", message="", command="echo hi", session_key="kiro-cli:sess-1"
     )
 
-    await svc._execute(job)  # noqa: SLF001
+    await svc._execute(job)
 
     assert enqueued == []
     assert called == ["j3"]
@@ -181,7 +181,7 @@ async def test_inject_failure_falls_through_to_error(tmp_path) -> None:
     svc.set_kiro_cli_message_callback(_wake)
     job = CronJob(id="j4", name="poll", message="check", session_key="kiro-cli:sess-1")
 
-    await svc._execute(job)  # noqa: SLF001
+    await svc._execute(job)
 
     assert job.last_status == "error"
     assert getattr(job, "cli_injected", False) is False
@@ -241,17 +241,17 @@ async def test_wire_cron_hooks_after_dashboard_diverts_supervised_job(tmp_path) 
 
     # Boot order: cron first (no dashboard) ...
     GatewayOrchestrator._wire_cron_dashboard_hooks(_bare_orchestrator(svc, None))  # type: ignore[arg-type]
-    assert svc._should_inject_to_cli(  # noqa: SLF001
+    assert svc._should_inject_to_cli(
         CronJob(id="j", name="n", message="m", session_key="kiro-cli:s")
     ) is False
     # ... then the post-dashboard pass attaches the hooks.
     GatewayOrchestrator._wire_cron_dashboard_hooks(orch)  # type: ignore[arg-type]
-    assert svc._push_refresh is dashboard_state.push_refresh  # noqa: SLF001
+    assert svc._push_refresh is dashboard_state.push_refresh
 
     job = CronJob(id="j3", name="poll", message="check", session_key="kiro-cli:sess-3")
-    await svc._execute(job)  # noqa: SLF001
+    await svc._execute(job)
 
     assert enqueued == [("kiro-cli:sess-3", "cron", "j3", "check")]
     assert called == []
-    records, total = await svc._history.get_job_history("j3")  # noqa: SLF001
+    records, total = await svc._history.get_job_history("j3")
     assert total == 1 and records[0]["outcome"] == "injected"

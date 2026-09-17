@@ -5164,7 +5164,7 @@ class GatewayOrchestrator:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
                     try:
-                        client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
+                        client, _is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
                             agent_session_key, agent
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
@@ -5314,7 +5314,7 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
-                client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
+                client, _is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
                     session_key, cron_agent or None
                 )
                 _acquired = True

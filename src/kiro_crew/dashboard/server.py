@@ -1778,7 +1778,6 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_monitors_list,
         api_session_monitor_get,
     )
-
     from kiro_crew.dashboard.handlers.crew_wakes import (
         api_autonudge_get_by_id,
         api_crew_wakes_ack,

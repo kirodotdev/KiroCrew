@@ -90,7 +90,7 @@ class Wake:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Wake":
+    def from_dict(cls, d: dict[str, Any]) -> Wake:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -233,7 +233,7 @@ class WakeQueue:
         if wait > 0:
             try:
                 await asyncio.wait_for(event.wait(), timeout=wait)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         async with self._lock:
             self._sweep_owner_locked(owner)

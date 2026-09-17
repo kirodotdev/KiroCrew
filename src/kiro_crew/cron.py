@@ -4377,7 +4377,7 @@ class CronService:
         self._push_refresh = cb
 
     def set_kiro_cli_message_callback(
-        self, cb: "Callable[[CronJob], Awaitable[bool]] | None"
+        self, cb: Callable[[CronJob], Awaitable[bool]] | None
     ) -> None:
         """Wire the Plane C divert for supervised agent-message jobs.
 

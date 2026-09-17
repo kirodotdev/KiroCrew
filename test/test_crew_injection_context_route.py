@@ -43,9 +43,9 @@ SECRET = "phase5-injection-secret"
 
 
 def _now() -> str:
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _builder(tmp_path, *, prefs: str = "", lesson: str = "") -> ContextBuilder:
