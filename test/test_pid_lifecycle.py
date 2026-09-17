@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import signal
@@ -3650,9 +3651,10 @@ class TestTrackedAgentPids:
     """_tracked_agent_pids unions the PIDs both tracking files claim."""
 
     def test_no_files_yields_empty_set(self, pid_file: Path, session_pid_file: Path) -> None:
-        from kiro_crew.session_pid import _tracked_agent_pids
+        from kiro_crew.session_pid import _read_tracked_agent_pids, _tracked_agent_pids
 
         assert _tracked_agent_pids() == set()
+        assert _read_tracked_agent_pids() == (set(), True)
 
     def test_session_entry_collects_child_not_gateway_or_identity_field(
         self, pid_file: Path, session_pid_file: Path
@@ -3716,6 +3718,22 @@ class TestTrackedAgentPids:
         pid_file.write_text("31:32\n", encoding="utf-8")
         with patch.object(Path, "read_text", side_effect=OSError("boom")):
             assert _tracked_agent_pids() == set()
+
+    def test_unreadable_non_missing_file_marks_snapshot_incomplete(
+        self, pid_file: Path, session_pid_file: Path
+    ) -> None:
+        from kiro_crew.session_pid import _read_tracked_agent_pids
+
+        with patch.object(Path, "read_text", side_effect=OSError(errno.EACCES, "denied")):
+            assert _read_tracked_agent_pids() == (set(), False)
+
+    def test_malformed_entry_marks_snapshot_incomplete_but_keeps_valid_pids(
+        self, pid_file: Path, session_pid_file: Path
+    ) -> None:
+        from kiro_crew.session_pid import _read_tracked_agent_pids
+
+        session_pid_file.write_text("10:11\ntruncated:\n", encoding="utf-8")
+        assert _read_tracked_agent_pids() == ({11}, False)
 
 
 class TestIsUntrackedManagedAgentOrphan:

@@ -146,6 +146,10 @@ class CleanupDeps:
     kill_confirmed_and_writeback: PidWriteback
     find_orphan_mcp_candidates: Callable[[set[int]], list[int]]
     kill_orphan_mcps: Callable[[list[int]], int]
+    # Linux/systemd agent-scope reaper. Takes the live provider PID set and
+    # returns a summary object exposing ``.reclaimed`` (int). Typed loosely so
+    # this module need not import ``session_scope_reap`` at module load.
+    reap_agent_scopes: Callable[[set[int]], Any]
     build_child_map: Callable[[], dict[int, list[int]]]
     rss_mb_from_tree: Callable[[int, dict[int, list[int]]], int]
     get_session_rss_mb: Callable[[int], int]
@@ -308,6 +312,31 @@ class SessionCleanup:
             # This sweep treats failures as a silent best-effort
             # miss.  The watchdog must not promote the severity.
             pass
+
+    async def _reap_agent_scopes_hook(self) -> None:
+        # Reclaim abandoned agent cgroup scopes (Linux/systemd; a no-op
+        # elsewhere). The live provider/pool/in-flight PID set is gathered here
+        # so a scope containing any live tree is never touched; the reaper reads
+        # tracked PIDs from the session_pid files itself. Blocking subprocess
+        # work runs on the maintenance pool, exactly like the orphan-MCP sweep.
+        try:
+            active_pids, safe = self._active_pids()
+            if not safe:
+                return
+            summary = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.reap_agent_scopes,
+                active_pids,
+            )
+            reclaimed = int(getattr(summary, "reclaimed", 0) or 0)
+            if reclaimed:
+                self._deps.logger.info(
+                    "Periodic sweep: reclaimed %d abandoned agent scope(s)",
+                    reclaimed,
+                )
+        except Exception:
+            # Best-effort, like the orphan-MCP sweep: never promote severity.
+            self._deps.logger.debug("agent-scope reap hook failed", exc_info=True)
 
     async def _rss_threshold_check(self) -> None:
         if not self.state.rss_max_mb:

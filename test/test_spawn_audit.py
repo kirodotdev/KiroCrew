@@ -1496,6 +1496,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "session_pid.py::_our_orphan_pids",
         "session_pid.py::find_orphan_mcp_candidates",
         "session_pid.py::kill_orphan_mcps",
+        # The abandoned-agent-scope reaper's two systemctl calls are gateway
+        # maintenance against this install's own units, not agent work. The binary
+        # comes only from platform_compat.trusted_system_bin("systemctl")'s fixed
+        # system directories; a miss returns without spawning, so PATH and agent
+        # input cannot choose it. Argv is fixed `--user show` / `--user stop`
+        # apart from a unit name enumerated from this install's own per-instance
+        # `kirocrew-agents-<token>.slice` cgroup tree. The unit is one separate
+        # list-argv element, shell is never enabled, and no cwd is passed.
+        "session_scope_reap.py::_scope_active_enter_us",
+        "session_scope_reap.py::_systemctl_stop",
         "slack/gateway.py::_auto_apply_update",
         # Wheel/cli.sh auto-update: runs the signed installer command
         # (composed locally from a validated channel name and https-pinned

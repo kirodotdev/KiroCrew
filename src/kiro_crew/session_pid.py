@@ -9,6 +9,7 @@ See ``session.py`` module docstring for the full Process Sweep Architecture.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import signal
@@ -232,6 +233,14 @@ def _rewrite_pid_file(path: Path, content: str) -> bool:
 # runtimes are reclaimed by their own tracked-PID sweep, never by the
 # marker-based work sweep (see _is_sweepable_orphan_work).
 _MANAGED_AGENT_MARKERS: tuple[str, ...] = ("kiro-cli", "claude")
+
+# Exact argv0 basenames that may authorize an abandoned-scope reclaim. Unlike
+# _MANAGED_AGENT_MARKERS, this set is identity rather than substring matching:
+# it is deliberately private to _is_agent_runtime_anchor so the tracked-PID and
+# orphan-work sweeps retain their existing broader marker semantics.
+_MANAGED_AGENT_RUNTIME_BASENAMES: frozenset[bytes] = frozenset(
+    {b"claude", b"claude-agent-acp", b"kiro-cli", b"kiro-cli-chat"}
+)
 
 
 def _is_managed_agent_process(pid: int) -> bool:
@@ -2431,6 +2440,24 @@ def _is_marked_mcp_launcher(cmdline: bytes) -> bool:
     return any(marker in normalized for marker in _MARKED_MCP_LAUNCHER_MARKERS)
 
 
+def _read_env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool | None:
+    """Tri-state read of *pid*'s ``KIROCREW_SPAWNED`` environment marker.
+
+    ``None`` distinguishes an unreadable environment from a readable one that
+    lacks the marker. An explicit *proc_root* permits fixture-owned process
+    tables on every host; production reads remain Linux-only.
+    """
+    if sys.platform != "linux" and proc_root is None:
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
+    try:
+        environ = (root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return None
+    return needle in environ.split(b"\x00")
+
+
 def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 
@@ -2441,15 +2468,7 @@ def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     identity. macOS/Windows keep the pre-existing cmdline-marker-only behavior.
     *proc_root* is a test seam for fixture-owned process tables.
     """
-    if sys.platform != "linux":
-        return False
-    root = proc_root if proc_root is not None else Path("/proc")
-    needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
-    try:
-        environ = (root / str(pid) / "environ").read_bytes()
-    except OSError:
-        return False
-    return needle in environ.split(b"\x00")
+    return _read_env_has_kirocrew_marker(pid, proc_root) is True
 
 
 def _is_sweepable_orphan_mcp(pid: int, cmdline: bytes) -> bool:
@@ -2654,6 +2673,30 @@ def _work_orphan_basename(cmdline: bytes) -> bytes:
     return args[0].rsplit(b"/", 1)[-1]
 
 
+def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bool:
+    """True when *cmdline* positively identifies an agent-runtime tree member.
+
+    This is the scope-reaper's authorization anchor, deliberately separate from
+    marker/descent ownership. It recognizes the generated sandbox launcher and
+    fingerprinted MCP workers through :func:`_is_orphan_mcp`, direct managed
+    runtimes (``kiro-cli`` / ``kiro-cli-chat`` / ``claude-agent-acp`` /
+    ``claude``) by exact argv0 basename, and the existing fingerprint-less MCP
+    launcher shapes only when that member itself carries the Kiro Crew spawn
+    marker. Peer gateway/CLI entrypoints are excluded.
+    """
+    if not cmdline:
+        return False
+    normalized = cmdline.replace(b"\x00", b" ")
+    if any(marker in normalized for marker in _GATEWAY_MARKERS):
+        return False
+    if _is_orphan_mcp(cmdline):
+        return True
+    basename = _work_orphan_basename(cmdline)
+    if basename in _MANAGED_AGENT_RUNTIME_BASENAMES:
+        return True
+    return has_kirocrew_marker and _is_marked_mcp_launcher(cmdline)
+
+
 def _is_sweepable_orphan_work(pid: int, cmdline: bytes, age_seconds: float) -> bool:
     """Third positive-identity path: agent-spawned TEST-RUNNER process
     (pytest coordinator or pytest-xdist/execnet worker) that outlived its
@@ -2733,8 +2776,8 @@ _REAPABLE_PID_FIELD: tuple[tuple[str, int], ...] = (
 )
 
 
-def _tracked_agent_pids() -> set[int]:
-    """PIDs a reaper can terminate, per both tracking files.
+def _read_tracked_agent_pids() -> tuple[set[int], bool]:
+    """Return the tracked PID snapshot and whether it is complete.
 
     Both files are read because a runtime absent from BOTH is exactly what
     :func:`_is_untracked_managed_agent_orphan` reports, and each reaper keys off
@@ -2743,32 +2786,46 @@ def _tracked_agent_pids() -> set[int]:
     session entry's third field is a start-time identity, numeric on Linux, and
     is never read as a PID.
 
-    Deliberately read WITHOUT either file lock. Readers cannot tear: rewrites
+    Reads remain lock-free. Readers cannot tear: rewrites
     go through :func:`_rewrite_pid_file` (temp file + rename, so a reader sees
     either the whole old or the whole new content) and tracking appends are
-    single short lines. Locking here would put a lock acquisition inside the
-    sweep's per-scan path for a purely diagnostic read. Any read failure yields
-    the entries found so far — the detector is report-only, so the worst
-    outcome is one spurious or one missing log line, never a kill.
+    single short lines. ``complete`` is false whenever a potential PID could
+    have been dropped; a missing file is a complete empty contribution.
     """
     tracked: set[int] = set()
+    complete = True
     paths = (_session_pid_file_path(), _pid_file_path())
     for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
         try:
             raw = path.read_text(encoding="utf-8")
-        except OSError:
-            continue  # absent or unreadable — nothing this file can claim
+        except OSError as exc:
+            if exc.errno != errno.ENOENT:
+                complete = False
+            continue
         for line in raw.split():
             fields = line.split(":")
             index = 0 if len(fields) == 1 else reapable_index
             if index >= len(fields):
-                continue  # truncated entry — no reapable field to read
+                complete = False
+                continue
             try:
                 value = int(fields[index])
             except ValueError:
-                continue  # malformed or partially-appended line
+                complete = False
+                continue
             if value > 0:
                 tracked.add(value)
+    return tracked, complete
+
+
+def _tracked_agent_pids() -> set[int]:
+    """PIDs a reaper can terminate, preserving report-only fail-open behavior.
+
+    Diagnostic callers intentionally accept a partial set. Any caller that can
+    authorize a kill must use :func:`_read_tracked_agent_pids` and require its
+    completeness flag.
+    """
+    tracked, _complete = _read_tracked_agent_pids()
     return tracked
 
 
@@ -3247,7 +3304,7 @@ def _sel_orphan_kill(pid: int, pgid: int, cmdline: bytes, method: str) -> None:
         logger.debug("SEL orphan-kill audit failed", exc_info=True)
 
 
-def _pid_cmdline(pid: int) -> bytes:
+def _pid_cmdline(pid: int, proc_root: Path | None = None) -> bytes:
     """Best-effort argv for *pid* on Linux; ``b""`` when unreadable or off-Linux.
 
     Empty is inconclusive, never "clean": every caller treats it as fail-closed
@@ -3256,12 +3313,14 @@ def _pid_cmdline(pid: int) -> bytes:
     Off-Linux deliberately has NO ``ps`` branch. Every consumer of this argv
     feeds a decision that also requires :func:`_env_has_kirocrew_marker`, which
     is fail-closed off Linux, so a subprocess here would only ever supply
-    evidence for a verdict that is already "refuse".
+    evidence for a verdict that is already "refuse". An explicit *proc_root*
+    permits fixture-owned process tables on every host.
     """
-    if sys.platform != "linux":
+    if sys.platform != "linux" and proc_root is None:
         return b""
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes()
+        return (root / str(pid) / "cmdline").read_bytes()
     except OSError:
         return b""
 

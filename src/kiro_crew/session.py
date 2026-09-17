@@ -209,6 +209,7 @@ from kiro_crew.session_pid import (
     kill_orphan_mcps,
 )
 from kiro_crew.session_pool import WarmPoolDeps, WarmSessionPool
+from kiro_crew.session_scope_reap import reap_abandoned_agent_scopes
 from kiro_crew.stats import Stats
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 
@@ -1196,6 +1197,7 @@ class SessionManager:
             ),
             find_orphan_mcp_candidates=lambda active_pids: find_orphan_mcp_candidates(active_pids),
             kill_orphan_mcps=lambda candidates: kill_orphan_mcps(candidates),
+            reap_agent_scopes=lambda active_pids: reap_abandoned_agent_scopes(active_pids),
             build_child_map=lambda: _build_child_map(),
             rss_mb_from_tree=lambda pid, child_map: _rss_mb_from_tree(pid, child_map),
             get_session_rss_mb=lambda pid: get_session_rss_mb(pid),
@@ -1227,6 +1229,7 @@ class SessionManager:
                     [
                         CleanupHook("idle_expiry", self._expire_idle_hook),
                         CleanupHook("orphan_mcp", self._orphan_mcp_hook),
+                        CleanupHook("reap_agent_scopes", self._reap_agent_scopes_hook),
                         CleanupHook("rss_threshold", self._rss_threshold_check),
                         CleanupHook("stuck_turn", self._stuck_turn_check),
                         CleanupHook("bg_drain_reap", self._bg_drain_reap_hook),
@@ -2969,6 +2972,10 @@ class SessionManager:
     async def _orphan_mcp_hook(self) -> None:
         """Run the legacy orphan-MCP cleanup hook."""
         await self._cleanup_boundary()._orphan_mcp_hook()
+
+    async def _reap_agent_scopes_hook(self) -> None:
+        """Reclaim abandoned agent cgroup scopes during a cleanup tick."""
+        await self._cleanup_boundary()._reap_agent_scopes_hook()
 
     async def _rss_threshold_check(self) -> None:
         """Recycle idle sessions whose process trees exceed the RSS policy."""

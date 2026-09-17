@@ -669,10 +669,64 @@ send time.
   promoting the severity of errors the lifted inline blocks swallowed). The
   hooks are assembled through the `SessionManager` facade so existing
   monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
-  `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
+  `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
   sandbox-artifact, bytecode-cache, periodic tracked-PID, and untracked-MCP
   sweeps.
+- **Reaping abandoned agent scopes** (`session_scope_reap.py`,
+  Linux/systemd only): each agent session runs inside a transient
+  `systemd-run --user --scope` under a per-instance child of
+  `kirocrew-agents.slice` (`sandbox._agents_slice_name`). `--scope` GCs a
+  transient unit only after its process exits, so a hard gateway kill or restart
+  strands the whole tree: the leader dies, the `launcher`/`kiro-cli`/
+  `kiro-cli-chat` + MCP children reparent to the systemd user manager, and
+  nothing reaps the scope — the idle/RSS watchdog iterates only
+  `_sessions`, the PID sweeps know only tracked roots, and
+  `session_pid._is_untracked_managed_agent_orphan` is report-only. The reaper
+  reconciles the cgroup tree (the only authority on what this instance leaked)
+  against the live registry. It runs on every cleanup tick via the
+  `reap_agent_scopes` hook — never on the gateway boot path
+  (`AUTOSDE.yaml` `no-new-work-on-gateway-boot-path`: an orphan sweep whose
+  cost scales with leaked state must not delay `KIROCREW_READY`), so the first
+  tick after a restart is what picks up a previous gateway's strays; the hook
+  gathers the live provider/pool/in-flight
+  PID set (so a scope containing any live tree is never touched) and the reaper
+  requires a complete tracked-PID snapshot from the `session_pid` files. An
+  unreadable or malformed snapshot aborts that tick before any scope is scanned.
+  A scope is reclaimed
+  only when ALL hold: (i) no member PID is tracked or a live provider; (ii-a)
+  AT LEAST ONE member has positive agent-runtime argv identity — the generated
+  launcher, an exact argv0 basename of `kiro-cli`, `kiro-cli-chat`,
+  `claude-agent-acp`, or `claude`, or a marked MCP launcher — which is the
+  scope-wide stop authorization; (ii-b) EVERY member is this install's own — it
+  carries the `KIROCREW_SPAWNED` marker, or its `ppid` chain reaches a
+  marker-bearing member without leaving the scope's member set (ownership is by
+  tree: env-clearing grandchildren such as `chrome-headless` renderers under a
+  playwright `node` daemon carry no marker, and that leaked daemon tree is the
+  multi-GB survivor users report); an unreadable `environ` fails closed to "not
+  reclaimable"; (iii) the group leader is dead OR the
+  scope's `ActiveEnterTimestampMonotonic` predates this gateway's boot stamp;
+  and (iv) the scope is older than the module's 600-second grace floor. Reclaim is
+  `systemctl --user stop <unit>`, then a fallback SIGTERM → 3s → SIGKILL that
+  re-reads `cgroup.procs`, opens a pidfd, requires a post-pin `cgroup.procs`
+  read to retain that PID in the same scope, re-derives tree ownership, and
+  signals through that pidfd. A recycled PID can therefore never redirect a
+  signal; a host without pidfd support leaves the member untouched. `pid <= 1` and the
+  gateway's own PID are never signalled, and each reclaimed scope emits a SEL
+  `agent_scope_reap` event. Only THIS install's per-instance child slice is
+  enumerated: a degraded instance token (no per-instance child) is treated as
+  "nothing to reap here" rather than reaching into a co-resident gateway's
+  scopes. A no-op off Linux or without cgroup v2 delegation
+  (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
+  a scope-wide stop, so an intentional detached server left after its agent
+  runtime exits is preserved. The accepted fail-closed residual is that a scope
+  whose runtime-anchor members have all died is never reclaimed, even if every
+  survivor still has the marker or is an attributable env-cleared descendant;
+  old skipped scopes are summarized at INFO by stable reason category, making
+  that residual operator-visible. Stale
+  `session_pid_<pid>.txt`/`.sig` files are separately pruned by
+  `_prune_stale_session_pid_files` (below); the reaper adds no second deletion
+  path.
 - **Stuck-turn reporting** (`_stuck_turn_check`, threshold
   `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
   consumer has stopped pulling events. Exists because the per-turn watchdog in
