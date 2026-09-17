@@ -34,12 +34,22 @@ def _isolate_config_dir(tmp_path, monkeypatch):
         monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
 
 
+class _StageManager:
+    def running_agents_for(self, _parent: str) -> list[dict]:
+        return []
+
+    async def has_pending_work_for_async(self, _parent: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
+        return False
+
+
 def _make_state():
     state = MagicMock()
     state.broadcast_ws = MagicMock()
     state.push_slots_update = MagicMock()
-    state.subagents = MagicMock()
-    state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents = _StageManager()
     return state
 
 
@@ -63,6 +73,9 @@ def _stage_texts(monkeypatch, texts):
     stage_box = {"n": 0}
 
     async def _mock_run_chat(state, slot, message, **kwargs):
+        callback = kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         idx = stage_box["n"]
         stage_box["n"] += 1
         if idx < len(texts):
@@ -195,13 +208,9 @@ async def test_completion_summary_truncates_the_excerpt_at_120_chars(monkeypatch
 async def test_completion_summary_falls_back_to_done_for_blank_result(monkeypatch, tmp_path):
     """Preservation: an empty result FILE yields '— done', not a crash.
 
-    The blank file is produced by the write half, not by a stage that emitted
-    nothing: a stage whose captured text is empty does not complete at all (it is
-    a failed round — see ``test/test_autopilot_empty_stage.py``), so driving this
-    through an empty turn would assert on a summary the loop never reaches. Same
-    technique as the deleted-file sibling below, for the same reason: the property
-    under test belongs to ``_completion_excerpts``, and it has to be reached by a
-    path that still exists.
+    The blank file is produced by the write half to isolate the excerpt fallback
+    from stage-turn behavior. A stage now advances when its turn returns without
+    raising, including when it captured no assistant text.
     """
     from kiro_crew.dashboard import chat_orchestrator
     from kiro_crew.dashboard.chat import _stage_loop

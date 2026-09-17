@@ -66,6 +66,47 @@ def _tokens(root: Path, check: str, *, strict: bool = False) -> set[str]:
     return {f.token for f in findings.facts + findings.advisories if f.check == check}
 
 
+class TestInvariantIds:
+    def test_autopilot_source_comment_ids_must_exist_in_the_invariant_table(
+        self, tree: Path
+    ) -> None:
+        _write(
+            tree,
+            "docs/system-specs/modules/autopilot.md",
+            "| ID | Rule |\n|---|---|\n| S1 | First |\n| S2 | Second |\n",
+        )
+        _write(
+            tree,
+            "src/kiro_crew/worker.py",
+            "# S1: valid citation\n"
+            "def run():\n"
+            '    """Valid citation (S2)."""\n'
+            "    return 'S3 service'  # S3 is a service, not an invariant citation\n"
+            "# noqa: S608\n"
+            "# S9: missing invariant\n",
+        )
+
+        assert gate.run(tree).unknown_autopilot_invariants == ["src/kiro_crew/worker.py:6 -> S9"]
+
+    def test_harness_source_comment_ids_must_exist_in_the_invariant_table(self, tree: Path) -> None:
+        _write(
+            tree,
+            "docs/system-specs/modules/harness-parity.md",
+            "| Id | Rule |\n|---|---|\n| H4 | First |\n| H13 | Second |\n",
+        )
+        _write(
+            tree,
+            "src/kiro_crew/harness.py",
+            "# H4: valid citation\n"
+            "def run():\n"
+            '    """Valid citation (H13)."""\n'
+            "    return 'H99 service'  # H99 is data, not an invariant citation\n"
+            "# H99: missing invariant\n",
+        )
+
+        assert gate.run(tree).unknown_harness_invariants == ["src/kiro_crew/harness.py:5 -> H99"]
+
+
 class TestPathExists:
     """A repo-anchored path resolves, or the doc is wrong."""
 

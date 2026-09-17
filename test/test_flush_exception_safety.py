@@ -233,6 +233,8 @@ class TestSeam3StageLoopFinally:
         state.push_slots_update = MagicMock()
         state.subagents = MagicMock()
         state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+        state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
 
         slot = _ChatSlot("stage-flush-guard", mode="orchestrator")
         slot._titled = True
@@ -246,6 +248,9 @@ class TestSeam3StageLoopFinally:
         # The seam under test is the `finally`, which this reaches by letting the
         # plan complete.
         async def _one_stage(s, sl, msg, **kw):
+            callback = kw.get("_on_consumed")
+            if callable(callback):
+                callback(True)
             sl.append("assistant", "stage output", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _one_stage)

@@ -235,6 +235,52 @@ class TestFollowUpDelivery:
         assert len(announced) == 1 and "suppressed" in announced[0].error
 
     @pytest.mark.asyncio
+    async def test_boundary_cancel_drops_completed_owners_queued_followup(
+        self, monkeypatch
+    ) -> None:
+        """A completed owner's queued continuation cannot outlive its stage."""
+        mgr = _manager()
+        _fast(mgr, monkeypatch)
+        parent, owner = "dash:stage", "owner-a"
+        info = SubagentInfo(
+            id="r7-boundary",
+            task="completed stage work",
+            done=True,
+            parent_session_key=parent,
+            _stage_boundary_owner=owner,
+        )
+        mgr._agents[info.id] = info
+        mgr._tasks[info.id] = MagicMock()
+        info.pending_followups = ["continue after cancellation"]
+        continues: list = []
+        _patch_continue(
+            monkeypatch,
+            mgr,
+            lambda cid, task, **kw: (
+                continues.append((cid, task, kw)),
+                SubagentInfo(id="child", task=task),
+            )[1],
+        )
+
+        async def _settle_boundary(*_args) -> int:
+            return 0
+
+        monkeypatch.setattr(mgr, "_settle_boundary_queue", _settle_boundary)
+        mgr._arm_followup_watcher(info)
+        watcher = mgr._followup_watchers[info.id]
+        mgr._agents.pop(info.id)
+
+        assert await mgr.cancel_for_boundary(parent, owner) == (0, 0)
+        mgr._tasks.pop(info.id, None)
+        await asyncio.gather(watcher, return_exceptions=True)
+        await asyncio.sleep(0)
+
+        assert info._stage_boundary_cancelled is True
+        assert info.pending_followups == []
+        assert continues == []
+        assert info.id not in mgr._followup_watchers
+
+    @pytest.mark.asyncio
     async def test_dispatch_failure_announces_the_typed_error(self, monkeypatch) -> None:
         """conversation_gone at dispatch time reaches the parent as a real
         completion event carrying the typed failure, not just a SEL row."""
@@ -340,9 +386,9 @@ class TestFollowUpDelivery:
         assert ok
         info.done = True  # run completes; watcher proceeds to the busy dispatch
         await asyncio.sleep(0.1)  # watcher enters the busy-retry sleep
-        assert info.pending_followups == ["important correction"], (
-            "the queue must not be drained before the outcome settles"
-        )
+        assert info.pending_followups == [
+            "important correction"
+        ], "the queue must not be drained before the outcome settles"
         await mgr.cancel_all()
         # The shutdown sweep announced the still-queued message.
         assert len(announced) == 1

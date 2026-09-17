@@ -344,12 +344,16 @@ class _FairnessMixin(ManagerComponent):
         if not view.any_slot:
             return None
         for idx, params in enumerate(queue):
-            if params.get("_resume_id"):
+            if params.get("_resume_id") and not self._manager._boundary_cancellation_pending(
+                params
+            ):
                 return idx
         roots_ok = view.root_slot
 
         def eligible(params: Mapping[str, Any]) -> bool:
-            return roots_ok or self.entry_is_child(params)
+            return not self._manager._boundary_cancellation_pending(params) and (
+                roots_ok or self.entry_is_child(params)
+            )
 
         def lane_of(params: Mapping[str, Any]) -> str:
             return self.lane_of_entry(params, lanes)

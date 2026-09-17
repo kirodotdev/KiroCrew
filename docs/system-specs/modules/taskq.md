@@ -467,8 +467,14 @@ _stop_before_claim=True)` returns a `ClaimPoint` once every gate passed AND
 the slot is reserved -- running count and stagger token taken synchronously,
 so a concurrent admission during the await sees the cap spent;
 `claim_and_start` awaits `store.run(taskq_claim)` and re-enters with
-`_claimed=`, which consumes the reservation instead of re-checking capacity,
-and every non-start outcome releases it), the same split serves the ACCEPT
+`_claimed=`, which consumes the reservation instead of re-checking capacity.
+A pre-claim refusal releases it. Once the row is `admitted`, an unavailable
+boundary-generation check moves the claim into the process-local
+`_retained_claims` map with its reservation still spent; one retry timer opens a
+later pump settlement pass, and that pass retries one retained generation before
+ordinary refill. The map is bounded by already-reserved capacity. A successful
+retry registers exactly once and consumes the reservation; a durable refusal
+releases it). The same split serves the ACCEPT
 path -- `spawn_async` awaits the window decision (`taskq_should_window_async`)
 and the claim on the writer thread and posts a pressure defer
 (`taskq_defer_posted`), so the sync re-entry with `_store_accepted` performs

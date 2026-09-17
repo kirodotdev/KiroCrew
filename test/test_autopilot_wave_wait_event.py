@@ -61,6 +61,12 @@ class _Subagents:
         self.scans += 1
         return list(self.pending)
 
+    async def has_pending_work_for_async(self, _parent_key: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent_key: str, _owner: str = "") -> bool:
+        return False
+
     def completion_event(self, parent_key: str) -> asyncio.Event:
         self.events_handed_out.append(parent_key)
         if self._on_wait is not None:
@@ -99,6 +105,9 @@ def _make_slot(*, stage_timeout=1800, titles=("Only",)):
 
 def _stage_turn(monkeypatch, *, on_turn=None):
     async def _mock_run_chat(state, slot, message, **kwargs):
+        callback = kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         slot.append("assistant", "stage output", "msg msg-a")
         if on_turn is not None:
             on_turn()
@@ -180,7 +189,10 @@ class TestTheWaveWaitIsEventDriven:
 
         await asyncio.wait_for(_stage_loop(_make_state(subagents), slot, auto_run=True), 5)
 
-        assert subagents.scans <= 4, f"the wave was scanned {subagents.scans} times"
+        assert subagents.scans <= 4, (
+            f"the wave was scanned {subagents.scans} times; the event-driven wait "
+            "must not add a boundary-settlement rescan"
+        )
 
     @pytest.mark.asyncio
     async def test_the_waiter_registration_is_released(self, monkeypatch):

@@ -158,6 +158,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    stage_boundary_for,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
@@ -347,6 +348,7 @@ from kiro_crew.subagent import (
     ToolApprovalCallback,
     _injection_notice_outcome,
     resolve_max_subagents,
+    stage_boundary_owner_for_run,
 )
 from kiro_crew.subagent_completion_meta import (
     OUTCOME_FAILED,
@@ -8500,12 +8502,16 @@ class GatewayOrchestrator:
         # Subagents panel permanently empty for cron/channel-born sessions.
         _event_slot = subagent_event_slot
 
-        async def _broadcast_subagent_status(info: SubagentInfo, event: str) -> None:
+        async def _broadcast_subagent_status(
+            info: SubagentInfo,
+            event: str,
+            selected_slot_name: str = "",
+        ) -> None:
             """Broadcast subagent status change via WS for per-slot tracking."""
             if not self.dashboard_state:
                 return
             try:
-                slot = _event_slot(info.parent_session_key)
+                slot = selected_slot_name or _event_slot(info.parent_session_key)
                 agents = (
                     self.subagent_mgr.running_agents_for(info.parent_session_key)
                     if self.subagent_mgr
@@ -8542,7 +8548,7 @@ class GatewayOrchestrator:
             if not self.dashboard_state:
                 return
             _max_retrigger = 3
-            if slot._recovery_retrigger_count >= _max_retrigger:
+            if stage_boundary_for(slot).recovery_retrigger_count >= _max_retrigger:
                 logger.warning(
                     "Recovery retrigger cap (%d) reached for %s, dropping %d queued failures",
                     _max_retrigger,
@@ -8551,7 +8557,7 @@ class GatewayOrchestrator:
                 )
                 slot._pending_subagent_failures.clear()
                 return
-            slot._recovery_retrigger_count += 1
+            stage_boundary_for(slot).recovery_retrigger_count += 1
             slot._recovery_chat_triggered = True
             # Bound here rather than at module scope: this reads ``_run_chat`` from
             # ``dashboard.chat``, a different module than the top-level
@@ -8692,9 +8698,35 @@ class GatewayOrchestrator:
             # terminal WS event, orchestration accounting or a done/ok counter
             # bump would invent an agent that never ran.
             _flush_only = getattr(info, "_digest_flush_only", False) is True
+            parent_key = info.parent_session_key
+            _parent_slot_name = dashboard_slot_key(parent_key)
+            _boundary_owner = stage_boundary_owner_for_run(info)
+
+            def _boundary_completion_cancelled() -> bool:
+                return getattr(info, "_stage_boundary_cancelled", False) is True
+
+            _injection_slot = None
+            if self.dashboard_state and _parent_slot_name:
+                from kiro_crew.dashboard.handlers.messaging import (
+                    _stage_boundary_slot_for_parent,
+                )
+
+                _injection_slot = _stage_boundary_slot_for_parent(
+                    self.dashboard_state,
+                    parent_key,
+                    boundary_owner=_boundary_owner,
+                )
+                if _injection_slot is None and not _boundary_owner:
+                    _injection_slot = self.dashboard_state.get_slot(_parent_slot_name)
+            _completion_key = getattr(_injection_slot, "key", "")
+            _injection_slot_name = (
+                _completion_key
+                if isinstance(_completion_key, str) and _completion_key
+                else _event_slot(parent_key)
+            )
 
             if not _flush_only:
-                await _broadcast_subagent_status(info, "done")
+                await _broadcast_subagent_status(info, "done", _injection_slot_name)
                 # Wake anything waiting on this parent's wave (the autopilot
                 # stage loop) BEFORE the injection below, which can take
                 # minutes: ``info.done`` is already True by here — the terminal
@@ -8717,20 +8749,15 @@ class GatewayOrchestrator:
             title = f"Subagent `{info.id}` {emoji}"
 
             # ── Orchestration guard: track failures (only in orchestrator mode) ──
-            parent_key = info.parent_session_key
             guard_msg = ""
             try:
-                _is_orchestrator = False
-                _slot = None
-                # Stage limits are a property of the tab the orchestrator runs
-                # in, not of where its conversation started.
-                _parent_slot_name = dashboard_slot_key(parent_key)
-                if self.dashboard_state and _parent_slot_name:
-                    _slot = self.dashboard_state.get_slot(_parent_slot_name)
-                    _is_orchestrator = (
-                        _slot is not None and getattr(_slot, "mode", "") == "orchestrator"
-                    )
-                if _slot is not None and _is_orchestrator:
+                # Stage limits are a property of the selected tab the
+                # orchestrator runs in, not of its canonical parent name.
+                _is_orchestrator = (
+                    _injection_slot is not None
+                    and getattr(_injection_slot, "mode", "") == "orchestrator"
+                )
+                if _injection_slot is not None and _is_orchestrator:
                     from kiro_crew.context_management import (
                         MAX_STAGE_ESCALATIONS,
                         MAX_STAGE_ROUNDS,
@@ -8747,12 +8774,13 @@ class GatewayOrchestrator:
                     # landing on a cancelled slot whose tracker is absent
                     # is bounded accounting noise (the stage loop itself
                     # stays latched and cannot advance).
-                    if not getattr(_slot, "_orch_tracker", None):
-                        _slot._orch_tracker = OrchestrationTracker()
-                    tracker = _slot._orch_tracker
+                    if not getattr(_injection_slot, "_orch_tracker", None):
+                        _injection_slot._orch_tracker = OrchestrationTracker()
+                    tracker = _injection_slot._orch_tracker
                     if tracker.stopped:
                         logger.info("Orchestration stopped, ignoring subagent result %s", info.id)
-                        return
+                        if not _boundary_completion_cancelled():
+                            return
                     task_key = info.task[:80]
                     if _flush_only:
                         # No task ran — nothing to record. Recording it as a
@@ -8860,8 +8888,6 @@ class GatewayOrchestrator:
                 requested_model=info.requested_model or info.model or "",
                 resolved_model=info.resolved_model or "",
             )
-
-            parent_key = info.parent_session_key
 
             if _flush_only:
                 # The synthetic record has no result of its own. Its title/body
@@ -9010,7 +9036,7 @@ class GatewayOrchestrator:
                                 "batch_finished",
                                 {
                                     "batch_id": _batch_id,
-                                    "slot": _event_slot(parent_key),
+                                    "slot": _injection_slot_name,
                                     "total": bp["total"],
                                     "ok": bp["ok"],
                                     "err": bp["err"],
@@ -9019,6 +9045,12 @@ class GatewayOrchestrator:
                             )
                     except Exception:
                         logger.debug("batch_finished broadcast failed", exc_info=True)
+            if _boundary_completion_cancelled():
+                logger.info(
+                    "Subagent %s completion discarded after stage authority revocation",
+                    info.id,
+                )
+                return
             if _batch_id:
                 if _flush_only and bp["total"] <= 1:
                     # Single-member wave: nothing is ever held, and falling
@@ -9227,15 +9259,13 @@ class GatewayOrchestrator:
             # Channel, no tab → channel thread + dashboard notification
             # Cron/no parent  → dashboard notification only
 
-            _slot_name = dashboard_slot_key(parent_key)
-            if _slot_name and self.dashboard_state:
+            _slot_name = _injection_slot_name
+            if _parent_slot_name and self.dashboard_state:
                 # Route the result through _run_chat for full streaming, tool
                 # call visibility, and proper lifecycle. A channel-born tab
                 # runs on the channel's own session, so the turn's mirror
                 # carries the reply back to the thread — the raw-injection path
                 # below is for parents with no tab to stream into.
-                _injection_slot = self.dashboard_state.get_slot(_slot_name)
-
                 # Redact LLM-generated output before any external surface
                 announce, _ = redact_exfiltration_urls(announce)
                 announce, _ = redact_credentials(announce)
@@ -9298,6 +9328,33 @@ class GatewayOrchestrator:
                     # is delivered. try/finally so a CancelledError can't leak it.
                     _injection_slot._subagent_deliveries_inflight += 1
                     try:
+                        if getattr(_injection_slot, "_in_stage_execution", False) is True:
+                            # The Python stage controller owns this boundary. It
+                            # waits for terminal reports, then drains completion
+                            # entries in order before capturing or advancing.
+                            # Launching here would race that capture; waiting on
+                            # slot.task can wait on the controller itself.
+                            _injection_slot.queue_append(
+                                announce,
+                                kind=SUBAGENT_COMPLETION_KIND,
+                                meta=stage_boundary_for(_injection_slot).tag_meta(
+                                    {SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                                    owner=stage_boundary_owner_for_run(info),
+                                ),
+                            )
+                            self._defer_queued_delivery(
+                                _injection_slot,
+                                announce,
+                                info,
+                                flush_only=_flush_only,
+                            )
+                            self.dashboard_state.push_slots_update()
+                            logger.info(
+                                "Subagent %s → queued for Autopilot stage in %s",
+                                info.id,
+                                _slot_name,
+                            )
+                            return
                         if _injection_slot_busy(_injection_slot):
                             # Slot is busy (or an injection is dispatched but
                             # not yet started) — wait for that task to finish,
@@ -9316,6 +9373,13 @@ class GatewayOrchestrator:
                                 except Exception:
                                     pass  # Task failed — slot is now idle
 
+                            if _boundary_completion_cancelled():
+                                logger.info(
+                                    "Subagent %s completion discarded after stage "
+                                    "authority revocation",
+                                    info.id,
+                                )
+                                return
                             # Re-check: another injection may have claimed the slot
                             # during the await above.
                             if _injection_slot_busy(_injection_slot):
@@ -9346,7 +9410,10 @@ class GatewayOrchestrator:
                                 _injection_slot.queue_append(
                                     announce,
                                     kind=SUBAGENT_COMPLETION_KIND,
-                                    meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                                    meta=stage_boundary_for(_injection_slot).tag_meta(
+                                        {SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                                        owner=stage_boundary_owner_for_run(info),
+                                    ),
                                 )
                                 # Queuing is not delivery. The announce promises
                                 # result paths the parent can read on demand, but
@@ -9559,6 +9626,13 @@ class GatewayOrchestrator:
                             )
                         else:
                             msg = announce
+                        if _boundary_completion_cancelled():
+                            logger.info(
+                                "Subagent %s completion discarded after stage "
+                                "authority revocation",
+                                info.id,
+                            )
+                            return
                         response = await asyncio.wait_for(
                             _inject_with_retry(client, msg, parent_key, _inject_label),
                             timeout=INJECTION_TIMEOUT,
@@ -10086,6 +10160,20 @@ class GatewayOrchestrator:
                 logger.warning("Failed to send orphan notification to Slack DM: %s", exc)
             return delivered
 
+        def _report_failure_boundary(parent: str, owner: str) -> object | None:
+            if self.dashboard_state is None:
+                return None
+            from kiro_crew.dashboard.handlers.messaging import (
+                _stage_boundary_slot_for_parent,
+            )
+
+            slot = _stage_boundary_slot_for_parent(
+                self.dashboard_state,
+                parent,
+                boundary_owner=owner,
+            )
+            return stage_boundary_for(slot) if slot is not None else None
+
         self.subagent_mgr = SubagentManager(
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,
@@ -10107,6 +10195,7 @@ class GatewayOrchestrator:
             # that yield is ``run()``'s memory barrier. Hold the pump until
             # ``_start_subagent_dispatch_after_memory_ready`` opens it.
             defer_queue_dispatch=True,
+            stage_boundary_for_scope=_report_failure_boundary,
         )
         # A parent that ends takes its children with it, on every backend. The
         # session lifecycle owns the boundary and drives both halves at each of its

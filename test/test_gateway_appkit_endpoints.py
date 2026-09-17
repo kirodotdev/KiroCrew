@@ -38,6 +38,18 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.handlers import api_mcp_server_detail
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
 
+
+class _StageManager:
+    def running_agents_for(self, _parent: str) -> list[dict]:
+        return []
+
+    async def has_pending_work_for_async(self, _parent: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -2803,8 +2815,7 @@ class TestNoteEndpoint:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
 
         slot = _ChatSlot("stage-slot", mode="orchestrator")
         slot._auto_run = False
@@ -2849,8 +2860,7 @@ class TestNoteEndpoint:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
 
         slot = _ChatSlot("stage-slot", mode="orchestrator")
         slot._auto_run = True

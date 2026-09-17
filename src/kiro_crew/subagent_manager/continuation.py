@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         logger,
         read_state,
         sel,
+        stage_boundary_owner_for_run,
         time,
         update_state,
         uuid,
@@ -364,6 +365,7 @@ class ContinuationCoordinator(ManagerComponent):
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int] | None" = None,
+        _stage_boundary_owner: str = "",
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id* (sync callers).
 
@@ -395,6 +397,7 @@ class ContinuationCoordinator(ManagerComponent):
             _preassigned_id,
             _memory_mode,
             _crew_log_asked,
+            _stage_boundary_owner=_stage_boundary_owner,
         )
         if not isinstance(prelude, dict):
             return prelude
@@ -412,6 +415,7 @@ class ContinuationCoordinator(ManagerComponent):
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int] | None" = None,
+        _stage_boundary_owner: str = "",
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
@@ -485,6 +489,7 @@ class ContinuationCoordinator(ManagerComponent):
             _crew_log_asked,
             _execution_context=execution,
             _captured_state=state,
+            _stage_boundary_owner=_stage_boundary_owner,
         )
         if not isinstance(prelude, dict):
             return prelude
@@ -505,6 +510,7 @@ class ContinuationCoordinator(ManagerComponent):
         *,
         _execution_context=None,
         _captured_state=...,
+        _stage_boundary_owner: str = "",
     ) -> "SubagentInfo | dict[str, Any] | None":
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
@@ -537,6 +543,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=(
                     f"conversation_busy: run {busy.id} is still settling a state "
                     "write on this conversation — retry shortly"
@@ -575,6 +582,7 @@ class ContinuationCoordinator(ManagerComponent):
                     task=_redact(task),
                     done=True,
                     parent_session_key=parent_session_key,
+                    _stage_boundary_owner=_stage_boundary_owner,
                     error=native_refusal,
                 )
             # Point the caller at the prior result if the run folder survives
@@ -591,6 +599,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=(
                     "conversation_gone: no resumable session remains for "
                     f"{conv_id} (expired, released, or files pruned)."
@@ -612,6 +621,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=f"memory_unavailable: {exc}",
             )
         # The old registry record can disappear after eviction or restart. A
@@ -637,6 +647,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=f"resume_failed: {exc}",
             )
         # Promote the run's retention through the single choke point:
@@ -666,6 +677,7 @@ class ContinuationCoordinator(ManagerComponent):
                 task=_redact(task),
                 done=True,
                 parent_session_key=parent_session_key,
+                _stage_boundary_owner=_stage_boundary_owner,
                 error=(
                     "conversation_busy: retention promotion is temporarily "
                     f"unavailable for {conv_id}; retry the continuation"
@@ -717,6 +729,7 @@ class ContinuationCoordinator(ManagerComponent):
             # follow-up reads the global store -- a split nothing reports.
             memory_store=memory_store,
             _memory_mode=_memory_mode,
+            _stage_boundary_owner=_stage_boundary_owner,
             app=app,
             **(
                 {"_execution_context": _execution_context.to_record()}
@@ -880,6 +893,8 @@ class ContinuationCoordinator(ManagerComponent):
         info = self._manager._agents.get(agent_id)
         if info is None:
             return False, "not_found"
+        if info._stage_boundary_cancelled:
+            return False, "not_running: owning stage was cancelled"
         if info.done:
             return False, "not_running: run finished — use spawn_continue"
         if self._manager._shutting_down:
@@ -920,9 +935,13 @@ class ContinuationCoordinator(ManagerComponent):
         run_info = info  # narrowed local: mypy loses the None-narrow in closure defaults
         task = asyncio.create_task(self._manager._deliver_followups(info))
         self._manager._followup_watchers[run_id] = task
+        self._manager._followup_watcher_parents[run_id] = info.parent_session_key
+        self._manager._followup_watcher_infos[run_id] = info
 
         def _done(t: "asyncio.Task", _id: str = run_id, _info: SubagentInfo = run_info) -> None:
             self._manager._followup_watchers.pop(_id, None)
+            self._manager._followup_watcher_parents.pop(_id, None)
+            self._manager._followup_watcher_infos.pop(_id, None)
             _info._followup_watcher = False
             if not t.cancelled() and t.exception() is not None:
                 logger.warning("follow_up watcher for %s failed", _id, exc_info=t.exception())
@@ -930,6 +949,7 @@ class ContinuationCoordinator(ManagerComponent):
             if (
                 not t.cancelled()
                 and _info.pending_followups
+                and not _info._stage_boundary_cancelled
                 and not self._manager._shutting_down
                 and _id in self._manager._agents
             ):
@@ -1010,6 +1030,14 @@ class ContinuationCoordinator(ManagerComponent):
         def _settle() -> None:
             info.pending_followups = info.pending_followups[len(messages) :]
 
+        if info._stage_boundary_cancelled:
+            logger.info(
+                "follow_up for %s suppressed — its stage boundary was cancelled",
+                info.id,
+            )
+            self._manager._audit_followup(info, "followup_suppressed")
+            _settle()
+            return
         if info.user_stopped:
             logger.info("follow_up for %s suppressed — the user stopped the run", info.id)
             self._manager._audit_followup(info, "followup_suppressed")
@@ -1029,6 +1057,10 @@ class ContinuationCoordinator(ManagerComponent):
         # Finalization may hold the conversation for a beat after the task is
         # popped (shielded report); retry a bounded number of times.
         for _attempt in range(self._manager._FOLLOWUP_BUSY_RETRIES):
+            if info._stage_boundary_cancelled:
+                self._manager._audit_followup(info, "followup_suppressed")
+                _settle()
+                return
             child = await self._manager.continue_conversation_async(
                 info.id,
                 task,
@@ -1041,6 +1073,7 @@ class ContinuationCoordinator(ManagerComponent):
                 # merged dispatch this is the turn that asked LAST; each individual
                 # ask is recorded at its own turn as `subagent/steered`.
                 _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+                _stage_boundary_owner=stage_boundary_owner_for_run(info),
             )
             err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
             if not err.startswith("conversation_busy"):
@@ -1097,6 +1130,7 @@ class ContinuationCoordinator(ManagerComponent):
             parent_session_key=info.parent_session_key,
             error=reason,
         )
+        synthetic._stage_boundary_owner = stage_boundary_owner_for_run(info)
         try:
             await self._manager._on_done(synthetic)
         except Exception:

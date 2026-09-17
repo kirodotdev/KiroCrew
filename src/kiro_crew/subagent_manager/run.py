@@ -654,17 +654,49 @@ class RunEventCoordinator(ManagerComponent):
         """
         return await self._manager._queued_depth_async(parent_session_key)
 
+    def _has_live_parent_run_task(self, parent_session_key: str) -> bool:
+        """Whether a parent-owned run can still register its terminal report.
+
+        ``_run_inner`` publishes ``info.done`` before ``_run_impl`` resumes its
+        ``finally`` and registers the report task. During that scheduling gap the
+        ordinary ``running`` view is empty, but the outer task is still live.
+        Keep the parent pending until that task is removed; by then the report is
+        registered in ``_report_owners`` and the delivery barrier owns the wait.
+        """
+        for info in self._manager._agents.values():
+            if info.parent_session_key != parent_session_key:
+                continue
+            task = self._manager._tasks.get(info.id)
+            if task is not None and not task.done():
+                return True
+        return False
+
+    def _has_live_parent_followup_watcher(self, parent_session_key: str) -> bool:
+        """Whether a live follow-up watcher still owns work for this parent."""
+        parents = getattr(self._manager, "_followup_watcher_parents", {})
+        watchers = getattr(self._manager, "_followup_watchers", {})
+        return any(
+            not task.done() and parents.get(run_id) == parent_session_key
+            for run_id, task in watchers.items()
+        )
+
     def has_pending_work_for_impl(self, parent_session_key: str) -> bool:
-        """True while *parent_session_key* has sub-agents RUNNING or QUEUED.
+        """True while a parent has queued, running, or finalizing sub-agents.
 
         The reset-deferral guards must consult this, not ``running`` alone —
         see :meth:`queued_count_for` for why. A parent session reset while a
         spawn is still queued strands that agent's completion on a
-        cold-started, context-free replacement session.
+        cold-started, context-free replacement session. A completed inner run
+        remains pending until its live outer task registers the terminal report,
+        and a follow-up watcher remains pending until it dispatches or settles.
         """
         if self._manager._queued_depth(parent_session_key) > 0:
             return True
-        return any(a.parent_session_key == parent_session_key for a in self._manager.running)
+        return (
+            self._has_live_parent_run_task(parent_session_key)
+            or self._has_live_parent_followup_watcher(parent_session_key)
+            or any(a.parent_session_key == parent_session_key for a in self._manager.running)
+        )
 
     async def has_pending_work_for_async_impl(self, parent_session_key: str) -> bool:
         """:meth:`has_pending_work_for_impl` for an event-loop caller.
@@ -674,7 +706,11 @@ class RunEventCoordinator(ManagerComponent):
         """
         if await self._manager._queued_depth_async(parent_session_key) > 0:
             return True
-        return any(a.parent_session_key == parent_session_key for a in self._manager.running)
+        return (
+            self._has_live_parent_run_task(parent_session_key)
+            or self._has_live_parent_followup_watcher(parent_session_key)
+            or any(a.parent_session_key == parent_session_key for a in self._manager.running)
+        )
 
     def _emit_queue_depth_impl(self, parent_session_key: str, batch_id: str = "") -> None:
         """Emit the current queued depth for *parent_session_key* as a

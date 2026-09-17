@@ -70,7 +70,9 @@ invariants and names what pins each one.
 - An invariant is *closed* by its test, not by this document. If a row
   disagrees with the named test, the test is right.
 - The ids are stable. Source docstrings and review findings cite them bare
-  (`H4`, `H6`), so the id is the lookup key.
+  (`H4`, `H6`), so the id is the lookup key. `scripts/docs_lint.py` validates
+  citation-shaped source comments (`# H6:` and `(H13)`) against this table, so
+  a bare ID cannot silently name a row that does not exist.
 
 ## Group A: Kiro is the default and the floor
 

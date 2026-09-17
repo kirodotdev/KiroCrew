@@ -42,6 +42,7 @@ class _GateMixin(ManagerComponent):
     if TYPE_CHECKING:
         # Sibling-mixin methods this module reaches through ``self``; typing only.
         CLAIM_UNAVAILABLE: str
+        CLAIM_RETAINED: str
 
         TASK_STORE_UNAVAILABLE_CODE: str
 
@@ -189,6 +190,7 @@ class _GateMixin(ManagerComponent):
         target_member: str | None = None,
         delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
+        _stage_boundary_owner: str = "",
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
@@ -525,6 +527,7 @@ class _GateMixin(ManagerComponent):
             "memory_store": memory_store,
             "_execution_context": execution.to_record(),
             "crew": crew,
+            "_stage_boundary_owner": _stage_boundary_owner,
             "_memory_mode": _memory_mode,
             # Same rule for the asking turn: `spawn_async` re-enters from this
             # dict (prepare -> write -> re-enter), so a follow-up whose asking
@@ -946,22 +949,29 @@ class _GateMixin(ManagerComponent):
                 # overshoot the cap or skip the stagger.
                 self._manager._running_count += 1
                 self._manager._last_spawn_ts = time.monotonic()
-                return ClaimPoint(agent_id)
+                return ClaimPoint(agent_id, parent_session_key, _stage_boundary_owner)
             taskq_generation, proceed, claim_reason = self._manager._admission.taskq_claim(agent_id)
-        if not proceed and claim_reason == self.CLAIM_UNAVAILABLE:
-            # The store could not take the row (busy / unavailable). Starting
-            # anyway would run work no lease tracks -- generation 0, invisible
-            # to reconcile, restartable by the next pump. The row stays
-            # ``queued`` on disk; the caller keeps a QUEUED handle and the
-            # pump retries after the admit wait.
-            logger.warning("taskq: claim of %s unavailable; left queued for the pump", agent_id)
+        if not proceed and claim_reason in (self.CLAIM_UNAVAILABLE, self.CLAIM_RETAINED):
+            # A pre-claim outage leaves the row QUEUED and needs an ordinary
+            # refill. A post-claim outage leaves it ADMITTED under this process;
+            # claim_and_start retains its generation and reservation, and its
+            # dedicated retry pass owns the wake.
+            retained = claim_reason == self.CLAIM_RETAINED
+            logger.warning(
+                "taskq: %s of %s unavailable; %s",
+                "post-claim settlement" if retained else "claim",
+                agent_id,
+                "retained admitted generation" if retained else "left queued for the pump",
+            )
             self._manager._emit_queue_depth(parent_session_key, batch_id)
-            try:
-                asyncio.get_event_loop().call_later(
-                    self._manager._admission.taskq_admit_wait_secs(), self._manager._drain_queue
-                )
-            except RuntimeError:
-                pass
+            if not retained:
+                try:
+                    asyncio.get_event_loop().call_later(
+                        self._manager._admission.taskq_admit_wait_secs(),
+                        self._manager._drain_queue,
+                    )
+                except RuntimeError:
+                    pass
             info = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
@@ -978,10 +988,9 @@ class _GateMixin(ManagerComponent):
                 include_project=include_project,
             )
             # Pinned HERE, on the pass that still knows which turn asked. The
-            # pump re-enters this method with ``_from_queue=True`` after the
-            # admit wait, where that turn cannot be read; the pin this leaves
-            # is what that pass carries forward, and ``remember_child_origin``
-            # refuses to move it.
+            # pump re-enters this method after the store answers, where that
+            # turn cannot be read; the pin this leaves is what that pass carries
+            # forward, and ``remember_child_origin`` refuses to move it.
             self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
             return info
         if not proceed:

@@ -5970,6 +5970,100 @@ class TestParentEndCancelsItsChildren:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_parent_end_cancels_owned_followup_without_recreating_session(self, cfg):
+        """A queued continuation cannot outlive the parent that accepted it."""
+        from kiro_crew.subagent import SubagentInfo
+        from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
+
+        parent = "dashboard:chat-9"
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create(parent)
+
+        watcher_started = asyncio.Event()
+        release_watcher = asyncio.Event()
+        dispatch = AsyncMock()
+
+        async def _dispatch_followup():
+            watcher_started.set()
+            await release_watcher.wait()
+            await dispatch()
+            await mgr.get_or_create(parent)
+
+        info = SubagentInfo(
+            id="child-with-followup",
+            task="original task",
+            agent="default",
+            parent_session_key=parent,
+        )
+        info.done = True
+        info._reported_to_parent = True
+        info.pending_followups = ["continue after the parent ends"]
+        info._followup_watcher = True
+        watcher = asyncio.create_task(_dispatch_followup())
+        cancel_reasons: list[str] = []
+        audited: list[tuple[str, str]] = []
+
+        class _Children:
+            def __init__(self):
+                self._agents = {info.id: info}
+                self._queue = []
+                self._teardown_cancelled_ids = set()
+                self._followup_watchers = {info.id: watcher}
+                self._followup_watcher_parents = {info.id: parent}
+                self._followup_watcher_infos = {info.id: info}
+
+            def _audit_followup(self, owned, outcome):
+                audited.append((owned.id, outcome))
+
+            def _cancel_task_intentionally(self, task, owned=None, *, reason):
+                cancel_reasons.append(reason)
+                task.cancel()
+
+        children = _Children()
+        coordinator = CancellationCoordinator(children)  # type: ignore[arg-type]
+
+        class _Handler:
+            def snapshot_teardown_children(self, parent_session_key):
+                return coordinator.snapshot_teardown_children_impl(parent_session_key)
+
+            async def cancel_for_teardown(
+                self,
+                agent_ids,
+                *,
+                parent_session_key="",
+                verb="",
+            ):
+                return await coordinator.cancel_for_teardown_impl(
+                    agent_ids,
+                    parent_session_key=parent_session_key,
+                    verb=verb,
+                )
+
+        mgr.set_child_teardown_handler(_Handler())
+        await watcher_started.wait()
+        try:
+            await mgr.remove(parent)
+            release_watcher.set()
+            await asyncio.gather(watcher, return_exceptions=True)
+
+            assert cancel_reasons == ["parent teardown cancelled owned follow-up"]
+            assert info.pending_followups == []
+            assert audited == [(info.id, "followup_suppressed")]
+            assert children._followup_watchers == {}
+            assert children._followup_watcher_parents == {}
+            assert children._followup_watcher_infos == {}
+            dispatch.assert_not_awaited()
+            assert not mgr.has_session(
+                parent
+            ), "the queued follow-up rebuilt the conversation after parent teardown"
+        finally:
+            release_watcher.set()
+            if not watcher.done():
+                watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
+            await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_remove_cancels_children(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         _snapshotted, seen, cb = self._recorder()
@@ -7022,6 +7116,9 @@ class TestParentEndCancelsItsChildren:
                 self._teardown_cancelled_ids = set()
                 self._followup_watchers = {"run-delivered": watcher}
 
+            def _cancel_task_intentionally(self, task, info=None, *, reason):
+                task.cancel()
+
         manager = _Manager()
         coordinator = CancellationCoordinator(manager)  # type: ignore[arg-type]
 
@@ -7081,6 +7178,9 @@ class TestParentEndCancelsItsChildren:
                 self._queue = []
                 self._teardown_cancelled_ids = set()
                 self._followup_watchers = {"run-1": watcher}
+
+            def _cancel_task_intentionally(self, task, info=None, *, reason):
+                task.cancel()
 
         manager = _Manager()
         coordinator = CancellationCoordinator(manager)  # type: ignore[arg-type]

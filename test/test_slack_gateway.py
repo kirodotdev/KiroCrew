@@ -2425,6 +2425,103 @@ class TestSubagentDoneStoppedClassification:
         tracker.record_success.assert_not_called()
         tracker.record_failure.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_boundary_cancelled_completion_is_not_routed(self):
+        """A completion that lost stage authority never reaches its parent."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        tracker = MagicMock()
+        tracker.stopped = False
+        slot = MagicMock()
+        slot.key = "gone"
+        slot.mode = "orchestrator"
+        slot._orch_tracker = tracker
+        slot.running = False
+        slot.task = None
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        on_done = self._capture_on_done(orch)
+        info = self._stopped_info()
+        info._stage_boundary_cancelled = True
+        info.batch_id = "cancelled-wave"
+        info.batch_total = 1
+
+        run_chat = AsyncMock()
+        with patch("kiro_crew.slack.gateway._run_chat", run_chat):
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        run_chat.assert_not_awaited()
+        slot.queue_append.assert_not_called()
+        orch.dashboard_state.notify.assert_not_called()
+        orch.subagent_mgr.finalize_batch.assert_called_once_with("cancelled-wave")
+        assert "cancelled-wave" not in orch._batch_progress
+
+    @pytest.mark.asyncio
+    async def test_completed_owner_revoked_while_report_waits_is_not_routed(self):
+        """Cancellation that lands during report bookkeeping wins before route."""
+        from kiro_crew.dashboard.state import StageBoundary
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        owner = "owner-a"
+        tracker = MagicMock()
+        tracker.stopped = False
+        slot = MagicMock()
+        slot.key = "gone"
+        slot.mode = "orchestrator"
+        slot._orch_tracker = tracker
+        slot.running = False
+        slot.task = None
+        slot._in_stage_execution = False
+        slot._subagent_deliveries_inflight = 0
+        slot._subagents_inline_collected = set()
+        slot.stage_boundary = StageBoundary(stage=1, generation=owner)
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        on_done = self._capture_on_done(orch)
+        info = self._stopped_info()
+        info.user_stopped = False
+        info.result = "completed before cancellation"
+        info._stage_boundary_owner = owner
+        info.batch_id = "cancel-race-wave"
+        info.batch_total = 2
+        bookkeeping_started = asyncio.Event()
+        release_bookkeeping = asyncio.Event()
+
+        async def _blocked_pending(*_args):
+            bookkeeping_started.set()
+            await release_bookkeeping.wait()
+            return False
+
+        run_chat = AsyncMock()
+        with (
+            patch(
+                "kiro_crew.slack.gateway._subagent_batch_pending",
+                side_effect=_blocked_pending,
+            ),
+            patch("kiro_crew.slack.gateway._run_chat", run_chat),
+        ):
+            routing = asyncio.create_task(on_done(info))
+            await bookkeeping_started.wait()
+            info.user_stopped = True
+            info._stage_boundary_cancelled = True
+            release_bookkeeping.set()
+            await routing
+            await asyncio.sleep(0)
+
+        run_chat.assert_not_awaited()
+        slot.queue_append.assert_not_called()
+        orch.dashboard_state.notify.assert_not_called()
+
 
 class TestSubagentFinalSummaryDirective:
     """Fix 2 (B1): the LAST sub-agent completion ARMS a one-shot synthesis turn
@@ -3687,6 +3784,123 @@ class TestSubagentDone:
 
         orch.dashboard_state.notify.assert_not_called()
         orch.dashboard_state.push_slots_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_dashboard_completion_routes_to_exact_run_owner(self):
+        """A tagged run routes to its owner even when another alias armed later."""
+        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
+        from kiro_crew.subagent import SubagentInfo
+
+        orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        on_done = mock_sm.call_args[1]["on_done"]
+        parent = "dashboard:chat-1"
+        canonical = _ChatSlot("chat-1")
+        canonical.mode = "chat"
+        first = _ChatSlot("chat-1-first")
+        first.mode = "chat"
+        first.linked_session_key = parent
+        first.stage_boundary = StageBoundary(
+            stage=1,
+            generation="first-owner",
+            parent_session_keys={parent},
+            armed_at=2,
+        )
+        first._in_stage_execution = True
+        second = _ChatSlot("chat-1-second")
+        second.mode = "chat"
+        second.linked_session_key = parent
+        second.stage_boundary = StageBoundary(
+            stage=1,
+            generation="second-owner",
+            parent_session_keys={parent},
+            armed_at=1,
+        )
+        second._in_stage_execution = True
+        orch.dashboard_state._slots = {
+            canonical.key: canonical,
+            first.key: first,
+            second.key: second,
+        }
+        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
+
+        info = SubagentInfo(id="alias-agent", task="alias task", parent_session_key=parent)
+        info.done = True
+        info.result = "alias result"
+        info._stage_boundary_owner = second.stage_boundary.owner or ""
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        assert not canonical._queue
+        assert not first._queue
+        assert not first._subagent_delivery_pending
+        assert len(second._queue) == 1
+        assert second._subagent_delivery_pending
+        assert second.stage_boundary.owns_entry(second._queue[0])
+        status_payload = next(
+            call.args[1]
+            for call in orch.dashboard_state.broadcast_ws.call_args_list
+            if call.args[0] == "subagent_status"
+        )
+        assert status_payload["slot"] == second.key
+        run_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retry_after_released_boundary_routes_to_live_canonical_slot(self):
+        """A retry cannot keep an owner after that exact boundary is released."""
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
+        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        from kiro_crew.subagent import SubagentInfo
+
+        orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        on_done = mock_sm.call_args[1]["on_done"]
+        manager = orch.subagent_mgr
+        parent = "dashboard:chat-1"
+        canonical = _ChatSlot("chat-1")
+        canonical.mode = "chat"
+        canonical.stage_boundary = StageBoundary(
+            stage=1,
+            generation="released-owner",
+            parent_session_keys={parent},
+        )
+        canonical.stage_boundary.clear()
+        orch.dashboard_state._slots = {canonical.key: canonical}
+        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
+        orch.dashboard_state.subagents = manager
+
+        old = SubagentInfo(id="old", task="failed", parent_session_key=parent)
+        old.done = True
+        old.error = "boom"
+        old._stage_boundary_owner = "released-owner"
+        old.execution_context = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew"
+        )
+        retry = SubagentInfo(id="retry", task="failed", parent_session_key=parent)
+        manager.get.return_value = old
+        manager.spawn.return_value = retry
+        request = MagicMock()
+        request.app = {"state": orch.dashboard_state}
+        request.match_info = {"agent_id": old.id}
+        request.get.return_value = None
+        response = await api_spawn_retry(request)
+        assert response.status == 200
+        retry._stage_boundary_owner = manager.spawn.call_args.kwargs["_stage_boundary_owner"]
+
+        canonical.stage_boundary.arm(2)
+        canonical.stage_boundary.parent_session_keys.add(parent)
+        canonical._in_stage_execution = True
+        retry.done = True
+        retry.result = "retry result"
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
+            await on_done(retry)
+            await asyncio.sleep(0)
+
+        assert retry._stage_boundary_owner == ""
+        assert len(canonical._queue) == 1
+        assert canonical._queue[0]["kind"] == "subagent_completion"
+        orch.dashboard_state.notify.assert_not_called()
+        run_chat.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dashboard_slot_busy_queues(self):

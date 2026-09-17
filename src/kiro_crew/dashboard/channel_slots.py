@@ -735,7 +735,7 @@ def _window_refresh_is_safe(slot: "_ChatSlot") -> bool:
     mistake those for missing history and duplicate them, so defer instead —
     the next pass retries once the turn has landed.
     """
-    return bool(slot.linked_session_key) and not slot.running and not slot._dirty
+    return bool(slot.linked_session_key) and not slot.turn_running and not slot._dirty
 
 
 #: Per-state reconcile lock. Keyed weakly so a discarded state is collectable —

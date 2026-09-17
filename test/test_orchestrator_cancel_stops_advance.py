@@ -19,7 +19,7 @@ a plan cancel means.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -49,6 +49,8 @@ def _make_orchestrator_state(tmp_path, slot_key, titles):
     state = _make_state(tmp_path)
     state.subagents = MagicMock()
     state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+    state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
     state.subagents._tasks = {}
     slot = state.get_or_create_slot(slot_key, mode="orchestrator")
     slot._stage_titles = list(titles)
@@ -63,6 +65,12 @@ async def _cancel(client, slot_key):
     assert (await resp.json())["cancelled"] is True
 
 
+def _mark_consumed(kwargs: dict) -> None:
+    callback = kwargs.get("_on_consumed")
+    if callable(callback):
+        callback(True)
+
+
 @pytest.mark.asyncio
 async def test_cancel_during_run_chat_does_not_advance(tmp_path, monkeypatch):
     """Cancel while stage 1 is inside ``_run_chat`` -- stage 2 must never run."""
@@ -75,6 +83,7 @@ async def test_cancel_during_run_chat_does_not_advance(tmp_path, monkeypatch):
     stages_run: list[int] = []
 
     async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        _mark_consumed(_kwargs)
         stages_run.append(len(stages_run) + 1)
         _slot.append("assistant", f"stage {len(stages_run)} body", "msg msg-a")
         if len(stages_run) == 1:
@@ -122,6 +131,7 @@ async def test_cancel_between_stages_blocks_reentry(tmp_path, monkeypatch):
     stages_run: list[int] = []
 
     async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        _mark_consumed(_kwargs)
         stages_run.append(len(stages_run) + 1)
         _slot.append("assistant", f"stage {len(stages_run)} body", "msg msg-a")
 
@@ -169,6 +179,7 @@ async def test_cancel_during_subagent_wait_does_not_advance(tmp_path, monkeypatc
     stages_run: list[int] = []
 
     async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        _mark_consumed(_kwargs)
         stages_run.append(len(stages_run) + 1)
         _slot.append("assistant", f"stage {len(stages_run)} body", "msg msg-a")
 

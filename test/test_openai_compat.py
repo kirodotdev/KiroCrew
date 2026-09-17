@@ -106,6 +106,10 @@ def _make_slot():
     slot.key = "test-slot"
     slot.agent = ""
     slot.task = None
+    slot.running = False
+    slot.turn_running = False
+    slot.stage_boundary.stage = None
+    slot._plan_cancelled = False
     slot.event = asyncio.Event()
     slot._pending = []
 
@@ -117,6 +121,122 @@ def _make_slot():
 
     slot.drain = drain
     return slot
+
+
+@pytest.mark.asyncio
+async def test_named_slot_refuses_while_stage_controller_runs():
+    """The controller keeps a slot busy between its stage-turn tasks."""
+    slot = _make_slot()
+    slot.task = None
+    slot.running = True
+    slot.turn_running = True
+    state = _make_state(slot)
+    request = _make_request(
+        {
+            "id": "test-slot",
+            "model": "vanellope",
+            "messages": [{"role": "user", "content": "do not interleave"}],
+            "stream": False,
+        },
+        state,
+    )
+
+    async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+        slot._pending.append({"role": "assistant", "content": "interleaved"})
+        slot._pending.append({"cls": "done"})
+        slot.event.set()
+
+    with patch(
+        "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
+    ) as run_chat:
+        response = await api_completions(request)
+
+    assert response.status == 409
+    response_body = json.loads(response.body)
+    assert response_body["error"]["type"] == "slot_busy"
+    assert response_body["error"]["code"] == "slot_busy"
+    assert response_body["code"] == "slot_busy"
+    run_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_named_slot_refuses_while_stage_boundary_is_pending():
+    """A real pending stage boundary makes the slot accessor report busy."""
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("test-slot")
+    slot.stage_boundary.arm(1, consumed=True)
+    assert slot.task is None
+    assert slot.running is True
+    state = _make_state(slot)
+    request = _make_request(
+        {
+            "id": "test-slot",
+            "model": "vanellope",
+            "messages": [{"role": "user", "content": "do not contaminate stage output"}],
+            "stream": False,
+        },
+        state,
+    )
+
+    async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+        slot._pending.append({"role": "assistant", "content": "interleaved"})
+        slot._pending.append({"cls": "done"})
+        slot.event.set()
+
+    with patch(
+        "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
+    ) as run_chat:
+        response = await api_completions(request)
+
+    assert response.status == 409
+    response_body = json.loads(response.body)
+    assert response_body["error"]["type"] == "slot_busy"
+    assert response_body["error"]["code"] == "stage_gate_paused"
+    assert response_body["code"] == "stage_gate_paused"
+    assert response_body["error"]["message"] == (
+        "slot 'test-slot' is paused at an Autopilot stage gate; " "continue from the dashboard (Go)"
+    )
+    run_chat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_named_slot_stays_busy_between_cancel_latch_and_boundary_release():
+    """Cancel cannot reopen named-slot admission before its boundary clears."""
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("test-slot")
+    slot.stage_boundary.arm(1, consumed=True)
+    slot._plan_cancelled = True
+    state = _make_state(slot)
+    request = _make_request(
+        {
+            "id": "test-slot",
+            "model": "vanellope",
+            "messages": [{"role": "user", "content": "do not race cancellation"}],
+            "stream": False,
+        },
+        state,
+    )
+
+    async def fake_run_chat(_state, _slot, _prompt, **_kwargs):
+        slot._pending.append({"role": "assistant", "content": "admitted after release"})
+        slot._pending.append({"cls": "done"})
+        slot.event.set()
+
+    with patch(
+        "kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat
+    ) as run_chat:
+        busy = await api_completions(request)
+        assert busy.status == 409
+        assert json.loads(busy.body)["code"] == "slot_busy"
+        run_chat.assert_not_called()
+
+        slot.stage_boundary.clear()
+        admitted = await api_completions(request)
+
+    assert admitted.status == 200
+    run_chat.assert_called_once()
 
 
 def _make_state(slot):

@@ -18,6 +18,16 @@ silently reloading a fallback. The current request is delivered once and is not
 replayed as historical input. This includes cron, recovery and user-replay
 injections; queue drain supplies the exact appended row to the runner.
 
+`running` gates turn admission and destructive history edits; `turn_running`
+reports execution. `test_pending_boundary_consumer_semantics.py::test_running_and_turn_running_slot_readers_are_enumerated`
+walks every dashboard symbol and pins each direct or shared-helper reader by
+`(module, symbol)` to the predicate it uses; the same census enumerates every
+non-null `slot.task` publisher so a new unguarded admission site fails the test.
+`stage_boundary_for` treats a missing writable boundary on a real `_ChatSlot` as
+an error. Until #12042 removes the compatibility fallback, a non-slot object
+receives an ephemeral boundary and that swallowed assignment failure emits one
+unconditional WARNING naming the object's type.
+
 ## Dashboard app launch intents
 
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary

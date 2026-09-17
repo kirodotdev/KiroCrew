@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from ._component import ManagerComponent
 
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         clear_tombstone,
         delivery_is_parked,
         logger,
+        stage_boundary_owner_for_run,
         time,
     )
 
@@ -278,6 +279,7 @@ class CancellationCoordinator(ManagerComponent):
             id=str(params.get("_preassigned_id") or ""),
             task=str(params.get("task") or "(stopped before start)"),
             parent_session_key=str(params.get("parent_session_key") or ""),
+            _stage_boundary_owner=str(params.get("_stage_boundary_owner") or ""),
             agent=str(params.get("agent") or ""),
             user_stopped=True,
             queued=True,
@@ -406,26 +408,36 @@ class CancellationCoordinator(ManagerComponent):
         # A follow-up watcher is a SECOND announce path for the same run, and the id gate
         # cannot see it: when a queued follow-up cannot be delivered the watcher announces a
         # SYNTHETIC failure built with a fresh id, so it walks past a gate keyed on the run
-        # that produced it -- the same shape as the wave digest's flush record. Disarmed at
-        # the source for the same reason: cancel the watcher for every run this teardown is
-        # ending, so no synthetic report is composed for a conversation that is over. The
-        # follow-up itself is not lost work being discarded -- it was a correction queued
-        # for a conversation that has ended.
+        # that produced it -- the same shape as the wave digest's flush record. Disarm it at
+        # the source for the same reason. The accepted continuation is cancelled rather than
+        # announced: its parent has ended, so an announcement would itself recreate the
+        # retired conversation.
         #
-        # EVERY run this parent owns, not the three selected lists. A watcher outlives its
-        # run by design -- it dispatches AFTER the run finishes, which is why the dispatch
-        # cannot read the asking ordinal -- so a run that is done AND delivered still holds
-        # one. Such a run is in none of the three lists and is not even marked, because
-        # there is nothing to cancel and nothing parked to gate; the watcher is the only
-        # thing left that can speak for it, and it speaks with a FRESH id that no id-keyed
-        # gate recognises.
-        for agent_id in [info.id for info in mine]:
-            followup_watcher = self._manager._followup_watchers.pop(agent_id, None)
+        # Include watcher-held records as well as ``_agents``. A watcher deliberately
+        # outlives its completed run and can therefore be the only remaining owner record
+        # after completed-state eviction.
+        followup_infos = {
+            id(info): info
+            for info in (
+                *mine,
+                *getattr(self._manager, "_followup_watcher_infos", {}).values(),
+            )
+            if info.parent_session_key == parent_session_key
+        }
+        for info in followup_infos.values():
+            if getattr(info, "pending_followups", None):
+                info.pending_followups = []
+                self._manager._audit_followup(info, "followup_suppressed")
+            followup_watcher = self._manager._followup_watchers.get(info.id)
             if followup_watcher is not None and not followup_watcher.done():
-                # Spelled ``followup_watcher`` because the raw-cancel chokepoint audit
-                # (``test_no_raw_cancel_outside_chokepoint``) allows this call by variable
-                # name: the convention is what tells an auditor which cancels are sanctioned.
-                followup_watcher.cancel()
+                self._manager._cancel_task_intentionally(
+                    followup_watcher,
+                    info,
+                    reason="parent teardown cancelled owned follow-up",
+                )
+            self._manager._followup_watchers.pop(info.id, None)
+            getattr(self._manager, "_followup_watcher_parents", {}).pop(info.id, None)
+            getattr(self._manager, "_followup_watcher_infos", {}).pop(info.id, None)
         return selected
 
     async def cancel_for_teardown_impl(
@@ -644,6 +656,259 @@ class CancellationCoordinator(ManagerComponent):
         running_stopped = sum(result is True for result in results)
         return (running_stopped, queued_stopped)
 
+    def _boundary_scope_matches_impl(
+        self,
+        params: Mapping[str, object],
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> bool:
+        return (
+            str(params.get("parent_session_key") or "") == parent_session_key
+            and str(params.get("_stage_boundary_owner") or "") == boundary_owner
+        )
+
+    def _boundary_cancellation_pending_impl(self, params: Mapping[str, object]) -> bool:
+        """Whether exact cancellation authority forbids dispatch of *params*."""
+        parent = str(params.get("parent_session_key") or "")
+        owner = str(params.get("_stage_boundary_owner") or "")
+        return bool(
+            parent
+            and owner
+            and (
+                (parent, owner) in self._manager._pending_boundary_cancellations
+                or self._manager.boundary_cancellation_refused(parent, owner)
+            )
+        )
+
+    def boundary_cancellation_pending_reason_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> str:
+        """Latest settlement failure or cap refusal for one exact scope."""
+        retained = self._manager._pending_boundary_cancellations.get(
+            (parent_session_key, boundary_owner),
+            "",
+        )
+        return retained or self._manager._boundary_cancellation_refusal(
+            parent_session_key,
+            boundary_owner,
+        )
+
+    def _schedule_boundary_cancel_retry_impl(self) -> None:
+        """Arm one later pump pass for unresolved durable cancellations."""
+        if not self._manager._pending_boundary_cancellations:
+            return
+        pending = self._manager._boundary_cancel_retry_handle
+        if pending is not None and not pending.cancelled():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        def _retry() -> None:
+            self._manager._boundary_cancel_retry_handle = None
+            self._manager._drain_queue()
+
+        delay = max(0.05, self._manager._admission.taskq_admit_wait_secs())
+        self._manager._boundary_cancel_retry_handle = loop.call_later(delay, _retry)
+
+    def _apply_boundary_cancelled_rows_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+        cancelled: list[dict],
+        *,
+        settled: bool,
+    ) -> int:
+        """Apply confirmed store cancels to loop-owned queue state and reports."""
+        by_id = {
+            str(params.get("_preassigned_id") or ""): params
+            for params in cancelled
+            if params.get("_preassigned_id")
+        }
+        stopped = 0
+        dropped_rows: list[dict] = []
+        for index in range(len(self._manager._queue) - 1, -1, -1):
+            params = self._manager._queue[index]
+            if params.get("_resume_id") or not self._manager._boundary_scope_matches(
+                params,
+                parent_session_key,
+                boundary_owner,
+            ):
+                continue
+            agent_id = str(params.get("_preassigned_id") or "")
+            if not settled and agent_id not in by_id:
+                continue
+            dropped_rows.append(self._manager._queue.pop(index))
+            by_id.pop(agent_id, None)
+        for dropped in reversed(dropped_rows):
+            self._manager._report_queued_stop(dropped)
+            self._manager._emit_queue_depth(
+                str(dropped.get("parent_session_key") or ""),
+                str(dropped.get("batch_id") or ""),
+            )
+            stopped += 1
+        for agent_id, params in by_id.items():
+            if agent_id in self._manager._agents:
+                continue
+            self._manager._report_queued_stop(params)
+            self._manager._emit_queue_depth(
+                str(params.get("parent_session_key") or ""),
+                str(params.get("batch_id") or ""),
+            )
+            stopped += 1
+        if settled:
+            self._manager._pending_boundary_cancellations.pop(
+                (parent_session_key, boundary_owner),
+                None,
+            )
+        return stopped
+
+    async def _settle_boundary_queue_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> int:
+        """Cancel one scope's durable queued rows without blocking the loop."""
+        cancelled: list[dict] = []
+        failure = ""
+        try:
+            cancelled, failure = await self._manager._admission.taskq_cancel_boundary_async(
+                parent_session_key,
+                boundary_owner,
+            )
+        except Exception as exc:
+            failure = str(exc).strip() or type(exc).__name__
+            logger.warning(
+                "Stage-boundary queued cancellation failed for parent=%s owner=%s",
+                parent_session_key,
+                boundary_owner,
+                exc_info=True,
+            )
+        if failure:
+            failure = self._manager._bounded_boundary_cancellation_failure(failure)
+        settled = not failure
+        stopped = self._manager._apply_boundary_cancelled_rows(
+            parent_session_key,
+            boundary_owner,
+            cancelled,
+            settled=settled,
+        )
+        if failure:
+            self._manager._pending_boundary_cancellations[(parent_session_key, boundary_owner)] = (
+                failure
+            )
+            logger.warning(
+                "Stage-boundary queued cancellation remains pending for " "parent=%s owner=%s: %s",
+                parent_session_key,
+                boundary_owner,
+                failure,
+            )
+            self._manager._schedule_boundary_cancel_retry()
+        elif not self._manager._pending_boundary_cancellations:
+            pending = self._manager._boundary_cancel_retry_handle
+            if pending is not None and not pending.cancelled():
+                self._manager._cancel_task_intentionally(
+                    pending,
+                    reason="boundary cancellation settled",
+                )
+            self._manager._boundary_cancel_retry_handle = None
+        return stopped
+
+    async def retry_pending_boundary_cancellations_impl(self) -> None:
+        """Retry exact durable cancels before the pump may dispatch a row."""
+        for parent_session_key, boundary_owner in tuple(
+            self._manager._pending_boundary_cancellations
+        ):
+            await self._manager._settle_boundary_queue(
+                parent_session_key,
+                boundary_owner,
+            )
+
+    def _revoke_boundary_owners_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+    ) -> tuple[SubagentInfo, ...]:
+        """Revoke every in-process record owned by one exact boundary."""
+        candidates = (
+            *self._manager._agents.values(),
+            *self._manager._report_owners.values(),
+            *getattr(self._manager, "_followup_watcher_infos", {}).values(),
+        )
+        matching: list[SubagentInfo] = []
+        seen: set[int] = set()
+        for info in candidates:
+            identity = id(info)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if (
+                info.parent_session_key != parent_session_key
+                or stage_boundary_owner_for_run(info) != boundary_owner
+            ):
+                continue
+            matching.append(info)
+            info.user_stopped = True
+            info._stage_boundary_cancelled = True
+            if info.pending_followups:
+                info.pending_followups = []
+                self._manager._audit_followup(info, "followup_suppressed")
+            watcher = self._manager._followup_watchers.get(info.id)
+            if watcher is not None and not watcher.done():
+                self._manager._cancel_task_intentionally(
+                    watcher,
+                    info,
+                    reason="stage boundary cancelled",
+                )
+        self._manager.discard_report_failures(parent_session_key, boundary_owner)
+        return tuple(info for info in matching if not info.done and not info.queued)
+
+    async def cancel_for_boundary_impl(
+        self,
+        parent_session_key: str,
+        boundary_owner: str,
+        *,
+        retain_scope: bool = True,
+    ) -> tuple[int, int]:
+        """Stop work owned by one exact stage boundary, including approval waits."""
+        if not parent_session_key or not boundary_owner:
+            return (0, 0)
+        refusal = (
+            self._manager._hold_boundary_cancellation(
+                parent_session_key,
+                boundary_owner,
+            )
+            if retain_scope
+            else self._manager._boundary_cancellation_refusal(
+                parent_session_key,
+                boundary_owner,
+            )
+        )
+        # The scope decision is synchronous. Revoke live work, completed reports,
+        # and watcher-owned follow-ups before any durable writer can suspend.
+        live_infos = self._manager._revoke_boundary_owners(
+            parent_session_key,
+            boundary_owner,
+        )
+        if refusal:
+            results = await asyncio.gather(
+                *(self._manager.cancel(info.id) for info in live_infos),
+                return_exceptions=True,
+            )
+            return (sum(result is True for result in results), 0)
+        queued_stopped = await self._manager._settle_boundary_queue(
+            parent_session_key,
+            boundary_owner,
+        )
+        results = await asyncio.gather(
+            *(self._manager.cancel(info.id) for info in live_infos),
+            return_exceptions=True,
+        )
+        return (sum(result is True for result in results), queued_stopped)
+
     def _stop_queued(self, agent_ids: Sequence[str]) -> int:
         """Unqueue each id that is still waiting and report it stopped; count them.
 
@@ -703,6 +968,24 @@ class CancellationCoordinator(ManagerComponent):
         # Shutdown-driven cancellations must never trigger the one-shot
         # unexpected-cancel auto-continue (the loop is going away).
         self._manager._shutting_down = True
+        boundary_retry = self._manager._boundary_cancel_retry_handle
+        if boundary_retry is not None and not boundary_retry.cancelled():
+            self._manager._cancel_task_intentionally(
+                boundary_retry,
+                reason="shutdown boundary cancellation retry",
+            )
+        self._manager._boundary_cancel_retry_handle = None
+        self._manager._pending_boundary_cancellations.clear()
+        retained_retry = self._manager._retained_claim_retry_handle
+        if retained_retry is not None and not retained_retry.cancelled():
+            self._manager._cancel_task_intentionally(
+                retained_retry,
+                reason="shutdown retained claim retry",
+            )
+        self._manager._retained_claim_retry_handle = None
+        # Do not clear or release retained claims here. Their durable rows are
+        # still ADMITTED, so process teardown ends the in-memory reservation and
+        # the next boot reconciles them to QUEUED as one atomic ownership change.
         if self._manager._reaper_task and not self._manager._reaper_task.done():
             self._manager._reaper_task.cancel()
             self._manager._reaper_task = None
@@ -721,14 +1004,17 @@ class CancellationCoordinator(ManagerComponent):
         # from the dict as the gather completes it, so a post-gather snapshot
         # is already empty.
         watcher_ids = list(self._manager._followup_watchers)
+        watcher_infos = dict(self._manager._followup_watcher_infos)
         followup_watchers = [t for t in self._manager._followup_watchers.values() if not t.done()]
         for followup_watcher in followup_watchers:
             followup_watcher.cancel()
         if followup_watchers:
             await asyncio.gather(*followup_watchers, return_exceptions=True)
         self._manager._followup_watchers.clear()
+        self._manager._followup_watcher_parents.clear()
+        self._manager._followup_watcher_infos.clear()
         for agent_id in watcher_ids:
-            watcher_info = self._manager._agents.get(agent_id)
+            watcher_info = watcher_infos.get(agent_id) or self._manager._agents.get(agent_id)
             if watcher_info is not None and watcher_info.pending_followups:
                 dropped = list(watcher_info.pending_followups)
                 watcher_info.pending_followups = []
