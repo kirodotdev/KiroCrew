@@ -547,7 +547,9 @@ class TestTagVocabulary:
             assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
 
     @pytest.mark.asyncio
-    async def test_status_patch_without_agent_keeps_the_recorded_policy(self, tmp_path, monkeypatch):
+    async def test_status_patch_without_agent_keeps_the_recorded_policy(
+        self, tmp_path, monkeypatch
+    ):
         """A status-inclusive PATCH that omits ``agent`` — the ordinary form-edit
         re-send — keeps the policy already in the protected store. A human-only
         ``none`` row stays ``none`` and a narrowed ``add-only`` stays ``add-only``;
