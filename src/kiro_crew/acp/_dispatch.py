@@ -1897,7 +1897,7 @@ def _measure_tool_output(redacted: str) -> tuple[str, int]:
     two outputs sharing their first bounded characters would hash the same, and
     the byte count would under-report every output past the bound.
 
-    Computed only while the ledger is on. The pair has one consumer, the emitter,
+    Computed only while the crew log is on. The pair has one consumer, the emitter,
     which is gated on the same flag -- so with the flag off this is work nothing
     reads, over text as large as a file the model just printed. ``("", -1)`` is
     the emitter's own spelling for a field it must not record, distinct from a
@@ -1906,10 +1906,10 @@ def _measure_tool_output(redacted: str) -> tuple[str, int]:
 
     One function for both parser sites (this module's terminal-frame builder and
     the streaming update parser in ``client``) so the digest they produce cannot
-    drift apart: a ledger reader comparing two entries has no way to tell which
+    drift apart: a crew log reader comparing two entries has no way to tell which
     parser produced either one.
     """
-    from kiro_crew.session_ledger_emit import enabled as _ledger_enabled
+    from kiro_crew.crew_log.emit import enabled as _ledger_enabled
 
     if not _ledger_enabled():
         return "", -1
@@ -2011,7 +2011,7 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
         )
     joined = "\n".join(output_parts)
     _redacted = _redact(joined)
-    # Measured only when the ledger is on. These two fields have exactly one
+    # Measured only when the crew log is on. These two fields have exactly one
     # consumer -- the flag-gated emitter -- so hashing every tool result while it
     # is off is work nothing reads, and a tool result is as large as a file the
     # model just printed. The defaults carry "not recorded" rather than a

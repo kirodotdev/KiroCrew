@@ -2318,7 +2318,7 @@ More shapes this class hides, all Windows-only and all green on every Linux run:
   of magnitude below (which still fails a seconds-for-milliseconds bug) and, as the
   ceiling, a span the test measures itself.
 - **A fixed drain ceiling over a batch of fsync-priced writes is a rate assertion.**
-  Every test in `test_ledger_edge_concurrency` hands the session ledger's single writer
+  Every test in `test_crew_log_edge_concurrency` hands the session log's single writer
   thread 30 to 160 appends, and `assert emit.flush(timeout=10.0)` across that batch
   bounds a write RATE rather than the emitter. One append is an `fsync` behind a
   cross-process lock:

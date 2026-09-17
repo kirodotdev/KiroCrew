@@ -77,7 +77,7 @@ class TestLedgerRoot:
         home.mkdir()
         target = tmp_path / "outside"
         target.mkdir()
-        make_dir_link(home / "ledgers", target)
+        make_dir_link(home / "crew-log", target)
         restricted: list[Path] = []
 
         with caplog.at_level(logging.WARNING, logger=paths.__name__):
@@ -85,7 +85,7 @@ class TestLedgerRoot:
 
         assert restricted == [], "the owner-only callback would chmod the link target"
         assert list(target.iterdir()) == [], "the linked target was modified"
-        assert any("Refusing ledger root" in record.message for record in caplog.records)
+        assert any("Refusing crew log root" in record.message for record in caplog.records)
 
 
 class TestConfigPackageDir:

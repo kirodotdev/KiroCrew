@@ -7314,7 +7314,7 @@ class TestExtractToolCallUpdate:
         assert len(event.tool_output) <= 8000
 
     def test_long_output_metadata_covers_full_redacted_text(self, monkeypatch):
-        monkeypatch.setenv("KIROCREW_SESSION_LEDGER", "1")
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
         output = "A" * 8000 + "é-tail"
         full_redacted = acp_client.redact_text(output)
         full_bytes = full_redacted.encode("utf-8", "replace")
@@ -7348,7 +7348,7 @@ class TestExtractToolCallUpdate:
         while nothing will read it is work the default path must not do. ``-1``
         distinguishes "not recorded" from a real zero-length output.
         """
-        monkeypatch.delenv("KIROCREW_SESSION_LEDGER", raising=False)
+        monkeypatch.delenv("KIROCREW_CREW_LOG", raising=False)
         client = self._client()
         msg = self._make_msg(
             {

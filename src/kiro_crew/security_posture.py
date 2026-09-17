@@ -113,10 +113,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "source-content digests remain server-side.",
     ),
     (
-        "Session ledger entries",
-        "session_ledger_emit.py",
-        "Message bodies written to the append-only per-session ledger under "
-        "`<home>/ledgers/sessions/` -- what the user typed and what the model "
+        "Crew log entries",
+        "crew_log/emit.py",
+        "Message bodies written to the append-only per-session crew log under "
+        "`<home>/crew-log/sessions/` -- what the user typed and what the model "
         "answered. This sink is a FILE rather than "
         "a response, so what it writes outlives the process and is read back "
         "later by folds and the session panel; that makes it an output boundary "

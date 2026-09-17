@@ -484,17 +484,17 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     message, so this is the only place that can record it at all.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("KIROCREW_SESSION_LEDGER", "1")
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     import json
 
-    from kiro_crew import ledger as lg
-    from kiro_crew import session_ledger_emit
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import emit as crew_log_emit
 
-    session_ledger_emit.reset_caches()
+    crew_log_emit.reset_caches()
     sid = "sess-steer-requeue"
-    session_ledger_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
-    session_ledger_emit.on_turn_started(sid, 1, "user")
-    assert session_ledger_emit.flush()
+    crew_log_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
+    crew_log_emit.on_turn_started(sid, 1, "user")
+    assert crew_log_emit.flush()
 
     state = _make_state(tmp_path)
     slot = _busy(_slot(state, "chat-1"))
@@ -515,7 +515,7 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     outcome = await cd.steer_into_running_turn(state, slot, "run this instead")
 
     assert outcome == cd.STEER_REQUEUED
-    assert session_ledger_emit.flush()
+    assert crew_log_emit.flush()
     body = [
         json.loads(line)
         for line in lg.ledger_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
@@ -526,7 +526,7 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     assert len(mine) == 1, f"expected one entry for one message, got {[e['type'] for e in mine]}"
     assert mine[0]["type"] == "message/queued"
     assert mine[0]["data"]["source"] == "steer"
-    session_ledger_emit.reset_caches()
+    crew_log_emit.reset_caches()
 
 
 @pytest.mark.asyncio
@@ -3928,7 +3928,7 @@ def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkey
     Mutation guard: recording the delivered case here -- from a live ordinal or any
     other guess -- reddens this.
     """
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard import chat_delivery
 
     state = _make_state(tmp_path)
@@ -3938,19 +3938,19 @@ def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkey
 
     appended: list[str] = []
     queued_for: list[str] = []
-    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
     # Spied on the shared write seam rather than on one entry point, so an entry
     # written under ANY type is caught rather than only a steer-shaped one.
     monkeypatch.setattr(
-        session_ledger_emit,
+        crew_log_emit,
         "_write",
         lambda _sid, entry_type, *a, **kw: appended.append(entry_type),
     )
     monkeypatch.setattr(
-        session_ledger_emit, "on_message_queued", lambda sid, **_kw: queued_for.append(sid)
+        crew_log_emit, "on_message_queued", lambda sid, **_kw: queued_for.append(sid)
     )
     # A turn IS running, so a guess would have had something plausible to record.
-    monkeypatch.setattr(session_ledger_emit, "live_turn", lambda _sid: 13)
+    monkeypatch.setattr(crew_log_emit, "live_turn", lambda _sid: 13)
 
     def _consume_inside_the_rpc(*_a, **_kw):
         # The running turn takes the registration, which is what makes the
@@ -3979,7 +3979,7 @@ def test_a_stop_race_that_only_expects_a_requeue_records_nothing(tmp_path, monke
 
     Mutation guard: recording the queued outcome here reddens this.
     """
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard import chat_delivery
 
     state = _make_state(tmp_path)
@@ -3988,10 +3988,8 @@ def test_a_stop_race_that_only_expects_a_requeue_records_nothing(tmp_path, monke
     slot._acp_client = _steerable(accepted=True)
 
     queued: list[str] = []
-    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
-    monkeypatch.setattr(
-        session_ledger_emit, "on_message_queued", lambda sid, **_kw: queued.append(sid)
-    )
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "on_message_queued", lambda sid, **_kw: queued.append(sid))
 
     def _stop_without_requeueing(*_a, **_kw):
         # A stop lands while the steer is still registered, and nothing has moved
@@ -4020,7 +4018,7 @@ def test_a_requeued_steer_is_recorded_as_a_queued_message(tmp_path, monkeypatch)
 
     Mutation guard: recording `send_id` reddens this, because the two differ here.
     """
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
     from kiro_crew.dashboard import chat_delivery
 
     state = _make_state(tmp_path)
@@ -4029,9 +4027,9 @@ def test_a_requeued_steer_is_recorded_as_a_queued_message(tmp_path, monkeypatch)
     slot._acp_client = _steerable(accepted=True)
 
     queued: list[dict] = []
-    monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
     monkeypatch.setattr(
-        session_ledger_emit, "on_message_queued", lambda sid, **kw: queued.append(dict(kw))
+        crew_log_emit, "on_message_queued", lambda sid, **kw: queued.append(dict(kw))
     )
     seen: dict[str, str] = {}
 

@@ -270,11 +270,11 @@ class CompactionCoordinator:
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):
             del self.state.pending_verdict[key]
-            # Append-only session ledger (flag-gated, fail-soft). The OTHER half
+            # Append-only the session's log (flag-gated, fail-soft). The OTHER half
             # of the emit in ``_settle_compact_cooldown``: a compaction whose
             # effect was not measurable at the time deferred its verdict to here,
             # and without this line that compaction would never appear in the
-            # ledger at all. ``pct`` is the first CONFIRMED reading after it, so
+            # crew log at all. ``pct`` is the first CONFIRMED reading after it, so
             # it is the honest ``pct_after`` even when it is higher than
             # ``baseline`` -- a deferred reading includes a later turn's growth,
             # which makes ``freed_pct`` negative rather than absent. Recording
@@ -284,10 +284,10 @@ class CompactionCoordinator:
             # Deferred, not module-scope: this module is reached from the gateway
             # boot path, and AUTOSDE's no-new-work-on-gateway-boot-path rule asks
             # for a flag-gated subsystem's IMPORT to be gated, not just its use.
-            from kiro_crew import session_ledger_emit
+            from kiro_crew.crew_log import emit as crew_log_emit
 
-            session_ledger_emit.on_compaction_applied(
-                session_ledger_emit.session_id_of(provider),
+            crew_log_emit.on_compaction_applied(
+                crew_log_emit.session_id_of(provider),
                 pct_before=baseline,
                 pct_after=pct,
             )
@@ -556,15 +556,15 @@ class CompactionCoordinator:
             )
             return False
         self.state.pending_verdict.pop(key, None)
-        # Append-only session ledger (flag-gated, fail-soft). This is the
+        # Append-only the session's log (flag-gated, fail-soft). This is the
         # immediately-confirmed half; a deferred verdict is recorded by
         # ``_compaction_gate_decision`` when its reading settles, so every
-        # compaction reaches the ledger on exactly one of the two paths.
+        # compaction reaches the crew log on exactly one of the two paths.
         # Deferred for the boot-path rule; see the note at the other call site.
-        from kiro_crew import session_ledger_emit
+        from kiro_crew.crew_log import emit as crew_log_emit
 
-        session_ledger_emit.on_compaction_applied(
-            session_ledger_emit.session_id_of(provider),
+        crew_log_emit.on_compaction_applied(
+            crew_log_emit.session_id_of(provider),
             pct_before=pct_before,
             pct_after=pct_after,
         )

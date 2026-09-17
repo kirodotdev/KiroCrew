@@ -3201,7 +3201,7 @@ class TestSessionLedgerOnPermanentDelete:
         ledger tree. A fixture with no slot is a unit the funnel must refuse, which
         is what the two tests below use it for.
         """
-        from kiro_crew import ledger as lg
+        from kiro_crew import crew_log as lg
 
         return lg.Ledger.create(
             lg.KIND_SESSION, session_id, owner="default", agent="kirocrew", slot=slot
@@ -3209,7 +3209,7 @@ class TestSessionLedgerOnPermanentDelete:
 
     @staticmethod
     def _exists(session_id: str) -> bool:
-        from kiro_crew import ledger as lg
+        from kiro_crew import crew_log as lg
 
         return lg.Ledger.exists(lg.KIND_SESSION, session_id)
 
@@ -3263,20 +3263,20 @@ class TestSessionLedgerOnPermanentDelete:
         ``destroy`` does, and a stub that omitted it would be testing a gateway
         that does not exist -- which is precisely how this defect stayed
         invisible. ``destroy``'s own emit is pinned separately, driven through the
-        real method, in ``test_ledger_retention.py``.
+        real method, in ``test_crew_log_retention.py``.
 
         The pre-assertion is the point of the test. Asserting only that the ledger
         is gone would pass against a fixture that never held the lease, which is
         exactly how the rest of this class was green while the funnel could not
         remove a real one.
         """
-        from kiro_crew import ledger as lg
-        from kiro_crew import session_ledger_emit as emit
-        from kiro_crew.ledger.store import REMOVE_OWNED, remove_unit
+        from kiro_crew import crew_log as lg
+        from kiro_crew.crew_log import emit
+        from kiro_crew.crew_log.store import REMOVE_OWNED, remove_unit
         from kiro_crew.metrics.sessions import END_REASON_DESTROYED
 
         _guard_work_ledger_cleanup(monkeypatch)
-        monkeypatch.setenv(emit.SESSION_LEDGER_ENV, "1")
+        monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
         emit.reset_caches()
         try:
             emit.on_session_opened(
@@ -3321,11 +3321,11 @@ class TestSessionLedgerOnPermanentDelete:
         assertion would pass either way. Refusing the removal is the one reading
         where the two diverge.
         """
-        from kiro_crew import session_ledger_emit as emit
-        from kiro_crew.ledger import store as ledger_store
+        from kiro_crew.crew_log import emit
+        from kiro_crew.crew_log import store as ledger_store
 
         _guard_work_ledger_cleanup(monkeypatch)
-        monkeypatch.setenv(emit.SESSION_LEDGER_ENV, "1")
+        monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
         monkeypatch.setattr(
             ledger_store, "remove_unit", lambda *_a, **_k: ledger_store.REMOVE_OWNED
         )
@@ -3377,7 +3377,7 @@ class TestSessionLedgerOnPermanentDelete:
         landed.
         """
         _guard_work_ledger_cleanup(monkeypatch)
-        from kiro_crew import ledger as lg
+        from kiro_crew import crew_log as lg
 
         lg.Ledger.create(lg.KIND_SESSION, "acp-slotless", owner="default", agent="kirocrew")
         slot = _make_slot("dashboard_chat-1-100")
@@ -3563,7 +3563,7 @@ class TestSessionLedgerOnPermanentDelete:
         state = _make_state({"dashboard_chat-1-100": slot})
         state.sessions.resumable_sid = MagicMock(return_value="acp-explodes")
 
-        from kiro_crew.ledger import store as ledger_store
+        from kiro_crew.crew_log import store as ledger_store
 
         def _boom(*_args, **_kwargs):
             raise RuntimeError("ledger tree unreadable")

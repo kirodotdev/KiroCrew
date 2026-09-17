@@ -931,9 +931,9 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     entirely — the user manages archive deletion manually.
 
     The same pass expires closed SESSION LEDGERS, on the same setting and inside
-    the same throttle (:func:`kiro_crew.ledger.store.sweep_expired`). One switch
-    governs both because a session's message bodies live in its ledger now: a
-    build that expired the transcript archive while the ledger it points into grew
+    the same throttle (:func:`kiro_crew.crew_log.store.sweep_expired`). One switch
+    governs both because a session's message bodies live in its crew log now: a
+    build that expired the transcript archive while the crew log it points into grew
     forever would keep the larger half of the same history indefinitely, and a
     second setting for it would be a second thing to find and turn off.
     """
@@ -962,8 +962,8 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     adir = _archive_dir(base)
     cutoff = now - retention_days * 86400
     removed = 0
-    # An absent archive directory is not a reason to skip the ledger half: a
-    # session can hold a ledger long before anything of its transcript is
+    # An absent archive directory is not a reason to skip the crew log half: a
+    # session can hold a crew log long before anything of its transcript is
     # archived, so returning here would leave that half uncollected until the
     # first archive ever written.
     if adir.exists():
@@ -981,7 +981,7 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
 
 
 def _cleanup_expired_ledgers(retention_days: int, now: float) -> None:
-    """Expire closed session ledgers, best-effort, never at the transcript's cost.
+    """Expire closed the sessions' logs, best-effort, never at the transcript's cost.
 
     Off the event loop, which is what makes the added filesystem work safe rather
     than merely cheap: the only caller is ``_cleanup_old_archives``, reached from
@@ -993,20 +993,20 @@ def _cleanup_expired_ledgers(retention_days: int, now: float) -> None:
     than per delete on the loop.
 
     Imported lazily and swallowed on failure for one reason each. Lazily because
-    this module is imported on every startup while the ledger store is only
-    reachable behind ``KIROCREW_SESSION_LEDGER``, and a launch without the flag
+    this module is imported on every startup while the crew log store is only
+    reachable behind ``KIROCREW_CREW_LOG``, and a launch without the flag
     should not pay for the import. Swallowed because the caller is on the
-    transcript ARCHIVE path: a ledger tree that cannot be swept is a disk-space
+    transcript ARCHIVE path: a crew log tree that cannot be swept is a disk-space
     problem, and letting it raise here would turn that into a failure to archive
     the transcript, which loses history rather than retaining too much of it. The
     sweep logs its own counts.
     """
     try:
-        from kiro_crew.ledger.store import sweep_expired
+        from kiro_crew.crew_log.store import sweep_expired
 
         sweep_expired(retention_days, now=now)
     except Exception:
-        logger.debug("Session ledger retention sweep failed", exc_info=True)
+        logger.debug("The session's log retention sweep failed", exc_info=True)
 
 
 def transcript_sort_key(ts: str) -> tuple[int, float]:

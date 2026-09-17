@@ -335,16 +335,23 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The conductor work ledger: a worker's full file toolset must not reach any
     # conductor's records except through the routes that check its binding.
     "work-ledger",
-    # Every append-only per-unit ledger, crew and session alike (ledger/store.py).
-    # The design treats the ledger as the authority a conductor reads instead of
+    # Every append-only per-unit crew log, crew and session alike (crew_log/store.py).
+    # The design treats the crew log as the authority a conductor reads instead of
     # re-deriving, so an in-sandbox process able to write here could forge an
     # entry attributed to the gateway or rewrite the history it is reporting
     # into. The library's write rules bind only callers who go through it, and the
     # file-tool fence answers only the agent's own tools -- neither answers a
     # sandboxed subprocess calling ``open()``, which is what this entry is for.
     # Nothing in-sandbox reads one: the store runs in the GATEWAY process, so
-    # HIDDEN rather than READONLY. Named at the shared ``ledgers`` root, so a
+    # HIDDEN rather than READONLY. Named at the shared ``crew-log`` root, so a
     # future unit kind is covered without a new entry.
+    "crew-log",
+    # The RETIRED root, for the reason its file-tool fence is kept: this rename
+    # ships no migration, so entries an older build wrote under ``<home>/ledgers``
+    # are still on disk and would lose their OS mask on upgrade. Deliberately NOT in
+    # ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``: that set exists for a root the store
+    # creates LAZILY, and nothing creates this one any more, so there is no writer to
+    # race. Precreating it would re-materialise the retired name on every machine.
     "ledgers",
     "cron-history",
     # The cron in-flight markers, masked rather than sealed read-only because
@@ -1017,7 +1024,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # Private memory has the same late-creation hazard: an agent spawned before
     # the first member must never gain access when that member's database appears.
     "memory_stores",
-    # Append-only per-unit ledgers, and the hazard is the sharpest here: the
+    # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that
     # write finds the name absent, the ``SENSITIVE_DIRS`` loop skips what does not
@@ -1026,7 +1033,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # read as the gateway's. Materialising it empty at 0700 gives the bind a name
     # to cover before anything can write one. macOS needs no entry here: a
     # Seatbelt deny is a path rule that holds for a name that does not exist yet.
-    "ledgers",
+    "crew-log",
     # The chat_tag grants store writes by atomic rename of a sibling temp, so
     # the whole directory must exist before the isdir-guarded mask loop runs —
     # otherwise the first sandbox spawned before the first grant write sees an

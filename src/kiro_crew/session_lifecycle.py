@@ -492,8 +492,8 @@ class SessionLifecycleService:
                 # this session's. The pop and the sample happen before this call's
                 # own suspension point, so that ordering still holds; only the
                 # crumb unlink is deferred to a worker.
-                # Append-only session ledger (flag-gated, fail-soft). Reset is
-                # the teardown that ends a ledger's life, since the successor
+                # Append-only the session's log (flag-gated, fail-soft). Reset is
+                # the teardown that ends a crew log's life, since the successor
                 # cold-starts a new ACP session id. Written BEFORE the await
                 # below: the emitter hands the entry to its own thread and
                 # returns, so this adds no suspension point, while writing it
@@ -504,10 +504,10 @@ class SessionLifecycleService:
                 # Deferred, not module-scope: this module is reached from the gateway
                 # boot path, and AUTOSDE's no-new-work-on-gateway-boot-path rule asks
                 # for a flag-gated subsystem's IMPORT to be gated, not just its use.
-                from kiro_crew import session_ledger_emit
+                from kiro_crew.crew_log import emit as crew_log_emit
 
-                session_ledger_emit.on_session_closed(
-                    session_ledger_emit.session_id_of(session.provider),
+                crew_log_emit.on_session_closed(
+                    crew_log_emit.session_id_of(session.provider),
                     END_REASON_RESET,
                 )
                 await record_session_ended(key, end_reason=END_REASON_RESET)
@@ -873,7 +873,7 @@ class SessionLifecycleService:
                 reason=constants.unbind_reason_session_destroyed,
             )
             if session is not None:
-                # Append-only session ledger (flag-gated, fail-soft). Destroy is a
+                # Append-only the session's log (flag-gated, fail-soft). Destroy is a
                 # teardown and has to record itself, for the same reason the reset
                 # route above does -- and for one more: without this entry the
                 # unit is never collected by EITHER half of retention. The emitter
@@ -908,7 +908,7 @@ class SessionLifecycleService:
                 # the teardown that already happened. Entries from turns that were
                 # in flight still follow it by design -- see `on_session_closed`.
                 #
-                # It cannot start a ledger for a session that has none: `_handle`
+                # It cannot start a crew log for a session that has none: `_handle`
                 # never creates one, so a close for an unopened session writes
                 # nothing rather than leaving a header behind for a conversation
                 # that is being destroyed.
@@ -916,9 +916,9 @@ class SessionLifecycleService:
                 # Deferred, not module-scope: this module is reached from the
                 # gateway boot path, and AUTOSDE's no-new-work-on-gateway-boot-path
                 # rule asks for a flag-gated subsystem's IMPORT to be gated too.
-                from kiro_crew import session_ledger_emit
+                from kiro_crew.crew_log import emit as crew_log_emit
 
-                ledger_sid = session_ledger_emit.session_id_of(session.provider)
+                ledger_sid = crew_log_emit.session_id_of(session.provider)
                 retained_key: str | None = None
                 if ledger_sid:
                     try:
@@ -929,11 +929,11 @@ class SessionLifecycleService:
                 if retained_key is not None:
                     self._deps.logger.info(
                         "Session destroy: %s still maps to session id of %s; recording a "
-                        "non-terminal teardown so its ledger is retained",
+                        "non-terminal teardown so its crew log is retained",
                         retained_key,
                         key,
                     )
-                session_ledger_emit.on_session_closed(
+                crew_log_emit.on_session_closed(
                     ledger_sid,
                     END_REASON_DESTROYED if retained_key is None else _END_REASON_SID_RETAINED,
                 )

@@ -5704,11 +5704,11 @@ class TestIneffectiveCompactionCooldown:
         unknown mid-turn -- would settle here and be recorded nowhere, so the
         ledger would be missing exactly the compactions that were hardest to
         measure."""
-        from kiro_crew import session_ledger_emit
+        from kiro_crew.crew_log import emit as crew_log_emit
 
         seen: list[tuple[float, float]] = []
         monkeypatch.setattr(
-            session_ledger_emit,
+            crew_log_emit,
             "on_compaction_applied",
             lambda sid, *, pct_before, pct_after: seen.append((pct_before, pct_after)),
         )

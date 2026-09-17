@@ -241,11 +241,11 @@ class TestSteerConsumedClears:
         without one. Adding an emitter back at either site, without a resolver that
         owns both facts, reddens this test.
         """
-        from kiro_crew import session_ledger_emit
+        from kiro_crew.crew_log import emit as crew_log_emit
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
 
         assert not [
-            name for name in dir(session_ledger_emit) if "steer" in name.lower()
+            name for name in dir(crew_log_emit) if "steer" in name.lower()
         ], "the emitter exposes a steer entry point, which no site can order correctly"
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -256,15 +256,13 @@ class TestSteerConsumedClears:
         slot._acp_client = MagicMock()
 
         appended: list[tuple] = []
-        monkeypatch.setattr(session_ledger_emit, "session_id_of", lambda _c: "acp-1")
-        monkeypatch.setattr(
-            session_ledger_emit, "_write", lambda *a, **kw: appended.append((a, kw))
-        )
+        monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _c: "acp-1")
+        monkeypatch.setattr(crew_log_emit, "_write", lambda *a, **kw: appended.append((a, kw)))
 
         _settle_consumed_steers(slot, "<user_message>\nfix the bug\n</user_message>", state)
 
         assert slot._pending_steers == ["late arrival"], "settling itself still works"
-        assert appended == [], "the echo wrote a ledger entry it cannot order"
+        assert appended == [], "the echo wrote a crew log entry it cannot order"
 
     def test_snapshot_settles_only_contained_steers(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard.chat_runner import _settle_consumed_steers

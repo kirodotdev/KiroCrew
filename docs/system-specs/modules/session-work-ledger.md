@@ -29,7 +29,7 @@ maintenance primitive, not part of the history-delete request path, and its one
 caller is the operator sweep in [Cleanup](#cleanup).
 
 That reasoning is specific to THIS store's identity and does not carry to the
-append-only session ledger (`ledger-core.md`), which the same funnel does remove.
+append-only session ledger (`crew-log-core.md`), which the same funnel does remove.
 The hazard here is key REUSE: this store is keyed by the slot key, so a successor
 tab in the same slot legitimately inherits and resumes the record. A session
 ledger is keyed by the ACP session id, which never names a different

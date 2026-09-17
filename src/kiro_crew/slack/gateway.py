@@ -4004,7 +4004,7 @@ class GatewayOrchestrator:
                                     wrapped,
                                     _directive_user_origin=False,
                                     # Structural provenance for the session
-                                    # ledger: the queued twin above carries
+                                    # crew log: the queued twin above carries
                                     # CRON_NOTIFICATION_KIND, and this branch is
                                     # the same injector dispatching directly.
                                     _turn_actor="cron",
@@ -9023,7 +9023,7 @@ class GatewayOrchestrator:
                                     announce,
                                     _directive_user_origin=False,
                                     # Structural provenance for the session
-                                    # ledger: the queued twin above carries
+                                    # crew log: the queued twin above carries
                                     # SUBAGENT_COMPLETION_KIND, and this branch
                                     # is the same injector dispatching directly.
                                     _turn_actor="subagent",
@@ -13217,7 +13217,7 @@ class GatewayOrchestrator:
         # session by this point, so the sweep is not racing a mapping publisher --
         # the same position the sweep already held here before this change.
         await asyncio.to_thread(cleanup_orphaned_sessions)
-        # The session ledger's buffered appends, for EVERY gateway mode. The
+        # The session's log's buffered appends, for EVERY gateway mode. The
         # dashboard registers its own cleanup hook, but a mode that builds no
         # dashboard app -- slack-only is the plain case -- never runs one, and
         # os._exit below skips atexit, so without this the buffer dies with the
@@ -13229,12 +13229,12 @@ class GatewayOrchestrator:
             # Imported HERE, not at module scope: AUTOSDE's
             # no-new-work-on-gateway-boot-path rule asks for an optional subsystem's
             # import to be gated, and a shutdown drain is the only use in this module.
-            from kiro_crew import session_ledger_emit
+            from kiro_crew.crew_log import emit as crew_log_emit
 
-            if not await asyncio.to_thread(session_ledger_emit.drain_for_shutdown):
-                logger.warning("session ledger did not fully drain before exit")
+            if not await asyncio.to_thread(crew_log_emit.drain_for_shutdown):
+                logger.warning("the session's log did not fully drain before exit")
         except Exception:  # noqa: BLE001 - shutdown must not raise
-            logger.debug("session ledger drain failed during shutdown", exc_info=True)
+            logger.debug("the session's log drain failed during shutdown", exc_info=True)
         # This is a hard exit too: os._exit skips atexit, so the log queue's
         # drain hook never runs here either. Without this the whole shutdown
         # tail is lost -- including the "Graceful shutdown timed out" warning

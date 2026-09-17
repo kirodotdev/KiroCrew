@@ -687,13 +687,13 @@ class TestMaskableDirsAreMaterializedBeforeTheSpawn:
     def test_an_absent_ledgers_root_is_materialized_before_the_mask_binds(self, crew_home, mode):
         """The sharpest case of this whole class, named on its own.
 
-        A ledger is the authority a reader trusts instead of re-deriving, and the
+        A crew log is the authority a reader trusts instead of re-deriving, and the
         store creates this root on its first write. Absent, the ``isdir`` guard
         skips it and the mask is vacuous for the life of every sandbox spawned
         first -- one of which can then create the directory itself and fill it with
         entries attributed to the gateway.
         """
-        root = crew_home / "ledgers"
+        root = crew_home / "crew-log"
         assert not root.exists(), "the point of the test is that it starts absent"
 
         created = sandbox._materialize_maskable_dirs()

@@ -467,8 +467,8 @@ def ensure_data_home() -> Path:
             exc_info=True,
         )
     # UNCONDITIONAL, not in an `else`. The home failing to tighten is the case
-    # where the ledger root's own mode matters MOST: it is the only remaining
-    # boundary, and skipping it there leaves every lazily created ledger
+    # where the crew log root's own mode matters MOST: it is the only remaining
+    # boundary, and skipping it there leaves every lazily created crew log
     # directory at the process umask. The helper reports its own failure, so a
     # filesystem that refuses both still boots.
     _ensure_ledger_root(home, restrict_dir_to_owner)
@@ -476,7 +476,7 @@ def ensure_data_home() -> Path:
 
 
 def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
-    """Establish ``<home>/ledgers`` owner-only, before anything writes a ledger.
+    """Establish ``<home>/crew-log`` owner-only, before anything writes a crew log.
 
     Eager rather than lazy because two other mechanisms are stated per PATH and
     both are weaker while the name does not exist: the Linux sandbox bind-mask
@@ -495,12 +495,12 @@ def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
     exotic filesystem must not make the gateway unbootable, and the sandbox mask
     plus the file-tool fence still stand if this one assertion cannot be made.
     """
-    root = home / "ledgers"
+    root = home / "crew-log"
     try:
         canonical_home = home.resolve()
-        if root.is_symlink() or root.resolve() != canonical_home / "ledgers":
+        if root.is_symlink() or root.resolve() != canonical_home / "crew-log":
             logger.warning(
-                "Refusing ledger root %s: it is a link or resolves outside %s",
+                "Refusing crew log root %s: it is a link or resolves outside %s",
                 root,
                 canonical_home,
             )
@@ -509,20 +509,20 @@ def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
         restrict(root)
         # The kind directories under it need the same two properties, and for the
         # same reason: containment resolves its base first, so a linked
-        # ``ledgers/<kind>`` would make the link's target the containment root and
-        # every ledger path beneath it would pass while living outside this tree.
+        # ``crew-log/<kind>`` would make the link's target the containment root and
+        # every crew log path beneath it would pass while living outside this tree.
         # Establishing them here is what the argument above makes for the root --
         # a name that does not exist has no mode to inherit and is skipped by the
-        # sandbox mask. The names are the spellings ``ledger/store.py::_ROOT_DIR``
+        # sandbox mask. The names are the spellings ``crew_log/store.py::_ROOT_DIR``
         # maps its kinds to; this module imports no ``kiro_crew`` package at module
         # scope, so they are stated rather than read.
         for leaf in ("crews", "sessions"):
             kind_root = root / leaf
             if kind_root.is_symlink() or (
-                kind_root.exists() and kind_root.resolve() != canonical_home / "ledgers" / leaf
+                kind_root.exists() and kind_root.resolve() != canonical_home / "crew-log" / leaf
             ):
                 logger.warning(
-                    "Refusing ledger kind directory %s: it is a link or resolves outside %s",
+                    "Refusing crew log kind directory %s: it is a link or resolves outside %s",
                     kind_root,
                     canonical_home,
                 )
@@ -531,7 +531,7 @@ def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
             restrict(kind_root)
     except (OSError, RuntimeError):
         logger.warning(
-            "Cannot restrict %s to owner-only; ledgers may be readable by other users",
+            "Cannot restrict %s to owner-only; crew logs may be readable by other users",
             root,
             exc_info=True,
         )

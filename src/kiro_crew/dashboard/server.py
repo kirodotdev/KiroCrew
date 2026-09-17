@@ -3171,7 +3171,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
             await manager.shutdown()
 
     async def _session_ledger_drain(app_: web.Application) -> None:
-        """Write out the session ledger's buffered appends before the process goes.
+        """Write out the session's log buffered appends before the process goes.
 
         The emitter hands appends to a writer thread so a turn never waits on the
         filesystem, which means a record can be in memory when shutdown starts.
@@ -3182,15 +3182,15 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         """
         try:
             # Imported here, not at module scope: this file is on the gateway boot
-            # path, and the emitter is flag-gated behind KIROCREW_SESSION_LEDGER.
+            # path, and the emitter is flag-gated behind KIROCREW_CREW_LOG.
             # AUTOSDE's no-new-work-on-gateway-boot-path rule asks for the IMPORT to
             # be gated, not just the handler, so a launch with the flag unset pays
             # nothing for a subsystem it will never call.
-            from kiro_crew import session_ledger_emit
+            from kiro_crew.crew_log import emit as crew_log_emit
 
-            await asyncio.to_thread(session_ledger_emit.drain_for_shutdown)
+            await asyncio.to_thread(crew_log_emit.drain_for_shutdown)
         except Exception:  # noqa: BLE001 - shutdown must not raise
-            logger.debug("session ledger drain failed during shutdown", exc_info=True)
+            logger.debug("crew log drain failed during shutdown", exc_info=True)
 
     app.on_startup.append(_instances_startup)
     app.on_cleanup.append(_instances_shutdown)

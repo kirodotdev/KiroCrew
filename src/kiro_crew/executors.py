@@ -287,7 +287,7 @@ _MAX_PATH_RESOLVE_WORKERS = 2
 _MAX_PATH_PROBE_WORKERS = 8
 _MAX_PATH_TRANSFER_WORKERS = 8
 # ONE worker, and the count is the contract rather than a capacity guess. An
-# append-only ledger assigns ``seq`` by reading the file's own tail under its
+# append-only crew log assigns ``seq`` by reading the file's own tail under its
 # lock, and a turn's entries thread under the ``seq`` its ``turn/started``
 # returned -- so the entries of one unit must reach the file in the order their
 # call sites produced them. A single worker draining a FIFO queue is what
@@ -531,13 +531,13 @@ def path_transfer_executor() -> ThreadPoolExecutor:
 
 
 def ledger_executor() -> ThreadPoolExecutor:
-    """Return the process-wide append-only ledger writer pool, creating it on first use.
+    """Return the process-wide append-only crew log writer pool, creating it on first use.
 
     Threads are named ``mc-ledger``, and there is exactly ONE of them
     (:data:`_MAX_LEDGER_WORKERS`) because the order entries reach a unit's file
     is part of the format, not an optimization -- see that constant.
 
-    Serves :mod:`kiro_crew.session_ledger_emit`, whose storage call takes the
+    Serves :mod:`kiro_crew.crew_log.emit`, whose storage call takes the
     per-ledger lock, reads a bounded tail to assign ``seq`` and ``fsync``s the
     appended line. Those otherwise run on the gateway's own event loop: a
     ``flock`` that waits and an ``fsync`` that enters the kernel, once per tool
@@ -548,7 +548,7 @@ def ledger_executor() -> ThreadPoolExecutor:
     :func:`path_resolve_executor` has one: an ``fsync`` on a wedged or full
     filesystem holds its worker until the kernel returns, and a started
     ``run_in_executor`` future cannot be cancelled. Here that can only delay
-    other ledger writes -- which are fail-soft and never block a turn -- while on
+    other crew log writes -- which are fail-soft and never block a turn -- while on
     the maintenance pool it would occupy a worker the orphan-reaping sweeps need
     to recover from an event-loop wedge.
     """

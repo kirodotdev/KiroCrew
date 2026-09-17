@@ -237,7 +237,7 @@ settling its first-emitter precedents (per-`key` monotonic `seq`, one gateway ap
 writer, fail-open because "the log is observability, not audit"). A
 `session/tags-changed` kind would have fit its envelope (`{v, kind, src, key, ts_ms,
 data}`, additive-only, opaque `key`, unknown-kind tolerance). The surviving
-append-only stream is the per-unit ledger, whose scope is one crew or one session --
+append-only stream is the per-unit crew log, whose scope is one crew or one session --
 a cross-session tag transition has no unit to belong to, so this option would need
 the `gateway` kind that stream does not yet define.
 

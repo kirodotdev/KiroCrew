@@ -148,7 +148,7 @@ def _queued_entry_id(slot: Any, delivery_id: str) -> str:
     window -- and reading that as "mine was requeued" drops the transcript row for
     a steer the turn actually consumed.
 
-    The entry's OWN id is returned rather than a bool because the ledger records
+    The entry's OWN id is returned rather than a bool because the crew log records
     which queue entry the text became, and the only id this coroutine could
     otherwise reach is the client's `sendId` -- a different namespace, minted by a
     different party, which no reader could join against the queue.
@@ -357,12 +357,12 @@ async def steer_into_running_turn(
         # Deferred, not module-scope: this module is reached from the gateway boot
         # path, and AUTOSDE's no-new-work-on-gateway-boot-path rule asks for a
         # flag-gated subsystem's IMPORT to be gated, not just its use.
-        from kiro_crew import session_ledger_emit
+        from kiro_crew.crew_log import emit as crew_log_emit
 
-        sid = session_ledger_emit.session_id_of(client)
+        sid = crew_log_emit.session_id_of(client)
         if not sid:
             return
-        session_ledger_emit.on_message_queued(
+        crew_log_emit.on_message_queued(
             sid,
             source="steer",
             size_bytes=len(message.encode("utf-8", "surrogatepass")),
@@ -389,7 +389,7 @@ async def steer_into_running_turn(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
         )
-        # No ledger entry: the drain already STARTED a turn with this text, and
+        # No entry: the drain already STARTED a turn with this text, and
         # that turn recorded its own `message/received`. Writing `message/queued`
         # now would place the queued fact AFTER the received fact that supersedes
         # it, which reads as a message queued after it had already run.
@@ -397,7 +397,7 @@ async def steer_into_running_turn(
 
     still_registered = bool(slot._pending_steers.count(message))
     # The requeued entry's own id when the teardown moved our steer, else "". Held
-    # rather than discarded to a bool, because the entry the ledger names has to be
+    # rather than discarded to a bool, because the entry the crew log names has to be
     # the entry this path actually found.
     queued_id = _queued_entry_id(slot, delivery_id)
     queued = bool(queued_id)
@@ -417,7 +417,7 @@ async def steer_into_running_turn(
             # Still registered means the teardown has not run yet and will
             # requeue it, so the text still runs — the caller must NOT resend.
             #
-            # No ledger entry, because "will requeue" is a PREDICTION and this log
+            # No entry, because "will requeue" is a PREDICTION and this log
             # records only what is observed: a second stop can hard-kill and
             # discard the pending steers before the teardown runs, and then a
             # `message/queued` would permanently claim a queue entry that was
@@ -500,7 +500,7 @@ async def steer_into_running_turn(
     # No ledger entry from here either. Reaching this point rules out every requeue
     # and discard KNOWN SO FAR, which is what entitles this path to persist a
     # transcript row -- but that row is mutable and starts as `written`, promoted to
-    # `consumed` only when the echo confirms the injection. A ledger line has no
+    # `consumed` only when the echo confirms the injection. A crew log line has no
     # such state: it would assert consumption this coroutine cannot prove, and a
     # turn that ends without the echo still requeues the text.
 
@@ -649,10 +649,10 @@ def queue_for_next_turn(
     # running, so it is there. No turn ordinal: this message belongs to no turn
     # yet, and it names the one it eventually runs as when that turn starts.
     # Deferred for the boot-path rule; see the note at the other call site.
-    from kiro_crew import session_ledger_emit
+    from kiro_crew.crew_log import emit as crew_log_emit
 
-    session_ledger_emit.on_message_queued(
-        session_ledger_emit.session_id_of(getattr(slot, "_acp_client", None)),
+    crew_log_emit.on_message_queued(
+        crew_log_emit.session_id_of(getattr(slot, "_acp_client", None)),
         source=slot.key,
         # "replace", not strict: a JSON body may carry a lone surrogate, which
         # strict UTF-8 refuses to encode. The message is ALREADY queued at this
