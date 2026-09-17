@@ -106,7 +106,9 @@ class TestCronService:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         job = svc.add_job(
-            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            name="shipped-disabled",
+            message="",
+            cron_expr="0 22 * * *",
             enabled=False,
         )
         assert job.enabled is False
@@ -118,7 +120,9 @@ class TestCronService:
         assert loaded and loaded[0].enabled is False
 
     def test_add_job_enabled_false_never_persisted_enabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The paused state is part of the FIRST persist — no save may ever
         capture the disabled-by-manifest job in an enabled state (a crash or a
@@ -137,13 +141,15 @@ class TestCronService:
 
         monkeypatch.setattr(svc, "_save", spy_save)
         svc.add_job(
-            name="shipped-disabled", message="", cron_expr="0 22 * * *",
+            name="shipped-disabled",
+            message="",
+            cron_expr="0 22 * * *",
             enabled=False,
         )
         assert snapshots, "add_job must persist the new job"
-        assert all(s == (False, True) for s in snapshots), (
-            f"a save captured the job enabled: {snapshots}"
-        )
+        assert all(
+            s == (False, True) for s in snapshots
+        ), f"a save captured the job enabled: {snapshots}"
 
     def test_add_job_invalid_cron_expr(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
@@ -599,13 +605,15 @@ class TestLastResultTimestamp:
         the row content the dedup compares, so anything coarser merges two runs
         that finished within the same interval.
         """
-        job = CronJob(id="tz1", name="tz", message="go", schedule=CronSchedule(kind="every", every_secs=300))
+        job = CronJob(
+            id="tz1", name="tz", message="go", schedule=CronSchedule(kind="every", every_secs=300)
+        )
         job.timezone = "UTC"
         job.set_run_result("output")
         assert job.last_result_stamp.startswith(" | ")
         # ' | YYYY-MM-DD HH:MM:SS UTC'
         assert job.last_result_stamp.endswith("UTC")
-        stamped = job.last_result_stamp[len(" | "): -len(" UTC")]
+        stamped = job.last_result_stamp[len(" | ") : -len(" UTC")]
         datetime.strptime(stamped, "%Y-%m-%d %H:%M:%S")
 
     def test_an_unknown_timezone_still_renders_via_the_utc_fallback(self) -> None:
@@ -616,7 +624,9 @@ class TestLastResultTimestamp:
         rows dedup against: a run must not lose its stamp over a config typo.
         """
         job = CronJob(
-            id="tz2", name="tz", message="go",
+            id="tz2",
+            name="tz",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=300),
         )
         job.timezone = "Not/AZone"
@@ -632,7 +642,9 @@ class TestLastResultTimestamp:
         instead of gaining a third variant of the same row.
         """
         job = CronJob(
-            id="tz3", name="tz", message="go",
+            id="tz3",
+            name="tz",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=300),
         )
         # Beyond what the platform can turn into a date, which is what the
@@ -676,6 +688,572 @@ class TestLastResultTimestamp:
         assert job.last_result == ""
         assert job.last_result_ts == 0.0
         assert job.last_result_stamp == ""
+
+
+class TestDurableResultDeliveryOwnership:
+    """Confirmed result delivery is a durable generation tombstone."""
+
+    @staticmethod
+    def _owed_job(service: CronService) -> CronJob:
+        job = service.add_job(
+            name="owed-result",
+            message="report",
+            cron_expr="3 3 29 2 *",
+        )
+        job.owed_fire = True
+        service._save()
+        return job
+
+    def test_confirmed_delivery_survives_restart_and_clears_the_owed_run(
+        self, tmp_path: Path
+    ) -> None:
+        service = CronService(base_dir=tmp_path)
+        job = self._owed_job(service)
+        job.set_run_result("delivered once")
+
+        assert service.result_delivery_is_current(job) is True
+        assert service.claim_result_delivery(job) is True
+        assert service.settle_result_delivery(job, "result-hash") is True
+
+        restarted = CronService(base_dir=tmp_path)
+        loaded = restarted.get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result == "delivered once"
+        assert loaded.last_delivered_result_ts == loaded.last_result_ts
+        assert loaded.last_posted_hash == "result-hash"
+        assert loaded.owed_fire is False
+        assert restarted._is_due(loaded, time.time()) is False
+        # The same generation is already owned and must not enter delivery.
+        assert restarted.result_delivery_is_current(loaded) is False
+
+    def test_settlement_is_idempotent_for_the_same_result_generation(self, tmp_path: Path) -> None:
+        service = CronService(base_dir=tmp_path)
+        job = self._owed_job(service)
+        job.set_run_result("one generation")
+
+        assert service.claim_result_delivery(job) is True
+        assert service.settle_result_delivery(job, "same-hash") is True
+        committed_at = job.last_posted_at
+        assert service.settle_result_delivery(job, "same-hash") is True
+
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_delivered_result_ts == job.last_result_ts
+        assert loaded.last_posted_at == committed_at
+
+    def test_live_owner_blocks_competitor_then_stale_owner_is_reclaimable(
+        self, tmp_path: Path
+    ) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = self._owed_job(seed)
+        first = CronService(base_dir=tmp_path)
+        first_job = first.get_job(original.id)
+        assert first_job is not None
+        first_job.set_run_result("first result")
+
+        with patch.object(
+            CronService,
+            "_delivery_owner_identity",
+            return_value=(101, "first-generation"),
+        ):
+            assert first.claim_result_delivery(first_job) is True
+
+        # A replacement runtime loads the STORED pending result. It must not
+        # regenerate agent work merely to take over delivery ownership.
+        second = CronService(base_dir=tmp_path)
+        second_job = second.get_job(original.id)
+        assert second_job is not None
+        assert second_job.last_result == "first result"
+        second_job.result_origin_ts = second_job.last_result_ts
+        second_job.result_produced = True
+
+        with (
+            patch.object(
+                CronService,
+                "_delivery_owner_identity",
+                return_value=(202, "second-generation"),
+            ),
+            patch.object(
+                CronService,
+                "_delivery_claim_owner_is_live",
+                return_value=True,
+            ),
+        ):
+            assert second.claim_result_delivery(second_job) is False
+
+        with (
+            patch.object(
+                CronService,
+                "_delivery_owner_identity",
+                return_value=(202, "second-generation"),
+            ),
+            patch.object(
+                CronService,
+                "_delivery_claim_owner_is_live",
+                return_value=False,
+            ),
+        ):
+            assert second.claim_result_delivery(second_job) is True
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.delivery_claim_result_ts == second_job.last_result_ts
+        assert loaded.delivery_claim_owner_pid == 202
+        assert loaded.delivery_claim_owner_start == "second-generation"
+
+    def test_stale_runtime_cannot_reopen_debt_or_replace_the_winner(self, tmp_path: Path) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = self._owed_job(seed)
+        original.schedule = CronSchedule(kind="at", at_ts=1.0)
+        seed._save()
+        stale_service = CronService(base_dir=tmp_path)
+        winner_service = CronService(base_dir=tmp_path)
+        stale = stale_service.get_job(original.id)
+        winner = winner_service.get_job(original.id)
+        assert stale is not None and winner is not None
+
+        winner.set_run_result("replacement result")
+        assert winner_service.claim_result_delivery(winner) is True
+        assert winner_service.settle_result_delivery(winner, "winner-hash") is True
+        winner_state = winner_service.get_job(original.id)
+        assert winner_state is not None
+        winner_state.last_run_ts = 222.0
+        winner_state.last_status = "ok"
+        winner_state.last_error = None
+        winner_state.auto_paused = True
+        winner_state.enabled = False
+        winner_state.user_paused = True
+        winner_service._save()
+
+        # The drained runtime finishes later from the generation it loaded.
+        stale.set_run_result("stale result")
+        stale.owed_fire = True
+        stale.last_run_ts = 111.0
+        stale.last_status = "error"
+        stale.last_error = "stale failure"
+        stale.auto_paused = False
+        stale.enabled = True
+        stale.user_paused = False
+        assert stale_service.result_delivery_is_current(stale) is False
+        stale_service._merge_job_result(stale)
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.last_result == "replacement result"
+        assert loaded.last_posted_hash == "winner-hash"
+        assert loaded.last_delivered_result_ts == winner.last_result_ts
+        assert loaded.owed_fire is False
+        assert loaded.last_run_ts == 222.0
+        assert loaded.last_status == "ok"
+        assert loaded.last_error is None
+        assert loaded.auto_paused is True
+        assert loaded.enabled is False
+        assert loaded.user_paused is True
+
+    def test_unrelated_job_write_does_not_advance_this_job_generation(self, tmp_path: Path) -> None:
+        service = CronService(base_dir=tmp_path)
+        watched = service.add_job(name="watched", message="one", every_secs=300)
+        watched_generation = watched.record_generation
+        other = service.add_job(name="other", message="two", every_secs=300)
+
+        assert watched.record_generation == watched_generation
+        service.update_job(other.id, name="other updated")
+        assert watched.record_generation == watched_generation
+
+    @pytest.mark.parametrize(
+        "edit",
+        ["rename", "ack", "model", "schedule", "pause", "delivery", "owner"],
+    )
+    def test_concurrent_config_edit_preserves_edit_and_commits_execution_progress(
+        self,
+        tmp_path: Path,
+        edit: str,
+    ) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = seed.add_job(name="original", message="report", every_secs=300)
+        running_service = CronService(base_dir=tmp_path)
+        running = running_service.get_job(original.id)
+        assert running is not None
+        running.bind_run_origin()
+        origin_generation = running.run_record_generation()
+
+        editor = CronService(base_dir=tmp_path)
+        if edit == "rename":
+            assert editor.update_job(original.id, name="renamed") is not None
+        elif edit == "ack":
+            assert editor.ack_job(original.id, "operator acknowledged") is True
+        elif edit == "model":
+            assert editor.update_job(original.id, model="alternate") is not None
+        elif edit == "schedule":
+            assert editor.update_job(original.id, every_secs=900) is not None
+        elif edit == "pause":
+            assert editor.enable_job(original.id, enabled=False) is True
+        elif edit == "delivery":
+            assert (
+                editor.update_job(
+                    original.id,
+                    channel="C-new",
+                    thread_ts="1711957800.200",
+                )
+                is not None
+            )
+        elif edit == "owner":
+            assert editor.adopt_job(original.id, "dashboard:new-owner") is True
+        else:  # pragma: no cover - parametrization is exhaustive
+            raise AssertionError(edit)
+
+        edited = CronService(base_dir=tmp_path).get_job(original.id)
+        assert edited is not None
+        # Config, acknowledgement, destination and ownership edits compose
+        # with a run; none invalidates execution-owned progress.
+        assert edited.record_generation == origin_generation
+
+        running.last_run_ts = 222.0
+        running.last_status = "ok"
+        running.last_error = None
+        running.last_retry_count = 2
+        running.last_retry_run_ts = 222.0
+        running.set_run_result("completed result")
+        running_service._merge_job_result(running)
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.last_run_ts == 222.0
+        assert loaded.last_status == "ok"
+        assert loaded.last_error is None
+        assert loaded.last_retry_count == 2
+        assert loaded.last_retry_run_ts == 222.0
+        assert loaded.last_result == "completed result"
+        assert loaded.record_generation > origin_generation
+        if edit == "rename":
+            assert loaded.name == "renamed"
+        elif edit == "ack":
+            assert loaded.acked_items == ["operator acknowledged"]
+        elif edit == "model":
+            assert loaded.model == "alternate"
+        elif edit == "schedule":
+            assert loaded.schedule == CronSchedule(kind="every", every_secs=900)
+        elif edit == "pause":
+            assert loaded.enabled is False
+            assert loaded.user_paused is True
+        elif edit == "delivery":
+            assert loaded.channel == "C-new"
+            assert loaded.thread_ts == "1711957800.200"
+        elif edit == "owner":
+            assert loaded.session_key == "dashboard:new-owner"
+
+    @pytest.mark.parametrize("edit", ["destination", "owner"])
+    @pytest.mark.parametrize(
+        "boundary",
+        ["before_result", "between_validation_and_claim", "during_multipart"],
+    )
+    def test_delivery_route_edit_matrix_preserves_current_config_and_pinned_parts(
+        self,
+        tmp_path: Path,
+        edit: str,
+        boundary: str,
+    ) -> None:
+        service = CronService(base_dir=tmp_path)
+        original = service.add_job(
+            name="routed",
+            message="report",
+            every_secs=300,
+            channel="C-old",
+            thread_ts="1711957800.100",
+            session_key="dashboard:old-owner",
+        )
+        canonical = service.get_job(original.id)
+        assert canonical is not None
+        running = canonical.snapshot_for_run()
+        running.bind_run_origin()
+        origin_generation = running.run_record_generation()
+
+        def apply_edit() -> None:
+            editor = CronService(base_dir=tmp_path)
+            if edit == "destination":
+                assert (
+                    editor.update_job(
+                        original.id,
+                        channel="C-new",
+                        thread_ts="1711957800.200",
+                    )
+                    is not None
+                )
+            else:
+                assert editor.adopt_job(original.id, "dashboard:new-owner") is True
+
+        if boundary == "before_result":
+            apply_edit()
+        running.set_run_result("completed once")
+
+        assert service.result_delivery_is_current(running) is True
+        if boundary == "between_validation_and_claim":
+            route_before = running.delivery_route_identity()
+            apply_edit()
+            assert service.claim_result_delivery(running) is False
+            assert running.delivery_route_identity() != route_before
+            assert service.result_delivery_is_current(running) is True
+
+        assert service.claim_result_delivery(running) is True
+        pinned_channel = running.channel or f"dm-for:{running.session_key}"
+        pinned_thread = running.thread_ts or "1711957800.300"
+        parts = ["parent", "overflow"]
+        assert (
+            service.checkpoint_result_delivery(
+                running,
+                parts=parts,
+                completed_parts=1,
+                channel=pinned_channel,
+                parent_ts=pinned_thread,
+            )
+            is True
+        )
+        if boundary == "during_multipart":
+            apply_edit()
+        assert (
+            service.checkpoint_result_delivery(
+                running,
+                parts=parts,
+                completed_parts=2,
+                channel=pinned_channel,
+                parent_ts=pinned_thread,
+            )
+            is True
+        )
+        assert service.settle_result_delivery(running, "delivered-hash") is True
+        service._merge_job_result(running)
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.record_generation > origin_generation
+        assert loaded.last_result == "completed once"
+        assert loaded.last_delivered_result_ts == loaded.last_result_ts
+        assert loaded.last_posted_hash == "delivered-hash"
+        assert loaded.pending_delivery_result_ts == 0.0
+        assert loaded.delivery_slack_parts == []
+        assert loaded.enabled is True
+        assert loaded.user_paused is False
+        if edit == "destination":
+            assert loaded.channel == "C-new"
+            assert loaded.thread_ts == "1711957800.200"
+        else:
+            assert loaded.session_key == "dashboard:new-owner"
+
+    def test_concurrent_reschedule_wins_over_stale_at_completion_park(self, tmp_path: Path) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = seed.add_job(name="once", message="report", at_ts=9999999999.0)
+        running_service = CronService(base_dir=tmp_path)
+        running = running_service.get_job(original.id)
+        assert running is not None
+        running.bind_run_origin()
+
+        editor = CronService(base_dir=tmp_path)
+        assert editor.update_job(original.id, every_secs=900) is not None
+        running.enabled = False  # the old at-schedule completed
+        running.last_run_ts = 222.0
+        running.last_status = "ok"
+        running_service._merge_job_result(running)
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.schedule == CronSchedule(kind="every", every_secs=900)
+        assert loaded.enabled is True
+        assert loaded.user_paused is False
+        assert loaded.last_run_ts == 222.0
+
+    def test_concurrent_resume_wins_over_stale_at_completion_park(self, tmp_path: Path) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = seed.add_job(name="once", message="report", at_ts=9999999999.0)
+        assert seed.enable_job(original.id, enabled=False) is True
+        running_service = CronService(base_dir=tmp_path)
+        running = running_service.get_job(original.id)
+        assert running is not None
+        running.bind_run_origin()
+
+        editor = CronService(base_dir=tmp_path)
+        assert editor.enable_job(original.id, enabled=True) is True
+        running.enabled = False  # the old at-run would otherwise park it again
+        running.last_run_ts = 222.0
+        running.last_status = "ok"
+        running_service._merge_job_result(running)
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.enabled is True
+        assert loaded.user_paused is False
+        assert loaded.last_run_ts == 222.0
+
+    def test_partial_slack_cursor_cannot_settle_the_whole_result(self, tmp_path: Path) -> None:
+        service = CronService(base_dir=tmp_path)
+        job = self._owed_job(service)
+        job.set_run_result("multipart")
+        assert service.claim_result_delivery(job) is True
+        assert (
+            service.checkpoint_result_delivery(
+                job,
+                parts=["parent", "overflow"],
+                completed_parts=1,
+                channel="D1",
+                parent_ts="1711957800.100",
+            )
+            is True
+        )
+
+        assert service.settle_result_delivery(job, "partial-hash") is False
+        partial = CronService(base_dir=tmp_path).get_job(job.id)
+        assert partial is not None
+        assert partial.last_delivered_result_ts == 0.0
+        assert partial.delivery_slack_completed_parts == 1
+        assert partial.pending_delivery_result_ts == partial.last_result_ts
+
+        assert (
+            service.checkpoint_result_delivery(
+                job,
+                parts=["parent", "overflow"],
+                completed_parts=2,
+                channel="D1",
+                parent_ts="1711957800.100",
+            )
+            is True
+        )
+        assert service.settle_result_delivery(job, "complete-hash") is True
+
+    def test_resultless_merge_preserves_a_newly_owed_occurrence(self, tmp_path: Path) -> None:
+        service = CronService(base_dir=tmp_path)
+        job = service.add_job(
+            name="pruned-cron",
+            message="report",
+            cron_expr="0 6 * * *",
+        )
+        running = CronService(base_dir=tmp_path)
+        skipped = running.get_job(job.id)
+        assert skipped is not None
+
+        # A pruned launch produces no new result. Its carried result timestamps
+        # may both be zero (or may both name an older delivered result), but the
+        # skip still owes this cron-expression occurrence to the replacement
+        # gateway.
+        skipped.result_produced = False
+        skipped.run_never_started = True
+        skipped.keep_overdue = True
+        skipped.owed_fire = True
+        running._merge_job_result(skipped)
+
+        loaded = CronService(base_dir=tmp_path).get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result_ts == loaded.last_delivered_result_ts == 0.0
+        assert loaded.owed_fire is True
+
+    @pytest.mark.parametrize("winner_state", ["result", "delivery"])
+    def test_resultless_stale_runtime_cannot_overwrite_newer_execution_state(
+        self,
+        tmp_path: Path,
+        winner_state: str,
+    ) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = self._owed_job(seed)
+        stale_service = CronService(base_dir=tmp_path)
+        winner_service = CronService(base_dir=tmp_path)
+        stale = stale_service.get_job(original.id)
+        winner = winner_service.get_job(original.id)
+        assert stale is not None and winner is not None
+        stale.bind_run_origin()
+        winner.bind_run_origin()
+        origin_generation = stale.run_record_generation()
+
+        winner.set_run_result("newer result")
+        winner.last_run_ts = 222.0
+        winner.last_status = "error"
+        winner.last_error = "newer failure"
+        winner.last_retry_count = 7
+        winner.last_retry_run_ts = 222.0
+        winner.auto_paused = True
+        winner.owed_fire = False
+        if winner_state == "delivery":
+            assert winner_service.claim_result_delivery(winner) is True
+            assert (
+                winner_service.checkpoint_result_delivery(
+                    winner,
+                    parts=["parent", "overflow"],
+                    completed_parts=1,
+                    channel="D1",
+                    parent_ts="1711957800.100",
+                )
+                is True
+            )
+        winner_service._merge_job_result(winner)
+        winner_generation = CronService(base_dir=tmp_path).get_job(original.id)
+        assert winner_generation is not None
+        assert winner_generation.record_generation > origin_generation
+
+        # The drained runtime produces NO result, so only the execution-owned
+        # generation can reject it. Every opposite execution value below must
+        # lose to the newer durable generation; config fields are preserved by
+        # ownership rather than copied from either runtime.
+        stale.result_produced = False
+        stale.last_run_ts = 111.0
+        stale.last_status = "ok"
+        stale.last_error = None
+        stale.last_retry_count = 1
+        stale.last_retry_run_ts = 111.0
+        stale.auto_paused = False
+        stale.user_paused = True
+        stale.enabled = True
+        stale.owed_fire = True
+        stale_service._merge_job_result(stale)
+
+        loaded = CronService(base_dir=tmp_path).get_job(original.id)
+        assert loaded is not None
+        assert loaded.last_result == "newer result"
+        assert loaded.last_run_ts == 222.0
+        assert loaded.last_status == "error"
+        assert loaded.last_error == "newer failure"
+        assert loaded.last_retry_count == 7
+        assert loaded.last_retry_run_ts == 222.0
+        assert loaded.auto_paused is True
+        assert loaded.user_paused is False
+        assert loaded.enabled is False
+        assert loaded.owed_fire is False
+        assert loaded.record_generation == winner_generation.record_generation
+        if winner_state == "delivery":
+            assert loaded.pending_delivery_result_ts == loaded.last_result_ts
+            assert loaded.delivery_slack_parts == ["parent", "overflow"]
+            assert loaded.delivery_slack_completed_parts == 1
+            assert loaded.delivery_slack_channel == "D1"
+            assert loaded.delivery_slack_parent_ts == "1711957800.100"
+
+    def test_resultless_stale_runtime_cannot_recreate_a_deleted_job(self, tmp_path: Path) -> None:
+        seed = CronService(base_dir=tmp_path)
+        original = self._owed_job(seed)
+        stale_service = CronService(base_dir=tmp_path)
+        stale = stale_service.get_job(original.id)
+        assert stale is not None
+
+        remover = CronService(base_dir=tmp_path)
+        assert remover.remove_job(original.id, actor="test", source="generation-fence") is True
+
+        stale.result_produced = False
+        stale.last_status = "ok"
+        stale.owed_fire = True
+        stale_service._merge_job_result(stale)
+
+        assert CronService(base_dir=tmp_path).get_job(original.id) is None
+
+    def test_unconfirmed_result_does_not_consume_or_overwrite_the_owed_run(
+        self, tmp_path: Path
+    ) -> None:
+        service = CronService(base_dir=tmp_path)
+        job = self._owed_job(service)
+        job.set_run_result("never acknowledged")
+
+        # Crash before any surface acknowledges delivery: no settlement call.
+        restarted = CronService(base_dir=tmp_path)
+        loaded = restarted.get_job(job.id)
+        assert loaded is not None
+        assert loaded.last_result != "never acknowledged"
+        assert loaded.last_delivered_result_ts == 0.0
+        assert loaded.owed_fire is True
+        assert restarted._is_due(loaded, time.time()) is True
 
 
 class TestTimerRestoreOnLoad:
@@ -829,7 +1407,9 @@ class TestJobCompletionRearmsTimer:
     async def test_run_job_isolated_rearms_the_timer(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -845,14 +1425,489 @@ class TestJobCompletionRearmsTimer:
         mock_arm.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_run_job_isolated_does_not_rearm_a_stopped_service(
+    async def test_run_job_isolated_keeps_a_pruned_every_job_overdue(self, tmp_path: Path) -> None:
+        """The outer 'every'-job drift correction must not re-consume a
+        keep_overdue (pruned-install) run: _execute deliberately left
+        last_run_ts untouched so the replacement gateway retries the owed
+        run immediately."""
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="watch",
+            message="go",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+        job.last_run_ts = 1234.5
+        svc._jobs = [job]
+        svc._save()
+        svc._running = True
+
+        async def pruned_execute(j):
+            # _record_pruned_launch_skip contract as _execute observes it.
+            j.last_status = "error"
+            j.run_never_started = True
+            j.keep_overdue = True
+
+        with (
+            patch.object(svc, "_execute_with_timeout", side_effect=pruned_execute),
+            patch.object(svc, "_arm_timer"),
+        ):
+            await svc._run_job_isolated(job)
+
+        assert job.last_run_ts == 1234.5
+
+    @pytest.mark.asyncio
+    async def test_owed_fire_makes_a_cron_job_due_off_minute_and_is_consumed(
         self, tmp_path: Path
     ) -> None:
+        """An owed occurrence is due regardless of the current minute, and
+        the make-up run consumes the marker exactly once."""
+        import time as _time
+
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            # A minute that is (almost surely) not now; owed_fire must
+            # override the mismatch.
+            schedule=CronSchedule(kind="cron", cron_expr="3 3 29 2 *"),
+        )
+        job.owed_fire = True
+
+        assert svc._is_due(job, _time.time()) is True
+
+        async def clean_cb(j):
+            return None
+
+        svc._on_job = clean_cb
+        # The make-up run consumes the marker via _execute's per-run reset.
+        await svc._execute(job)
+
+        assert job.owed_fire is False
+        assert svc._is_due(job, _time.time()) is False
+
+    @pytest.mark.asyncio
+    async def test_a_never_started_run_does_not_consume_the_owed_fire(self, tmp_path: Path) -> None:
+        """The debt reset at run start must not stick when the run never
+        started (overlap, pool starvation, fire-time deny) — the merge would
+        persist the cleared debt and the occurrence would never run."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="3 3 29 2 *"),
+        )
+        job.owed_fire = True
+
+        async def never_started_cb(j):
+            # Overlap/starvation contract: the run never dispatched.
+            j.last_status = "error"
+            j.run_never_started = True
+
+        svc._on_job = never_started_cb
+        await svc._execute(job)
+
+        assert job.owed_fire is True
+
+    def test_owed_fire_drain_repersists_after_merge_contention(self, tmp_path: Path) -> None:
+        """A merge lost to store contention queues the debt; the next locked
+        transaction re-persists it."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        assert job.owed_fire is False
+
+        svc._pending_owed_fires["j1"] = True
+        with svc._file_lock():
+            svc._drain_pending_owed_fires_locked()
+
+        assert job.owed_fire is True
+        assert not svc._pending_owed_fires
+        # Persisted: a fresh load sees the debt.
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is True
+
+    def test_owed_fire_drain_clears_stale_debt_after_a_consumed_run(self, tmp_path: Path) -> None:
+        """The clear direction: a make-up run consumed the debt but its merge
+        was lost — the drain must persist False or the replacement gateway
+        duplicates the occurrence."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+        svc._jobs = [job]
+        svc._save()
+
+        job.owed_fire = False  # the make-up run consumed it in memory
+        svc._pending_owed_fires["j1"] = False
+        svc._drain_owed_fires_with_lock()
+
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is False
+
+    def test_owed_fire_drain_requeues_its_claim_when_the_save_fails(self, tmp_path: Path) -> None:
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._pending_owed_fires["j1"] = True
+
+        with (
+            patch.object(svc, "_save", side_effect=OSError("disk full")),
+            svc._file_lock(),
+        ):
+            with pytest.raises(OSError):
+                svc._drain_pending_owed_fires_locked()
+
+        # The claim was restored, so a later drain retries.
+        assert svc._pending_owed_fires == {"j1": True}
+        svc._drain_owed_fires_with_lock()
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is True
+
+    def test_a_drain_save_failure_does_not_abort_the_tick_scan(self, tmp_path: Path) -> None:
+        """The tick's locked transaction contains the drain's re-raise: an
+        unrelated persistence failure must not make a due job miss its
+        minute."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._pending_owed_fires["j1"] = True
+
+        with patch.object(svc, "_save", side_effect=OSError("disk full")):
+            snapshot = svc._tick_scan_locked()  # must NOT raise
+
+        assert [j.id for j in snapshot] == ["j1"]
+        # The claim survived for a later drain.
+        assert svc._pending_owed_fires == {"j1": True}
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_the_callback_restores_the_debt(self, tmp_path: Path) -> None:
+        """A stop()/reap cancellation BEFORE dispatch never delivered the
+        occurrence — the debt reset at run start must not stick, but only
+        when the callback recorded the run as never-started."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def cancelled_cb(j):
+            j.run_never_started = True
+            raise asyncio.CancelledError()
+
+        svc._on_job = cancelled_cb
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute(job)
+
+        assert job.owed_fire is True
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_setup_restores_the_debt(self, tmp_path: Path) -> None:
+        """The round-16 window: a cancel after the callback starts but
+        BEFORE positive dispatch confirmation (session/context setup) sets
+        neither run_never_started nor run_dispatched — nothing ran, so the
+        debt must survive."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def cancelled_in_setup_cb(j):
+            # No run_never_started, no run_dispatched: the setup window.
+            raise asyncio.CancelledError()
+
+        svc._on_job = cancelled_in_setup_cb
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute(job)
+
+        assert job.owed_fire is True
+        assert svc._pending_owed_fires == {}
+
+    @pytest.mark.asyncio
+    async def test_cancellation_after_dispatch_keeps_the_debt_consumed(
+        self, tmp_path: Path
+    ) -> None:
+        """A cancellation landing AFTER the run dispatched must not restore
+        the debt: the run's side effects exist, and a restored debt would
+        replay them on the replacement gateway."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def cancelled_mid_run_cb(j):
+            # Dispatched: the launch/prompt went out before the cancel.
+            j.run_dispatched = True
+            raise asyncio.CancelledError()
+
+        svc._on_job = cancelled_mid_run_cb
+        with pytest.raises(asyncio.CancelledError):
+            await svc._execute(job)
+
+        assert job.owed_fire is False
+        # The reaper's terminal merge does not carry owed_fire, so the
+        # durable clear must be queued or the stale on-disk True replays
+        # the occurrence on the next tick.
+        assert svc._pending_owed_fires == {"j1": False}
+
+    @pytest.mark.asyncio
+    async def test_a_policy_denied_owed_run_drops_the_debt(self, tmp_path: Path) -> None:
+        """A fire-time policy denial can persist indefinitely, and an owed
+        job is due on every poll — restoring the debt would refire every 30
+        seconds for as long as the policy holds. The occurrence is dropped;
+        the job resumes at its next scheduled slot."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        job.owed_fire = True
+
+        async def denied_cb(j):
+            j.last_status = "error"
+            j.fire_time_denied = True
+
+        svc._on_job = denied_cb
+        await svc._execute(job)
+
+        assert job.owed_fire is False
+
+    @pytest.mark.asyncio
+    async def test_quiesced_pruned_job_survives_a_store_reload(self, tmp_path: Path) -> None:
+        """A per-object enabled=False dies at the next _sync (fresh disk
+        copies are enabled by design, for the replacement gateway) — the
+        service-level pruned-quiesce registry must keep the job out of the
+        due-scan on THIS process regardless of reloads."""
+        import time as _time
+
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="watch",
+            message="go",
+            schedule=CronSchedule(kind="every", every_secs=60),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc.quiesce_pruned("j1")
+
+        # Simulate the resurrection: a store reload hands back a FRESH,
+        # enabled copy of the job.
+        svc._sync()
+        reloaded = next(j for j in svc._jobs if j.id == "j1")
+        assert reloaded.enabled is True  # on-disk state, by design
+
+        now = _time.time()
+        due = [
+            j
+            for j in svc._jobs
+            if j.enabled
+            and j.id not in svc._executing
+            and j.id not in svc._pruned_quiesced
+            and svc._is_due(j, now)
+        ]
+        assert due == []
+        # And without the registry the job WOULD be due — proving the
+        # registry is the operative guard.
+        assert svc._is_due(reloaded, now) is True
+        # And the wake computation must skip it too: a quiesced overdue job
+        # driving _next_wake_secs to 0 would re-arm the timer immediately
+        # after every empty scan — a zero-delay loop.
+        assert svc._next_wake_secs() is None
+
+    def test_a_string_false_owed_fire_on_disk_loads_as_false(self, tmp_path: Path) -> None:
+        """Strict identity on deserialization: the string "false" is truthy
+        and would dispatch the job outside its schedule."""
+        import json
+
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        store = tmp_path / "crons.json"
+        data = json.loads(store.read_text())
+        data["jobs"][0]["owed_fire"] = "false"
+        store.write_text(json.dumps(data))
+
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is False
+
+    def test_merge_queues_owed_state_when_the_store_is_unreadable(self, tmp_path: Path) -> None:
+        """_sync degrades an unreadable store to an empty list WITHOUT
+        raising, and the merge must degrade too (never crash the job
+        runner) — but the owed state must reach the recovery queue instead
+        of being silently swallowed."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        (tmp_path / "crons.json").write_text("{ not json")
+        job.owed_fire = True
+
+        svc._merge_job_result(job)  # must NOT raise
+
+        assert svc._pending_owed_fires == {"j1": True}
+
+    def test_merge_queues_the_one_shot_removal_when_the_store_is_unreadable(
+        self, tmp_path: Path
+    ) -> None:
+        """A completed delete_after_run one-shot must not re-fire after the
+        store heals: the unreadable-store branch owes the removal to the
+        defer_removal queue exactly like the base path's delete_owed."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="oneshot",
+            message="go",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        svc._jobs = [job]
+        svc._save()
+        (tmp_path / "crons.json").write_text("{ not json")
+        job.last_status = "ok"
+
+        svc._merge_job_result(job)  # must NOT raise
+
+        assert "j1" in svc._pending_removals
+
+    def test_merge_does_not_queue_removal_for_a_never_started_one_shot(
+        self, tmp_path: Path
+    ) -> None:
+        """The retention guards travel with the deferred delete: a
+        never-started (e.g. pruned-skip) one-shot is retained, not consumed."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="oneshot",
+            message="go",
+            schedule=CronSchedule(kind="at", at_ts=1.0),
+            delete_after_run=True,
+        )
+        svc._jobs = [job]
+        svc._save()
+        (tmp_path / "crons.json").write_text("{ not json")
+        job.run_never_started = True
+
+        svc._merge_job_result(job)  # must NOT raise
+
+        assert "j1" not in svc._pending_removals
+
+    @pytest.mark.asyncio
+    async def test_stop_drains_pending_owed_fires(self, tmp_path: Path) -> None:
+        """The drained (pruned-install) gateway is by definition about to
+        shut down — stop() must be a drain point, because the 'next timer
+        tick' the deferral normally relies on never comes."""
+        from kiro_crew.cron import CronService
+
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(
+            id="j1",
+            name="daily",
+            message="go",
+            schedule=CronSchedule(kind="cron", cron_expr="0 6 * * *"),
+        )
+        svc._jobs = [job]
+        svc._save()
+        svc._pending_owed_fires["j1"] = True
+
+        await svc.stop()
+
+        assert not svc._pending_owed_fires
+        svc2 = CronService(base_dir=tmp_path)
+        loaded = next(j for j in svc2._jobs if j.id == "j1")
+        assert loaded.owed_fire is True
+
+    @pytest.mark.asyncio
+    async def test_run_job_isolated_does_not_rearm_a_stopped_service(self, tmp_path: Path) -> None:
         """A job finishing during/after shutdown must not spin up a fresh
         timer task behind close_all()'s back."""
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -879,7 +1934,9 @@ class TestJobCompletionRearmsTimer:
         shorter one instead of leaving the stale one in place."""
         svc = CronService(base_dir=tmp_path)
         job = CronJob(
-            id="j1", name="watch", message="go",
+            id="j1",
+            name="watch",
+            message="go",
             schedule=CronSchedule(kind="every", every_secs=60),
         )
         svc._jobs = [job]
@@ -915,9 +1972,7 @@ class TestArmTimerDuringOnTimer:
     doesn't cover it. See _arm_timer's second guard clause."""
 
     @pytest.mark.asyncio
-    async def test_arm_timer_does_not_cancel_the_timer_task_mid_sweep(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_arm_timer_does_not_cancel_the_timer_task_mid_sweep(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)
         svc._running = True
         svc._loop = asyncio.get_running_loop()
@@ -1062,10 +2117,19 @@ class TestFormatSchedule:
         # Mock "now" to Apr 10, job at 3PM same day
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
-        monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
-            "now": classmethod(lambda cls, tz=None: fake_now),
-            "fromtimestamp": staticmethod(lambda ts, tz=None: datetime.fromtimestamp(ts, tz)),
-        }))
+        monkeypatch.setattr(
+            "kiro_crew.cron.datetime",
+            type(
+                "D",
+                (datetime,),
+                {
+                    "now": classmethod(lambda cls, tz=None: fake_now),
+                    "fromtimestamp": staticmethod(
+                        lambda ts, tz=None: datetime.fromtimestamp(ts, tz)
+                    ),
+                },
+            ),
+        )
         job_ts = datetime(2026, 4, 10, 15, 0, tzinfo=timezone.utc).timestamp()
         result = format_schedule(CronSchedule(kind="at", at_ts=job_ts))
         assert result.startswith("at ")
@@ -1077,10 +2141,19 @@ class TestFormatSchedule:
         # Mock "now" to Apr 10, job on Apr 17
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
-        monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
-            "now": classmethod(lambda cls, tz=None: fake_now),
-            "fromtimestamp": staticmethod(lambda ts, tz=None: datetime.fromtimestamp(ts, tz)),
-        }))
+        monkeypatch.setattr(
+            "kiro_crew.cron.datetime",
+            type(
+                "D",
+                (datetime,),
+                {
+                    "now": classmethod(lambda cls, tz=None: fake_now),
+                    "fromtimestamp": staticmethod(
+                        lambda ts, tz=None: datetime.fromtimestamp(ts, tz)
+                    ),
+                },
+            ),
+        )
         job_ts = datetime(2026, 4, 17, 8, 0, tzinfo=timezone.utc).timestamp()
         result = format_schedule(CronSchedule(kind="at", at_ts=job_ts))
         assert "Apr 17" in result
@@ -1130,9 +2203,7 @@ class TestFormatSchedule:
             return type("C", (), {"timezone": "Bad/Zone"})()
 
         monkeypatch.setattr("kiro_crew.cron.KiroCrewConfig.load", staticmethod(_record_load))
-        monkeypatch.setattr(
-            "kiro_crew.cron.published_config_timezone", lambda: "America/New_York"
-        )
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "America/New_York")
         s = CronSchedule(kind="cron", cron_expr="0 22 * * 1-5")
         result = format_schedule(s)
         # Expression is evaluated in job timezone (ET fallback), so 22:00 = 10 PM local
@@ -1301,16 +2372,14 @@ class TestTimezoneScheduling:
             return type("C", (), {"timezone": "Bad/Zone"})()
 
         monkeypatch.setattr("kiro_crew.cron.KiroCrewConfig.load", staticmethod(_record_load))
-        monkeypatch.setattr(
-            "kiro_crew.cron.published_config_timezone", lambda: "America/Toronto"
-        )
+        monkeypatch.setattr("kiro_crew.cron.published_config_timezone", lambda: "America/Toronto")
 
         assert _job_tz(CronJob(id="j1", name="t", message="m", timezone="")) == ZoneInfo(
             "America/Toronto"
         )
-        assert _job_tz(
-            CronJob(id="j2", name="t", message="m", timezone="Asia/Tokyo")
-        ) == ZoneInfo("Asia/Tokyo")
+        assert _job_tz(CronJob(id="j2", name="t", message="m", timezone="Asia/Tokyo")) == ZoneInfo(
+            "Asia/Tokyo"
+        )
         assert not loads, "_job_tz loaded config.json on the event loop"
 
     def test_get_local_tz_never_loads_the_config_file(self, monkeypatch) -> None:
@@ -1477,9 +2546,7 @@ class TestTimezoneScheduling:
         )
         window_start = datetime(2025, 3, 10, 6, 0, tzinfo=timezone.utc)
         fires = [
-            i
-            for i in range(180)
-            if CronService._is_due(job, window_start.timestamp() + i * 60)
+            i for i in range(180) if CronService._is_due(job, window_start.timestamp() + i * 60)
         ]
         assert len(fires) == 1
 

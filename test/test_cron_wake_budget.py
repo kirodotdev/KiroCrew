@@ -150,11 +150,12 @@ def gw_and_cb() -> tuple[Any, Callable[[], Any], Callable[..., Any]]:
     gw.slack = None
     gw.conv_log = None
     gw.dashboard_state = None
-    gw._owner_id = "U000"
+    gw._owner_id = ""
     gw.subagent_mgr = None
     gw._cron_injecting = {}
     gw._no_crons = False
     gw._interactive_approval = MagicMock(return_value="interactive_cb")
+    gw._channel_reply_link = MagicMock(return_value=None)
 
     captured_cb: list[Any] = [None]
 
@@ -403,6 +404,7 @@ class TestCronTransientRetry:
 
             async def _two_runs() -> tuple[int, int]:
                 await gw._init_cron()
+                gw.cron_svc = None
                 cb = get_cb()
                 svc = CronService(base_dir=tmp_path, on_job=cb)
                 await svc._execute(job)

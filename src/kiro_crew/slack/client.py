@@ -50,8 +50,10 @@ class SlackClientOps(ABC):
         thread_ts: str | None = None,
         unfurl_links: bool | None = None,
         unfurl_media: bool | None = None,
+        reply_broadcast: bool | None = None,
+        client_msg_id: str | None = None,
     ) -> str:
-        """Post a message, return its ts."""
+        """Post a message, returning its ts; ``client_msg_id`` deduplicates retries."""
 
     @abstractmethod
     async def post_blocks(
@@ -62,8 +64,10 @@ class SlackClientOps(ABC):
         thread_ts: str | None = None,
         unfurl_links: bool | None = None,
         unfurl_media: bool | None = None,
+        reply_broadcast: bool | None = None,
+        client_msg_id: str | None = None,
     ) -> str:
-        """Post a Block Kit message, return its ts."""
+        """Post Block Kit, returning its ts; ``client_msg_id`` deduplicates retries."""
 
     @abstractmethod
     async def update_message(
@@ -118,7 +122,12 @@ class SlackClientOps(ABC):
 
     @abstractmethod
     async def post_ephemeral(
-        self, channel: str, user_id: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None
+        self,
+        channel: str,
+        user_id: str,
+        text: str,
+        blocks: list[dict] | None = None,
+        thread_ts: str | None = None,
     ) -> None:
         """Post an ephemeral message visible only to the specified user."""
 
@@ -212,7 +221,9 @@ class SlackClientOps(ABC):
         """
         return None
 
-    async def fetch_thread_replies(self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True) -> list[dict]:
+    async def fetch_thread_replies(
+        self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True
+    ) -> list[dict]:
         """Fetch thread replies. Returns list of message dicts with 'user'/'bot_id' and 'text'."""
         return []
 
@@ -306,7 +317,8 @@ class RealSlackClient(SlackClientOps):
             home = str(ch.get("context_team_id") or "")
         except Exception:
             logger.info(
-                "could not resolve the home workspace of channel %s", channel,
+                "could not resolve the home workspace of channel %s",
+                channel,
                 exc_info=True,
             )
             home = ""
@@ -337,6 +349,7 @@ class RealSlackClient(SlackClientOps):
         unfurl_links: bool | None = None,
         unfurl_media: bool | None = None,
         reply_broadcast: bool | None = None,
+        client_msg_id: str | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {"channel": channel, "text": text}
         if thread_ts is not None:
@@ -347,6 +360,8 @@ class RealSlackClient(SlackClientOps):
             kwargs["unfurl_media"] = unfurl_media
         if reply_broadcast and thread_ts is not None:
             kwargs["reply_broadcast"] = True
+        if client_msg_id is not None:
+            kwargs["client_msg_id"] = client_msg_id
         self._inject_team(channel, kwargs)
         resp = await self._web.chat_postMessage(**kwargs)
         return resp["ts"]
@@ -360,6 +375,7 @@ class RealSlackClient(SlackClientOps):
         unfurl_links: bool | None = None,
         unfurl_media: bool | None = None,
         reply_broadcast: bool | None = None,
+        client_msg_id: str | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {"channel": channel, "blocks": blocks, "text": text}
         if thread_ts is not None:
@@ -370,6 +386,8 @@ class RealSlackClient(SlackClientOps):
             kwargs["unfurl_media"] = unfurl_media
         if reply_broadcast and thread_ts is not None:
             kwargs["reply_broadcast"] = True
+        if client_msg_id is not None:
+            kwargs["client_msg_id"] = client_msg_id
         self._inject_team(channel, kwargs)
         resp = await self._web.chat_postMessage(**kwargs)
         return resp["ts"]
@@ -459,7 +477,12 @@ class RealSlackClient(SlackClientOps):
         return resp["channel"]["id"]
 
     async def post_ephemeral(
-        self, channel: str, user_id: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None
+        self,
+        channel: str,
+        user_id: str,
+        text: str,
+        blocks: list[dict] | None = None,
+        thread_ts: str | None = None,
     ) -> None:
         kwargs: dict = {"channel": channel, "user": user_id, "text": text}
         if blocks:
@@ -767,9 +790,7 @@ class RealSlackClient(SlackClientOps):
                                 else [rich_text_element]
                             )
                             for leaf in leaves:
-                                inline_texts = self._extract_inline_texts(
-                                    leaf.get("elements", [])
-                                )
+                                inline_texts = self._extract_inline_texts(leaf.get("elements", []))
                                 if inline_texts:
                                     parts.append("".join(inline_texts))
                 return "\n".join(parts) or text or None
@@ -777,11 +798,15 @@ class RealSlackClient(SlackClientOps):
             logger.debug("fetch_message failed for %s/%s", channel, ts, exc_info=True)
         return None
 
-    async def fetch_thread_replies(self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True) -> list[dict]:
+    async def fetch_thread_replies(
+        self, channel: str, thread_ts: str, limit: int = 200, warn_on_pagination: bool = True
+    ) -> list[dict]:
         """Fetch parent message + replies via conversations.replies API."""
         try:
             resp = await self._web.conversations_replies(
-                channel=channel, ts=thread_ts, limit=limit,
+                channel=channel,
+                ts=thread_ts,
+                limit=limit,
             )
             data: dict = resp.data if hasattr(resp, "data") else dict(resp)  # type: ignore[assignment,call-overload]
             messages: list[dict] = data.get("messages", [])
@@ -789,7 +814,9 @@ class RealSlackClient(SlackClientOps):
             if warn_on_pagination and meta.get("next_cursor"):
                 logger.warning(
                     "Thread %s/%s has more messages than limit=%d; import is incomplete",
-                    channel, thread_ts, limit,
+                    channel,
+                    thread_ts,
+                    limit,
                 )
             return messages
         except (SlackClientError, aiohttp.ClientError, asyncio.TimeoutError):

@@ -51,10 +51,12 @@ def _run_cron_runs(
     gw.sessions = MagicMock()
     gw.sessions.get_pid = MagicMock(return_value=None)
     gw.ctx_builder = MagicMock()
-    gw.slack = MagicMock()
+    # Delivery is outside this harness's subject. Dashboard-only runs carry no
+    # external outbox obligation, so every invocation reaches a fresh gate verdict.
+    gw.slack = None
     gw.conv_log = None
     gw.dashboard_state = None
-    gw._owner_id = "U000"
+    gw._owner_id = ""
     gw.subagent_mgr = None
     gw._cron_injecting = {}
     gw._no_crons = False
@@ -65,6 +67,7 @@ def _run_cron_runs(
     gw.ctx_builder.build_message = MagicMock(return_value=("msg", None))
     gw.ctx_builder.hooks = MagicMock()
     gw._interactive_approval = MagicMock(return_value="interactive_cb")
+    gw._channel_reply_link = MagicMock(return_value=None)
     if deliver_raises:
         # Fails the dashboard history read that runs AFTER the gate verdict and
         # is NOT wrapped in a local handler (the Slack post below it is), so the
@@ -104,9 +107,10 @@ def _run_cron_runs(
 
     captured_cb = None
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls:
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -119,6 +123,7 @@ def _run_cron_runs(
 
         async def _init_and_run():
             await gw._init_cron()
+            gw.cron_svc = None
             assert captured_cb is not None
             for _ in range(runs):
                 await captured_cb(job)
