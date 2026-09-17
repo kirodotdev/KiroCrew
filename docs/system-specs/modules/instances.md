@@ -470,6 +470,49 @@ request with no `request["user"]` with `401`, and rejects a disabled feature wit
 | `GET /api/instances/{id}/capabilities` | What a CONNECTED peer can do, for a local session bound to it: `version` (+ `local_version` and the `version_match` gate the relay enforces), `agents` + `default_agent`, `models`, `effort_levels`, `workspaces` + `default_workspace`. Aggregates five fixed peer reads (`/api/version`, `/api/agents`, `/api/models`, `/api/effort-levels`, `/api/workspaces`) through `SshTunnelManager.peer_capability` — a closed path set, deliberately NOT the prefix-fenced proxy above, which would have granted the peer's mutating `PUT /api/agents/{name}` in the same stroke. The reads fan out concurrently, each under `DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS` (8s) except `/api/models`, which gets `DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS` (20s): the model list is the one read whose COLD path runs bounded subprocess work on the peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat --list-models`, ~15s worst case), so an 8s budget killed every cold read and reported a healthy peer as `capability_unreachable` (#10621). One failed read does not fail the request: the reply is a PARTIAL document with the miss named per-field in `unavailable` (`capability_unreachable`, `capability_unauthorized`, `capability_peer_too_old`, …), so the frontend disables exactly that control. The dashboard (`useRemoteCapabilities`) re-polls a partial document every 8s while the peer is version-compatible and the per-field code is the transient `capability_unreachable` — never for version-skewed, disconnected, or terminally-failing peers — and its model pickers render a loading row (`aria-busy`) rather than an empty list while the model roster is pending, and an inline `ErrorNotice` with in-place retry when the read itself fails — an empty list would claim the peer offers no models. Replies are untrusted input: every string crosses the redact + clamp chain (`_cap_str` / `_cap_rows`, row cap 500) before reaching a picker. Owner-only, like the proxy and the federated search. |
 | `ANY /api/instances/{id}/proxy/{path}` | Generic chat proxy — the carrier for the remote-crew chat view. Forwards a **bounded slice** of a CONNECTED peer's `/api/` surface over the already-open tunnel via `SshTunnelManager.proxy_request`, streaming the reply chunk-by-chunk (a proxied chat turn streams SSE for minutes, so the client timeout is connect + read-idle, never total). Credential rules match the federated search: the manager-held token travels as the port-scoped cookie and never reaches the browser; a `401/403` gets exactly one transparent re-mint retry; `allow_redirects=False` (a compromised peer answering 30x must not steer the hub — SSRF). Path policy is a **canonicalization**, not a pattern check, and runs before any URL is built: the caller's path is percent-decoded to a fixed point (bounded by `PROXY_PATH_MAX_DECODE_PASSES`, a deeper chain is refused), then every segment must be a plainly-named token — no empty segment, no all-dots segment, and only unreserved/sub-delim characters — and the forwarded path is **rebuilt from exactly those vetted segments**. Vetting the decoded form and forwarding the rebuilt one is what closes encoded traversal at any depth: a half-decoded `%252e%252e` matches no denylist rule yet still normalizes back into the control plane. On that canonical form the vet policy is a **positive prefix allowlist** (`_PROXY_ALLOWED_PREFIXES`, `api/chat` + `api/stream` today): only the peer's `api/chat` subtree and its `api/stream` event feed are forwarded — each a prefix grant, so every route under one is reachable, which is the chat feature's own wire surface — and everything outside the named prefixes is refused by default: the peer's own `api/instances` plane (one hub cannot chain through a peer into a third machine's SSH control plane), the peer's token-minting routes (whose JSON replies would carry a minted peer credential back through the hub in-band), and any endpoint the peer grows outside the allowlisted prefixes. `api/stream` is the peer's own SSE broadcast endpoint and the out-of-turn half of the chat view: the per-turn reply streams back from `api/chat`, while session-list and slot-state changes arrive on `api/stream`. It is deliberately that endpoint and **not** its WebSocket sibling `api/ws` — a WS row would need a `101 Switching Protocols` to cross this proxy, and the reply content-type gate below exists precisely to stop a peer serving anything but JSON/SSE onto the authenticated hub origin, so an upgrade would tunnel straight through it. Note what the row admits: that feed is per-client but not per-slot, so a hub holding it receives the peer's whole notification/slot broadcast rather than only the session on screen — peer content crossing to a hub user who is already the peer's owner (this route is owner-only), so it widens volume, not privilege, and is the reason it is a named row rather than a blanket `api/` grant. A new prefix is added to the constant explicitly, never by widening back to deny-only; the constant's exact value is pinned by a test so widening is always a reviewed act. Methods limited to GET/POST/PUT/PATCH/DELETE; inbound bodies capped at `PROXY_REQUEST_BODY_MAX_BYTES` before buffering. No browser Origin or cookies are forwarded to the peer (the hub presents as a same-origin loopback client), and the hub's own `?token=` credential is **stripped from the forwarded query** — the browser may authenticate the proxy request with it, and forwarding it would hand the peer a replayable hub credential. Replies are gated to an **allowlist**: only `application/json` and `text/event-stream` content types are forwarded (a compromised peer must not serve active content that executes on the hub origin), and only allowlisted headers (`Content-Type`, `Cache-Control`, `X-Accel-Buffering`) cross back — `Set-Cookie` and everything else is dropped, with `X-Content-Type-Options: nosniff` added. Typed failures (`proxy_peer_not_connected`, `proxy_no_credential`, `proxy_unauthorized`, `proxy_peer_unreachable`) map to 5xx with a machine-readable `code`. |
 
+**Remote approval control follows execution ownership.** A peer ``permission``
+row is both transcript data and live control state: ``remote_relay`` appends the
+row locally, validates and bounds its server-derived request id, registers a
+mirror in the owning slot's ``_approval_futures``, and pushes the slot projection
+so the ordinary dashboard card appears. The owner-gated one-shot
+``POST /api/approvals/{id}/{action}`` path and trust-tier
+``POST /api/chat/slots/{slot}/approve`` path both forward the decision to the
+exact peer ``remote_slot`` first; only a peer 2xx resolves and marks the captured
+local future generation. State-level approvals retain priority when an id
+collides with a slot request, while a generic id matching multiple slots is
+refused as ambiguous. A refused or unreachable peer returns
+``502 remote_approval_failed`` and leaves the card retryable. The peer endpoint
+replays a matching durable decision idempotently, so a lost success response can
+be retried. Exact ``decision`` metadata on ``approval_resolved`` frames lets a
+direct peer-side answer settle the mirror instead of teardown relabelling it.
+In-flight fences identify futures, not reusable request-id strings: Reject once
+may produce a same-id successor without an earlier response or teardown removing
+that new card. Relay teardown retires each exact unresolved generation, so a peer
+timeout or truncated stream cannot leave a ghost card.
+
+Approval-mode parity covers the whole mode vocabulary, not only YOLO. A scoped
+``POST /api/chat/mode`` forwards ``normal``, ``trust_reads``, ``trust`` or
+``yolo`` to its execution peer before mutating the hub's representation; an
+unscoped request is sent once to each remote execution peer with no ``slot``
+field, preserving the peer's all-slots semantics. The peer therefore applies its
+own governance ceiling and audit path. A successful transition requested by a
+hub returns a short-lived, one-use rollback token whose snapshot stays on that
+peer and includes peer-global YOLO source, exact remaining lifetime and
+permanence, plus every peer slot and channel mode. The hub reads the bounded
+control response through its HTTP body boundary before accepting success, so
+transport fragmentation cannot hide the rollback token after the peer changes.
+Restoration never extends a
+timed grant, preserves declared versus ad-hoc permanence, and writes channel
+state off the event loop. If a
+later target or the hub fails, compensation consumes those authoritative tokens
+instead of guessing from the hub's incomplete mirrors. A refusal returns
+``502 remote_approval_mode_failed`` and the hub keeps its prior mode. Card-level
+YOLO first passes the hub's critical activation and audit gate, then forwards an
+ordinary approval for the current peer tool, and only then enables YOLO on the
+peer. A stale slot on a hub-global YOLO request
+retains the pre-existing local-only semantics because there is no proven
+execution peer to address.
+
 **Two routes cross the token boundary, not one.** `connect` and `refresh-token`
 both return a minted dashboard token in their response body, and they are the
 **only** two that do. `refresh-token` exists because the browser needs to replace

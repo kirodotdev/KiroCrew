@@ -2063,6 +2063,7 @@ class _ChatSlot:
         "_queue",
         "_last_enqueue_ts",
         "_approval_futures",
+        "_remote_approval_forwards",
         "_trust",
         "_trust_scope",
         "_trust_reads",
@@ -2326,6 +2327,11 @@ class _ChatSlot:
         # ``_note_enqueue``.
         self._last_enqueue_ts: str = ""
         self._approval_futures: dict[str, asyncio.Future[str]] = {}  # type: ignore[type-arg]
+        # Peer approval/mode writes that have been accepted for forwarding but
+        # whose local mirror generation is not settled yet. Relay teardown skips
+        # only these exact futures: a peer may reuse a request id after Reject
+        # once, and that successor must remain independently actionable.
+        self._remote_approval_forwards: set[asyncio.Future[str]] = set()
         self._trust: bool = False  # auto-approve tools for this slot
         # SafetyOverride scope key holding an EXPIRING, SEL-audited auto-approve
         # grant, for an unattended app worker with no human present to click
@@ -4070,6 +4076,10 @@ class DashboardState:
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
+        # Short-lived, one-use rollback snapshots for federated mode changes.
+        # Tokens, not snapshots, cross the wire; the authoritative state stays
+        # on the peer that captured it. The mode handler prunes by age and size.
+        self._approval_mode_rollbacks: dict[str, tuple[float, dict[str, Any]]] = {}
         # Process-local Spec Builder outbox claims, keyed by directory + delivery.
         # Directory scope matters because aliases use different slots for the same
         # files; durable status remains owned by the app's decision ledger.

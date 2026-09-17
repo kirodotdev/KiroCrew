@@ -52,7 +52,7 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
-from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
+from kiro_crew.dashboard.state import DashboardState, _mark_permission_resolved, _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import (
     SEARCH_MIN_CHARS,
@@ -2685,6 +2685,81 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     action = request.match_info["action"]
     if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
+
+    # State-level approvals keep their existing priority. Request ids are scoped
+    # to ACP connections and can collide, so a generic click must never be
+    # redirected from a pending cron/subagent decision to a slot merely because
+    # that slot happens to expose the same id.
+    state_future = state._approval_futures.get(approval_id)
+    owner = None
+    owner_future = None
+    if state_future is None or state_future.done():
+        matches = []
+        for candidate in state._slots.values():
+            future = candidate._approval_futures.get(approval_id)
+            if future is not None and not future.done():
+                matches.append((candidate, future))
+        if len(matches) > 1:
+            return web.json_response(
+                {
+                    "error": "approval id is ambiguous across sessions",
+                    "code": "approval_id_ambiguous",
+                },
+                status=409,
+            )
+        if matches:
+            owner, owner_future = matches[0]
+
+    if owner is not None and owner.is_remote and owner_future is not None:
+        # Imported lazily: handlers/__init__.py re-exports this module while the
+        # chat handler imports that facade, so module-scope imports would cycle.
+        from kiro_crew.dashboard.chat_handlers import (
+            _mark_captured_permission,
+            _permission_row,
+            deny_non_owner_remote_operation,
+        )
+        from kiro_crew.dashboard.remote_relay import RemoteTurnError, forward_peer_approval
+
+        denied = deny_non_owner_remote_operation(request, owner, "approval_resolve")
+        if denied is not None:
+            return denied
+        decision = (
+            "approved"
+            if action == "approve"
+            else "rejected_once" if action == "reject_once" else "rejected"
+        )
+        permission_row = _permission_row(owner.messages, approval_id, pending_only=True)
+        owner._remote_approval_forwards.add(owner_future)
+        try:
+            await forward_peer_approval(state, owner, approval_id, decision)
+        except RemoteTurnError as exc:
+            owner._remote_approval_forwards.discard(owner_future)
+            return web.json_response(
+                {"error": str(exc), "code": "remote_approval_failed"}, status=502
+            )
+
+        # Settle the captured future and row, not a second state-wide lookup:
+        # another generation can reuse the connection-scoped id while the peer
+        # write is in flight, and the decision has already reached the old one.
+        if not owner_future.done():
+            owner_future.set_result(decision)
+        marked = _mark_captured_permission(permission_row, approval_id, decision)
+        if permission_row is None:
+            marked = _mark_permission_resolved(owner.messages, approval_id, decision)
+        if marked:
+            owner._dirty = True
+        state._audit_and_broadcast_approval(
+            owner.key,
+            approval_id,
+            action == "approve",
+            decision,
+        )
+        owner._remote_approval_forwards.discard(owner_future)
+        if owner._approval_futures.get(approval_id) is owner_future:
+            owner._approval_futures.pop(approval_id, None)
+        state.push_slots_update()
+        return web.json_response({"ok": True})
+
     ok = state.resolve_approval(
         approval_id, action == "approve", rejected_once=action == "reject_once"
     )
