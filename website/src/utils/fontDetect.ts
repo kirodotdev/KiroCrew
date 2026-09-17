@@ -102,6 +102,22 @@ export function monospaceFontStack(family: string): string {
   return `${cssFontFamilyToken(family)}, ${MONOSPACE_GENERIC}`
 }
 
+/** The fallback a chat/prose font stack ends in — a reading surface, not a grid. */
+const PROPORTIONAL_GENERIC = GENERIC_FAMILIES[2] // 'sans-serif'
+
+/**
+ * CSS font stack that renders `family` and degrades to a proportional default.
+ *
+ * The chat surface is prose, not a fixed-width grid, so the generic tail is
+ * `sans-serif` rather than `monospace`: a name that does not resolve should fall
+ * back to a readable proportional face, not a terminal font. Used to preview a
+ * picker row in its own family — the mirror of `monospaceFontStack` for the
+ * terminal picker.
+ */
+export function proportionalFontStack(family: string): string {
+  return `${cssFontFamilyToken(family)}, ${PROPORTIONAL_GENERIC}`
+}
+
 /**
  * Whether a family name resolves to a font installed on this machine.
  *
@@ -184,16 +200,22 @@ export type LocalFontQuery =
   | { ok: false; reason: 'unsupported' | 'denied' }
 
 /**
- * Enumerate the machine's monospace font families via the Local Font Access API.
+ * Enumerate the machine's font families via the Local Font Access API, keeping
+ * only those `keep` accepts.
  *
  * MUST be called from a user gesture: the permission prompt requires transient
  * activation, so calling it on mount fails. A rejection covers both an explicit
  * block and a dismissed prompt — indistinguishable from each other, and neither
  * is fatal, because the probed candidate list remains valid.
+ *
+ * `keep` is what separates the terminal picker (monospace only — xterm lays
+ * glyphs on a fixed grid) from the chat picker (every family — chat is prose):
+ * the enumeration, the family-collapsing and the reading-order sort are shared,
+ * only the predicate differs.
  */
-export async function queryLocalMonospaceFonts(
-  win: WindowLike | undefined = defaultWindow(),
-  measure: MeasureText = defaultMeasure,
+async function queryLocalFontFamilies(
+  keep: (family: string) => boolean,
+  win: WindowLike | undefined,
 ): Promise<LocalFontQuery> {
   if (!isLocalFontAccessSupported(win)) return { ok: false, reason: 'unsupported' }
   let fonts: LocalFontDataLike[]
@@ -213,10 +235,29 @@ export async function queryLocalMonospaceFonts(
     ok: true,
     // Ordered for reading, so the collation follows the app's language rather
     // than whatever locale the browser happens to be set to.
-    families: Array.from(families)
-      .filter(name => isMonospaceFamily(name, measure))
-      .sort(compareText),
+    families: Array.from(families).filter(keep).sort(compareText),
   }
+}
+
+/** Monospace font families from the font book, for the terminal picker. */
+export async function queryLocalMonospaceFonts(
+  win: WindowLike | undefined = defaultWindow(),
+  measure: MeasureText = defaultMeasure,
+): Promise<LocalFontQuery> {
+  return queryLocalFontFamilies(name => isMonospaceFamily(name, measure), win)
+}
+
+/**
+ * Every font family from the font book, for the chat picker.
+ *
+ * No monospace filter — chat is prose, so proportional families are exactly what
+ * a reader wants, and the terminal's grid-alignment reason to exclude them does
+ * not apply here.
+ */
+export async function queryLocalFonts(
+  win: WindowLike | undefined = defaultWindow(),
+): Promise<LocalFontQuery> {
+  return queryLocalFontFamilies(() => true, win)
 }
 
 /** Test-only: drop the memoized measuring context. */

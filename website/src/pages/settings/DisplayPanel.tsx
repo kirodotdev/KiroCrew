@@ -31,7 +31,7 @@ import {
 } from '../../hooks/useTerminalFont'
 import { FONT_FAMILY_OPTIONS, OPENDYSLEXIC_MONO_FAMILY_NAME } from '../../utils/fontFamilyOptions'
 import { useFontOptions } from '../../hooks/useFontOptions'
-import { isFontInstalled, monospaceFontStack } from '../../utils/fontDetect'
+import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../../utils/fontDetect'
 
 import { i18nT } from '../../i18n/t'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
@@ -73,7 +73,7 @@ function StatusIndicator({ label }: { label: string }) {
 export function DisplayPanel() {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed } = useLanguage()
-  const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
+  const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
   const { preference, setTheme, colorTheme, setColorTheme, allThemes, loadCustomThemes, themeSwitching, overridesDropReport } = useTheme()
@@ -134,6 +134,35 @@ export function DisplayPanel() {
         ? i18nT('pages.settings.displayPanel.terminal_font_detect_denied')
         : fontDetectResult === 'none'
           ? i18nT('pages.settings.displayPanel.terminal_font_detect_none')
+          : undefined
+
+  // ── Custom font picker ──
+  // Shown only when the Font Family option below is "Custom". It names any
+  // installed family, which useZoom applies to --font-body app-wide (the custom
+  // family flows to chat, titles and folders by inheritance). Same component and
+  // two-layer detection as the terminal picker, but 'all' mode (this is prose,
+  // so proportional families are offered too) with previews in a proportional
+  // stack. Empty string = nothing typed yet; useZoom then falls back to the Sans
+  // stack, so Custom never renders as the browser default serif.
+  const {
+    families: customFontFamilies,
+    accessSupported: customFontAccessSupported,
+    lastResult: customFontDetectResult,
+    enumerate: enumerateCustomFonts,
+  } = useFontOptions('all')
+  const customFontPreview = (fam: string) => ({ previewFontFamily: proportionalFontStack(fam) })
+  const customFontOptions = useMemo(
+    () => customFontFamilies.map(fam => ({ value: fam, label: fam, ...customFontPreview(fam) })),
+    [customFontFamilies],
+  )
+  const customFontDetectStatus = customFontDetectResult === 'checking'
+    ? i18nT('pages.settings.displayPanel.custom_font_detect_checking')
+    : customFontDetectResult === 'added'
+      ? i18nT('pages.settings.displayPanel.custom_font_detect_added')
+      : customFontDetectResult === 'denied'
+        ? i18nT('pages.settings.displayPanel.custom_font_detect_denied')
+        : customFontDetectResult === 'none'
+          ? i18nT('pages.settings.displayPanel.custom_font_detect_none')
           : undefined
 
   const dispatch = useAppDispatch()
@@ -358,6 +387,46 @@ export function DisplayPanel() {
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.font_family')} description={i18nT('pages.settings.displayPanel.ui_font_family_for_the_dashboard_code_font_follo')} value={family}
             options={FONT_FAMILY_OPTIONS.map(o => ({ value: o.value, label: o.labelKey ? i18nT(o.labelKey) : o.label! }))}
             onChange={v => setFontFamily(v as FontFamily)} />
+          {/* Only when "Custom" is picked above: choose ANY installed family for
+              --font-body app-wide (chat, titles and folders inherit it). Same
+              browser-side detection as the terminal picker; a Nerd Font renders
+              its glyphs and index.css turns on ligatures while Custom is active.
+              Empty = nothing chosen yet, and useZoom falls back to the Sans stack. */}
+          {family === 'custom' && (
+            <>
+            <SettingsCombobox
+              label={i18nT('pages.settings.displayPanel.custom_font_family')}
+              description={i18nT('pages.settings.displayPanel.custom_font_family_desc')}
+              value={customFontFamily}
+              options={customFontOptions}
+              onChange={setCustomFontFamily}
+              triggerFallback={customFontFamily || i18nT('pages.settings.displayPanel.custom_font_choose')}
+              searchPlaceholder={i18nT('pages.settings.displayPanel.custom_font_search')}
+              customValueOption={typed => (isFontInstalled(typed)
+                ? {
+                  label: i18nT('pages.settings.displayPanel.custom_font_use_typed', { value: typed }),
+                  ...customFontPreview(typed),
+                }
+                : {
+                  label: i18nT('pages.settings.displayPanel.custom_font_use_typed', { value: typed }),
+                  sublabel: i18nT('pages.settings.displayPanel.custom_font_not_detected'),
+                })}
+              action={customFontAccessSupported
+                ? { label: i18nT('pages.settings.displayPanel.custom_font_detect'), onSelect: enumerateCustomFonts }
+                : undefined}
+              actionStatus={customFontDetectStatus}
+            />
+            {/* Ligatures are the reason many pick a coding font here, so default
+                on — but a programming font's =>/!= ligatures are divisive, so this
+                turns them off without leaving Custom. Only shown in Custom mode. */}
+            <SettingsToggle
+              label={i18nT('pages.settings.displayPanel.custom_font_ligatures')}
+              description={i18nT('pages.settings.displayPanel.custom_font_ligatures_desc')}
+              checked={customFontLigatures}
+              onChange={setCustomFontLigatures}
+            />
+            </>
+          )}
         </SettingsCard>
       </SettingsSection>
 
