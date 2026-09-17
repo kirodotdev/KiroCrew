@@ -9754,7 +9754,9 @@
         "search_files": "Pesquisar arquivos",
         "searching": "Pesquisando…",
         "showing_first_matches": "Mostrando as primeiras {{shown}} correspondências",
-        "unable_to_list_folder": "Não foi possível listar a pasta"
+        "unable_to_list_folder": "Não foi possível listar a pasta",
+        "search_timed_out": "A pesquisa expirou",
+        "refresh_retries": "Atualizar para tentar novamente"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

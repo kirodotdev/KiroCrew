@@ -9486,7 +9486,9 @@
         "search_files": "搜索文件",
         "searching": "正在搜索…",
         "showing_first_matches": "显示前 {{shown}} 个匹配项",
-        "unable_to_list_folder": "无法列出目录内容"
+        "unable_to_list_folder": "无法列出目录内容",
+        "search_timed_out": "搜索超时",
+        "refresh_retries": "点击“刷新”重试"
       },
       "knowledgePicker": {
         "cancel": "取消",

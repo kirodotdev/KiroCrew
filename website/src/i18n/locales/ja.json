@@ -9486,7 +9486,9 @@
         "search_files": "ファイルを検索",
         "searching": "検索中…",
         "showing_first_matches": "最初の {{shown}} 件の一致を表示しています",
-        "unable_to_list_folder": "フォルダーを一覧表示できません"
+        "unable_to_list_folder": "フォルダーを一覧表示できません",
+        "search_timed_out": "検索がタイムアウトしました",
+        "refresh_retries": "再試行するには「更新」"
       },
       "knowledgePicker": {
         "cancel": "キャンセル",

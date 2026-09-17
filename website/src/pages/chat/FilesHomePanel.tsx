@@ -4,7 +4,7 @@ import { FileText, RotateCw, ExternalLink } from 'lucide-react'
 import { useBranding } from '../../hooks/useBranding'
 import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
-import FileBrowserRail, { useTreeState } from './FileBrowserRail'
+import FileBrowserRail, { useTreeState, useTreeAvailable, useTreeNotice } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
@@ -44,7 +44,8 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
   // header; askAgent on — the Files panel holds no draft.
   const reveal = useRevealFailure(projectDir ?? undefined)
   const treeState = useTreeState(projectDir)
-  const treeAvailable = treeState === 'ready'
+  const treeNotice = useTreeNotice(projectDir, t)
+  const railMounts = useTreeAvailable(projectDir)
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['project-tree', projectDir] })
     qc.invalidateQueries({ queryKey: ['git-status', projectDir] })
@@ -58,12 +59,9 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
         <span className="flex-1" />
         {projectDir && (
           <>
-            {/* The rail's own refresh targets the same two queries and awaits
-                them, and the error state below carries a labelled Refresh of its
-                own, so mounting this unconditionally would put two
-                identically-named controls in one view. It covers only the state
-                that has neither: a directory whose tree has not resolved yet. */}
-            {!treeAvailable && treeState !== 'error' && (
+            {/* Covers every state the rail does not, including a cause a Refresh cannot answer —
+                unlabelled there, so the control exists without the copy promising a remedy. */}
+            {!railMounts && (
               <button onClick={refresh} className={iconBtn} title={t('pages.chat.filesHome.refresh')} aria-label={t('pages.chat.filesHome.refresh')}>
                 <RotateCw size={14} />
               </button>
@@ -85,25 +83,21 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />
           {treeState === 'error' ? (
-            <>
-              {/* A failed fetch is not a missing setting: the directory is set
-                  (the header is naming it), the tree endpoint just would not
-                  serve it. Retrying is the remedy, so the affordance sits with
-                  the message instead of only as a header icon. The Files tab
-                  holds no draft → hand-off on, beside the retry. */}
-              <ErrorNotice message={t('pages.chat.filesHome.tree_error')} askAgent />
-              <button
-                onClick={refresh}
-                className="text-[12px] px-2.5 h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border border-border"
-              >{t('pages.chat.filesHome.refresh')}</button>
-            </>
+            /* Only NON-recoverable causes reach here, so the composed line carries no remedy: a
+               refusal answers the same however often it is re-asked. It still names WHICH refusal,
+               because "couldn't load" left the reason to be read off an absent clause. */
+            <ErrorNotice message={treeNotice ?? ''} askAgent />
           ) : (
             <span className="text-[12.5px]">
-              {treeAvailable ? t('pages.chat.filesHome.select_file_hint') : t('pages.chat.filesHome.no_project_dir')}
+              {/* Silent on a recoverable failure: the rail beside this is already naming it,
+                  and promising a tree to pick from would contradict that notice. */}
+              {treeState === 'ready' ? t('pages.chat.filesHome.select_file_hint')
+                : treeState === 'no-dir' ? t('pages.chat.filesHome.no_project_dir')
+                  : null}
             </span>
           )}
         </div>
-        {treeAvailable && (
+        {railMounts && (
           <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} />
         )}
       </div>

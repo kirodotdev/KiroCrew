@@ -9620,7 +9620,9 @@
         "search_files": "Dateien suchen",
         "searching": "Suche…",
         "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
-        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
+        "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden",
+        "search_timed_out": "Zeitüberschreitung bei der Suche",
+        "refresh_retries": "Aktualisieren, um es erneut zu versuchen"
       },
       "knowledgePicker": {
         "cancel": "Abbrechen",
