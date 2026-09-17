@@ -21,6 +21,7 @@ import ast
 import functools
 import importlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -236,11 +237,68 @@ def test_the_family_logs_under_the_facade_name() -> None:
 
 
 def test_the_moved_enums_keep_the_facade_module() -> None:
-    """``ResetCause`` and ``RecoveryPayload`` are named by the path callers import them
-    from, and that path still resolves them."""
-    for cls in (chat_utils.ResetCause, chat_utils.RecoveryPayload):
+    """``ResetCause``, ``RecoveryPayload`` and ``RecoveryProvenance`` are named by the path
+    callers import them from, and that path still resolves them."""
+    for cls in (chat_utils.ResetCause, chat_utils.RecoveryPayload, chat_utils.RecoveryProvenance):
         assert cls.__module__ == FACADE
         assert getattr(importlib.import_module(cls.__module__), cls.__qualname__) is cls
+
+
+#: The provider-banner grammar and its echo evidence belong to what a turn's final text
+#: claims; the host-minted recovery provenance belongs to the rows the runner injects,
+#: beside the recovery payload it travels with.
+_PROVIDER_BANNER_HOMES = {
+    "_PROVIDER_BUDGET_BANNER_RE": "turn_text",
+    "_PROVIDER_BUDGET_TOPIC_RE": "turn_text",
+    "_DIGIT_GROUPING_RE": "turn_text",
+    "_COUNT_RE": "turn_text",
+    "_banner_count": "turn_text",
+    "_carries_count": "turn_text",
+    "strip_provider_budget_banner": "turn_text",
+    "mentions_provider_budget": "turn_text",
+    "classify_provider_budget_banner": "turn_text",
+    "RecoveryProvenance": "injected_rows",
+    "RECOVERY_PROVENANCE_META_KEY": "injected_rows",
+    "has_recovery_provenance": "injected_rows",
+}
+
+
+def test_the_provider_banner_names_are_served_from_their_owners() -> None:
+    """Each provider-banner and recovery-provenance name is bound once, in its owner, and
+    the facade serves it from there rather than holding a copy of its own."""
+    exports = _index().exports
+    served = {name: exports.get(name) for name in _PROVIDER_BANNER_HOMES}
+    assert served == {
+        name: f"{OWNER_PREFIX}{home}" for name, home in _PROVIDER_BANNER_HOMES.items()
+    }
+    assert sorted(set(_PROVIDER_BANNER_HOMES) & set(vars(chat_utils))) == []
+    for name, home in _PROVIDER_BANNER_HOMES.items():
+        assert getattr(chat_utils, name) is vars(sys.modules[f"{OWNER_PREFIX}{home}"])[name]
+
+
+def test_a_facade_patch_of_the_topic_gate_reaches_the_owner_classifier() -> None:
+    """The capacity-topic gate is read as a plain global of its owner, so a patch through
+    the facade must change what the owner's classifier decides, and the undo restores it."""
+    banner = "You have 8154 weighted tokens left"
+    assert chat_utils.mentions_provider_budget("please continue") is False
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(chat_utils, "_PROVIDER_BUDGET_TOPIC_RE", re.compile("continue"))
+        assert chat_utils.mentions_provider_budget("please continue") is True
+        assert chat_utils.classify_provider_budget_banner(
+            banner,
+            "please continue",
+            is_provider_recovery=True,
+            is_transient_recovery=False,
+            prior_visible_output=True,
+        ) == (banner, False)
+    assert chat_utils.mentions_provider_budget("please continue") is False
+    assert chat_utils.classify_provider_budget_banner(
+        banner,
+        "please continue",
+        is_provider_recovery=True,
+        is_transient_recovery=False,
+        prior_visible_output=True,
+    ) == ("", True)
 
 
 def test_a_read_through_the_facade_follows_a_rebound_owner_global() -> None:

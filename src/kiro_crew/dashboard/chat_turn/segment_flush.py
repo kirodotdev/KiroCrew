@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         register_widgets_off_loop,
         sel,
         sel_is_warm,
+        strip_provider_budget_banner,
         telemetry_channel_of,
         with_bounded_redaction_records,
     )
@@ -246,8 +247,12 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
+    strip_provider_banner: bool = False,
 ) -> None:
     """Finalize current text block as a segment and persist it.
+
+    ``strip_provider_banner`` removes one leading provider-budget banner the
+    caller already classified as provider metadata.
 
     ``quiet_persist`` additionally suppresses the per-message ``chat_message``
     broadcast that ``slot.append`` emits for the finalized assistant message.
@@ -323,6 +328,11 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    stripped_budget_banner = False
+    if strip_provider_banner:
+        assistant_text, stripped_budget_banner = strip_provider_budget_banner(assistant_text)
+        if stripped_budget_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
     # Repair a glued option marker before persisting. A mid-turn steer reply (or
     # any concatenation seam upstream) can append prose directly after an
     # ``[OPTIONS: ...]`` line with no separator, producing a single line the render
@@ -335,6 +345,19 @@ def _flush_segment(
     # model that later re-reads the line must not take it for an instruction.
     assistant_text = _reflow_label_and_audit(slot, assistant_text)
     redacted, blocked_links, redactions = _redact_segment(slot, assistant_text)
+    # A banner-only segment (opted-in strip removed the whole text) has no
+    # user-facing text to persist. Gated on an actual strip so ordinary empty
+    # flushes keep their existing behaviour. File chips and stats are already
+    # scoped to this turn's own rows, so nothing lands on the preceding answer.
+    # Regeneration is different: fall through so the normal assistant-message
+    # path consumes and attaches pending variants; returning here would let its
+    # done callback discard prior answers.
+    if stripped_budget_banner and not redacted and not slot._pending_variants:
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;

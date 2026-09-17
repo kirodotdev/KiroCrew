@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         TRANSIENT_RETRY_KIND,
         DashboardState,
         RecoveryPayload,
+        RecoveryProvenance,
         _ChatSlot,
         _has_user_queued_followup,
         _recovery_delay,
@@ -157,6 +158,11 @@ async def _recover_posttoken_transient(
                 _POSTTOKEN_RECOVER_MSG,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 payload=RecoveryPayload.CONTINUATION,
+                # Same text as the provider-budget banner recovery, different
+                # owner: the tag keeps banner stripping and the provider-specific
+                # queue policy away from a retry that may legitimately repeat its
+                # answer.
+                provenance=RecoveryProvenance.TRANSIENT_RETRY,
             )
     # else: Stop active (_should_suppress_requeue) or nested turn
     # (_prompt_depth != 0) — do NOT requeue; partial + notice already
