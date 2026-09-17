@@ -122,9 +122,7 @@ class MediaUpload:
 
 def _split_chunks(data: bytes) -> tuple[bytes, ...]:
     """Split *data* into ≤ CHUNK_SIZE_BYTES raw pieces, in order."""
-    return tuple(
-        data[i : i + CHUNK_SIZE_BYTES] for i in range(0, len(data), CHUNK_SIZE_BYTES)
-    )
+    return tuple(data[i : i + CHUNK_SIZE_BYTES] for i in range(0, len(data), CHUNK_SIZE_BYTES))
 
 
 def prepare_upload(data: bytes, media_type: str, filename: str, *, max_bytes: int) -> MediaUpload:
@@ -152,7 +150,11 @@ def prepare_upload(data: bytes, media_type: str, filename: str, *, max_bytes: in
         # (50 MiB), but checked so a future ceiling bump cannot silently produce
         # an over-limit handshake.
         raise WeComUploadError(f"file needs {len(chunks)} chunks, over the {MAX_CHUNKS} limit")
-    md5 = hashlib.md5(data).hexdigest()  # noqa: S324 - protocol-mandated integrity tag, not security
+    # WeCom's upload protocol mandates an md5 integrity tag; it is a wire
+    # checksum, not a security hash. usedforsecurity=False states that intent.
+    md5 = hashlib.md5(  # nosemgrep: python.lang.security.insecure-hash-algorithms-md5.insecure-hash-algorithm-md5
+        data, usedforsecurity=False
+    ).hexdigest()  # noqa: S324 - protocol-mandated integrity tag, not security
     return MediaUpload(
         media_type=media_type,
         filename=filename,

@@ -882,15 +882,27 @@ class TestUploadMedia:
         task = asyncio.create_task(drive_responses())
         # Let upload_media run until it parks on the init response.
         await asyncio.sleep(0.05)
-        await _feed_response(client, "aibot_upload_media-", {
-            "body": {"upload_id": "UP1"}, "errcode": 0, "errmsg": "ok",
-        })
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"upload_id": "UP1"},
+                "errcode": 0,
+                "errmsg": "ok",
+            },
+        )
         await asyncio.sleep(0.05)
         await _feed_response(client, "aibot_upload_media-", {"errcode": 0, "errmsg": "ok"})
         await asyncio.sleep(0.05)
-        await _feed_response(client, "aibot_upload_media-", {
-            "body": {"type": "file", "media_id": "MID42"}, "errcode": 0, "errmsg": "ok",
-        })
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"type": "file", "media_id": "MID42"},
+                "errcode": 0,
+                "errmsg": "ok",
+            },
+        )
         media_id = await asyncio.wait_for(task, timeout=2)
 
         assert media_id == "MID42"
@@ -915,9 +927,15 @@ class TestUploadMedia:
 
         task = asyncio.create_task(client.upload_media(b"hi", "file", "f.txt"))
         await asyncio.sleep(0.05)
-        await _feed_response(client, "aibot_upload_media-", {
-            "body": {}, "errcode": 40004, "errmsg": "bad",
-        })
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {},
+                "errcode": 40004,
+                "errmsg": "bad",
+            },
+        )
         with pytest.raises(WeComUploadError, match="refused"):
             await asyncio.wait_for(task, timeout=2)
 
@@ -930,9 +948,14 @@ class TestUploadMedia:
 
         task = asyncio.create_task(client.upload_media(b"hi", "file", "f.txt"))
         await asyncio.sleep(0.05)
-        await _feed_response(client, "aibot_upload_media-", {
-            "body": {"upload_id": "UP1"}, "errcode": 0,
-        })
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"upload_id": "UP1"},
+                "errcode": 0,
+            },
+        )
         await asyncio.sleep(0.05)
         await _feed_response(client, "aibot_upload_media-", {"errcode": 0})
         await asyncio.sleep(0.05)
@@ -959,9 +982,14 @@ class TestUploadMedia:
         client._pending_responses["aibot_upload_media-xyz"] = resp_waiter
 
         # Deliver an int-ACK for the proactive push req_id.
-        await client._handle_message(json.dumps({
-            "headers": {"req_id": "aibot_send_msg-abc"}, "errcode": 0,
-        }))
+        await client._handle_message(
+            json.dumps(
+                {
+                    "headers": {"req_id": "aibot_send_msg-abc"},
+                    "errcode": 0,
+                }
+            )
+        )
         assert ack_waiter.result() == 0
         assert not resp_waiter.done()  # untouched
 

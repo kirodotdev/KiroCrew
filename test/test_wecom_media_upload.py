@@ -34,7 +34,12 @@ class TestPrepareUpload:
         assert up.filename == "test.txt"
         assert up.total_size == len(data)
         assert up.total_chunks == 1
-        assert up.md5 == hashlib.md5(data).hexdigest()
+        assert (
+            up.md5
+            == hashlib.md5(  # nosemgrep: python.lang.security.insecure-hash-algorithms-md5.insecure-hash-algorithm-md5
+                data, usedforsecurity=False
+            ).hexdigest()
+        )
 
     def test_chunk_boundary_exact(self) -> None:
         # Exactly one chunk worth: still one chunk, not two.
@@ -117,3 +122,51 @@ class TestFrameBodies:
         assert CMD_INIT == "aibot_upload_media_init"
         assert CMD_CHUNK == "aibot_upload_media_chunk"
         assert CMD_FINISH == "aibot_upload_media_finish"
+
+
+class TestWeComMediaTypeMapping:
+    """Round-trip the documented _WECOM_TYPE_BY_EXT allowlist and the default."""
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            ("photo.png", "image"),
+            ("photo.JPG", "image"),  # case-insensitive
+            ("clip.jpeg", "image"),
+            ("anim.gif", "image"),
+            ("shot.bmp", "image"),
+            ("pic.webp", "image"),
+            ("hello.amr", "voice"),
+            ("movie.mp4", "video"),
+            ("movie.mov", "video"),
+            ("movie.m4v", "video"),
+            ("movie.webm", "video"),
+            ("report.pdf", "file"),  # unmapped -> generic file
+            ("deck.pptx", "file"),
+            ("noext", "file"),
+            ("", "file"),
+        ],
+    )
+    def test_media_type_by_extension(self, filename: str, expected: str) -> None:
+        from kiro_crew.wecom.transport import wecom_media_type_for
+
+        assert wecom_media_type_for(filename) == expected
+
+
+class TestBasename:
+    """_basename must strip both separators so a Windows path never leaks."""
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("C:\\Users\\alice\\report.pdf", "report.pdf"),  # Windows absolute
+            ("/home/alice/docs/report.pdf", "report.pdf"),  # POSIX absolute
+            ("report.pdf", "report.pdf"),  # bare name
+            ("a/b\\c.png", "c.png"),  # mixed separators
+            ("C:\\dir\\", ""),  # trailing sep -> empty leaf
+        ],
+    )
+    def test_basename_strips_both_separators(self, path: str, expected: str) -> None:
+        from kiro_crew.wecom.transport import _basename
+
+        assert _basename(path) == expected
