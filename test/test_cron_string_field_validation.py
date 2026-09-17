@@ -277,6 +277,13 @@ class TestCapAlignment:
         # Dashboard-only prompt snapshot (message-sized cap), same reasoning:
         # written by the create handler, no CRON_ADD_SCHEMA entry.
         "source_template_prompt",
+        # project_path is intentionally NOT in CRON_ADD_SCHEMA/CRON_UPDATE_SCHEMA
+        # -- it is a dashboard/REST-only field (POST/PATCH /api/crons via
+        # validate_string_field). Advertising it in an MCP tool schema without
+        # the handler reading it back would let an LLM agent set a value that
+        # is silently dropped -- MCP's cron_add/cron_update deliberately do
+        # not accept it.
+        "project_path",
         # Secret-grant pins and the requesting session key are written only by
         # the grant endpoint / cron_secret_request tool, never via
         # CRON_ADD_SCHEMA (grants cannot be created through cron_add).

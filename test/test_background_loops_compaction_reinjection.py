@@ -54,6 +54,7 @@ def gw_and_cb() -> tuple[Any, Callable[[], Any], Callable[..., Any]]:
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._no_crons = False
     gw._interactive_approval = MagicMock(return_value="interactive_cb")
 
@@ -78,11 +79,33 @@ def _job(**kw: Any) -> CronJob:
     )
 
 
+def _resolved(_cfg: Any, agent: str | None, project_path: str | None, **_kw: Any) -> Any:
+    """Report the requested agent as honored, whatever its name.
+
+    The sequence path pre-resolves every member before any turn runs and skips
+    the whole fire when one does not resolve, so a fire path exercised with
+    stand-in agent names needs them honored to reach the turn loop this module
+    is about. Naming them here keeps the flag assertions measuring the flag
+    rather than agent resolution.
+    """
+    from kiro_crew.config.sections import ResolvedBindings
+
+    return ResolvedBindings(
+        workspace_dir=Path("/tmp/ws"),
+        memory_store_name="global",
+        effective_memory_config={},
+        kiro_agent=agent or "default",
+        requested_resolved=True,
+        resolved_source="alias" if agent else "",
+    )
+
+
 def _run(gw: Any, get_cb: Callable[[], Any], capture_cron: Any, job: CronJob, stream: Any) -> Any:
     with (
         patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=stream),
         patch("kiro_crew.slack.gateway.redact_exfiltration_urls", return_value=("", False)),
         patch("kiro_crew.slack.gateway.redact_credentials", return_value=("", False)),
+        patch("kiro_crew.slack.gateway.resolve_agent_bindings", side_effect=_resolved),
         patch(
             "kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)
         ),

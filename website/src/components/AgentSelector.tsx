@@ -26,6 +26,13 @@ export interface KiroCrewAgent {
    *  older payloads predate the field, and it falls back to `description`. */
   triggers?: string
   source: string
+  /** Which roster half this row came from: `'global'` for a configured agent,
+   *  `'project'` for one declared by `<project>/.kiro/agents`. Optional because
+   *  a caller that never passes `project_path` has no project half to
+   *  distinguish, and older payloads predate the field. Distinct from `source`,
+   *  which names the row's PROVENANCE (kirocrew, package, app) and reads
+   *  `'kirocrew'` on a project row — the two are not interchangeable. */
+  scope?: string
   /** Default session color (#rrggbb hex) applied to new sessions using this
    *  agent. Empty or absent means no agent color. */
   session_color?: string
@@ -74,6 +81,24 @@ interface Props {
    * pixel-identical after every press during an outage.
    */
   rosterFailure?: { reloading: boolean; onReload: () => void }
+  /**
+   * Names in `agents` where a PROJECT agent displaced a same-named configured
+   * one, so the row can say so. Present only on a surface that merges a
+   * project's roster into the global one (Schedule's job form); absent
+   * everywhere else, where no collision is representable.
+   *
+   * The list holds ONE row per name — the project one, because that is what
+   * dispatch resolves inside a bound folder. Without this marker the user sees
+   * a `project` badge and a global agent that has silently disappeared from
+   * the list, with nothing connecting the two. "This is a project agent" and
+   * "this project agent took over a configured agent's name" are different
+   * facts, and only the second explains the absence.
+   *
+   * A Set rather than a flag on the agent objects: those mirror a server
+   * payload, and a synthetic field on them would be indistinguishable from one
+   * the API actually sends.
+   */
+  shadowedGlobals?: Set<string>
 }
 
 /**
@@ -92,7 +117,7 @@ interface Props {
  * Popover has no option semantics of its own, so the listbox ARIA and roving
  * focus come from `useListboxKeyboard`, unchanged.
  */
-export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false, rosterFailure }: Props) {
+export default function AgentSelector({ agents, defaultAgent, value, onChange, modal = false, rosterFailure, shadowedGlobals }: Props) {
   const provider = useProvider()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -308,8 +333,42 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
                         {a.source}
                       </SourceBadge>
                     )}
+                    {/* `scope`, not `source` (UX Review): the server tags a
+                        project row `scope: 'project'` but `source` reads
+                        'kirocrew' on it exactly as it does on a configured one,
+                        so a folder-supplied agent was visually identical to a
+                        global one and a user could not tell which picks would
+                        vanish when the directory was cleared. The `overrides
+                        global` chip only ever covered COLLIDING rows, which is a
+                        strict subset. */}
+                    {a.scope === 'project' && (
+                      <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-bg-elevated text-muted border border-border shrink-0">
+                        {i18nT('components.agentSelector.folder_agent')}
+                      </span>
+                    )}
+                    {shadowedGlobals?.has(a.name) && (
+                      <span
+                        className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-bg-elevated text-muted border border-border shrink-0"
+                        title={i18nT('components.agentSelector.overrides_global_hint')}
+                      >
+                        {i18nT('components.agentSelector.overrides_global')}
+                      </span>
+                    )}
                   </div>
-                  <span className="text-[11px] text-muted truncate">{a.description || provider.resolveAgentTemplate(a)}</span>
+                  {/* A shadowed row spends this line on the override instead of
+                      the usual description. It is not a nicety: the badge above
+                      is a 10px chip whose only explanation was a `title`, and a
+                      native tooltip needs a mouse resting precisely on that chip
+                      — no hover exists on touch, and the whole point of the
+                      marker is that a user who cannot find their configured
+                      agent learns why. The line is free here, because a project
+                      row has no description of its own and would otherwise
+                      repeat the template name the row already resolves to. */}
+                  <span className="text-[11px] text-muted truncate">
+                    {shadowedGlobals?.has(a.name)
+                      ? i18nT('components.agentSelector.overrides_global_detail')
+                      : a.description || provider.resolveAgentTemplate(a)}
+                  </span>
                 </div>
                 {isCurrent && <span className="text-accent text-[11px] ml-auto shrink-0"><Check className="lucide-inline" /></span>}
               </Btn>
