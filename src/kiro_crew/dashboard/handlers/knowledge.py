@@ -29,6 +29,12 @@ from kiro_crew.dashboard.handlers.files import (
     _content_matches_ext,
 )
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.knowledge.acl import (
+    LOCAL_LIBRARY,
+    LOCAL_PRINCIPAL,
+    QueryPrincipal,
+    bridge_binding_resolver,
+)
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
 from kiro_crew.knowledge.agent_source import add_agent_document
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
@@ -78,8 +84,10 @@ _MAX_SOURCE_NAME_LEN = 200
 def _sel_log(tool: str, **kwargs: object) -> None:
     """Emit SEL audit event for knowledge API mutations."""
     sel().log_tool_invocation(
-        session_key="dashboard", agent="knowledge-api",
-        tool_name=f"knowledge.{tool}", outcome=str(kwargs.pop("outcome", "completed")),
+        session_key="dashboard",
+        agent="knowledge-api",
+        tool_name=f"knowledge.{tool}",
+        outcome=str(kwargs.pop("outcome", "completed")),
         resources=str(kwargs) if kwargs else "",
     )
 
@@ -100,6 +108,7 @@ async def _audited_write(fn, *, event: str, fields=None):
     their own sync helper instead (``_create_source_audited``). Returns whatever
     *fn* returned.
     """
+
     def _write_and_audit():
         result = fn()
         _sel_log(event, **(fields or {}))
@@ -187,6 +196,267 @@ def _pipeline(request: web.Request):
     return request.app.get("knowledge_pipeline")
 
 
+# ---------------------------------------------------------------------------
+# Query-time ACL wiring (knowledge/acl.py)
+# The dashboard's knowledge search serves the on-host PERSONAL library. These
+# seams turn the request's authenticated identity into the query-time inputs the
+# retriever gates with, and expose where a shared/multi-tenant deployment plugs
+# in the provider binding resolver + revalidation hook. Fail-closed and honest
+# about what is wired TODAY:
+#
+#  * A managed cloud/structured item is gated on the PROVIDER-mapped subject/
+#    tenant, resolved PER CANDIDATE from the query principal + the candidate's
+#    own (provider, account) by app["knowledge_binding_resolver"] (W01's
+#    trusted binding association). No resolver is wired yet, so a managed item
+#    stays denied regardless of the dashboard identity -- one request never
+#    applies one provider identity to the whole library.
+#  * A trusted-local item is what the personal library legitimately serves, so
+#    the default whole-query context is acl.LOCAL_LIBRARY and the principal is
+#    acl.LOCAL_PRINCIPAL (trusted-local visible, every managed item denied).
+#
+# Install points (all read here, no call-site change): a per-candidate
+# app["knowledge_binding_resolver"] (acl.BindingResolver), an
+# app["knowledge_revalidator"] (acl.RevalidationHook), and -- for a deployment
+# that resolves the whole-query principal itself -- app["knowledge_identity_
+# resolver"] (request -> AccessContext) and app["knowledge_query_principal"]
+# (request -> acl.QueryPrincipal).
+def _knowledge_access_context(request: web.Request):
+    """The whole-query AccessContext (used for trusted-local items and for a
+    deployment that resolves a single context via knowledge_identity_resolver).
+
+    Uses an installed ``knowledge_identity_resolver`` when present; otherwise the
+    on-host personal library runs under the local single-user context. Never
+    derives a managed-item identity from a raw dashboard/session id -- that is
+    the per-candidate binding resolver's job, and its absence keeps managed items
+    denied.
+    """
+    resolver = request.app.get("knowledge_identity_resolver")
+    if resolver is not None:
+        try:
+            ctx = resolver(request)
+            if ctx is not None:
+                return ctx
+        except Exception:
+            logger.warning(
+                "knowledge_identity_resolver raised; falling back to the local "
+                "single-user context (managed items stay denied)",
+                exc_info=True,
+            )
+    return LOCAL_LIBRARY
+
+
+def _knowledge_query_principal(request: web.Request):
+    """The authenticated QueryPrincipal this request runs as.
+
+    Resolution order:
+
+    1. An explicitly installed ``knowledge_query_principal`` resolver
+       (``request -> QueryPrincipal``) wins — the seam a shared/multi-tenant
+       deployment uses once W01 can map the caller to a provider-resolvable
+       principal.
+    2. Otherwise derive from the identity the AUTH MIDDLEWARE already ESTABLISHED
+       on this request and nowhere else: ``request["app"]`` (the validated app
+       name, empty for the dashboard user), ``request["user"]`` (the validated
+       user id) and ``request["is_dashboard_user"]`` (the middleware's POSITIVE
+       dashboard-user signal, set as ``not app`` after a token/cookie validated).
+       These are written by ``token_auth`` ONLY after validation — an arbitrary
+       header or a raw ``X-Session-Key`` can never appear here, so a
+       caller-supplied header cannot become a principal.
+
+    When the middleware established NO identity on the request (none of those
+    keys present — e.g. a cookie-less internal/loopback path, or a request that
+    reached this handler without the identity-setting branch), we do NOT MINT a
+    principal from anything the caller could control: we return
+    ``LOCAL_PRINCIPAL`` (fail-closed; managed items denied). This touches no
+    middleware and invents no auth — it only READS what auth already proved.
+
+    An authenticated caller (dashboard owner, or an authenticated app) is derived
+    as a VERIFIED, NON-local ``QueryPrincipal``, so its managed candidates go
+    through the real per-candidate binding check (bound -> visible; unbound/
+    unverified/revoked/wrong-endpoint -> denied) instead of being denied
+    unconditionally. Trusted-local items stay visible via the bypass
+    access_context (a separate axis); on a host with no binding_resolver
+    installed, managed items are still denied (the gate drops a managed candidate
+    under a bypass context), so a non-local owner principal does not leak. The
+    binding still needs W01 to map the Kiro Crew caller to a provider subject/
+    tenant so ``principal_id`` (``user:<uid>`` / ``app:<name>``) aligns with the
+    binding's ``kiro_principal``; that mapping is the named dependency, not
+    something this handler may invent.
+    """
+    resolver = request.app.get("knowledge_query_principal")
+    if resolver is not None:
+        try:
+            p = resolver(request)
+            if p is not None:
+                return p
+        except Exception:
+            logger.warning(
+                "knowledge_query_principal raised; falling back to the request's "
+                "own middleware-established identity (managed items stay denied)",
+                exc_info=True,
+            )
+
+    # Read ONLY keys the auth middleware sets post-validation; never a header.
+    def _authed(key):
+        try:
+            return request[key]
+        except (KeyError, TypeError):
+            return None
+
+    app_name = _authed("app")
+    user_id = _authed("user")
+    is_dashboard_user = _authed("is_dashboard_user")
+
+    # No identity established by the middleware at all -> do not mint an
+    # authorization subject. LOCAL_PRINCIPAL is UNVERIFIED (verified=False), so
+    # the W01 resolver's principal_verified predicate denies it even if an owner
+    # binding exists -- an unproven caller is never an authorization subject.
+    if app_name is None and user_id is None and is_dashboard_user is None:
+        return LOCAL_PRINCIPAL
+
+    # An authenticated app caller -> a VERIFIED, NON-local principal, so its
+    # managed candidates go through the real per-candidate binding check (bound
+    # -> visible; unbound/unverified/revoked/wrong-endpoint -> denied). It is NOT
+    # local_library: local_library would short-circuit the resolver and deny
+    # every managed item unconditionally, which is exactly the bug where a
+    # legitimately-bound caller is denied forever. Trusted-LOCAL items stay
+    # visible via the bypass access_context (a separate axis); on a host with no
+    # binding_resolver installed, managed items are still denied (the gate drops
+    # a managed candidate under a bypass context), so this does not leak.
+    if app_name:
+        return QueryPrincipal(principal_id=f"app:{app_name}", local_library=False, verified=True)
+
+    # The dashboard owner (positive signal, or a validated user with no app): a
+    # VERIFIED, STABLE, NON-local owner principal. Same reasoning as the app
+    # branch -- managed items undergo the binding check so a bound owner is
+    # served, and are denied when unbound; trusted-local files remain visible via
+    # the bypass access_context. The id is stable across requests for the same
+    # authenticated user, so a same-owner provider binding resolves.
+    if is_dashboard_user or user_id:
+        owner = str(user_id or "").strip() or "dashboard-owner"
+        return QueryPrincipal(principal_id=f"user:{owner}", local_library=False, verified=True)
+
+    return LOCAL_PRINCIPAL
+
+
+def _knowledge_binding_resolver(request: web.Request):
+    """The per-candidate provider BindingResolver, if a deployment installed one
+    on ``app["knowledge_binding_resolver"]``; None otherwise (managed items then
+    fall back to the whole-query context, i.e. denied under the local library).
+
+    The installed resolver is W01's ``ControlPlaneBindingResolver``, whose
+    ``resolve`` returns an ``AccessGrant`` record (subject/tenant/groups from the
+    trusted store's VERIFIED refs) — NOT an ``AccessContext``, so it lacks the
+    ``subject_ids`` the policy's subject test reads. It is wrapped here through
+    ``acl.bridge_binding_resolver`` so the retrieval gate receives a genuine
+    ``AccessContext``; a resolver that already returns ``AccessContext`` is
+    wrapped harmlessly (isinstance pass-through). The policy is untouched."""
+    inner = request.app.get("knowledge_binding_resolver")
+    if inner is None:
+        # Construct lazily on FIRST USE (never on the boot path / on_startup), so
+        # gateway startup and socket binding are not delayed by building the
+        # control-plane store. Guarded + fail-closed: when the control-plane
+        # package is absent this stays None and managed items are denied. A host
+        # may also pre-install its own resolver on the app key, which is used
+        # as-is.
+        inner = _install_binding_resolver(request.app)
+    if inner is None:
+        return None
+
+    return bridge_binding_resolver(inner)
+
+
+def _knowledge_revalidator(request: web.Request):
+    """The provider live-permission RevalidationHook, if a deployment installed
+    one on ``app["knowledge_revalidator"]``; None otherwise (managed grants then
+    fall back to their staleness stamp, i.e. stale -> denied)."""
+    return request.app.get("knowledge_revalidator")
+
+
+async def _acl_visible_ids(request: web.Request, item_ids):
+    """The subset of *item_ids* this request's identity may see, via the SAME
+    per-item ACL gate ``search`` uses. Every non-search read/export route funnels
+    through here so a managed item is never returned ungated to an unbound or
+    wrong-identity caller (fail-closed: no gate seams installed => managed items
+    are denied). Runs the gate on a worker thread (sqlite is thread-local)."""
+    ids = [i for i in item_ids if i]
+    if not ids:
+        return set()
+    store = _store(request)
+    retriever = HybridRetriever(
+        store,
+        revalidator=_knowledge_revalidator(request),
+        binding_resolver=_knowledge_binding_resolver(request),
+    )
+    access_context = _knowledge_access_context(request)
+    query_principal = _knowledge_query_principal(request)
+    return await asyncio.to_thread(
+        retriever.visible_item_ids,
+        ids,
+        access_context=access_context,
+        query_principal=query_principal,
+    )
+
+
+async def _acl_can_see(request: web.Request, item_id: str) -> bool:
+    """True iff this request's identity may see the single *item_id* (fail-closed)."""
+    visible = await _acl_visible_ids(request, [item_id])
+    return item_id in visible
+
+
+def _install_binding_resolver(app: web.Application) -> None:
+    """Wire the REAL per-candidate binding resolver onto the app, if the
+    control-plane package is available in this build.
+
+    This is the production assembly the query-time ACL feature needs: it
+    constructs W01's ``ControlPlaneBindingResolver`` over the shared per-install
+    ``BindingStore`` (its default store path -- no new config surface) and
+    installs it on ``app["knowledge_binding_resolver"]``, with
+    ``principal_verified`` bound to the REAL ``acl.principal_is_verified``
+    predicate (only a principal the authenticated request path minted as verified
+    passes -- never a caller self-report or a lambda). ``account_to_deployment``
+    is left at the resolver's own default (``StoreBackedAccountToDeployment``, a
+    real store lookup); an unknown/unbound account resolves to nothing and the
+    gate denies (fail-closed).
+
+    Guarded: the control-plane modules land through W01's own PR, so on a tree
+    without them the import fails and the resolver is simply NOT installed --
+    managed items then fall back to the whole-query context (denied under the
+    local library), exactly the fail-closed posture. It NEVER synthesises a
+    stand-in resolver. A host that already installed its own resolver (e.g. a
+    test, or an edition) is left untouched. Returns the installed resolver (or
+    None when unavailable), so a first-use caller can construct-and-use it
+    without a second lookup."""
+    existing = app.get("knowledge_binding_resolver")
+    if existing is not None:
+        return existing
+    try:
+        from kiro_crew.connections.control_plane.acl_binding_resolver import (
+            ControlPlaneBindingResolver,
+        )
+        from kiro_crew.connections.control_plane.lifecycle import BindingStore
+        from kiro_crew.knowledge.acl import principal_is_verified
+    except Exception:
+        logger.debug(
+            "control-plane binding resolver unavailable in this build; managed "
+            "knowledge items fail closed until it is wired"
+        )
+        return None
+    try:
+        bstore = BindingStore()
+        resolver = ControlPlaneBindingResolver(bstore, principal_verified=principal_is_verified)
+        app["knowledge_binding_resolver"] = resolver
+        logger.info("knowledge binding resolver installed (control-plane store)")
+        return resolver
+    except Exception:
+        logger.warning(
+            "failed to construct the control-plane binding resolver; managed "
+            "knowledge items fail closed",
+            exc_info=True,
+        )
+        return None
+
+
 def _create_embedder(app):
     """Create embedder from KiroCrew config. Returns None if disabled/unavailable."""
     cfg_path = config_dir() / "config.json"
@@ -216,10 +486,13 @@ async def list_namespaces(request: web.Request) -> web.Response:
     """GET /api/knowledge/namespaces -- all namespaces with item counts."""
     store = _store(request)
     rows = await asyncio.to_thread(_namespace_rows, store)
-    return web.json_response([{"name": r["namespace"] or "default", "count": r["count"]} for r in rows])
+    return web.json_response(
+        [{"name": r["namespace"] or "default", "count": r["count"]} for r in rows]
+    )
 
 
 # ---------- Source Watcher ----------
+
 
 async def _start_watcher_async(app: web.Application) -> None:
     """Start the source watcher (auto-watches local_file sources)."""
@@ -235,7 +508,9 @@ async def _start_watcher_async(app: web.Application) -> None:
     app["_knowledge_watcher_task"] = task
 
 
-async def _start_artifact_ingest_async(app: web.Application, cfg: KiroCrewConfig | None = None) -> None:
+async def _start_artifact_ingest_async(
+    app: web.Application, cfg: KiroCrewConfig | None = None
+) -> None:
     """Wire artifact -> Knowledge Library sync when auto-ingest is enabled.
 
     Registers an in-process change-listener on the artifact store: every
@@ -363,12 +638,20 @@ def _attach_file_paths(store, items: list[dict]) -> None:
     if not source_ids:
         return
     ph = ",".join("?" * len(source_ids))
-    folder_sids = {r["id"] for r in store.db.execute(
-        f"SELECT id FROM sources WHERE id IN ({ph}) AND source_type IN ('local_folder', 'obsidian_vault')",  # noqa: S608
-        list(source_ids)).fetchall()}
-    artifact_sids = {r["id"] for r in store.db.execute(
-        f"SELECT id FROM sources WHERE id IN ({ph}) AND source_type = 'artifact'",  # noqa: S608
-        list(source_ids)).fetchall()}
+    folder_sids = {
+        r["id"]
+        for r in store.db.execute(
+            f"SELECT id FROM sources WHERE id IN ({ph}) AND source_type IN ('local_folder', 'obsidian_vault')",  # noqa: S608
+            list(source_ids),
+        ).fetchall()
+    }
+    artifact_sids = {
+        r["id"]
+        for r in store.db.execute(
+            f"SELECT id FROM sources WHERE id IN ({ph}) AND source_type = 'artifact'",  # noqa: S608
+            list(source_ids),
+        ).fetchall()
+    }
     if not folder_sids and not artifact_sids:
         return
     # Build item_id -> group-label reverse map.
@@ -376,7 +659,8 @@ def _attach_file_paths(store, items: list[dict]) -> None:
     # Folder/vault sources: group label is the file path.
     for sid in folder_sids:
         for row in store.db.execute(
-                "SELECT file_path, item_ids FROM folder_file_state WHERE source_id = ?", (sid,)):
+            "SELECT file_path, item_ids FROM folder_file_state WHERE source_id = ?", (sid,)
+        ):
             try:
                 ids = json.loads(row["item_ids"]) if row["item_ids"] else []
             except (json.JSONDecodeError, TypeError):
@@ -386,7 +670,8 @@ def _attach_file_paths(store, items: list[dict]) -> None:
     # Aggregate artifact source: group label is the artifact name (fallback slug).
     for sid in artifact_sids:
         for row in store.db.execute(
-                "SELECT slug, name, item_ids FROM artifact_item_state WHERE source_id = ?", (sid,)):
+            "SELECT slug, name, item_ids FROM artifact_item_state WHERE source_id = ?", (sid,)
+        ):
             try:
                 ids = json.loads(row["item_ids"]) if row["item_ids"] else []
             except (json.JSONDecodeError, TypeError):
@@ -414,18 +699,34 @@ _SCOPED_SEARCH_START = 200
 _SCOPED_SEARCH_MAX = 20000
 
 
-async def _search_until_exhausted(retriever, q: str, limit: int) -> list[dict]:
+async def _search_until_exhausted(
+    retriever, q: str, limit: int, access_context=None, query_principal=None
+) -> list[dict]:
     """Retrieve hybrid-search candidates until the retriever runs out.
 
     A source scope is applied *after* ranking, so a fixed window can hide every
     matching item behind higher-ranked hits from other sources. Growing the
     window until the retriever returns fewer rows than requested means the
     caller has seen the whole ranking, so its filtered count is the true total.
+
+    ``access_context``/``query_principal`` are the resolved query-time identity
+    (see _knowledge_access_context / _knowledge_query_principal); they default to
+    the local single-user identity when a caller does not supply them.
     """
+    if access_context is None:
+        access_context = LOCAL_LIBRARY
+    if query_principal is None:
+        query_principal = LOCAL_PRINCIPAL
     want = max(limit * 3, _SCOPED_SEARCH_START)
     results: list[dict] = []
     while True:
-        results = await run_in_embed_pool(retriever.search, q, limit=want)
+        results = await run_in_embed_pool(
+            retriever.search,
+            q,
+            limit=want,
+            access_context=access_context,
+            query_principal=query_principal,
+        )
         # Short read means the ranking is exhausted; nothing further to fetch.
         if len(results) < want or want >= _SCOPED_SEARCH_MAX:
             return results
@@ -454,7 +755,7 @@ def _load_items_by_id(store, item_ids: list[str]) -> dict[str, dict]:
     """
     out: dict[str, dict] = {}
     for start in range(0, len(item_ids), _SQLITE_VARIABLE_CHUNK):
-        chunk = item_ids[start:start + _SQLITE_VARIABLE_CHUNK]
+        chunk = item_ids[start : start + _SQLITE_VARIABLE_CHUNK]
         placeholders = ",".join("?" * len(chunk))
         rows = store.db.execute(
             f"SELECT * FROM items WHERE id IN ({placeholders})",  # noqa: S608
@@ -465,27 +766,20 @@ def _load_items_by_id(store, item_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def _items_page(store, where_clause: str, params: list,
-                limit: int, offset: int) -> tuple[int, list[dict]]:
-    """One page of the item listing, with its total, in one off-loop take.
+def _items_all(store, where_clause: str, params: list) -> list[dict]:
+    """Every matching item (ordered, UNPAGINATED), in one off-loop take.
 
-    Sync on purpose: the COUNT is a full scan over ``items``, which grows
-    without bound, and ``_attach_file_paths`` adds two more queries plus the row
-    serialization. The total and the page are separate reads on an autocommit
-    connection, so a concurrent insert can make the total disagree with the rows
-    by one page-worth; one take removes the suspensions between them, not the
-    disagreement. The caller dispatches this to a worker thread; ``store.db``
-    is thread-local, so the thread gets its own connection.
-    """
-    total = store.db.execute(
-        f"SELECT COUNT(*) FROM items i WHERE {where_clause}",  # noqa: S608
-        params).fetchone()[0]
+    Used by the browse route so the caller can ACL-filter the COMPLETE candidate
+    set BEFORE computing total/pagination -- filtering after pagination would
+    leak hidden counts into `total` and push visible rows onto later pages.
+    Sync on purpose (a full scan over ``items``); dispatched to a worker thread,
+    where ``store.db`` is thread-local."""
     rows = store.db.execute(
-        f"SELECT i.* FROM items i LEFT JOIN sources s ON i.source_id = s.id WHERE {where_clause} ORDER BY s.updated_at DESC, i.chunk_index ASC LIMIT ? OFFSET ?",  # noqa: S608, E501
-        [*params, limit, offset]).fetchall()
-    items = [store._serialize_item(r) for r in rows]
-    _attach_file_paths(store, items)
-    return total, items
+        f"SELECT i.* FROM items i LEFT JOIN sources s ON i.source_id = s.id "  # noqa: S608
+        f"WHERE {where_clause} ORDER BY s.updated_at DESC, i.chunk_index ASC",
+        params,
+    ).fetchall()
+    return [store._serialize_item(r) for r in rows]
 
 
 async def list_items(request: web.Request) -> web.Response:
@@ -513,7 +807,15 @@ async def list_items(request: web.Request) -> web.Response:
         embedder = request.app.get("knowledge_embedder")
         available = bool(embedder) and await embedder.is_available_async()
         embed_fn, embed_sig = vector_leg(embedder if available else None)
-        retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
+        retriever = HybridRetriever(
+            store,
+            embedder=embed_fn,
+            embed_sig=embed_sig,
+            revalidator=_knowledge_revalidator(request),
+            binding_resolver=_knowledge_binding_resolver(request),
+        )
+        access_context = _knowledge_access_context(request)
+        query_principal = _knowledge_query_principal(request)
         # mc-embed bulkhead: the search's query embed blocks on the shared model.
         # The retriever ranks globally, so post-retrieval filtering can discard
         # an unbounded share of any fixed window: if enough higher-ranked hits
@@ -523,10 +825,16 @@ async def list_items(request: web.Request) -> web.Response:
         # fewer rows than asked for), which makes the scoped total exact.
         # Unscoped searches keep the cheap limit * 3 window.
         if source_id:
-            all_results = await _search_until_exhausted(retriever, q, limit)
+            all_results = await _search_until_exhausted(
+                retriever, q, limit, access_context, query_principal
+            )
         else:
             all_results = await run_in_embed_pool(
-                retriever.search, q, limit=limit * 3
+                retriever.search,
+                q,
+                limit=limit * 3,
+                access_context=access_context,
+                query_principal=query_principal,
             )
         # Batch fetch all candidate items (avoid N+1). A scoped search escalates
         # its candidate pool, so this query and the row serialization can both be
@@ -553,7 +861,7 @@ async def list_items(request: web.Request) -> web.Response:
             filtered.append(item)
         total = len(filtered)
         offset = (page - 1) * limit
-        items = filtered[offset:offset + limit]
+        items = filtered[offset : offset + limit]
         await asyncio.to_thread(_attach_file_paths, store, items)
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
     else:
@@ -572,10 +880,19 @@ async def list_items(request: web.Request) -> web.Response:
         elif source_id:
             where.append("i.source_id = ?")
             params.append(source_id)
-        where_clause = ' AND '.join(where)
+        where_clause = " AND ".join(where)
+        # Per-item ACL BEFORE pagination: fetch the complete candidate set, drop
+        # the items this identity may not see, THEN compute total + the page.
+        # Filtering after pagination would leak hidden counts into `total` and
+        # push visible rows onto later pages. A managed item without a resolvable
+        # binding is dropped (fail-closed).
+        all_items = await asyncio.to_thread(_items_all, store, where_clause, params)
+        visible = await _acl_visible_ids(request, [it.get("id") for it in all_items])
+        vis_items = [it for it in all_items if it.get("id") in visible]
+        total = len(vis_items)
         offset = (page - 1) * limit
-        total, items = await asyncio.to_thread(
-            _items_page, store, where_clause, params, limit, offset)
+        items = vis_items[offset : offset + limit]
+        await asyncio.to_thread(_attach_file_paths, store, items)
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
 
 
@@ -594,7 +911,9 @@ def _item_detail(store, item_id: str) -> dict | None:
     if not item:
         return None
 
-    mentions = store.db.execute("SELECT entity_id, context FROM mentions WHERE item_id = ?", (item_id,)).fetchall()
+    mentions = store.db.execute(
+        "SELECT entity_id, context FROM mentions WHERE item_id = ?", (item_id,)
+    ).fetchall()
     entity_ids = [m["entity_id"] for m in mentions]
     entities = []
     for eid in entity_ids:
@@ -606,19 +925,26 @@ def _item_detail(store, item_id: str) -> dict | None:
     seen_ids = set()
     for eid in entity_ids:
         for row in store.db.execute(
-                "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)):
+            "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)
+        ):
             r = dict(row)
             if r["id"] not in seen_ids:
                 seen_ids.add(r["id"])
                 # Resolve entity names for display
-                src = store.db.execute("SELECT name FROM entities WHERE id = ?", (r["source_id"],)).fetchone()
-                tgt = store.db.execute("SELECT name FROM entities WHERE id = ?", (r["target_id"],)).fetchone()
+                src = store.db.execute(
+                    "SELECT name FROM entities WHERE id = ?", (r["source_id"],)
+                ).fetchone()
+                tgt = store.db.execute(
+                    "SELECT name FROM entities WHERE id = ?", (r["target_id"],)
+                ).fetchone()
                 r["source_name"] = src["name"] if src else r["source_id"]
                 r["target_name"] = tgt["name"] if tgt else r["target_id"]
                 relations.append(r)
 
-    locations = [dict(r) for r in store.db.execute(
-        "SELECT * FROM source_locations WHERE item_id = ?", (item_id,))]
+    locations = [
+        dict(r)
+        for r in store.db.execute("SELECT * FROM source_locations WHERE item_id = ?", (item_id,))
+    ]
 
     return {**item, "entities": entities, "relations": relations, "source_locations": locations}
 
@@ -626,8 +952,13 @@ def _item_detail(store, item_id: str) -> dict | None:
 async def get_item(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id} -- single item with entities, relations, source_locations."""
     store = _store(request)
-    detail = await asyncio.to_thread(_item_detail, store, request.match_info["id"])
+    item_id = request.match_info["id"]
+    detail = await asyncio.to_thread(_item_detail, store, item_id)
     if detail is None:
+        return web.json_response({"error": "not found"}, status=404)
+    # Per-item ACL: a managed item the caller may not see is reported as
+    # not-found (never 403), so its existence does not leak.
+    if not await _acl_can_see(request, item_id):
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response(detail)
 
@@ -648,7 +979,9 @@ async def update_item(request: web.Request) -> web.Response:
         return web.json_response({"error": "no valid fields"}, status=400)
     await _audited_write(
         partial(store.update_item, item_id, **fields),
-        event="item.update", fields={"item_id": item_id, "fields": list(fields)})
+        event="item.update",
+        fields={"item_id": item_id, "fields": list(fields)},
+    )
     return web.json_response({"ok": True})
 
 
@@ -685,8 +1018,11 @@ async def delete_item(request: web.Request) -> web.Response:
 async def get_item_content(request: web.Request) -> web.Response:
     """GET /api/knowledge/items/{id}/content -- plain text for clipboard."""
     store = _store(request)
-    item = await asyncio.to_thread(store.get_item, request.match_info["id"])
+    item_id = request.match_info["id"]
+    item = await asyncio.to_thread(store.get_item, item_id)
     if not item:
+        return web.Response(text="not found", status=404)
+    if not await _acl_can_see(request, item_id):
         return web.Response(text="not found", status=404)
     return web.Response(text=item["content"], content_type="text/plain")
 
@@ -703,7 +1039,8 @@ def _entity_list_rows(store, where_clause: str, params: list) -> list:
     connection.
     """
     return store.db.execute(
-        f"SELECT * FROM entities WHERE {where_clause} ORDER BY name LIMIT ?", params).fetchall()  # noqa: S608
+        f"SELECT * FROM entities WHERE {where_clause} ORDER BY name LIMIT ?", params
+    ).fetchall()  # noqa: S608
 
 
 async def list_entities(request: web.Request) -> web.Response:
@@ -724,8 +1061,7 @@ async def list_entities(request: web.Request) -> web.Response:
         where.append("name LIKE ?")
         params.append(f"%{q}%")
     params.append(limit)
-    rows = await asyncio.to_thread(
-        _entity_list_rows, store, ' AND '.join(where), params)
+    rows = await asyncio.to_thread(_entity_list_rows, store, " AND ".join(where), params)
     return web.json_response([dict(r) for r in rows])
 
 
@@ -758,7 +1094,10 @@ async def get_entity_items(request: web.Request) -> web.Response:
     store = _store(request)
     name = request.match_info["name"]
     rows = await asyncio.to_thread(_entity_items_rows, store, name)
-    return web.json_response([store._serialize_item(r) for r in rows])
+    items = [store._serialize_item(r) for r in rows]
+    # Per-item ACL: drop entity-linked items the caller may not see (fail-closed).
+    visible = await _acl_visible_ids(request, [it.get("id") for it in items])
+    return web.json_response([it for it in items if it.get("id") in visible])
 
 
 def _entity_items_rows(store, name: str) -> list:
@@ -799,8 +1138,12 @@ def _related_items(store, item_id: str, limit: int) -> list[dict]:
     ``store.db`` is thread-local, so the thread gets its own connection.
     """
     # Find entities mentioned in this item
-    entity_ids = [r["entity_id"] for r in store.db.execute(
-        "SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)).fetchall()]
+    entity_ids = [
+        r["entity_id"]
+        for r in store.db.execute(
+            "SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)
+        ).fetchall()
+    ]
     if not entity_ids:
         return []
 
@@ -811,7 +1154,7 @@ def _related_items(store, item_id: str, limit: int) -> list[dict]:
         f"FROM items i JOIN mentions m ON i.id = m.item_id "
         f"WHERE m.entity_id IN ({placeholders}) AND i.id != ? AND i.status = 'active' "
         f"GROUP BY i.id ORDER BY shared_entities DESC LIMIT ?",
-        [*entity_ids, item_id, limit]
+        [*entity_ids, item_id, limit],
     ).fetchall()
     return [{**store._serialize_item(r), "shared_entities": r["shared_entities"]} for r in rows]
 
@@ -826,6 +1169,9 @@ async def get_related_items(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid limit"}, status=400)
 
     items = await asyncio.to_thread(_related_items, store, item_id, limit)
+    # Per-item ACL: drop related items the caller may not see (fail-closed).
+    visible = await _acl_visible_ids(request, [it.get("id") for it in items])
+    items = [it for it in items if it.get("id") in visible]
     return web.json_response(items)
 
 
@@ -885,7 +1231,9 @@ async def get_full_graph(request: web.Request) -> web.Response:
             return web.json_response({"nodes": [], "edges": []})
         # Rank allowed entities by degree, take top N
         nodes_by_degree = sorted(
-            allowed_entities, key=lambda n: graph.degree(n) if graph.has_node(n) else 0, reverse=True
+            allowed_entities,
+            key=lambda n: graph.degree(n) if graph.has_node(n) else 0,
+            reverse=True,
         )[:limit]
     else:
         nodes_by_degree = sorted(graph.nodes, key=lambda n: graph.degree(n), reverse=True)[:limit]
@@ -893,10 +1241,16 @@ async def get_full_graph(request: web.Request) -> web.Response:
     if not nodes_by_degree:
         return web.json_response({"nodes": [], "edges": []})
     node_set = set(nodes_by_degree)
-    nodes = [{"id": n, "name": graph.nodes[n].get("name"), "type": graph.nodes[n].get("entity_type")}
-             for n in node_set if graph.has_node(n)]
-    edges = [{"source": u, "target": v, "type": d.get("relation_type"), "weight": d.get("weight")}
-             for u, v, d in graph.edges(data=True) if u in node_set and v in node_set]
+    nodes = [
+        {"id": n, "name": graph.nodes[n].get("name"), "type": graph.nodes[n].get("entity_type")}
+        for n in node_set
+        if graph.has_node(n)
+    ]
+    edges = [
+        {"source": u, "target": v, "type": d.get("relation_type"), "weight": d.get("weight")}
+        for u, v, d in graph.edges(data=True)
+        if u in node_set and v in node_set
+    ]
     return web.json_response({"nodes": nodes, "edges": edges})
 
 
@@ -954,8 +1308,7 @@ async def source_counts(request: web.Request) -> web.Response:
     # than run inline: blocking the event loop here would stall chat and
     # heartbeat processing on a large knowledge base.
     # The UNION repeats the filter clause, so the placeholders are bound twice.
-    rows = await asyncio.to_thread(
-        lambda: store.db.execute(sql, params + params).fetchall())
+    rows = await asyncio.to_thread(lambda: store.db.execute(sql, params + params).fetchall())
     counts = {r["sid"]: r["cnt"] for r in rows}
     # NOT sum(counts.values()): a document held by two sources appears in both
     # per-source counts, so summing them would exceed the number of documents and
@@ -963,7 +1316,8 @@ async def source_counts(request: web.Request) -> web.Response:
     total_row = await asyncio.to_thread(
         lambda: store.db.execute(
             f"SELECT COUNT(*) FROM items WHERE {' AND '.join(where)}", params  # noqa: S608
-        ).fetchone())
+        ).fetchone()
+    )
     return web.json_response({"counts": counts, "total": total_row[0]})
 
 
@@ -1009,7 +1363,8 @@ def _finalize_sync_status_write(
     marks = ", ".join("?" for _ in from_statuses)
     cur = store.db.execute(
         f"UPDATE sources SET sync_status = ? WHERE id = ? AND sync_status IN ({marks})",
-        (status, source_id, *from_statuses))
+        (status, source_id, *from_statuses),
+    )
     store.db.commit()
     return cur.rowcount > 0
 
@@ -1031,10 +1386,10 @@ async def _finalize_sync_status(
     try:
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.to_thread(
-                _finalize_sync_status_write, store, source_id, status, from_statuses)
+                _finalize_sync_status_write, store, source_id, status, from_statuses
+            )
     except Exception:
-        logger.exception(
-            "Could not finalize sync_status=%r for source %s", status, source_id)
+        logger.exception("Could not finalize sync_status=%r for source %s", status, source_id)
 
 
 async def _write_status_cancel_safe(store, source_id: str, status: str) -> None:  # type: ignore[no-untyped-def]
@@ -1071,9 +1426,9 @@ def _claim_sync(store, source_id: str) -> bool:
     clears it.
     """
     cur = store.db.execute(
-        "UPDATE sources SET sync_status = 'syncing' "
-        "WHERE id = ? AND sync_status <> 'syncing'",
-        (source_id,))
+        "UPDATE sources SET sync_status = 'syncing' " "WHERE id = ? AND sync_status <> 'syncing'",
+        (source_id,),
+    )
     store.db.commit()
     return cur.rowcount > 0
 
@@ -1112,7 +1467,8 @@ def _set_file_state(store, source_id: str, file_path: str, status: str) -> None:
     store.db.execute(
         "UPDATE folder_file_state SET status = ?, error_message = NULL "
         "WHERE source_id = ? AND file_path = ?",
-        (status, source_id, file_path))
+        (status, source_id, file_path),
+    )
     store.db.commit()
 
 
@@ -1126,12 +1482,14 @@ def _source_rows(store, uri_filter: str | None) -> list:
     thread-local, so the thread gets its own connection.
     """
     if uri_filter:
-        resolved_filter = str(Path(uri_filter).resolve()) if uri_filter.startswith('/') else uri_filter
+        resolved_filter = (
+            str(Path(uri_filter).resolve()) if uri_filter.startswith("/") else uri_filter
+        )
         return store.db.execute(
             "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
             "FROM sources s LEFT JOIN (SELECT source_id, COUNT(*) AS cnt FROM items GROUP BY source_id) c "
             "ON s.id = c.source_id WHERE s.uri = ? ORDER BY s.updated_at DESC",
-            (resolved_filter,)
+            (resolved_filter,),
         ).fetchall()
     return store.db.execute(
         "SELECT s.*, COALESCE(c.cnt, 0) AS item_count "
@@ -1177,13 +1535,17 @@ def _run_folder_dialog() -> str | None:
     absolute path, or None if the user cancelled or it failed to launch. Meant
     to run off the event loop via an executor."""
     cmd = [
-        "osascript", "-e",
-        'POSIX path of (choose folder with prompt '
+        "osascript",
+        "-e",
+        "POSIX path of (choose folder with prompt "
         '"Select a folder to add to your knowledge base")',
     ]
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            cmd, capture_output=True, text=True, timeout=_FOLDER_DIALOG_TIMEOUT,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_FOLDER_DIALOG_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
@@ -1223,9 +1585,7 @@ async def add_source(request: web.Request) -> web.Response:
     uri = body.get("uri", "")
     properties = body.get("properties", {})
     if not isinstance(properties, dict):
-        return web.json_response(
-            {"error": "properties must be an object"}, status=400
-        )
+        return web.json_response({"error": "properties must be an object"}, status=400)
     namespace = body.get("namespace", "")
 
     # Validate namespace if provided at top level or in properties
@@ -1233,9 +1593,7 @@ async def add_source(request: web.Request) -> web.Response:
         namespace = properties.get("namespace", "")
     if namespace:
         if not isinstance(namespace, str):
-            return web.json_response(
-                {"error": "namespace must be a string"}, status=400
-            )
+            return web.json_response({"error": "namespace must be a string"}, status=400)
         namespace = namespace.strip()[:64]
 
     if not source_type:
@@ -1252,12 +1610,7 @@ async def add_source(request: web.Request) -> web.Response:
     # prefix — Path("\\/?\\C:\\...") normalizes to the same extended path as
     # \\?\ — so match on "first two chars are any slash", not literal "\\" /
     # "//" alone.
-    if (
-        isinstance(uri, str)
-        and len(uri) >= 2
-        and uri[0] in ("\\", "/")
-        and uri[1] in ("\\", "/")
-    ):
+    if isinstance(uri, str) and len(uri) >= 2 and uri[0] in ("\\", "/") and uri[1] in ("\\", "/"):
         _sel_log("source.add_denied", reason="unsupported_prefix", uri=uri)
         return web.json_response(
             {
@@ -1284,7 +1637,9 @@ async def add_source(request: web.Request) -> web.Response:
         resolved_uri = str(Path(uri).resolve())
         if is_sensitive_path(resolved_uri):
             _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
-            return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
+            return web.json_response(
+                {"error": "Path is restricted for security reasons"}, status=403
+            )
 
     # Validate URI format for sources without a dedicated connector
     if source_type == "local_file":
@@ -1325,15 +1680,18 @@ async def add_source(request: web.Request) -> web.Response:
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
     if existing:
         return web.json_response(
-            {"error": "source already exists", "id": existing["id"],
-             "code": "source_exists"}, status=409)
+            {"error": "source already exists", "id": existing["id"], "code": "source_exists"},
+            status=409,
+        )
 
     # Folder sources: discovery walk + pending_confirmation (no auto-scan)
     if source_type in ("local_folder", "obsidian_vault"):
         folder_path = Path(uri).resolve()
         if is_sensitive_path(str(folder_path)):
             _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
-            return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
+            return web.json_response(
+                {"error": "Path is restricted for security reasons"}, status=403
+            )
         if not folder_path.is_dir():
             return web.json_response({"error": f"Directory not found: {uri}"}, status=400)
 
@@ -1350,12 +1708,14 @@ async def add_source(request: web.Request) -> web.Response:
             # The same filters the sweep applies, or the count describes a
             # different file set from the one that gets ingested.
             discovered = await asyncio.to_thread(
-                watcher._folder_watcher._walk, str(folder_path),
-                **walk_filters(properties, source_type))
+                watcher._folder_watcher._walk,
+                str(folder_path),
+                **walk_filters(properties, source_type),
+            )
             file_count = len(discovered)
             cost = await asyncio.to_thread(
-                estimate_scan_cost, discovered,
-                max_files=max_files_prop(properties))
+                estimate_scan_cost, discovered, max_files=max_files_prop(properties)
+            )
 
         # Store with pending_confirmation status
         if isinstance(properties, dict):
@@ -1364,12 +1724,17 @@ async def add_source(request: web.Request) -> web.Response:
             if namespace and "namespace" not in properties:
                 properties["namespace"] = namespace
         sid, created = await asyncio.to_thread(
-            _create_source_audited, store, source_type, name=name or uri, uri=uri,
-            properties=properties)
+            _create_source_audited,
+            store,
+            source_type,
+            name=name or uri,
+            uri=uri,
+            properties=properties,
+        )
         if not created:
             return web.json_response(
-                {"error": "source already exists", "id": sid,
-                 "code": "source_exists"}, status=409)
+                {"error": "source already exists", "id": sid, "code": "source_exists"}, status=409
+            )
         return web.json_response(
             {
                 "id": sid,
@@ -1388,12 +1753,12 @@ async def add_source(request: web.Request) -> web.Response:
         )
 
     sid, created = await asyncio.to_thread(
-        _create_source_audited, store, source_type, name=name or uri, uri=uri,
-        properties=properties)
+        _create_source_audited, store, source_type, name=name or uri, uri=uri, properties=properties
+    )
     if not created:
         return web.json_response(
-            {"error": "source already exists", "id": sid,
-             "code": "source_exists"}, status=409)
+            {"error": "source already exists", "id": sid, "code": "source_exists"}, status=409
+        )
 
     # Trigger immediate ingestion for local_file sources. The task claims
     # 'syncing' itself, so nothing is written here that a disconnect could
@@ -1453,7 +1818,8 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
             # retry it. Caught rather than left to propagate: these tasks carry
             # `add_done_callback(set.discard)`, which never retrieves an exception.
             logger.exception(
-                "Could not claim sync for source %s; leaving its status untouched", source_id)
+                "Could not claim sync for source %s; leaving its status untouched", source_id
+            )
             return
     finally:
         if claim_settled is not None:
@@ -1563,29 +1929,39 @@ async def _sync_source_body(request: web.Request) -> web.Response:
         if not file_uri:
             return web.json_response({"error": "no file path to sync"}, status=400)
         if source["sync_status"] == "syncing":
-            return web.json_response({"error": "sync already in progress", "source_id": source_id}, status=409)
+            return web.json_response(
+                {"error": "sync already in progress", "source_id": source_id}, status=409
+            )
         pipeline = _pipeline(request)
         if not pipeline:
             return web.json_response({"error": "pipeline not configured"}, status=503)
         # The task claims the row; this read is only the fast 409 for the common
         # case, so a lost claim ends the task rather than double-starting a sync.
         await _hand_off_under_gate(
-            request, pipeline,
+            request,
+            pipeline,
             lambda settled: _ingest_local_file_task(
-                pipeline, store, file_uri, source_id, claim_settled=settled),
+                pipeline, store, file_uri, source_id, claim_settled=settled
+            ),
         )
         _sel_log("source.sync.local_file", source_id=source_id)
         return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
 
     # Agent-assisted sync: fetch in background, no chat session needed
     uri = source["uri"] or ""
-    props = json.loads(source["properties"] or "{}") if isinstance(source["properties"], str) else (source["properties"] or {})
+    props = (
+        json.loads(source["properties"] or "{}")
+        if isinstance(source["properties"], str)
+        else (source["properties"] or {})
+    )
     url = uri or props.get("url", "")
     if not url:
         return web.json_response({"error": "no URL to fetch"}, status=400)
 
     if source["sync_status"] == "syncing":
-        return web.json_response({"error": "sync already in progress", "source_id": source_id}, status=409)
+        return web.json_response(
+            {"error": "sync already in progress", "source_id": source_id}, status=409
+        )
 
     pipeline = _pipeline(request)
     if not pipeline:
@@ -1595,17 +1971,25 @@ async def _sync_source_body(request: web.Request) -> web.Response:
         # Compatibility for minimal callers that predate workload-isolated pools.
         pool = request.app["knowledge_llm_pool"]
     await _hand_off_under_gate(
-        request, pipeline,
+        request,
+        pipeline,
         lambda settled: _background_agent_sync(
-            source_id, url, source["name"], store, pipeline, pool, claim_settled=settled),
+            source_id, url, source["name"], store, pipeline, pool, claim_settled=settled
+        ),
     )
     _sel_log("source.sync.agent", source_id=source_id, url=url)
     return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
 
 
 async def _background_agent_sync(  # type: ignore[no-untyped-def]
-    source_id: str, url: str, name: str, store, pipeline, pool: LLMPool,
-    *, claim_settled: asyncio.Event | None = None,
+    source_id: str,
+    url: str,
+    name: str,
+    store,
+    pipeline,
+    pool: LLMPool,
+    *,
+    claim_settled: asyncio.Event | None = None,
 ) -> None:
     """Background task: fetch content via agent, then ingest.
 
@@ -1636,7 +2020,8 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
             # retry it. Caught rather than left to propagate: these tasks carry
             # `add_done_callback(set.discard)`, which never retrieves an exception.
             logger.exception(
-                "Could not claim sync for source %s; leaving its status untouched", source_id)
+                "Could not claim sync for source %s; leaving its status untouched", source_id
+            )
             return
     finally:
         if claim_settled is not None:
@@ -1690,7 +2075,9 @@ async def delete_source(request: web.Request) -> web.Response:
         # call for that long -- never on the event loop.
         await _audited_write(
             partial(store.delete_source_cascade, source_id),
-            event="source.delete", fields={"source_id": source_id})
+            event="source.delete",
+            fields={"source_id": source_id},
+        )
     except Exception:
         logger.exception("delete_source failed: source_id=%s", source_id)
         return web.json_response({"error": "internal server error"}, status=500)
@@ -1718,10 +2105,13 @@ async def rename_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "name cannot be empty"}, status=400)
     if len(name) > _MAX_SOURCE_NAME_LEN:
         return web.json_response(
-            {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400)
+            {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
+        )
     await _audited_write(
         partial(store.update_source, source_id, name=name),
-        event="source.rename", fields={"source_id": source_id})
+        event="source.rename",
+        fields={"source_id": source_id},
+    )
     return web.json_response({"ok": True, "name": name})
 
 
@@ -1762,7 +2152,8 @@ def _adopt_source(store, source_id: str, *, event: str):
         source_id,
         set_keys={AUTO_REGISTRATION_RETIRED_PROP: True},
         remove_keys=("scan_paused",),
-        sync_status="active")
+        sync_status="active",
+    )
     if props is None:
         # Deleted between the read above and the write. Same answer as a row
         # that was never there: the caller 404s.
@@ -1783,8 +2174,12 @@ def _pause_source_row(store, source_id: str) -> bool:
     what stops the sweep from walking and delete-reconciling the whole folder;
     the deeper scan_paused gate in folder_watcher stops the ingestion itself.
     """
-    if store.merge_source_properties(
-            source_id, set_keys={"scan_paused": True}, sync_status="paused") is None:
+    if (
+        store.merge_source_properties(
+            source_id, set_keys={"scan_paused": True}, sync_status="paused"
+        )
+        is None
+    ):
         return False
     _sel_log("source.pause", source_id=source_id)
     return True
@@ -1807,12 +2202,220 @@ def _task_registry(app: web.Application, key: str) -> set:  # type: ignore[type-
     return tasks
 
 
+def _register_optional_connector(
+    connectors: "dict[str, BaseConnector]",
+    module_path: str,
+    class_name: str,
+    runner_factory=None,
+    inject_kw: str | None = None,
+    source_type: str | None = None,
+) -> bool:
+    """Register a structured vendor connector, injecting its live-read runner.
+
+    The structured vendor connectors (GitHub / Google Drive / Salesforce) each
+    live in their OWN package and land on ``main`` through their OWN PR. This
+    shared handler is their single registration site, but it must not
+    hard-``import`` a module that has not landed yet: a top-level import of an
+    absent module would break this handler's own import on a tree where the
+    vendor PR is not merged. So the import is guarded — when the module is
+    absent the source_type is simply NOT registered (fail-closed: ``add_source``
+    rejects an unregistered source_type and the retrieval gate never sees it,
+    never public).
+
+    Each connector takes its live-read dependency as an OPTIONAL injected arg
+    (GitHub ``transport_provider``, Google ``operations_factory``, Salesforce
+    ``call_runner``) and is the authority on its own fail-closed behavior when
+    that dependency is absent (GitHub refuses at fetch/detect_changes; Google/SF
+    refuse at validate_config). The injected value is a PER-SOURCE factory — the
+    connector calls it as ``factory(source)`` to build that source's own runner,
+    so one installed factory serves many sources without sharing a credential
+    binding. So the connector is registered whenever its module imports —
+    matching its documented contract (registered + editable, refusing live reads
+    until wired) — and the ``runner_factory`` is passed into the constructor ONLY
+    when the host has installed one; otherwise it is constructed with its own
+    default (this handler never synthesises a stand-in empty runner to feign
+    activation). This is real construction+injection (not an ``app[...]``
+    presence flag), and copies no vendor code — only the import + injected
+    instantiation live here.
+
+    Returns True when the connector was registered.
+
+    When ``source_type`` is given, registration is DEFERRED: the vendor module is
+    NOT imported and the connector is NOT constructed on the (boot) call path.
+    A lightweight :class:`_LazyConnector` is registered under the known
+    ``source_type`` and it imports + constructs the real connector on first
+    actual use (a fetch/detect/validate), so gateway boot does no optional
+    vendor import or constructor work before the socket binds. The source_type
+    is still registered immediately (``add_source`` sees it), and an absent
+    module still fails closed -- the lazy build raises at first use, and until
+    then nothing live has run.
+    """
+    if source_type is not None:
+        connectors[source_type] = _LazyConnector(
+            source_type, module_path, class_name, runner_factory=runner_factory, inject_kw=inject_kw
+        )
+        return True
+    return _build_optional_connector(
+        connectors, module_path, class_name, runner_factory=runner_factory, inject_kw=inject_kw
+    )
+
+
+def _build_optional_connector(
+    connectors: "dict[str, BaseConnector]",
+    module_path: str,
+    class_name: str,
+    runner_factory=None,
+    inject_kw: str | None = None,
+) -> bool:
+    """Import + construct a vendor connector NOW and register it (eager path).
+
+    Used by the lazy proxy on first use, and by any direct caller that passes no
+    ``source_type`` (e.g. a test driving construction explicitly)."""
+    import importlib
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError:
+        logger.debug(
+            "knowledge connector module %s not present; source_type not "
+            "registered (fail-closed until its PR lands)",
+            module_path,
+        )
+        return False
+    try:
+        connector_cls = getattr(module, class_name)
+        # Inject the host-installed PER-SOURCE runner factory when present, by the
+        # connector's OWN keyword (they differ: Google ``operations_factory``,
+        # GitHub ``transport_provider``, Salesforce ``runner_factory``). Injecting
+        # positionally would be WRONG for a connector whose first positional param
+        # is something else -- e.g. Salesforce's ``__init__(call_runner=None, *,
+        # runner_factory=None)`` takes a single pre-composed runner first, so a
+        # positional factory would land in ``call_runner`` and be mistaken for a
+        # runner. When no factory is installed (or no keyword is known), construct
+        # with the connector's own default (it self-enforces fail-closed live
+        # reads until wired).
+        if runner_factory is not None and inject_kw:
+            connector = connector_cls(**{inject_kw: runner_factory})
+        else:
+            connector = connector_cls()
+        connectors[connector.source_type()] = connector
+    except Exception:  # pragma: no cover - defensive; a broken vendor module
+        logger.exception(
+            "knowledge connector %s.%s failed to register; skipping "
+            "(built-in connectors unaffected)",
+            module_path,
+            class_name,
+        )
+        return False
+    return True
+
+
+class _LazyConnector(BaseConnector):
+    """A boot-cheap stand-in for a structured vendor connector.
+
+    Holds only the known ``source_type`` plus the module/class/injection needed
+    to build the real connector, so registering it does NO vendor import or
+    constructor work on the gateway boot path. The real connector is imported +
+    constructed on the FIRST call that needs it; ``source_type`` answers from the
+    stored string without building.
+
+    Fail-closed WITHOUT crashing the caller: when the vendor module is absent or
+    broken, ``_load`` returns None and each method degrades to the safe answer --
+    ``validate_config`` -> ``(False, reason)`` so source creation is REFUSED (not
+    a 500), ``detect_changes``/``supports_rows`` -> False, and a live read
+    (``fetch``/``fetch_rows``) raises a clear ``RuntimeError`` only if something
+    actually tries to read from an unavailable connector. An absent optional
+    connector therefore behaves exactly like an unregistered one at the API
+    surface, never an uncaught ImportError."""
+
+    def __init__(
+        self,
+        source_type: str,
+        module_path: str,
+        class_name: str,
+        *,
+        runner_factory=None,
+        inject_kw: str | None = None,
+    ) -> None:
+        self._source_type = source_type
+        self._module_path = module_path
+        self._class_name = class_name
+        self._runner_factory = runner_factory
+        self._inject_kw = inject_kw
+        self._real: "BaseConnector | None" = None
+        self._load_failed = False
+
+    def source_type(self) -> str:
+        return self._source_type
+
+    def _load(self) -> "BaseConnector | None":
+        """Import + construct the real connector, or None if unavailable
+        (absent module / broken constructor). Never raises to the caller."""
+        if self._real is None and not self._load_failed:
+            import importlib
+
+            try:
+                module = importlib.import_module(self._module_path)
+                connector_cls = getattr(module, self._class_name)
+                if self._runner_factory is not None and self._inject_kw:
+                    self._real = connector_cls(**{self._inject_kw: self._runner_factory})
+                else:
+                    self._real = connector_cls()
+            except Exception:
+                self._load_failed = True
+                logger.debug(
+                    "knowledge connector %s.%s unavailable; source_type %r fails "
+                    "closed (refused, never crashes the request)",
+                    self._module_path,
+                    self._class_name,
+                    self._source_type,
+                    exc_info=True,
+                )
+        return self._real
+
+    def supports_rows(self) -> bool:
+        real = self._load()
+        return real.supports_rows() if real is not None else False
+
+    def validate_config(self, config: dict) -> tuple[bool, str]:
+        real = self._load()
+        if real is None:
+            return (
+                False,
+                f"connector for source_type '{self._source_type}' is not "
+                "available in this build",
+            )
+        return real.validate_config(config)
+
+    async def fetch(self, source: dict) -> tuple[str, dict]:
+        real = self._load()
+        if real is None:
+            raise RuntimeError(f"connector for source_type '{self._source_type}' is unavailable")
+        return await real.fetch(source)
+
+    async def detect_changes(self, source: dict) -> bool:
+        real = self._load()
+        return await real.detect_changes(source) if real is not None else False
+
+    async def fetch_rows(self, source: dict):
+        real = self._load()
+        if real is None:
+            raise RuntimeError(f"connector for source_type '{self._source_type}' is unavailable")
+        return await real.fetch_rows(source)
+
+
 def _track_scan_task(app: web.Application, task: asyncio.Task) -> None:  # type: ignore[type-arg]
     """Keep strong reference to scan task and log exceptions."""
     tasks = _task_registry(app, "_scan_tasks")
     tasks.add(task)
     task.add_done_callback(tasks.discard)
-    task.add_done_callback(lambda t: logger.exception("scan_source failed", exc_info=t.exception()) if not t.cancelled() and t.exception() else None)
+    task.add_done_callback(
+        lambda t: (
+            logger.exception("scan_source failed", exc_info=t.exception())
+            if not t.cancelled() and t.exception()
+            else None
+        )
+    )
 
 
 async def confirm_source(request: web.Request) -> web.Response:
@@ -1820,7 +2423,8 @@ async def confirm_source(request: web.Request) -> web.Response:
     store = _store(request)
     source_id = request.match_info["id"]
     outcome, row, props = await asyncio.to_thread(
-        _adopt_source, store, source_id, event="source.confirm")
+        _adopt_source, store, source_id, event="source.confirm"
+    )
     if outcome == "missing":
         return web.json_response({"error": "not found"}, status=404)
     if outcome == "denied":
@@ -1828,13 +2432,19 @@ async def confirm_source(request: web.Request) -> web.Response:
     # Trigger scan
     watcher = request.app.get("knowledge_watcher")
     if watcher:
-        source = {"id": source_id, "uri": row["uri"], "source_type": row["source_type"], "properties": json.dumps(props)}
+        source = {
+            "id": source_id,
+            "uri": row["uri"],
+            "source_type": row["source_type"],
+            "properties": json.dumps(props),
+        }
         # Paced like the watcher's own sweeps. This is the burst that costs the
         # most -- nothing is ingested yet, so every discovered file is new -- so
         # skipping the budget here would spend the whole folder before the first
         # sweep ever ran.
-        task = asyncio.create_task(watcher._folder_watcher.scan_source(
-            source, chunk_budget=folder_chunk_budget(props)))
+        task = asyncio.create_task(
+            watcher._folder_watcher.scan_source(source, chunk_budget=folder_chunk_budget(props))
+        )
         _track_scan_task(request.app, task)
     return web.json_response({"status": "scanning"})
 
@@ -1853,7 +2463,8 @@ async def resume_source(request: web.Request) -> web.Response:
     store = _store(request)
     source_id = request.match_info["id"]
     outcome, row, props = await asyncio.to_thread(
-        _adopt_source, store, source_id, event="source.resume")
+        _adopt_source, store, source_id, event="source.resume"
+    )
     if outcome == "missing":
         return web.json_response({"error": "not found"}, status=404)
     if outcome == "denied":
@@ -1861,9 +2472,15 @@ async def resume_source(request: web.Request) -> web.Response:
     # Trigger scan to pick up remaining files
     watcher = request.app.get("knowledge_watcher")
     if watcher:
-        source = {"id": source_id, "uri": row["uri"], "source_type": row["source_type"], "properties": json.dumps(props)}
-        task = asyncio.create_task(watcher._folder_watcher.scan_source(
-            source, chunk_budget=folder_chunk_budget(props)))
+        source = {
+            "id": source_id,
+            "uri": row["uri"],
+            "source_type": row["source_type"],
+            "properties": json.dumps(props),
+        }
+        task = asyncio.create_task(
+            watcher._folder_watcher.scan_source(source, chunk_budget=folder_chunk_budget(props))
+        )
         _track_scan_task(request.app, task)
     return web.json_response({"status": "scanning"})
 
@@ -1879,7 +2496,8 @@ def _folder_file_rows(store, source_id: str) -> list:
     return store.db.execute(
         "SELECT file_path, status, error_message, mtime, content_hash, item_ids, last_seen "
         "FROM folder_file_state WHERE source_id = ? ORDER BY last_seen DESC",
-        (source_id,)).fetchall()
+        (source_id,),
+    ).fetchall()
 
 
 async def list_source_files(request: web.Request) -> web.Response:
@@ -1887,16 +2505,24 @@ async def list_source_files(request: web.Request) -> web.Response:
     store = _store(request)
     source_id = request.match_info["id"]
     rows = await asyncio.to_thread(_folder_file_rows, store, source_id)
-    files = [{"file_path": r["file_path"], "status": r["status"] or "pending",
-              "error_message": _redact(r["error_message"]) if r["error_message"] else None,
-              "mtime": r["mtime"],
-              "item_count": len(json.loads(r["item_ids"] or "[]"))} for r in rows]
+    files = [
+        {
+            "file_path": r["file_path"],
+            "status": r["status"] or "pending",
+            "error_message": _redact(r["error_message"]) if r["error_message"] else None,
+            "mtime": r["mtime"],
+            "item_count": len(json.loads(r["item_ids"] or "[]")),
+        }
+        for r in rows
+    ]
     # Also count totals
     total = len(files)
     done = sum(1 for f in files if f["status"] == "done")
     failed = sum(1 for f in files if f["status"] == "failed")
     skipped = sum(1 for f in files if f["status"] == "skipped")
-    return web.json_response({"files": files, "total": total, "done": done, "failed": failed, "skipped": skipped})
+    return web.json_response(
+        {"files": files, "total": total, "done": done, "failed": failed, "skipped": skipped}
+    )
 
 
 async def retry_file(request: web.Request) -> web.Response:
@@ -1915,7 +2541,9 @@ async def retry_file(request: web.Request) -> web.Response:
         return web.json_response({"error": "path is restricted"}, status=403)
     await _audited_write(
         partial(_set_file_state, store, source_id, file_path, "pending"),
-        event="source.file.retry", fields={"source_id": source_id})
+        event="source.file.retry",
+        fields={"source_id": source_id},
+    )
     return web.json_response({"status": "pending"})
 
 
@@ -1935,7 +2563,9 @@ async def skip_file(request: web.Request) -> web.Response:
         return web.json_response({"error": "path is restricted"}, status=403)
     await _audited_write(
         partial(_set_file_state, store, source_id, file_path, "skipped"),
-        event="source.file.skip", fields={"source_id": source_id})
+        event="source.file.skip",
+        fields={"source_id": source_id},
+    )
     return web.json_response({"status": "skipped"})
 
 
@@ -1969,8 +2599,9 @@ async def ingest_text(request: web.Request) -> web.Response:
         try:
             tmp.write(text.encode())
             tmp.close()
-            job_id = await pipeline.ingest_file(tmp.name, original_name=name,
-                                                namespace=namespace, source_id=source_id)
+            job_id = await pipeline.ingest_file(
+                tmp.name, original_name=name, namespace=namespace, source_id=source_id
+            )
             # Update source status. INVARIANT: the 'synced' write and the
             # source.ingest_text audit ride in ONE worker take (_audited_write),
             # with no await between them -- that is what makes the audit
@@ -1978,15 +2609,17 @@ async def ingest_text(request: web.Request) -> web.Response:
             # off-loop on its own.
             await _audited_write(
                 partial(_set_sync_status, store, source_id, "synced"),
-                event="source.ingest_text", fields={"source_id": source_id, "name": name})
+                event="source.ingest_text",
+                fields={"source_id": source_id, "name": name},
+            )
             return web.json_response({"ok": True, "job_id": job_id})
         except ImportChunkBudgetError as exc:
             # The cross-file import budget deferred this ingest. Surface the reasoned
             # refusal (429, not a generic 500) so the caller learns it is a transient
             # budget deferral it can retry, not a server fault. Nothing was written.
             return web.json_response(
-                {"error": str(exc), "code": "import_budget_exceeded"},
-                status=429)
+                {"error": str(exc), "code": "import_budget_exceeded"}, status=429
+            )
         except BaseException as exc:
             # ``except BaseException`` so a cancel is seen and re-raised (task
             # semantics), but this handler writes NO terminal status: it holds
@@ -2018,12 +2651,14 @@ async def get_config(request: web.Request) -> web.Response:
     # keep ``supported_formats`` as the clean extension list and surface the
     # no-extension capability via an explicit boolean instead of stripping the
     # information away entirely.
-    return web.json_response({
-        "enabled": pipeline is not None,
-        "supported_formats": sorted(FileReader.SUPPORTED - {''}),
-        "accepts_no_extension": '' in FileReader.SUPPORTED,
-        "folder_picker": _folder_picker_available(request),
-    })
+    return web.json_response(
+        {
+            "enabled": pipeline is not None,
+            "supported_formats": sorted(FileReader.SUPPORTED - {""}),
+            "accepts_no_extension": "" in FileReader.SUPPORTED,
+            "folder_picker": _folder_picker_available(request),
+        }
+    )
 
 
 # ---------- Stats ----------
@@ -2042,7 +2677,8 @@ def _stats_counts(store, with_embedded: bool) -> tuple[dict, int]:
     if not with_embedded:
         return stats, 0
     embedded = store.db.execute(
-        "SELECT COUNT(*) FROM items WHERE embedding IS NOT NULL").fetchone()[0]
+        "SELECT COUNT(*) FROM items WHERE embedding IS NOT NULL"
+    ).fetchone()[0]
     return stats, embedded
 
 
@@ -2050,8 +2686,7 @@ async def get_stats(request: web.Request) -> web.Response:
     """GET /api/knowledge/stats."""
     store = _store(request)
     embedder = request.app.get("knowledge_embedder")
-    stats, embedded_count = await asyncio.to_thread(
-        _stats_counts, store, embedder is not None)
+    stats, embedded_count = await asyncio.to_thread(_stats_counts, store, embedder is not None)
     if embedder:
         available = await embedder.is_available_async()
         stats["embeddings"] = {
@@ -2176,7 +2811,8 @@ async def ingest_file(request: web.Request) -> web.Response:
                 staged.unlink(missing_ok=True)
                 _sel_log("ingest", filename=filename, outcome="rejected", reason=reason)
                 return web.json_response(
-                    {"error": f"{ext} archive rejected ({reason})"}, status=400)
+                    {"error": f"{ext} archive rejected ({reason})"}, status=400
+                )
 
         # Admission BEFORE acceptance. This route answers 'processing' and ingests
         # in the background, and the staged temp file is the only server-side copy
@@ -2191,7 +2827,8 @@ async def ingest_file(request: web.Request) -> web.Response:
             staged.unlink(missing_ok=True)
             _sel_log("ingest", filename=filename, outcome="deferred")
             return web.json_response(
-                {"error": str(exc), "code": "import_budget_exceeded"}, status=429)
+                {"error": str(exc), "code": "import_budget_exceeded"}, status=429
+            )
 
         # Create source record immediately so it appears in the UI
         store = _store(request)
@@ -2231,7 +2868,8 @@ async def ingest_file(request: web.Request) -> web.Response:
                     # status itself on both its paths (ingestion.py:1128 / 1144), so a
                     # skipped stamp costs a UI hint and heals on its own.
                     stamp = asyncio.ensure_future(
-                        asyncio.to_thread(_set_sync_status, store, src_id, "syncing"))
+                        asyncio.to_thread(_set_sync_status, store, src_id, "syncing")
+                    )
                     try:
                         await asyncio.shield(stamp)
                     except asyncio.CancelledError:
@@ -2249,10 +2887,12 @@ async def ingest_file(request: web.Request) -> web.Response:
                         # client-supplied and can carry a secret, and the row is what
                         # a reader needs to correlate a status write that did not land.
                         logger.exception(
-                            "Could not stamp 'syncing' for source %s; ingesting anyway",
-                            src_id)
+                            "Could not stamp 'syncing' for source %s; ingesting anyway", src_id
+                        )
                     await pipeline.ingest_file(
-                        tmp_path, original_name=filename, namespace=namespace,
+                        tmp_path,
+                        original_name=filename,
+                        namespace=namespace,
                         source_id=src_id,
                         # Admission was settled above, so this call must not enter the
                         # budget again -- including when the reservation returned None
@@ -2292,7 +2932,8 @@ async def ingest_file(request: web.Request) -> web.Response:
                 pipeline.release_import_budget(budget_token)
                 if is_cancel:
                     await _finalize_sync_status(
-                        store, src_id, "error", from_statuses=("syncing", "pending"))
+                        store, src_id, "error", from_statuses=("syncing", "pending")
+                    )
                     raise
                 # Unconditional, NOT the CAS: this path's 'syncing' stamp is
                 # best-effort, so a failed stamp co-occurring with a failed
@@ -2313,8 +2954,12 @@ async def ingest_file(request: web.Request) -> web.Response:
             # the orphan sweep until its ingest ends, and a disconnect cannot
             # commit a 'syncing' the scheduled work then never clears.
             source_id, created = await asyncio.to_thread(
-                _add_source_unique, store,
-                name=filename, source_type='local_file', uri=uri, properties={},
+                _add_source_unique,
+                store,
+                name=filename,
+                source_type="local_file",
+                uri=uri,
+                properties={},
             )
             if not created:
                 # Marking a re-used row owed an ingest keeps the id the client
@@ -2331,10 +2976,12 @@ async def ingest_file(request: web.Request) -> web.Response:
                 except Exception:
                     logger.exception(
                         "Could not stamp 'syncing' for re-used source %s; ingesting anyway",
-                        source_id)
+                        source_id,
+                    )
             staged_path = str(staged)
             await _hand_off_under_gate(
-                request, pipeline,
+                request,
+                pipeline,
                 lambda gate_taken: _bg_ingest(staged_path, source_id, gate_taken),
             )
 
@@ -2355,8 +3002,10 @@ async def get_job(request: web.Request) -> web.Response:
     """GET /api/knowledge/jobs/{id}."""
     store = _store(request)
     row = await asyncio.to_thread(
-        lambda: store.db.execute("SELECT * FROM ingestion_jobs WHERE id = ?",
-                                 (request.match_info["id"],)).fetchone())
+        lambda: store.db.execute(
+            "SELECT * FROM ingestion_jobs WHERE id = ?", (request.match_info["id"],)
+        ).fetchone()
+    )
     if not row:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response(dict(row))
@@ -2372,8 +3021,12 @@ async def export_item(request: web.Request) -> web.Response:
     bundle = await asyncio.to_thread(store.export_item, item_id)
     if not bundle:
         return web.json_response({"error": "not found"}, status=404)
+    if not await _acl_can_see(request, item_id):
+        return web.json_response({"error": "not found"}, status=404)
     _sel_log("export_item", item_id=item_id)
-    return web.json_response(bundle, headers={"Content-Disposition": "attachment; filename=item.knowledge"})
+    return web.json_response(
+        bundle, headers={"Content-Disposition": "attachment; filename=item.knowledge"}
+    )
 
 
 async def export_all(request: web.Request) -> web.Response:
@@ -2382,9 +3035,56 @@ async def export_all(request: web.Request) -> web.Response:
     _sel_log("export_all", namespace=namespace)
     store = _store(request)
     bundle = await asyncio.to_thread(store.export_all, namespace=namespace)
-    safe_ns = re.sub(r'[^\w.-]', '_', namespace) if namespace else None
+    # Per-item ACL: a full-library export must not carry managed items the
+    # exporting identity may not see, NOR the sources/entities/relations reachable
+    # only from them. Applied UNCONDITIONALLY -- an empty visible set must still
+    # strip the rest of the bundle, so an empty item selection does not leak
+    # unrelated sources/entities/relations.
+    all_ids = [it.get("id") for it in bundle.get("items", [])]
+    visible = await _acl_visible_ids(request, all_ids) if all_ids else set()
+    vis_items = [it for it in bundle.get("items", []) if it.get("id") in visible]
+    bundle["items"] = vis_items
+    bundle["item_acls"] = [
+        a
+        for a in bundle.get("item_acls", [])
+        if isinstance(a, dict) and a.get("item_id") in visible
+    ]
+    # Sources: only those a visible item belongs to. Computed BEFORE
+    # source_locations so a location under an EXCLUDED source is dropped too --
+    # a deduplicated visible item can carry locations under several sources, and
+    # keeping a location whose source is not exported would break the imported
+    # bundle's source foreign key.
+    visible_src_ids = {it.get("source_id") for it in vis_items if it.get("source_id")}
+    bundle["sources"] = [s for s in bundle.get("sources", []) if s.get("id") in visible_src_ids]
+    bundle["source_locations"] = [
+        loc
+        for loc in bundle.get("source_locations", [])
+        if loc.get("item_id") in visible and loc.get("source_id") in visible_src_ids
+    ]
+    vis_mentions = [m for m in bundle.get("mentions", []) if m.get("item_id") in visible]
+    bundle["mentions"] = vis_mentions
+    # Restrict the rest of the bundle to the closure reachable from visible
+    # items, so a hidden managed item's entities and relations are not leaked.
+    # Entities: only those a visible item mentions.
+    visible_entity_ids = {m.get("entity_id") for m in vis_mentions if m.get("entity_id")}
+    bundle["entities"] = [
+        e for e in bundle.get("entities", []) if e.get("id") in visible_entity_ids
+    ]
+    # Relations: only those anchored to a visible item AND between kept
+    # entities (a relation whose source_item_id is hidden, or whose endpoints
+    # are not both in the visible entity set, is dropped).
+    bundle["relations"] = [
+        r
+        for r in bundle.get("relations", [])
+        if r.get("source_item_id") in visible
+        and r.get("source_id") in visible_entity_ids
+        and r.get("target_id") in visible_entity_ids
+    ]
+    safe_ns = re.sub(r"[^\w.-]", "_", namespace) if namespace else None
     filename = f"{safe_ns}.knowledge" if safe_ns else "knowledge.knowledge"
-    return web.json_response(bundle, headers={"Content-Disposition": f"attachment; filename={filename}"})
+    return web.json_response(
+        bundle, headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 async def import_bundle(request: web.Request) -> web.Response:
@@ -2445,8 +3145,13 @@ async def import_bundle(request: web.Request) -> web.Response:
             {"error": f"malformed bundle: {exc}", "code": "malformed_knowledge_bundle"},
             status=400,
         )
-    except (KeyError, OverflowError, sqlite3.IntegrityError,
-            sqlite3.ProgrammingError, sqlite3.DataError) as exc:
+    except (
+        KeyError,
+        OverflowError,
+        sqlite3.IntegrityError,
+        sqlite3.ProgrammingError,
+        sqlite3.DataError,
+    ) as exc:
         # Only failures that genuinely mean a bad bundle earn a 400:
         # IntegrityError (constraint/FK violations), ProgrammingError and
         # DataError (bad values reaching the SQL layer), KeyError (missing
@@ -2489,9 +3194,9 @@ def _embedding_counts(store) -> tuple[int, int]:
     dispatches this to a worker thread; ``store.db`` is thread-local, so the
     thread gets its own connection.
     """
-    total = store.db.execute(
-        "SELECT COUNT(*) as c FROM items WHERE status = 'active'"
-    ).fetchone()["c"]
+    total = store.db.execute("SELECT COUNT(*) as c FROM items WHERE status = 'active'").fetchone()[
+        "c"
+    ]
     embedded = store.db.execute(
         "SELECT COUNT(*) as c FROM items WHERE status = 'active' AND embedding IS NOT NULL"
     ).fetchone()["c"]
@@ -2505,17 +3210,20 @@ async def get_embedding_status(request: web.Request) -> web.Response:
     total, embedded = await asyncio.to_thread(_embedding_counts, store)
     # Polled every 30s by the frontend — loop-safe probe.
     available = await embedder.is_available_async() if embedder else False
-    return web.json_response({
-        "enabled": embedder is not None,
-        "available": available,
-        "model": embedder.model if embedder else None,
-        "total_items": total,
-        "embedded_items": embedded,
-    })
+    return web.json_response(
+        {
+            "enabled": embedder is not None,
+            "available": available,
+            "model": embedder.model if embedder else None,
+            "total_items": total,
+            "embedded_items": embedded,
+        }
+    )
 
 
-def _finalize_job(store, job_id: str, status: str, *,
-                  processed: int | None = None, error: str | None = None) -> bool:
+def _finalize_job(
+    store, job_id: str, status: str, *, processed: int | None = None, error: str | None = None
+) -> bool:
     """Stamp a terminal state on an ingestion job row, in one off-loop take.
 
     True when this call is the one that moved the row. Only a row still
@@ -2533,19 +3241,27 @@ def _finalize_job(store, job_id: str, status: str, *,
         cur = store.db.execute(
             "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? "
             "WHERE id = ? AND status = 'processing'",
-            (status, processed, datetime.now().isoformat(), job_id))
+            (status, processed, datetime.now().isoformat(), job_id),
+        )
     else:
         cur = store.db.execute(
             "UPDATE ingestion_jobs SET status = ?, error = ?, updated_at = ? "
             "WHERE id = ? AND status = 'processing'",
-            (status, error, datetime.now().isoformat(), job_id))
+            (status, error, datetime.now().isoformat(), job_id),
+        )
     store.db.commit()
     return cur.rowcount > 0
 
 
-def _finalize_job_audited(store, job_id: str, status: str, *, fields: dict,
-                          processed: int | None = None,
-                          error: str | None = None) -> bool:
+def _finalize_job_audited(
+    store,
+    job_id: str,
+    status: str,
+    *,
+    fields: dict,
+    processed: int | None = None,
+    error: str | None = None,
+) -> bool:
     """Finalize a rebuild job and audit the outcome, in ONE off-loop take.
 
     The audit rides inside the take for the reason ``_audited_write`` documents,
@@ -2594,7 +3310,8 @@ def _write_embedding(store, item_id: str, vector: bytes, sig: str) -> None:
     """
     store.db.execute(
         "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? WHERE id = ?",
-        (vector, sig, datetime.now().isoformat(), item_id))
+        (vector, sig, datetime.now().isoformat(), item_id),
+    )
     store.db.commit()
 
 
@@ -2605,8 +3322,9 @@ def _unembedded_count(store) -> int:
     ).fetchone()["c"]
 
 
-async def _rebuild_embeddings_job(app: web.Application, store, embedder, job_id: str,
-                                  force: bool = False) -> None:
+async def _rebuild_embeddings_job(
+    app: web.Application, store, embedder, job_id: str, force: bool = False
+) -> None:
     """Background wrapper: run the sig-gated rebuild and finalize the job row.
 
     The re-embed loop itself lives in ``knowledge.ingestion.rebuild_embeddings`` so
@@ -2624,16 +3342,21 @@ async def _rebuild_embeddings_job(app: web.Application, store, embedder, job_id:
         # watching its progress bar — the load is expected, so it runs at the
         # interactive scheduling class with no idling. The watcher self-heal
         # path stays on the paced default.
-        processed = await rebuild_embeddings(store, embedder, job_id=job_id, force=force,
-                                             pace=False)
+        processed = await rebuild_embeddings(
+            store, embedder, job_id=job_id, force=force, pace=False
+        )
         # Audit from inside the worker, gated on the CAS: a cancel delivered
         # while this await is in flight would otherwise skip the completed line
         # (it is the coroutine that dies, not the thread), and a cancel that
         # already stamped the row must not collect a completed line either.
         await asyncio.to_thread(
-            _finalize_job_audited, store, job_id, "completed", processed=processed,
-            fields={"count": processed, "rebuild": True, "force": force,
-                    "outcome": "completed"})
+            _finalize_job_audited,
+            store,
+            job_id,
+            "completed",
+            processed=processed,
+            fields={"count": processed, "rebuild": True, "force": force, "outcome": "completed"},
+        )
     except BaseException as exc:
         # CancelledError is a BaseException in 3.8+; finalize the row so a
         # shutdown cancellation does not leave it 'processing'.
@@ -2651,8 +3374,13 @@ async def _rebuild_embeddings_job(app: web.Application, store, embedder, job_id:
         # Suppressing the re-cancel keeps `exc` current for the bare `raise`.
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.to_thread(
-                _finalize_job_audited, store, job_id, status, error=str(exc),
-                fields={"rebuild": True, "force": force, "outcome": status})
+                _finalize_job_audited,
+                store,
+                job_id,
+                status,
+                error=str(exc),
+                fields={"rebuild": True, "force": force, "outcome": status},
+            )
         if is_cancel:
             raise
 
@@ -2692,7 +3420,8 @@ async def batch_embed_items(request: web.Request) -> web.Response:
                 {"job_id": active["id"] if active else None, "status": "processing"}
             )
         task = asyncio.create_task(
-            _rebuild_embeddings_job(request.app, store, embedder, job_id, force=force))
+            _rebuild_embeddings_job(request.app, store, embedder, job_id, force=force)
+        )
         app_tasks = _task_registry(request.app, "_bg_tasks")
         app_tasks.add(task)
         task.add_done_callback(app_tasks.discard)
@@ -2708,8 +3437,7 @@ async def batch_embed_items(request: web.Request) -> web.Response:
             None, embedder.embed_for_item, row["title"], row["summary"], row["content"]
         )
         if vec:
-            await asyncio.to_thread(
-                _write_embedding, store, row["id"], floats_to_bytes(vec), sig)
+            await asyncio.to_thread(_write_embedding, store, row["id"], floats_to_bytes(vec), sig)
             embedded += 1
 
     remaining = await asyncio.to_thread(_unembedded_count, store)
@@ -2786,12 +3514,24 @@ async def search_for_context(request: web.Request) -> web.Response:
     embedder = request.app.get("knowledge_embedder")
     available = bool(embedder) and await embedder.is_available_async()
     embed_fn, embed_sig = vector_leg(embedder if available else None)
-    retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
+    retriever = HybridRetriever(
+        store,
+        embedder=embed_fn,
+        embed_sig=embed_sig,
+        revalidator=_knowledge_revalidator(request),
+        binding_resolver=_knowledge_binding_resolver(request),
+    )
     # HybridRetriever.search runs on an mc-embed worker thread; KnowledgeStore
     # hands each thread its own sqlite connection, so all sqlite
     # access is thread-safe here. mc-embed bulkhead: the query embed occupies
     # the shared model.
-    results = await run_in_embed_pool(retriever.search, q, limit=limit)
+    results = await run_in_embed_pool(
+        retriever.search,
+        q,
+        limit=limit,
+        access_context=_knowledge_access_context(request),
+        query_principal=_knowledge_query_principal(request),
+    )
 
     cards = []
     total_tokens = 0
@@ -2803,18 +3543,20 @@ async def search_for_context(request: web.Request) -> web.Response:
         if remaining_budget <= 0:
             break
         if tokens > remaining_budget:
-            content = content[:remaining_budget * 4]
+            content = content[: remaining_budget * 4]
             tokens = remaining_budget
         cards.append(_build_context_card(r, content, tokens))
         total_tokens += tokens
 
     _sel_log("search_for_context", query=_redact(q), results=len(cards))
-    return web.json_response({
-        "query": _redact(q),
-        "results": cards,
-        "total_tokens": total_tokens,
-        "max_tokens": max_tokens,
-    })
+    return web.json_response(
+        {
+            "query": _redact(q),
+            "results": cards,
+            "total_tokens": total_tokens,
+            "max_tokens": max_tokens,
+        }
+    )
 
 
 async def add_agent_document_route(request: web.Request) -> web.Response:
@@ -2827,14 +3569,18 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     if not cfg.knowledge.auto_add_documents:
         return web.json_response(
-            {"error": "Adding documents to the knowledge library is turned off "
-                      "(knowledge.auto_add_documents).",
-             "code": "auto_add_documents_disabled"}, status=403)
+            {
+                "error": "Adding documents to the knowledge library is turned off "
+                "(knowledge.auto_add_documents).",
+                "code": "auto_add_documents_disabled",
+            },
+            status=403,
+        )
     pipeline = _pipeline(request)
     if not pipeline:
         return web.json_response(
-            {"error": "pipeline not configured",
-             "code": "pipeline_unavailable"}, status=503)
+            {"error": "pipeline not configured", "code": "pipeline_unavailable"}, status=503
+        )
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -2848,9 +3594,13 @@ async def add_agent_document_route(request: web.Request) -> web.Response:
     )
     if result.get("status") == "error":
         return web.json_response(
-            {"error": result["error"], "code": "document_rejected"}, status=400)
-    _sel_log("agent_document.add", title=_redact(result.get("title", "")) or "",
-             status=result.get("status", ""))
+            {"error": result["error"], "code": "document_rejected"}, status=400
+        )
+    _sel_log(
+        "agent_document.add",
+        title=_redact(result.get("title", "")) or "",
+        status=result.get("status", ""),
+    )
     return web.json_response(result)
 
 
@@ -2915,6 +3665,60 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+        # Structured vendor connectors (GitHub / Google Drive / Salesforce).
+        # Each lives in its own module that lands on main through its own PR;
+        # this is their single registration site. A connector is registered
+        # whenever its module imports (its documented contract: registered +
+        # edition-overridable, refusing live reads until wired), and its
+        # W01-backed runner factory is INJECTED when the host has installed one
+        # under ``knowledge_connector_runners`` — a {source_type: runner_factory}
+        # map. Each value is a PER-SOURCE factory: the connector invokes it as
+        # ``factory(source)`` to build that source's own runner (Google's
+        # ``operations_factory(source)``; Salesforce's per-source call runner),
+        # so one installed factory serves many sources without sharing a
+        # credential binding across them. WHERE the host obtains these factories
+        # (which composes the control-plane executor + per-source custody) is not
+        # settled yet, and this handler does NOT synthesise a default/empty
+        # runner to stand in: an absent factory means the connector is
+        # constructed with its own default and self-refuses live reads
+        # (fail-closed), never a fabricated "activated" state. An absent MODULE
+        # means the source_type is not registered at all (add_source rejects it,
+        # retrieval never sees it, never public). No vendor code is copied here;
+        # only the import + injected instantiation live in this shared handler.
+        # Built-ins are set BEFORE the edition merge below so an edition can
+        # still ADD or override a source_type. See _register_optional_connector.
+        _runner_factories = app.get("knowledge_connector_runners") or {}
+        # (source_type, module, class, inject_kw) -- inject_kw is the connector's
+        # OWN keyword for its per-source runner factory, which differs per vendor
+        # (see _register_optional_connector's positional-injection warning).
+        for _stype, _mod, _cls, _kw in (
+            (
+                "github",
+                "kiro_crew.knowledge.connectors.github_structured",
+                "GithubStructuredConnector",
+                "transport_provider",
+            ),
+            (
+                "google_drive",
+                "kiro_crew.knowledge.connectors.google_drive",
+                "GoogleDriveConnector",
+                "operations_factory",
+            ),
+            (
+                "salesforce",
+                "kiro_crew.knowledge.connectors.salesforce_structured",
+                "SalesforceStructuredConnector",
+                "runner_factory",
+            ),
+        ):
+            _register_optional_connector(
+                connectors,
+                _mod,
+                _cls,
+                runner_factory=_runner_factories.get(_stype),
+                inject_kw=_kw,
+                source_type=_stype,
+            )
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
@@ -2940,8 +3744,11 @@ def setup_knowledge_routes(app: web.Application) -> None:
             )
         )
         app["knowledge_pipeline"] = pipeline
-        app["knowledge_sync"] = SyncScheduler(store=store, pipeline=pipeline,
-                                              connectors=connectors)
+        app["knowledge_sync"] = SyncScheduler(store=store, pipeline=pipeline, connectors=connectors)
+        # The per-candidate binding resolver is assembled LAZILY on first use
+        # (see _knowledge_binding_resolver -> _install_binding_resolver), never on
+        # the boot path, so gateway startup and socket binding are not delayed by
+        # constructing the control-plane store. Guarded + fail-closed.
         # Start source watcher (auto-watches local_file sources)
         app.on_startup.append(_start_watcher_async)
         # Start artifact ingest watcher (no-op unless auto-ingest is enabled)

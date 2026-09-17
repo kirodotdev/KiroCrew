@@ -239,7 +239,7 @@ async def test_scoped_search_escalates_until_retrieval_is_exhausted(seeded):
     retriever = MagicMock()
     # Full windows until the pool exceeds 400, then a short read.
 
-    def _search(_q, limit):
+    def _search(_q, limit, access_context=None, query_principal=None):
         return [{"id": "x", "score": 1.0, "match_type": "fts"}] * (
             limit if limit <= 400 else limit - 1
         )
@@ -262,7 +262,7 @@ async def test_scoped_search_stops_at_the_escalation_cap(seeded):
     """A corpus that never short-reads must not escalate without bound."""
     store, _alpha, beta = seeded
     retriever = MagicMock()
-    retriever.search.side_effect = lambda _q, limit: [
+    retriever.search.side_effect = lambda _q, limit, access_context=None, query_principal=None: [
         {"id": "x", "score": 1.0, "match_type": "fts"}
     ] * limit
     req = _request(store, {"q": "content", "source_id": beta, "limit": "20"})

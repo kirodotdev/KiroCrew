@@ -109,8 +109,9 @@ class IngestionGate:
                     break
             if self._maintenance:
                 logger.warning(
-                    "Knowledge maintenance skipped: another maintenance window "
-                    "held for %.0fs", timeout)
+                    "Knowledge maintenance skipped: another maintenance window " "held for %.0fs",
+                    timeout,
+                )
                 yield False
                 return
             self._maintenance = True
@@ -122,8 +123,10 @@ class IngestionGate:
                 self._maintenance = False
                 self._cond.notify_all()
                 logger.warning(
-                    "Knowledge maintenance skipped: %d ingestion(s) still in flight "
-                    "after %.0fs", self._ingesting, timeout)
+                    "Knowledge maintenance skipped: %d ingestion(s) still in flight " "after %.0fs",
+                    self._ingesting,
+                    timeout,
+                )
                 yield False
                 return
         try:
@@ -182,8 +185,9 @@ def is_auto_registered(props: dict) -> bool:
     while on the auto-added marker it would retire a folder the user added by hand.
     Every writer in-tree stores a real boolean, so nothing legitimate is excluded.
     """
-    return (props.get(AUTO_ADDED_PROP) is True
-            and props.get(AUTO_REGISTRATION_RETIRED_PROP) is not True)
+    return (
+        props.get(AUTO_ADDED_PROP) is True and props.get(AUTO_REGISTRATION_RETIRED_PROP) is not True
+    )
 
 
 # Source types whose scan walks a directory tree, and therefore the only ones
@@ -194,6 +198,48 @@ def is_auto_registered(props: dict) -> bool:
 # registered with empty properties and never carries the marker at all; it is excluded
 # by type here for the same structural reason.)
 _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
+
+# ---------------------------------------------------------------------------
+# Source trust classification (query-time ACL provenance -- knowledge/acl.py)
+#
+# ``sources.trust_class`` records, as EVIDENCE written when the source is
+# created, whether the source's content is admitted-local (on-host material with
+# no external per-user ACL) or managed (a remote connector whose items carry a
+# provider-enforced ACL). The query-time ACL gate reads ONLY this stamp; it does
+# NOT re-guess trust from a source_type string at read time. Default is
+# ``managed`` (fail-closed): a source created without an explicit local stamp,
+# or of an unknown/misspelled type, is treated as managed and gated.
+#
+# TRUST_LOCAL is stamped ONLY by the real LOCAL production creators enumerated
+# below -- the ingestion paths that write items directly on-host with no remote
+# fetch. This set is defined FROM those creators (dashboard file upload,
+# single-file ingestion, auto_research local files, the folder watcher, the
+# agent-added aggregate, and the dashboard artifact aggregate), not from a
+# guess, and is used at exactly two places: stamping at creation and the
+# one-time migration backfill below. Every OTHER source_type -- every remote
+# SyncScheduler connector (sharepoint/onedrive/salesforce/github_structured/…)
+# -- is created ``managed``.
+TRUST_LOCAL = "local_admitted"
+TRUST_MANAGED = "managed"
+
+# The source_types created by a genuinely-local, on-host ingestion path. Derived
+# from the production add_source creators, NOT from a runtime type guess: used
+# only to stamp trust_class at creation and to backfill legacy rows once. A
+# remote connector type is deliberately absent, so it defaults to managed.
+_LOCAL_CREATOR_SOURCE_TYPES = frozenset(
+    {"local_folder", "obsidian_vault", "local_file", "artifact", "agent", "doc"}
+)
+
+
+def initial_trust_class(source_type: str | None) -> str:
+    """The trust_class a NEW source of this type is created with.
+
+    Local iff the type is one the local production creators use; managed
+    otherwise (fail-closed). This runs at CREATE time only -- the query-time gate
+    reads the stored stamp, never this function.
+    """
+    return TRUST_LOCAL if source_type in _LOCAL_CREATOR_SOURCE_TYPES else TRUST_MANAGED
+
 
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
@@ -263,8 +309,9 @@ class KnowledgeBundleError(ValueError):
     """
 
 
-def _validated_json_column(value: object, *, field: str, default: str,
-                           shape: type, shape_name: str) -> tuple[str, Any]:
+def _validated_json_column(
+    value: object, *, field: str, default: str, shape: type, shape_name: str
+) -> tuple[str, Any]:
     """Return ``(text, parsed)`` to bind for a store JSON column, or raise.
 
     ``None`` (and an absent key, which callers pass as ``None``) falls back
@@ -302,14 +349,16 @@ def _validated_json_column(value: object, *, field: str, default: str,
 def _validated_properties(value: object) -> str:
     """``sources.properties``: JSON text parsing to an object, or NULL."""
     text, _ = _validated_json_column(
-        value, field="sources.properties", default="{}", shape=dict, shape_name="object")
+        value, field="sources.properties", default="{}", shape=dict, shape_name="object"
+    )
     return text
 
 
 def _validated_aliases(value: object) -> str:
     """``entities.aliases``: JSON text parsing to an array of strings, or NULL."""
     text, parsed = _validated_json_column(
-        value, field="entities.aliases", default="[]", shape=list, shape_name="array")
+        value, field="entities.aliases", default="[]", shape=list, shape_name="array"
+    )
     if not all(isinstance(alias, str) for alias in parsed):
         raise KnowledgeBundleError("'entities.aliases' must be a JSON array of strings")
     return text
@@ -427,9 +476,7 @@ class _EdgeView:
                 ]
         else:
             snapshot = [
-                (u, v, attrs)
-                for u, targets in self._fwd.items()
-                for v, attrs in targets.items()
+                (u, v, attrs) for u, targets in self._fwd.items() for v, attrs in targets.items()
             ]
         yield from snapshot
 
@@ -502,6 +549,7 @@ _DOC_STATE_TABLES: tuple[tuple[str, str], ...] = (
     ("folder_file_state", "done"),
     ("artifact_item_state", "active"),
     ("agent_item_state", "active"),
+    ("connector_row_state", "active"),
 )
 
 # Which column identifies ONE document within a doc-state table. Ownership has to
@@ -514,6 +562,7 @@ _DOC_STATE_KEY_COL: dict[str, str] = {
     "folder_file_state": "file_path",
     "artifact_item_state": "slug",
     "agent_item_state": "slug",
+    "connector_row_state": "row_key",
 }
 
 # Which column on each state table holds a hash in the SAME DOMAIN as
@@ -540,6 +589,7 @@ _OWNERSHIP_HASH_COL: dict[str, str] = {
     "folder_file_state": "COALESCE(text_hash, content_hash)",
     "artifact_item_state": "content_hash",
     "agent_item_state": "content_hash",
+    "connector_row_state": "content_hash",
 }
 # Folder rows COALESCE so a legacy row -- written before ``text_hash`` existed, and
 # deliberately never backfilled -- keeps behaving exactly as it does today: for the
@@ -679,6 +729,7 @@ class KnowledgeStore:
                 uri TEXT UNIQUE NOT NULL,
                 properties TEXT DEFAULT '{}',
                 last_synced TEXT,
+                trust_class TEXT NOT NULL DEFAULT 'managed',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -836,6 +887,28 @@ class KnowledgeStore:
                 PRIMARY KEY (source_id, slug)
             );
 
+            -- Per-ROW item-group tracking for a STRUCTURED connector source
+            -- (GitHub issues/PRs/commits/check-runs, Salesforce records, ...).
+            -- Same shape and role as artifact_item_state/agent_item_state: it is
+            -- what lets one connector source hold many independently-replaceable
+            -- ROWS, each keyed by its OWN stable row_key, and gives incremental
+            -- sync a per-row unit. content_hash short-circuits an unchanged row;
+            -- item_ids is the row's item group (replaced on update, deleted on a
+            -- full-snapshot removal). Each row's per-user ACL lives on its items'
+            -- item_acl rows (with the ProviderResourceRef), NOT here -- this
+            -- table is the identity/change ledger, item_acl is the grant.
+            CREATE TABLE IF NOT EXISTS connector_row_state (
+                source_id TEXT NOT NULL REFERENCES sources(id),
+                row_key TEXT NOT NULL,
+                content_hash TEXT,
+                acl_hash TEXT,
+                item_ids TEXT DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                merged_into_source_id TEXT,
+                PRIMARY KEY (source_id, row_key)
+            );
+
             -- Tombstones for auto-discovered sources the user deleted. Keyed by
             -- URI (not source_id) and deliberately NOT touched by
             -- delete_source_cascade: auto-discovery's only idempotency marker is
@@ -846,6 +919,55 @@ class KnowledgeStore:
                 uri TEXT PRIMARY KEY,
                 dismissed_at TEXT NOT NULL
             );
+
+            -- Query-time access-control grant for one item, written at INGEST
+            -- time from the source's own permission facts and read at QUERY
+            -- time by the retriever's ACL gate (knowledge/acl.py). This is the
+            -- security boundary the items.source_id / items.namespace filters
+            -- deliberately are NOT: those are relevance labels, this decides
+            -- who may see a row.
+            --
+            -- subjects: JSON array of subject ids allowed to see the item
+            --   (or the acl.PUBLIC_SUBJECT sentinel for tenant-public content).
+            -- tenant: the org/workspace boundary the grant belongs to
+            --   (acl.PUBLIC_TENANT for cross-tenant public).
+            -- acl_version: monotonic marker bumped on every rewrite, so a
+            --   revoke immediately invalidates any decision cached on
+            --   (item_id, acl_version) -- the mechanism that makes the NEXT
+            --   query after a revoke deny, without a re-crawl (ACL-02).
+            --
+            -- An item with NO row here is denied by the fail-closed policy:
+            -- absence of a grant is not permission. Rows are removed with their
+            -- item (see _delete_item_cascade / delete_items_batch_in_txn) so a
+            -- removed item's grant cannot outlive it (KB-10).
+            --
+            -- managed: 1 for a cloud/structured item whose per-user ACL must be
+            --   enforced (and revalidated) at query time, 0 for trusted-local
+            --   material. Written at ingest from the source's own type; the
+            --   retriever also re-derives it from the live source_type so a
+            --   mislabelled/legacy row cannot downgrade a managed item.
+            -- fresh_as_of: epoch seconds at which this grant was last CONFIRMED
+            --   current against the provider (0 = never / ingest-time only).
+            --   The freshness check reads it; a managed grant older than the
+            --   staleness window with no fresh revalidation is denied.
+            -- resource_ref: JSON acl.ProviderResourceRef -- WHICH provider object
+            --   this managed item came from (provider/account/resource_id/
+            --   locator). Written at ingest; the query-time gate reads it to
+            --   resolve the per-candidate binding (by provider+account) and to
+            --   build the revalidation probe. A managed item whose resource_ref
+            --   is absent/unparseable cannot be revalidated -> denied.
+            CREATE TABLE IF NOT EXISTS item_acl (
+                item_id TEXT PRIMARY KEY REFERENCES items(id),
+                subjects TEXT NOT NULL DEFAULT '[]',
+                tenant TEXT NOT NULL,
+                acl_version INTEGER NOT NULL DEFAULT 1,
+                managed INTEGER NOT NULL DEFAULT 0,
+                fresh_as_of REAL NOT NULL DEFAULT 0,
+                resource_ref TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_item_acl_tenant ON item_acl(tenant);
 
         """)
         self.db.commit()
@@ -871,8 +993,7 @@ class KnowledgeStore:
         # column is guaranteed to exist: on a pre-existing DB the DDL block's
         # CREATE TABLE IF NOT EXISTS is a no-op and the column is added by the ALTER
         # above; IF NOT EXISTS keeps it idempotent for fresh DBs too.
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)")
         # source_locations predates being an identity table: pre-existing DBs have
         # neither the (item_id, source_id) uniqueness nor any index. De-duplicate
         # first so the unique index can be created, then add both lookup indexes.
@@ -881,7 +1002,8 @@ class KnowledgeStore:
         # are impossible, and the scan would run on every open for nothing.
         has_unique = self.db.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'index' "
-            "AND name = 'idx_source_locations_item_source'").fetchone()
+            "AND name = 'idx_source_locations_item_source'"
+        ).fetchone()
         if has_unique is None:
             self.db.execute("""
                 DELETE FROM source_locations WHERE id NOT IN (
@@ -890,19 +1012,39 @@ class KnowledgeStore:
             """)
             self.db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_locations_item_source "
-                "ON source_locations(item_id, source_id)")
+                "ON source_locations(item_id, source_id)"
+            )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_source_locations_item_id "
-            "ON source_locations(item_id)")
+            "ON source_locations(item_id)"
+        )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_source_locations_source_id "
-            "ON source_locations(source_id)")
+            "ON source_locations(source_id)"
+        )
         job_cols = {r[1] for r in self.db.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
         if "items_failed" not in job_cols:
             self.db.execute("ALTER TABLE ingestion_jobs ADD COLUMN items_failed INTEGER DEFAULT 0")
         src_cols = {r[1] for r in self.db.execute("PRAGMA table_info(sources)").fetchall()}
         if "sync_status" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN sync_status TEXT DEFAULT 'pending'")
+        # trust_class: query-time ACL provenance stamp (knowledge/acl.py). Older
+        # rows predate the column; add it defaulting to MANAGED (fail-closed),
+        # then backfill TRUST_LOCAL onto exactly the rows created by a known
+        # LOCAL production creator type -- ONE-TIME migration semantics derived
+        # from the real creators, NOT a runtime type guess (the gate never reads
+        # source_type). A remote-connector row keeps the managed default. This is
+        # gated on the column being freshly added so it runs once, not every open.
+        if "trust_class" not in src_cols:
+            self.db.execute(
+                f"ALTER TABLE sources ADD COLUMN trust_class TEXT NOT NULL DEFAULT '{TRUST_MANAGED}'"
+            )
+            local_types = tuple(sorted(_LOCAL_CREATOR_SOURCE_TYPES))
+            placeholders = ",".join("?" for _ in local_types)
+            self.db.execute(
+                f"UPDATE sources SET trust_class = ? WHERE source_type IN ({placeholders})",  # noqa: S608
+                (TRUST_LOCAL, *local_types),
+            )
         # ONE pass over the rows that still carry a blob copy of the status:
         # repair the column where it was never written, then retire the copy.
         # After this pass no row has a copy at all, so on a store that has
@@ -954,8 +1096,7 @@ class KnowledgeStore:
         # never escapes ASCII, and `_without_sync_status` re-serializes on every
         # insert and update), but a row imported by an early `import_bundle` --
         # which stored properties text verbatim -- can still hold one.
-        blob_copies = self.db.execute(
-            "SELECT id, properties, sync_status FROM sources").fetchall()
+        blob_copies = self.db.execute("SELECT id, properties, sync_status FROM sources").fetchall()
         for row in blob_copies:
             try:
                 props = json.loads(row["properties"] or "{}")
@@ -968,15 +1109,21 @@ class KnowledgeStore:
             if not isinstance(props, dict) or "sync_status" not in props:
                 continue
             copied = props["sync_status"]
-            if (row["sync_status"] == "pending" and isinstance(copied, str)
-                    and copied != "pending" and copied in self._INITIAL_SYNC_STATUSES):
+            if (
+                row["sync_status"] == "pending"
+                and isinstance(copied, str)
+                and copied != "pending"
+                and copied in self._INITIAL_SYNC_STATUSES
+            ):
                 self.db.execute(
                     "UPDATE sources SET sync_status = ? "
                     "WHERE id = ? AND sync_status = 'pending' AND properties = ?",
-                    (copied, row["id"], row["properties"]))
+                    (copied, row["id"], row["properties"]),
+                )
             self.db.execute(
                 "UPDATE sources SET properties = ? WHERE id = ? AND properties = ?",
-                (_without_sync_status(row["properties"]), row["id"], row["properties"]))
+                (_without_sync_status(row["properties"]), row["id"], row["properties"]),
+            )
         if "summary_topic" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN summary_topic TEXT")
         if "summary_themes" not in src_cols:
@@ -984,16 +1131,17 @@ class KnowledgeStore:
         # Backfill columns on the document-state tables. Each table itself is
         # created by ``_init_schema``, which runs first on every construction, so
         # only the per-column ALTERs belong here.
-        ffs_cols = {r[1] for r in self.db.execute(
-            "PRAGMA table_info(folder_file_state)").fetchall()}
+        ffs_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(folder_file_state)").fetchall()
+        }
         if "status" not in ffs_cols:
             self.db.execute(
-                "ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'")
+                "ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'"
+            )
         if "error_message" not in ffs_cols:
             self.db.execute("ALTER TABLE folder_file_state ADD COLUMN error_message TEXT")
         if "merged_into_source_id" not in ffs_cols:
-            self.db.execute(
-                "ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
+            self.db.execute("ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
         # The extracted-text hash, in the same domain as items.content_hash --
         # see _OWNERSHIP_HASH_COL. Deliberately NOT backfilled: it can only be
         # derived from a row's own items, and a legacy row that owns nothing has
@@ -1012,20 +1160,21 @@ class KnowledgeStore:
         # source exists.
         if "attempts" not in ffs_cols:
             self.db.execute(
-                "ALTER TABLE folder_file_state "
-                "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+                "ALTER TABLE folder_file_state " "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+            )
         # artifact_item_state -- per-artifact item-group tracking for the
         # aggregate "Artifacts" KB source, keyed by artifact slug.
-        ais_cols = {r[1] for r in self.db.execute(
-            "PRAGMA table_info(artifact_item_state)").fetchall()}
+        ais_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(artifact_item_state)").fetchall()
+        }
         if "name" not in ais_cols:
             self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN name TEXT")
         if "status" not in ais_cols:
             self.db.execute(
-                "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+                "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'"
+            )
         if "merged_into_source_id" not in ais_cols:
-            self.db.execute(
-                "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+            self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
         # The artifact kind AS INGESTED. Reconcile needs it to tell an
         # artifact whose kind changed while sync was off (stale chunks, must
         # be reaped) from one the user merely excluded by narrowing
@@ -1036,22 +1185,51 @@ class KnowledgeStore:
             self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN kind TEXT")
         # agent_item_state -- per-document item-group tracking for the aggregate
         # "Auto-added" KB source the agent writes to.
-        agent_cols = {r[1] for r in self.db.execute(
-            "PRAGMA table_info(agent_item_state)").fetchall()}
+        agent_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(agent_item_state)").fetchall()
+        }
         if "status" not in agent_cols:
-            self.db.execute(
-                "ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+            self.db.execute("ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
         if "merged_into_source_id" not in agent_cols:
-            self.db.execute(
-                "ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
+            self.db.execute("ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
         # The document's own REDACTED locator, attached to agent-source search
         # hits so a citation names where the document came from instead of the
         # aggregate's control uri. Legacy rows carry NULL, which citation
         # enrichment treats as "unknown" and falls back to agent://; the next
         # add of that document backfills it.
         if "source_uri" not in agent_cols:
-            self.db.execute(
-                "ALTER TABLE agent_item_state ADD COLUMN source_uri TEXT")
+            self.db.execute("ALTER TABLE agent_item_state ADD COLUMN source_uri TEXT")
+        # item_acl gained managed/fresh_as_of after first ship. A pre-existing
+        # grant row predates the managed/revalidation model, so it must NOT be
+        # assumed trusted: managed defaults to 0 here, but the retriever
+        # re-derives managed from the live source_type (get_item_grants' JOIN),
+        # so a legacy row on a cloud/structured item is still enforced. fresh_as_of
+        # defaults to 0 (never revalidated) -> a managed legacy grant is stale
+        # until a revalidation refreshes it, which is the correct fail-closed
+        # posture, not a regression.
+        acl_cols = {r[1] for r in self.db.execute("PRAGMA table_info(item_acl)").fetchall()}
+        if acl_cols:  # table exists (skip on a brand-new DB where DDL already made it)
+            if "managed" not in acl_cols:
+                self.db.execute(
+                    "ALTER TABLE item_acl ADD COLUMN managed INTEGER NOT NULL DEFAULT 0"
+                )
+            if "fresh_as_of" not in acl_cols:
+                self.db.execute(
+                    "ALTER TABLE item_acl ADD COLUMN fresh_as_of REAL NOT NULL DEFAULT 0"
+                )
+            if "resource_ref" not in acl_cols:
+                self.db.execute("ALTER TABLE item_acl ADD COLUMN resource_ref TEXT")
+        # connector_row_state.acl_hash -- a digest of the row's GRANT facts
+        # (subjects, tenant, resource_ref), stored beside content_hash so an
+        # ACL-only change (same text, different permissions) is detected even
+        # when the text hash is unchanged. A legacy row carries NULL, which the
+        # pipeline treats as "grant provenance unknown" and re-applies the grant
+        # on the next sync rather than trusting a possibly-obsolete one.
+        crs_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(connector_row_state)").fetchall()
+        }
+        if crs_cols and "acl_hash" not in crs_cols:
+            self.db.execute("ALTER TABLE connector_row_state ADD COLUMN acl_hash TEXT")
         # The orphan sweep is NOT here any more -- see `reclaim_orphans`. The
         # constructor runs on the event loop before the socket binds, and the
         # sweep is data-scaled and writer-locked, so on a large store it
@@ -1152,7 +1330,8 @@ class KnowledgeStore:
         # data-scaled sweep, so the post-bind sweep cannot stall the loop for
         # the duration the pre-bind one did.
         orphan_ids = [
-            row[0] for row in self.db.execute(f"SELECT id FROM sources WHERE {orphan_pred}").fetchall()
+            row[0]
+            for row in self.db.execute(f"SELECT id FROM sources WHERE {orphan_pred}").fetchall()
         ]
         for offset in range(0, len(orphan_ids), _RECLAIM_CHUNK):
             chunk = orphan_ids[offset : offset + _RECLAIM_CHUNK]
@@ -1160,8 +1339,12 @@ class KnowledgeStore:
             still_orphan = f"SELECT id FROM sources WHERE id IN ({marks}) AND {orphan_pred}"
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                self.db.execute(f"DELETE FROM source_locations WHERE source_id IN ({still_orphan})", chunk)
-                self.db.execute(f"DELETE FROM ingestion_jobs WHERE source_id IN ({still_orphan})", chunk)
+                self.db.execute(
+                    f"DELETE FROM source_locations WHERE source_id IN ({still_orphan})", chunk
+                )
+                self.db.execute(
+                    f"DELETE FROM ingestion_jobs WHERE source_id IN ({still_orphan})", chunk
+                )
                 self.db.execute(f"DELETE FROM sources WHERE id IN ({still_orphan})", chunk)
                 self.db.execute("COMMIT")
             except Exception:
@@ -1169,7 +1352,9 @@ class KnowledgeStore:
                 raise
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            self.db.execute("DELETE FROM entity_relations WHERE source_id NOT IN (SELECT id FROM entities) OR target_id NOT IN (SELECT id FROM entities)")
+            self.db.execute(
+                "DELETE FROM entity_relations WHERE source_id NOT IN (SELECT id FROM entities) OR target_id NOT IN (SELECT id FROM entities)"
+            )
             self._prune_orphan_entities()
             self.db.execute("COMMIT")
         except Exception:
@@ -1216,9 +1401,11 @@ class KnowledgeStore:
         """
         if not content_hash:
             return None
-        sql = ("SELECT i.source_id, s.source_type, s.name AS source_name "
-               "FROM items i JOIN sources s ON s.id = i.source_id "
-               "WHERE i.content_hash = ?")
+        sql = (
+            "SELECT i.source_id, s.source_type, s.name AS source_name "
+            "FROM items i JOIN sources s ON s.id = i.source_id "
+            "WHERE i.content_hash = ?"
+        )
         params: list[str] = [content_hash]
         if exclude_source_id:
             sql += " AND i.source_id != ?"
@@ -1336,9 +1523,19 @@ class KnowledgeStore:
             # True over a half-rebuilt graph.
             self._graph_loaded = True
 
-    def add_item(self, title, content, item_type, source_id=None, chunk_index=0,
-                 summary=None, tags=None, embedding=None, namespace="default",
-                 content_hash=None) -> str:
+    def add_item(
+        self,
+        title,
+        content,
+        item_type,
+        source_id=None,
+        chunk_index=0,
+        summary=None,
+        tags=None,
+        embedding=None,
+        namespace="default",
+        content_hash=None,
+    ) -> str:
         item_id = str(uuid4())
         now = datetime.now().isoformat()
         tags_json = json.dumps(tags or [])
@@ -1347,9 +1544,26 @@ class KnowledgeStore:
             self.db.execute(
                 "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (item_id, title, content, item_type, source_id, chunk_index, namespace, summary, tags_json, embedding, content_hash, now, now))
+                (
+                    item_id,
+                    title,
+                    content,
+                    item_type,
+                    source_id,
+                    chunk_index,
+                    namespace,
+                    summary,
+                    tags_json,
+                    embedding,
+                    content_hash,
+                    now,
+                    now,
+                ),
+            )
             # Sync FTS: get the rowid of the inserted item
-            rowid = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+            rowid = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()[
+                0
+            ]
             self._fts_index(rowid, title, content, tags_json)
             self.db.execute("COMMIT")
         except Exception:
@@ -1369,7 +1583,17 @@ class KnowledgeStore:
             d["embedding"] = base64.b64encode(raw).decode("ascii")
         return d
 
-    _ITEM_COLUMNS = {"title", "content", "item_type", "summary", "tags", "embedding", "status", "namespace", "updated_at"}
+    _ITEM_COLUMNS = {
+        "title",
+        "content",
+        "item_type",
+        "summary",
+        "tags",
+        "embedding",
+        "status",
+        "namespace",
+        "updated_at",
+    }
 
     def update_item(self, item_id, **fields):
         if not fields:
@@ -1400,26 +1624,486 @@ class KnowledgeStore:
             self.db.execute(f"UPDATE items SET {cols} WHERE id = ?", (*vals, item_id))  # noqa: S608
             # Sync FTS: delete with OLD values, insert with NEW values
             if old_row:
-                self._fts_unindex(old_row["rowid"], old_row["title"],
-                                  old_row["content"], old_row["tags"])
+                self._fts_unindex(
+                    old_row["rowid"], old_row["title"], old_row["content"], old_row["tags"]
+                )
                 new_row = self.db.execute(
                     "SELECT title, content, tags FROM items WHERE id = ?", (item_id,)
                 ).fetchone()
-                self._fts_index(old_row["rowid"], new_row["title"],
-                                new_row["content"], new_row["tags"])
+                self._fts_index(
+                    old_row["rowid"], new_row["title"], new_row["content"], new_row["tags"]
+                )
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             raise
 
+    # ------------------------------------------------------------------
+    # Query-time access control (item_acl table)
+    #
+    # These are the store's half of the ACL contract: written at INGEST time
+    # from a source's real permission facts, read at QUERY time by the
+    # retriever's fail-closed gate. The DECISION (who may see what) lives in
+    # knowledge/acl.py; the store only persists and returns grant records.
+    # ------------------------------------------------------------------
+
+    def set_item_acl(
+        self,
+        item_id: str,
+        subjects,
+        tenant: str,
+        *,
+        managed: bool = False,
+        fresh_as_of: float = 0.0,
+        resource_ref=None,
+    ) -> int:
+        """Write (or overwrite) *item_id*'s ACL grant. Returns the new acl_version.
+
+        ``subjects`` is an iterable of subject ids (or the ``acl.PUBLIC_SUBJECT``
+        sentinel); ``tenant`` is the org/workspace the grant belongs to (or
+        ``acl.PUBLIC_TENANT``). ``managed`` marks a cloud/structured item whose
+        per-user ACL must be revalidated at query time; ``fresh_as_of`` is the
+        epoch-seconds moment the grant was last confirmed current against the
+        provider (0.0 = ingest-time only, which the query-time freshness check
+        treats as stale for a managed item until a revalidation refreshes it).
+
+        ``resource_ref`` is the acl.ProviderResourceRef (or its ``.to_json()``
+        string, or a dict) naming WHICH provider object this managed item came
+        from -- persisted so the query-time gate can resolve the per-candidate
+        binding (by provider+account) and build the revalidation probe. Required
+        in practice for a managed item: a managed grant with no resource_ref
+        cannot be revalidated and the gate denies it. Ignored for a trusted-local
+        grant.
+
+        Overwriting an existing grant BUMPS ``acl_version`` monotonically, so any
+        decision cached on the old version is invalidated the moment the grant
+        changes -- this is what makes a narrowed grant take effect on the very
+        next query rather than after a re-crawl.
+        """
+        subj_list = sorted({str(s) for s in subjects})
+        ref_json = self._resource_ref_json(resource_ref)
+        now = datetime.now().isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            next_version = self._write_item_acl_locked(
+                item_id,
+                subj_list,
+                tenant,
+                managed=managed,
+                fresh_as_of=fresh_as_of,
+                ref_json=ref_json,
+                now=now,
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return next_version
+
+    def _write_item_acl_locked(
+        self,
+        item_id: str,
+        subj_list: list[str],
+        tenant: str,
+        *,
+        managed: bool,
+        fresh_as_of: float,
+        ref_json: str | None,
+        now: str,
+    ) -> int:
+        """Write one item's ACL grant WITHOUT owning the transaction.
+
+        The caller must already hold an open ``BEGIN IMMEDIATE`` and is
+        responsible for COMMIT/ROLLBACK. This lets a caller write several grants
+        AND the row-state in ONE transaction (see ``finalize_connector_row``), so
+        a failure part-way rolls the whole group back rather than committing some
+        grants while the ledger is never written. ``set_item_acl`` wraps this in
+        its own single-grant transaction for standalone callers."""
+        row = self.db.execute(
+            "SELECT acl_version FROM item_acl WHERE item_id = ?", (item_id,)
+        ).fetchone()
+        next_version = (row["acl_version"] + 1) if row else 1
+        self.db.execute(
+            "INSERT INTO item_acl "
+            "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, "
+            "resource_ref, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(item_id) DO UPDATE SET "
+            "subjects = excluded.subjects, tenant = excluded.tenant, "
+            "acl_version = excluded.acl_version, managed = excluded.managed, "
+            "fresh_as_of = excluded.fresh_as_of, resource_ref = excluded.resource_ref, "
+            "updated_at = excluded.updated_at",
+            (
+                item_id,
+                json.dumps(subj_list),
+                tenant,
+                next_version,
+                1 if managed else 0,
+                float(fresh_as_of),
+                ref_json,
+                now,
+            ),
+        )
+        return next_version
+
+    @staticmethod
+    def _resource_ref_json(resource_ref) -> str | None:
+        """Normalise a resource_ref (ProviderResourceRef | dict | json str | None)
+        to a stored JSON string (or None). Kept tolerant so the ingest caller may
+        pass the dataclass, a dict, or a pre-serialised string."""
+        if resource_ref is None:
+            return None
+        to_json = getattr(resource_ref, "to_json", None)
+        if callable(to_json):
+            return to_json()
+        if isinstance(resource_ref, dict):
+            return json.dumps(resource_ref, sort_keys=True)
+        if isinstance(resource_ref, str):
+            return resource_ref
+        return None
+
+    def revoke_item_acl(self, item_id: str) -> int:
+        """Revoke ALL access to *item_id* by clearing its subject set.
+
+        The grant row is kept (not deleted) with an EMPTY subject set, a bumped
+        ``acl_version`` AND ``fresh_as_of`` reset to 0, so the next query denies
+        it (empty set matches no subject, and a managed grant with no fresh stamp
+        is stale) AND any cached decision keyed on the prior version is
+        invalidated. This is distinct from deleting the item: the content is
+        still present, only its visibility is revoked -- the ACL-02/ACL-03 case
+        where a group departure or link revocation must deny the next query
+        without removing the underlying document. Returns the new acl_version, or
+        0 if the item had no grant to revoke.
+        """
+        now = datetime.now().isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT acl_version FROM item_acl WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                self.db.execute("COMMIT")
+                return 0
+            next_version = row["acl_version"] + 1
+            self.db.execute(
+                "UPDATE item_acl SET subjects = '[]', acl_version = ?, "
+                "fresh_as_of = 0, updated_at = ? WHERE item_id = ?",
+                (next_version, now, item_id),
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return next_version
+
+    def mark_item_acl_revalidated(
+        self, item_id: str, subjects, *, fresh_as_of: float, tenant: str | None = None
+    ) -> int:
+        """Record that a managed item's grant was CONFIRMED current by the provider.
+
+        This is the store side of the revalidation chain (knowledge/acl.py's
+        RevalidationHook is the interface that performs the provider probe and
+        then calls this). It writes the provider's freshly-observed subject set
+        and stamps ``fresh_as_of``, bumping ``acl_version`` so the previous
+        (stale) decision is invalidated. A revocation observed by the provider is
+        recorded by passing an empty ``subjects`` -- the next query then denies.
+        Returns the new acl_version. No-op returning 0 if the item has no grant
+        row to refresh.
+        """
+        subj_list = sorted({str(s) for s in subjects})
+        now = datetime.now().isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT acl_version, tenant FROM item_acl WHERE item_id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                self.db.execute("COMMIT")
+                return 0
+            next_version = row["acl_version"] + 1
+            new_tenant = tenant if tenant is not None else row["tenant"]
+            self.db.execute(
+                "UPDATE item_acl SET subjects = ?, tenant = ?, acl_version = ?, "
+                "fresh_as_of = ?, updated_at = ? WHERE item_id = ?",
+                (json.dumps(subj_list), new_tenant, next_version, float(fresh_as_of), now, item_id),
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return next_version
+
+    def get_item_grants(self, item_ids):
+        """Batch-fetch grant rows for *item_ids*, keyed by item_id.
+
+        Returns, for each id that HAS a grant row::
+
+            {"subjects": <json str>, "tenant": str, "acl_version": int,
+             "managed": bool, "fresh_as_of": float, "trust_class": str|None}
+
+        ``trust_class`` is the source's PROVENANCE stamp (``local_admitted`` /
+        ``managed``), read via a LEFT JOIN -- the retriever classifies managed
+        from it, NOT from a source_type guess. ``None`` when the item has no
+        source (sourceless -> trusted-local) OR its source row is missing
+        (dangling -> the retriever fails that closed). The stored ``managed``
+        flag is also returned so an item explicitly ingested managed cannot be
+        downgraded. Ids with no grant row are absent; the classifier decides
+        those from trust_class + the fail-closed policy. Chunked under
+        SQLITE_MAX_VARIABLE_NUMBER.
+        """
+        out: dict[str, dict] = {}
+        ids = list(item_ids)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.db.execute(
+                "SELECT a.item_id, a.subjects, a.tenant, a.acl_version, "  # noqa: S608
+                "a.managed, a.fresh_as_of, a.resource_ref, i.source_id, s.trust_class "
+                "FROM item_acl a "
+                "LEFT JOIN items i ON i.id = a.item_id "
+                "LEFT JOIN sources s ON s.id = i.source_id "
+                f"WHERE a.item_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                out[row["item_id"]] = {
+                    "subjects": row["subjects"],
+                    "tenant": row["tenant"],
+                    "acl_version": row["acl_version"],
+                    "managed": bool(row["managed"]),
+                    "fresh_as_of": row["fresh_as_of"],
+                    "resource_ref": row["resource_ref"],
+                    "trust_class": row["trust_class"],
+                    "has_source": row["source_id"] is not None,
+                }
+        return out
+
+    def get_item_trust(self, item_ids):
+        """Batch-fetch each item's ``(has_source, trust_class)``, keyed by id.
+
+        The retriever's ACL classifier needs the source PROVENANCE for EVERY
+        candidate, including ones with no grant row:
+
+        * ``has_source`` False -- a SOURCELESS item: MANAGED, fail-closed
+          (absence of a source is not proof of no external ACL, so it is never
+          waved through as trusted-local).
+        * ``has_source`` True, ``trust_class`` == ``local_admitted`` -- trusted-local.
+        * ``has_source`` True, ``trust_class`` == ``managed`` (or a MISSING source
+          row -> ``trust_class`` None) -- managed, fail-closed.
+
+        The gate reads THIS stamp; it never re-guesses trust from source_type.
+        An id with no item row resolves to ``(False, None)``.
+        """
+        out: dict[str, tuple[bool, str | None]] = {}
+        ids = list(item_ids)
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.db.execute(
+                "SELECT i.id, i.source_id, s.trust_class FROM items i "  # noqa: S608
+                "LEFT JOIN sources s ON s.id = i.source_id "
+                f"WHERE i.id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                out[row["id"]] = (row["source_id"] is not None, row["trust_class"])
+        return out
+
+    def get_connector_row_state(self, source_id: str) -> dict:
+        """The per-row change ledger for a structured connector source.
+
+        Returns ``{row_key: {"content_hash": str|None, "item_ids": [str],
+        "status": str}}`` for the ACTIVE rows of *source_id*. The pipeline reads
+        this before ingest to short-circuit unchanged rows (matching
+        content_hash) and to find the prior item group a changed row replaces;
+        the sync scheduler reads it to compute which rows a full snapshot dropped.
+        """
+        out: dict[str, dict] = {}
+        for row in self.db.execute(
+            "SELECT row_key, content_hash, acl_hash, item_ids, status "
+            "FROM connector_row_state "
+            "WHERE source_id = ? AND status = 'active'",
+            (source_id,),
+        ).fetchall():
+            try:
+                ids = json.loads(row["item_ids"]) if row["item_ids"] else []
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            out[row["row_key"]] = {
+                "content_hash": row["content_hash"],
+                "acl_hash": row["acl_hash"],
+                "item_ids": ids,
+                "status": row["status"],
+            }
+        return out
+
+    def set_connector_row_state(
+        self,
+        source_id: str,
+        row_key: str,
+        *,
+        content_hash: str | None,
+        item_ids: list[str],
+        acl_hash: str | None = None,
+    ) -> None:
+        """Record (or overwrite) which items one connector row owns.
+
+        Written by the pipeline in the SAME durable step as the row's items +
+        ACL grant, so the ledger, the content and the grant advance together --
+        a crash between them cannot leave a row marked active with no items or an
+        item with no grant."""
+        self._write_connector_row_state_locked(
+            source_id, row_key, content_hash=content_hash, item_ids=item_ids, acl_hash=acl_hash
+        )
+
+    def _write_connector_row_state_locked(
+        self,
+        source_id: str,
+        row_key: str,
+        *,
+        content_hash: str | None,
+        item_ids: list[str],
+        acl_hash: str | None,
+    ) -> None:
+        """Row-state write with no transaction of its own (caller owns it)."""
+        self.db.execute(
+            "INSERT INTO connector_row_state "
+            "(source_id, row_key, content_hash, acl_hash, item_ids, updated_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active') "
+            "ON CONFLICT(source_id, row_key) DO UPDATE SET "
+            "content_hash = excluded.content_hash, acl_hash = excluded.acl_hash, "
+            "item_ids = excluded.item_ids, "
+            "updated_at = excluded.updated_at, status = 'active', "
+            "merged_into_source_id = NULL",
+            (
+                source_id,
+                row_key,
+                content_hash,
+                acl_hash,
+                json.dumps(item_ids),
+                datetime.now().isoformat(),
+            ),
+        )
+
+    def finalize_connector_row(
+        self,
+        source_id: str,
+        row_key: str,
+        *,
+        content_hash: str | None,
+        acl_hash: str | None,
+        grants: list[dict],
+        item_ids: list[str],
+        delete_item_ids: list[str] | None = None,
+    ) -> None:
+        """Write a connector row's ACL grants AND its ledger entry ATOMICALLY.
+
+        ``grants`` is a list of ``{"item_id", "subjects", "tenant", "managed",
+        "fresh_as_of", "resource_ref"}`` dicts (one per created item). When
+        ``delete_item_ids`` is given (the row's PRIOR item group being replaced),
+        those items are deleted in the SAME transaction as the new grants + the
+        ledger row. Every step is written under ONE ``BEGIN IMMEDIATE``: if any
+        part fails, the whole unit rolls back, so the store never ends up with
+        the old items deleted while the new items are grantless and the ledger
+        unwritten -- the corruption where a retry then created permanently
+        untracked duplicate items."""
+        now = datetime.now().isoformat()
+        did_delete = bool(delete_item_ids)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if delete_item_ids:
+                self.delete_items_batch_in_txn(list(delete_item_ids), owner_source_id=source_id)
+            for g in grants:
+                subj_list = sorted({str(s) for s in g["subjects"]})
+                ref_json = self._resource_ref_json(g.get("resource_ref"))
+                self._write_item_acl_locked(
+                    g["item_id"],
+                    subj_list,
+                    g["tenant"],
+                    managed=bool(g.get("managed", False)),
+                    fresh_as_of=float(g.get("fresh_as_of", 0.0)),
+                    ref_json=ref_json,
+                    now=now,
+                )
+            self._write_connector_row_state_locked(
+                source_id, row_key, content_hash=content_hash, item_ids=item_ids, acl_hash=acl_hash
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        if did_delete:
+            # The in-txn delete seam drops entities the in-memory graph still
+            # holds; reload after COMMIT, as that seam requires.
+            self.reload_graph()
+
+    def delete_connector_row_atomic(
+        self, source_id: str, row_key: str, item_ids: list[str]
+    ) -> None:
+        """Delete a dropped connector row's items AND its ledger entry ATOMICALLY.
+
+        The item delete and the ``connector_row_state`` delete run under ONE
+        ``BEGIN IMMEDIATE`` (via the in-txn delete seam), so a crash or grant/
+        state failure can never commit the item deletion while leaving the ledger
+        row behind (which would permanently skip that row's data) or vice versa.
+        The graph reload runs after COMMIT, as the in-txn seam requires."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if item_ids:
+                self.delete_items_batch_in_txn(item_ids, owner_source_id=source_id)
+            self.db.execute(
+                "DELETE FROM connector_row_state WHERE source_id = ? AND row_key = ?",
+                (source_id, row_key),
+            )
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        if item_ids:
+            self.reload_graph()
+
+    def regrant_connector_row(
+        self,
+        source_id: str,
+        row_key: str,
+        *,
+        content_hash: str | None,
+        acl_hash: str | None,
+        grants: list[dict],
+        item_ids: list[str],
+    ) -> None:
+        """Re-apply an ACL-only change to an existing row's item group.
+
+        Used when a row's text is unchanged (same content_hash) but its grant
+        facts changed (subjects/tenant/resource_ref): the items stay, only the
+        grants and the ledger's acl_hash are rewritten -- atomically, so a query
+        never keeps evaluating an obsolete grant. Same transaction discipline as
+        ``finalize_connector_row``; kept as a named method so the intent (regrant,
+        not re-ingest) is explicit at the call site."""
+        self.finalize_connector_row(
+            source_id,
+            row_key,
+            content_hash=content_hash,
+            acl_hash=acl_hash,
+            grants=grants,
+            item_ids=item_ids,
+        )
+
     def _delete_item_cascade(self, item_id):
         """Delete item and its dependents without commit/graph reload (for batch use)."""
-        row = self.db.execute("SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)).fetchone()
+        row = self.db.execute(
+            "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
         if row:
             self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
         self.db.execute("DELETE FROM source_locations WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM mentions WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM entity_relations WHERE source_item_id = ?", (item_id,))
+        self.db.execute("DELETE FROM item_acl WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM items WHERE id = ?", (item_id,))
 
     def delete_item(self, item_id):
@@ -1455,8 +2139,7 @@ class KnowledgeStore:
         which is visible and recoverable, whereas a cross-wired group destroys
         content on the next delete.
         """
-        row = self.db.execute(
-            "SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
+        row = self.db.execute("SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
         content_hash = row["content_hash"] if row else None
         if not content_hash:
             return
@@ -1464,16 +2147,19 @@ class KnowledgeStore:
         for table, healthy in _DOC_STATE_TABLES:
             hash_col = _OWNERSHIP_HASH_COL[table]
             for st in self.db.execute(
-                    f"SELECT rowid, item_ids FROM {table} "  # noqa: S608
-                    f"WHERE source_id = ? AND {hash_col} = ?",
-                    (new_source_id, content_hash)).fetchall():
+                f"SELECT rowid, item_ids FROM {table} "  # noqa: S608
+                f"WHERE source_id = ? AND {hash_col} = ?",
+                (new_source_id, content_hash),
+            ).fetchall():
                 matches.append((table, healthy, st))
         if len(matches) != 1:
             if matches:
                 logger.warning(
                     "Not adopting item into source %s: %d documents there share this "
                     "content, so the hash does not say which one owns it",
-                    new_source_id, len(matches))
+                    new_source_id,
+                    len(matches),
+                )
             return
         table, healthy, st = matches[0]
         try:
@@ -1485,7 +2171,8 @@ class KnowledgeStore:
             self.db.execute(
                 f"UPDATE {table} SET item_ids = ?, status = ?, "  # noqa: S608
                 "merged_into_source_id = NULL WHERE rowid = ?",
-                (json.dumps(ids), healthy, st["rowid"]))
+                (json.dumps(ids), healthy, st["rowid"]),
+            )
 
     def detach_source_location_by_hash(self, source_id: str, content_hash: str) -> int:
         """Drop this source's CLAIM on a document it has no copy of.
@@ -1520,22 +2207,32 @@ class KnowledgeStore:
             hit = self.db.execute(
                 f"SELECT COUNT(*) AS n FROM {table} "  # noqa: S608
                 f"WHERE source_id = ? AND {hash_col} = ?",
-                (source_id, content_hash)).fetchone()
+                (source_id, content_hash),
+            ).fetchone()
             claimants += int(hit["n"] or 0) if hit else 0
         if claimants > 1:
             logger.warning(
                 "Keeping source %s's claim: %d documents there share this content, so "
-                "releasing it could strand one of them", source_id, claimants)
+                "releasing it could strand one of them",
+                source_id,
+                claimants,
+            )
             return 0
         cur = self.db.execute(
             "DELETE FROM source_locations WHERE source_id = ? AND item_id IN "
             "(SELECT id FROM items WHERE content_hash = ?)",
-            (source_id, content_hash))
+            (source_id, content_hash),
+        )
         return cur.rowcount or 0
 
-    def release_stale_claim(self, source_id: str, prev_hash: str | None,
-                            new_hash: str, prev_item_ids: list[str],
-                            prev_text_hash: str | None = None) -> int:
+    def release_stale_claim(
+        self,
+        source_id: str,
+        prev_hash: str | None,
+        new_hash: str,
+        prev_item_ids: list[str],
+        prev_text_hash: str | None = None,
+    ) -> int:
         """Release a claim made for content this source does not have.
 
         A source that lost a dedup owns no items but IS a location of the winner's,
@@ -1560,8 +2257,7 @@ class KnowledgeStore:
         """
         if prev_item_ids or not prev_hash or prev_hash == new_hash:
             return 0
-        return self.detach_source_location_by_hash(
-            source_id, prev_text_hash or prev_hash)
+        return self.detach_source_location_by_hash(source_id, prev_text_hash or prev_hash)
 
     def delete_items_batch(self, item_ids: list[str], owner_source_id: str | None = None):
         """Delete multiple items in a single transaction with one graph reload.
@@ -1585,8 +2281,7 @@ class KnowledgeStore:
             raise
         self._load_graph()
 
-    def delete_items_batch_in_txn(self, item_ids: list[str],
-                                  owner_source_id: str | None = None):
+    def delete_items_batch_in_txn(self, item_ids: list[str], owner_source_id: str | None = None):
         """The body of :meth:`delete_items_batch`, for a caller already in a write txn.
 
         Same semantics, minus the transaction and the graph reload, so a caller
@@ -1598,15 +2293,14 @@ class KnowledgeStore:
         """
         for item_id in item_ids:
             if owner_source_id:
-                others = self.sources_holding_item(
-                    item_id, exclude_source_id=owner_source_id)
+                others = self.sources_holding_item(item_id, exclude_source_id=owner_source_id)
                 if others:
                     self.reassign_item_source(item_id, others[0])
                     self._adopt_reassigned_item(item_id, others[0])
                     self.db.execute(
-                        "DELETE FROM source_locations "
-                        "WHERE item_id = ? AND source_id = ?",
-                        (item_id, owner_source_id))
+                        "DELETE FROM source_locations " "WHERE item_id = ? AND source_id = ?",
+                        (item_id, owner_source_id),
+                    )
                     continue
             self._delete_item_cascade(item_id)
         self._prune_orphan_entities()
@@ -1660,7 +2354,8 @@ class KnowledgeStore:
         row = self.db.execute(
             f"SELECT item_ids FROM {table} "  # noqa: S608
             f"WHERE source_id = ? AND {key_col} = ?",
-            (source_id, key)).fetchone()
+            (source_id, key),
+        ).fetchone()
         if not row:
             return []
         raw = row["item_ids"]
@@ -1670,16 +2365,20 @@ class KnowledgeStore:
             ids = json.loads(raw)
         except (TypeError, ValueError) as exc:
             raise RuntimeError(
-                f"{table} item_ids unreadable for {key!r} in source {source_id} "
-                f"({exc})") from exc
+                f"{table} item_ids unreadable for {key!r} in source {source_id} " f"({exc})"
+            ) from exc
         if not isinstance(ids, list) or not ids:
             return []
         # Bounded by chunker.MAX_CHUNKS_PER_FILE, so the bind count cannot reach
         # SQLITE_MAX_VARIABLE_NUMBER.
         placeholders = ",".join("?" for _ in ids)
-        return [r["id"] for r in self.db.execute(
-            f"SELECT id FROM items WHERE id IN ({placeholders}) AND source_id = ?",  # noqa: S608,E501
-            (*ids, source_id)).fetchall()]
+        return [
+            r["id"]
+            for r in self.db.execute(
+                f"SELECT id FROM items WHERE id IN ({placeholders}) AND source_id = ?",  # noqa: S608,E501
+                (*ids, source_id),
+            ).fetchall()
+        ]
 
     def delete_source_cascade(self, source_id):
         """Delete a source and all its items in a single transaction (batch SQL).
@@ -1695,8 +2394,12 @@ class KnowledgeStore:
             # ownership moves to one of those sources and only this source's location
             # row is dropped; the item, its text, embedding, FTS row and graph edges
             # are untouched. Only items this source solely holds are destroyed.
-            owned = [r["id"] for r in self.db.execute(
-                "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+            owned = [
+                r["id"]
+                for r in self.db.execute(
+                    "SELECT id FROM items WHERE source_id = ?", (source_id,)
+                ).fetchall()
+            ]
             doomed: list[str] = []
             for item_id in owned:
                 others = self.sources_holding_item(item_id, exclude_source_id=source_id)
@@ -1720,15 +2423,22 @@ class KnowledgeStore:
                 # FTS is external-content, so the old column values must be handed to
                 # the 'delete' command BEFORE the rows go -- and only for the rows going.
                 for row in self.db.execute(
-                        f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
-                        doomed).fetchall():
-                    self._fts_unindex(row["rowid"], row["title"],
-                                      row["content"], row["tags"])
+                    f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
+                    doomed,
+                ).fetchall():
+                    self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
                 self.db.execute(
-                    f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed)  # noqa: S608
-                self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
+                    f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed
+                )  # noqa: S608
                 self.db.execute(
-                    f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed)  # noqa: S608
+                    f"DELETE FROM mentions WHERE item_id IN ({q})", doomed
+                )  # noqa: S608
+                self.db.execute(
+                    f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed
+                )  # noqa: S608
+                self.db.execute(
+                    f"DELETE FROM item_acl WHERE item_id IN ({q})", doomed
+                )  # noqa: S608
                 self.db.execute(f"DELETE FROM items WHERE id IN ({q})", doomed)  # noqa: S608
 
             # Documents that deferred to this source need their marker cleared, or the
@@ -1740,13 +2450,19 @@ class KnowledgeStore:
             for table, healthy in _DOC_STATE_TABLES:
                 deferred = self.db.execute(
                     f"SELECT source_id, content_hash, rowid FROM {table} "  # noqa: S608
-                    "WHERE merged_into_source_id = ?", (source_id,)).fetchall()
+                    "WHERE merged_into_source_id = ?",
+                    (source_id,),
+                ).fetchall()
                 for row in deferred:
                     adopted: list[str] = []
                     if row["content_hash"]:
-                        adopted = [r["id"] for r in self.db.execute(
-                            "SELECT id FROM items WHERE source_id = ? AND content_hash = ?",
-                            (row["source_id"], row["content_hash"])).fetchall()]
+                        adopted = [
+                            r["id"]
+                            for r in self.db.execute(
+                                "SELECT id FROM items WHERE source_id = ? AND content_hash = ?",
+                                (row["source_id"], row["content_hash"]),
+                            ).fetchall()
+                        ]
                     if adopted:
                         # The document is present and owned here now: adopt the items
                         # rather than re-ingesting. Its own items, so no foreign group.
@@ -1755,13 +2471,16 @@ class KnowledgeStore:
                         self.db.execute(
                             f"UPDATE {table} SET merged_into_source_id = NULL, "  # noqa: S608
                             "status = ?, item_ids = ? WHERE rowid = ?",
-                            (healthy, json.dumps(adopted), row["rowid"]))
+                            (healthy, json.dumps(adopted), row["rowid"]),
+                        )
                     elif table == "folder_file_state":
                         # Scan-driven: clearing the marker to 'pending' makes the next
                         # walk re-ingest the file, which is the whole point of reviving.
                         self.db.execute(
                             "UPDATE folder_file_state SET merged_into_source_id = NULL, "
-                            "status = 'pending' WHERE rowid = ?", (row["rowid"],))
+                            "status = 'pending' WHERE rowid = ?",
+                            (row["rowid"],),
+                        )
                     else:
                         # Push-driven with no scanner to revive it, and the content is
                         # genuinely gone -- so the row keeps its 'deduped' status and
@@ -1770,7 +2489,9 @@ class KnowledgeStore:
                         # content the Library does not actually hold.
                         self.db.execute(
                             f"UPDATE {table} SET merged_into_source_id = NULL "  # noqa: S608
-                            "WHERE rowid = ?", (row["rowid"],))
+                            "WHERE rowid = ?",
+                            (row["rowid"],),
+                        )
             self.db.execute("DELETE FROM ingestion_jobs WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM folder_file_state WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM artifact_item_state WHERE source_id = ?", (source_id,))
@@ -1826,7 +2547,8 @@ class KnowledgeStore:
                 logger.warning(
                     "knowledge: FTS index migration could not take the writer lock; "
                     "serving the legacy index for now and retrying on the next read",
-                    exc_info=True)
+                    exc_info=True,
+                )
                 return
             self._fts_index_current = True
 
@@ -1842,55 +2564,64 @@ class KnowledgeStore:
             self.db.execute(
                 "UPDATE sources SET properties = ? "
                 "WHERE id = ? AND properties = ? AND sync_status = 'paused'",
-                (_without_sync_status(json.dumps(retired)), row["id"],
-                 row["properties"]))
+                (_without_sync_status(json.dumps(retired)), row["id"], row["properties"]),
+            )
         else:
             self.db.execute(
                 "UPDATE sources SET sync_status = 'pending_confirmation', "
                 "properties = ? WHERE id = ? AND properties = ? AND sync_status = ?",
-                (_without_sync_status(json.dumps(retired)), row["id"],
-                 row["properties"], row["sync_status"]))
+                (
+                    _without_sync_status(json.dumps(retired)),
+                    row["id"],
+                    row["properties"],
+                    row["sync_status"],
+                ),
+            )
             logger.info(
                 "Knowledge source %s was registered automatically by a feature that "
                 "no longer exists; it now needs confirmation before it is scanned "
-                "again", row["id"],
+                "again",
+                row["id"],
             )
 
     def retire_auto_registered_folder(self, source_id: str) -> bool:
         """Retire ONE auto-registered walking source by id. True when it moved.
 
-Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
-        the one funnel every scan goes through. Retiring at scan time rather than at
-        store open is what makes the coverage complete AND keeps the write off the
-        startup path: a row can arrive at any moment -- :meth:`import_bundle` restores
-        a bundle's source rows verbatim, so a bundle from an install that had
-        auto-registration enabled re-creates one while the gateway is already up --
-        and this takes the write lock, which a constructor-time caller could be
-        holding the event loop for.
+        Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
+                the one funnel every scan goes through. Retiring at scan time rather than at
+                store open is what makes the coverage complete AND keeps the write off the
+                startup path: a row can arrive at any moment -- :meth:`import_bundle` restores
+                a bundle's source rows verbatim, so a bundle from an install that had
+                auto-registration enabled re-creates one while the gateway is already up --
+                and this takes the write lock, which a constructor-time caller could be
+                holding the event loop for.
 
-        Synchronous and takes the write lock, so callers on the event loop hand it to
-        ``asyncio.to_thread``. False means nothing moved -- not a candidate, or the
-        lock was unavailable -- and the sweep refuses to scan the row either way.
+                Synchronous and takes the write lock, so callers on the event loop hand it to
+                ``asyncio.to_thread``. False means nothing moved -- not a candidate, or the
+                lock was unavailable -- and the sweep refuses to scan the row either way.
         """
         try:
             self.db.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError:
             logger.warning(
                 "Could not take the write lock to retire knowledge source %s; the "
-                "sweep skips it and the next sweep retries", source_id, exc_info=True)
+                "sweep skips it and the next sweep retries",
+                source_id,
+                exc_info=True,
+            )
             return False
         try:
             row = self.db.execute(
                 "SELECT id, properties, sync_status, source_type FROM sources WHERE id = ?",
-                (source_id,)).fetchone()
+                (source_id,),
+            ).fetchone()
             moved = False
             if row and row["source_type"] in _WALKING_SOURCE_TYPES:
                 try:
                     props = json.loads(row["properties"] or "{}")
                 except (ValueError, TypeError, RecursionError):
                     props = None
-                if (isinstance(props, dict)
-                        and is_auto_registered(props)):
+                if isinstance(props, dict) and is_auto_registered(props):
                     self._retire_one_in_txn(row, props)
                     moved = True
             self.db.execute("COMMIT")
@@ -1899,9 +2630,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self.db.execute("ROLLBACK")
             raise
 
-    def merge_source_properties(self, source_id: str, *, set_keys: dict | None = None,
-                                remove_keys: tuple[str, ...] = (),
-                                sync_status: str | None = None) -> dict | None:
+    def merge_source_properties(
+        self,
+        source_id: str,
+        *,
+        set_keys: dict | None = None,
+        remove_keys: tuple[str, ...] = (),
+        sync_status: str | None = None,
+    ) -> dict | None:
         """Apply a key delta to one source's ``properties``, in ONE write-locked take.
 
         Returns the properties as persisted, or None when the row is gone.
@@ -1932,7 +2668,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.db.execute(
-                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
             if row is None:
                 self.db.execute("COMMIT")
                 return None
@@ -1949,12 +2686,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             if sync_status is None:
                 cur = self.db.execute(
                     "UPDATE sources SET properties = ? WHERE id = ? AND properties = ?",
-                    (text, source_id, row["properties"]))
+                    (text, source_id, row["properties"]),
+                )
             else:
                 cur = self.db.execute(
                     "UPDATE sources SET properties = ?, sync_status = ? "
                     "WHERE id = ? AND properties = ?",
-                    (text, sync_status, source_id, row["properties"]))
+                    (text, sync_status, source_id, row["properties"]),
+                )
             self.db.execute("COMMIT")
             return props if cur.rowcount > 0 else None
         except Exception:
@@ -1982,7 +2721,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         if rows:
             logger.info(
                 "knowledge: re-indexing %d item(s) for FTS index format v%d "
-                "(CJK-segmented terms)", rows, FTS_INDEX_VERSION)
+                "(CJK-segmented terms)",
+                rows,
+                FTS_INDEX_VERSION,
+            )
         # IMMEDIATE so the writer lock is held for the whole rebuild: that is what
         # stops a concurrent writer from reading the old representation and then
         # writing terms the migrated index cannot match.
@@ -2001,7 +2743,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 batch = self.db.execute(
                     "SELECT rowid, title, content, tags FROM items "
                     "WHERE rowid > ? ORDER BY rowid LIMIT ?",
-                    (last, self._FTS_REBUILD_BATCH)).fetchall()
+                    (last, self._FTS_REBUILD_BATCH),
+                ).fetchall()
                 if not batch:
                     break
                 for row in batch:
@@ -2075,7 +2818,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         """
         self.db.execute(
             "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-            (rowid, *self._fts_terms(title, content, tags)))
+            (rowid, *self._fts_terms(title, content, tags)),
+        )
 
     def _fts_unindex(self, rowid, title, content, tags) -> None:
         """Remove one item's row from ``items_fts``.
@@ -2093,7 +2837,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(
             "INSERT INTO items_fts (items_fts, rowid, title, content, tags) "
             "VALUES ('delete', ?, ?, ?, ?)",
-            (rowid, *self._fts_terms(title, content, tags)))
+            (rowid, *self._fts_terms(title, content, tags)),
+        )
 
     def search_items_fts(self, query, limit=10, offset=0) -> list:
         self.ensure_fts_index_current()
@@ -2105,7 +2850,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 "SELECT i.*, fts.rank FROM items_fts fts "
                 "JOIN items i ON i.rowid = fts.rowid "
                 "WHERE items_fts MATCH ? ORDER BY fts.rank LIMIT ? OFFSET ?",
-                (safe, limit, offset)).fetchall()
+                (safe, limit, offset),
+            ).fetchall()
         except sqlite3.OperationalError:
             return []
         return [self._serialize_item(r) for r in rows]
@@ -2129,7 +2875,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(
             "INSERT INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (eid, name, entity_type, description, json.dumps(aliases or []), now, now))
+            (eid, name, entity_type, description, json.dumps(aliases or []), now, now),
+        )
         # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
         # critical section. ``_load_graph`` -- which every delete / merge /
         # import path runs after its own COMMIT -- takes this same lock for its whole
@@ -2148,7 +2895,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         row = self.db.execute("SELECT * FROM entities WHERE name = ?", (name,)).fetchone()
         if row:
             return dict(row)
-        row = self.db.execute("SELECT * FROM entities WHERE LOWER(name) = LOWER(?)", (name,)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM entities WHERE LOWER(name) = LOWER(?)", (name,)
+        ).fetchone()
         if row:
             return dict(row)
         for row in self.db.execute("SELECT * FROM entities"):
@@ -2158,43 +2907,55 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         return None
 
     def merge_entities(self, keep_id, merge_id):
-        self.db.execute("UPDATE entity_relations SET source_id = ? WHERE source_id = ?", (keep_id, merge_id))
-        self.db.execute("UPDATE entity_relations SET target_id = ? WHERE target_id = ?", (keep_id, merge_id))
+        self.db.execute(
+            "UPDATE entity_relations SET source_id = ? WHERE source_id = ?", (keep_id, merge_id)
+        )
+        self.db.execute(
+            "UPDATE entity_relations SET target_id = ? WHERE target_id = ?", (keep_id, merge_id)
+        )
         # Remove self-loops created by the merge
         self.db.execute(
-            "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?",
-            (keep_id, keep_id))
+            "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?", (keep_id, keep_id)
+        )
         # Delete mentions that would conflict, then update the rest
         self.db.execute(
             "DELETE FROM mentions WHERE entity_id = ? AND item_id IN (SELECT item_id FROM mentions WHERE entity_id = ?)",
-            (merge_id, keep_id))
-        self.db.execute("UPDATE mentions SET entity_id = ? WHERE entity_id = ?", (keep_id, merge_id))
+            (merge_id, keep_id),
+        )
+        self.db.execute(
+            "UPDATE mentions SET entity_id = ? WHERE entity_id = ?", (keep_id, merge_id)
+        )
         self.db.execute("DELETE FROM entities WHERE id = ?", (merge_id,))
         self.db.commit()
         self._load_graph()
 
-    def add_entity_relation(self, source_id, target_id, relation_type,
-                            description=None, weight=1.0, source_item_id=None) -> str:
+    def add_entity_relation(
+        self, source_id, target_id, relation_type, description=None, weight=1.0, source_item_id=None
+    ) -> str:
         rid = str(uuid4())
         now = datetime.now().isoformat()
         self.db.execute(
             "INSERT INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (rid, source_id, target_id, relation_type, description, weight, source_item_id, now))
+            (rid, source_id, target_id, relation_type, description, weight, source_item_id, now),
+        )
         # Hold ``_graph_lock`` across commit + add, one critical section -- see
         # add_entity. This closes the delete-then-restore race: a source deletion
         # whose rebuild+swap would otherwise land between this commit and this add
         # cannot interleave, so this edge is never re-injected after its row is gone.
         with self._graph_lock:
             self.db.commit()
-            self._graph.add_edge(source_id, target_id, id=rid, relation_type=relation_type, weight=weight)
+            self._graph.add_edge(
+                source_id, target_id, id=rid, relation_type=relation_type, weight=weight
+            )
         return rid
 
     def add_mention(self, item_id, entity_id, context=None):
         now = datetime.now().isoformat()
         self.db.execute(
             "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) VALUES (?, ?, ?, ?)",
-            (item_id, entity_id, context, now))
+            (item_id, entity_id, context, now),
+        )
         self.db.commit()
 
     # States a sources row may legitimately START in: the DURABLE ones, which a
@@ -2238,11 +2999,45 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         now = datetime.now().isoformat()
         properties = kwargs.get("properties", {})
         stored = _without_sync_status(properties)
+        # trust_class is EVIDENCE issued by a TRUSTED creator, not a
+        # caller-assertable field. The base value is derived from the source
+        # TYPE (initial_trust_class): only the fixed local-creator types yield
+        # TRUST_LOCAL. An explicit trust_class kwarg may only NARROW to
+        # TRUST_MANAGED (a remote connector stamping managed for a type that
+        # would otherwise default local); it can NEVER upgrade a non-local type
+        # to TRUST_LOCAL. So a caller passing trust_class=local_admitted for a
+        # 'sharepoint' (or any non-local) source is refused the local stamp and
+        # gets managed -- the stamp does not prove the issuer is trusted, the
+        # creator TYPE does. This is what stops external API input / a
+        # source_type rename / a forged kwarg from minting local trust.
+        base = initial_trust_class(source_type)
+        requested = kwargs.get("trust_class")
+        if requested == TRUST_MANAGED:
+            trust_class = TRUST_MANAGED  # narrowing is always allowed
+        elif requested in (None, ""):
+            trust_class = base
+        elif requested == TRUST_LOCAL:
+            # Honoured ONLY when the type itself is a local creator; otherwise
+            # the request is refused and the type-derived (managed) value stands.
+            trust_class = base
+        else:
+            # Unknown trust_class value -> fail-closed managed, never the request.
+            trust_class = TRUST_MANAGED
         self.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, name, source_type, uri, json.dumps(stored),
-             self._initial_sync_status(properties), now, now))
+            "trust_class, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                sid,
+                name,
+                source_type,
+                uri,
+                json.dumps(stored),
+                self._initial_sync_status(properties),
+                trust_class,
+                now,
+                now,
+            ),
+        )
         self.db.commit()
         return sid
 
@@ -2250,7 +3045,15 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         row = self.db.execute("SELECT * FROM sources WHERE uri = ?", (uri,)).fetchone()
         return dict(row) if row else None
 
-    _SOURCE_COLUMNS = {"name", "source_type", "uri", "properties", "last_synced", "sync_status", "updated_at"}
+    _SOURCE_COLUMNS = {
+        "name",
+        "source_type",
+        "uri",
+        "properties",
+        "last_synced",
+        "sync_status",
+        "updated_at",
+    }
 
     def update_source(self, source_id, **fields):
         """Write *fields* to a sources row.
@@ -2291,7 +3094,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(sql, params)
         self.db.commit()
 
-    def add_source_location(self, item_id, source_id, chunk_range=None, section_title=None, anchor=None):
+    def add_source_location(
+        self, item_id, source_id, chunk_range=None, section_title=None, anchor=None
+    ):
         """Record that *source_id* holds *item_id*, at an optional position within it.
 
         ``OR IGNORE`` against ``UNIQUE (item_id, source_id)``: a document reachable
@@ -2300,12 +3105,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         the first is deleted -- see ``sources_holding_item``.
         """
         self.add_source_location_in_txn(
-            item_id, source_id, chunk_range=chunk_range,
-            section_title=section_title, anchor=anchor)
+            item_id, source_id, chunk_range=chunk_range, section_title=section_title, anchor=anchor
+        )
         self.db.commit()
 
-    def add_source_location_in_txn(self, item_id, source_id, chunk_range=None,
-                                   section_title=None, anchor=None):
+    def add_source_location_in_txn(
+        self, item_id, source_id, chunk_range=None, section_title=None, anchor=None
+    ):
         """:meth:`add_source_location` without the commit, for a caller in a write txn.
 
         The connection runs in autocommit mode, so ``db.commit()`` inside an
@@ -2318,7 +3124,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "INSERT OR IGNORE INTO source_locations "
             "(id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (lid, item_id, source_id, chunk_range, section_title, anchor, now))
+            (lid, item_id, source_id, chunk_range, section_title, anchor, now),
+        )
 
     def sources_holding_item(self, item_id: str, exclude_source_id: str | None = None) -> list[str]:
         """Ids of EXISTING sources that hold *item_id*, optionally excluding one.
@@ -2327,8 +3134,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         comes back empty. Joins ``sources`` so a location row left pointing at an
         already-deleted source cannot keep a dead item alive.
         """
-        sql = ("SELECT sl.source_id FROM source_locations sl "
-               "JOIN sources s ON s.id = sl.source_id WHERE sl.item_id = ?")
+        sql = (
+            "SELECT sl.source_id FROM source_locations sl "
+            "JOIN sources s ON s.id = sl.source_id WHERE sl.item_id = ?"
+        )
         params: list[str] = [item_id]
         if exclude_source_id:
             sql += " AND sl.source_id != ?"
@@ -2343,8 +3152,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         only here, and only when the owning source is being deleted while another
         source still holds the document.
         """
-        self.db.execute("UPDATE items SET source_id = ? WHERE id = ?",
-                        (new_source_id, item_id))
+        self.db.execute("UPDATE items SET source_id = ? WHERE id = ?", (new_source_id, item_id))
 
     def get_neighbors(self, entity_id, depth=1) -> list:
         # Pin one graph reference for the whole traversal. ``_load_graph``
@@ -2371,7 +3179,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         result = []
         for nid in visited:
             data = graph.nodes.get(nid, {})
-            result.append({"id": nid, "name": data.get("name"), "entity_type": data.get("entity_type")})
+            result.append(
+                {"id": nid, "name": data.get("name"), "entity_type": data.get("entity_type")}
+            )
         return result
 
     def get_entity_subgraph(self, entity_id, depth=2) -> dict | None:
@@ -2406,7 +3216,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         edges = []
         for u, v, data in graph.edges(data=True):
             if u in visited and v in visited:
-                edges.append({"source": u, "target": v, "type": data.get("relation_type"), "weight": data.get("weight")})
+                edges.append(
+                    {
+                        "source": u,
+                        "target": v,
+                        "type": data.get("relation_type"),
+                        "weight": data.get("weight"),
+                    }
+                )
         return {"nodes": nodes, "edges": edges}
 
     def aggregate_stats(self) -> ContentStats:
@@ -2497,7 +3314,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         item = self.get_item(item_id)
         if not item:
             return {}
-        mentions = self.db.execute("SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)).fetchall()
+        mentions = self.db.execute(
+            "SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)
+        ).fetchall()
         entity_ids = [m["entity_id"] for m in mentions]
         entity_id_set = set(entity_ids)
         entities = []
@@ -2509,7 +3328,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         seen_ids = set()
         for eid in entity_ids:
             for row in self.db.execute(
-                    "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)):
+                "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)
+            ):
                 r = dict(row)
                 if r["id"] in seen_ids:
                     continue
@@ -2525,11 +3345,16 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     continue
                 seen_ids.add(r["id"])
                 relations.append(r)
-        locations = [dict(r) for r in self.db.execute(
-            "SELECT * FROM source_locations WHERE item_id = ?", (item_id,))]
-        mentions = [dict(r) for r in self.db.execute(
-            "SELECT * FROM mentions WHERE item_id = ?", (item_id,))]
-        source_ids = {sid for sid in (item.get("source_id"), *(loc["source_id"] for loc in locations)) if sid}
+        locations = [
+            dict(r)
+            for r in self.db.execute("SELECT * FROM source_locations WHERE item_id = ?", (item_id,))
+        ]
+        mentions = [
+            dict(r) for r in self.db.execute("SELECT * FROM mentions WHERE item_id = ?", (item_id,))
+        ]
+        source_ids = {
+            sid for sid in (item.get("source_id"), *(loc["source_id"] for loc in locations)) if sid
+        }
         sources = []
         for sid in source_ids:
             row = self.db.execute("SELECT * FROM sources WHERE id = ?", (sid,)).fetchone()
@@ -2546,27 +3371,51 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
     def export_all(self, namespace: str | None = None) -> dict:
         if namespace:
-            items = [self._serialize_item(r) for r in self.db.execute(
-                "SELECT * FROM items WHERE namespace = ?", (namespace,))]
+            items = [
+                self._serialize_item(r)
+                for r in self.db.execute("SELECT * FROM items WHERE namespace = ?", (namespace,))
+            ]
             item_ids = {i["id"] for i in items}
         else:
             items = [self._serialize_item(r) for r in self.db.execute("SELECT * FROM items")]
             item_ids = None
         if item_ids is not None:
             items_subq = "SELECT id FROM items WHERE namespace = ?"
-            relations = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM entity_relations WHERE source_item_id IS NULL OR source_item_id IN ({items_subq})",  # noqa: S608
-                (namespace,))]
-            source_locations = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM source_locations WHERE item_id IN ({items_subq})",  # noqa: S608
-                (namespace,))]
-            mentions = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM mentions WHERE item_id IN ({items_subq})",  # noqa: S608
-                (namespace,))]
+            relations = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM entity_relations WHERE source_item_id IS NULL OR source_item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
+            source_locations = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM source_locations WHERE item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
+            mentions = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM mentions WHERE item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
         else:
             relations = [dict(r) for r in self.db.execute("SELECT * FROM entity_relations")]
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
             mentions = [dict(r) for r in self.db.execute("SELECT * FROM mentions")]
+        if item_ids is not None:
+            item_acls = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM item_acl WHERE item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
+        else:
+            item_acls = [dict(r) for r in self.db.execute("SELECT * FROM item_acl")]
         return {
             "items": items,
             "entities": [dict(r) for r in self.db.execute("SELECT * FROM entities")],
@@ -2574,6 +3423,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "sources": [dict(r) for r in self.db.execute("SELECT * FROM sources")],
             "source_locations": source_locations,
             "mentions": mentions,
+            "item_acls": item_acls,
         }
 
     def import_bundle(self, bundle: dict) -> dict:
@@ -2581,6 +3431,28 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         entities_created = 0
         relations_rebuilt = 0
         now = datetime.now().isoformat()
+        # ── Trust-boundary invariant for an UNTRUSTED bundle ──────────────────
+        # ONE principle governs all four data-flow segments: a bundle's CLAIM, a
+        # MISSING field, or its NAMING an existing source id NEVER produces local
+        # trust or a new (non-managed) authorization. Concretely:
+        #
+        # 1. SOURCE CLASSIFICATION: an imported source is stamped local ONLY when
+        #    a source with its id ALREADY EXISTS in this store as TRUST_LOCAL
+        #    (independently admitted by the real local creator). A bundle can
+        #    neither create a new local source nor flip a managed one.
+        # 2. ITEM ATTRIBUTION: a NEWLY-inserted imported item is MANAGED at query
+        #    time regardless of which source id it names -- it gets an explicit
+        #    managed grant below. So a bundle cannot make new content
+        #    trusted-local by pointing item.source_id at a pre-existing local
+        #    source; only items that ALREADY exist here (idempotent re-import,
+        #    INSERT OR IGNORE no-op) keep their real, locally-established trust.
+        # 3. GRANT RESTORATION: a bundle-provided item_acl may only ever be
+        #    MANAGED (restrict, never un-gate). An explicit managed=0 in the
+        #    bundle is IGNORED -- imported grants are forced managed.
+        # 4. QUERY EXEMPTION: unchanged. The gate treats an item as managed when
+        #    its source is not TRUST_LOCAL OR it carries a managed grant; a
+        #    managed item without a resolvable binding is denied (fail-closed).
+        _newly_imported_item_ids: list[str] = []
         self.db.execute("BEGIN IMMEDIATE")
         try:
             for src in bundle.get("sources", []):
@@ -2616,16 +3488,47 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 # uses, so the row keeps its items and its properties and waits behind
                 # the same Confirm control. Aggregate and single-file sources are
                 # unaffected: they walk nothing.
-                if (src.get("source_type") in _WALKING_SOURCE_TYPES
-                        and restored != "paused"):
+                if src.get("source_type") in _WALKING_SOURCE_TYPES and restored != "paused":
                     restored = "pending_confirmation"
+                # trust_class is PROVENANCE, and a bundle is UNTRUSTED input.
+                # NEITHER the bundle's claimed source_type/trust_class NOR the
+                # ABSENCE of a managed grant is provenance: a crafted bundle can
+                # claim a local source_type and simply omit its grants, and
+                # "no managed grant in the bundle" does not prove the content is
+                # not managed. So imported provenance is MANAGED unless the source
+                # is INDEPENDENTLY RE-ADMITTED locally -- the ONLY verifiable
+                # signal is that a source with this id ALREADY EXISTS in THIS
+                # store as TRUST_LOCAL, established by the real local creator
+                # (add_source over a real folder the watcher admitted), not by any
+                # bundle. Absent that, the source is managed and the query-time
+                # gate + revalidation govern it; a genuine local library is
+                # restored by re-creating it through its local creator, never by
+                # trusting an imported bundle. (A one-step local restore would
+                # need a named, authenticated re-admission step; it does not exist
+                # today and is not invented here.)
+                existing_row = self.db.execute(
+                    "SELECT trust_class FROM sources WHERE id = ?", (src["id"],)
+                ).fetchone()
+                if existing_row is not None and existing_row["trust_class"] == TRUST_LOCAL:
+                    src_trust = TRUST_LOCAL
+                else:
+                    src_trust = TRUST_MANAGED
                 self.db.execute(
                     "INSERT OR IGNORE INTO sources (id, name, source_type, uri, properties, "
-                    "sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (src["id"], src["name"], src["source_type"], src["uri"],
-                     _without_sync_status(props_text),
-                     self._initial_status_or_default(restored),
-                     src.get("created_at", now), now))
+                    "sync_status, trust_class, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        src["id"],
+                        src["name"],
+                        src["source_type"],
+                        src["uri"],
+                        _without_sync_status(props_text),
+                        self._initial_status_or_default(restored),
+                        src_trust,
+                        src.get("created_at", now),
+                        now,
+                    ),
+                )
             for item in bundle.get("items", []):
                 raw_emb = item.get("embedding")
                 if isinstance(raw_emb, str) and raw_emb:
@@ -2645,52 +3548,177 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, embedding_sig, status, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (item["id"], item["title"], item["content"], item["item_type"],
-                     item.get("source_id"), item.get("chunk_index", 0), item.get("namespace", "default"), item.get("summary"),
-                     item.get("tags", "[]"), raw_emb, _validated_embedding_sig(item.get("embedding_sig")),
-                     item.get("status", "active"),
-                     item.get("created_at", now), now))
+                    (
+                        item["id"],
+                        item["title"],
+                        item["content"],
+                        item["item_type"],
+                        item.get("source_id"),
+                        item.get("chunk_index", 0),
+                        item.get("namespace", "default"),
+                        item.get("summary"),
+                        item.get("tags", "[]"),
+                        raw_emb,
+                        _validated_embedding_sig(item.get("embedding_sig")),
+                        item.get("status", "active"),
+                        item.get("created_at", now),
+                        now,
+                    ),
+                )
                 if cursor.rowcount > 0:
                     items_imported += 1
-                    row = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item["id"],)).fetchone()
+                    _newly_imported_item_ids.append(item["id"])
+                    row = self.db.execute(
+                        "SELECT rowid FROM items WHERE id = ?", (item["id"],)
+                    ).fetchone()
                     if row:
-                        self._fts_index(row[0], item["title"], item["content"],
-                                        item.get("tags", "[]"))
+                        self._fts_index(
+                            row[0], item["title"], item["content"], item.get("tags", "[]")
+                        )
             for ent in bundle.get("entities", []):
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (ent["id"], ent["name"], ent["entity_type"], ent.get("description"),
-                     _validated_aliases(ent.get("aliases")),
-                     ent.get("created_at", now), now))
+                    (
+                        ent["id"],
+                        ent["name"],
+                        ent["entity_type"],
+                        ent.get("description"),
+                        _validated_aliases(ent.get("aliases")),
+                        ent.get("created_at", now),
+                        now,
+                    ),
+                )
                 if cursor.rowcount > 0:
                     entities_created += 1
             for rel in bundle.get("relations", []):
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (rel["id"], rel["source_id"], rel["target_id"], rel["relation_type"],
-                     rel.get("description"), rel.get("weight", 1.0), rel.get("source_item_id"),
-                     rel.get("created_at", now)))
+                    (
+                        rel["id"],
+                        rel["source_id"],
+                        rel["target_id"],
+                        rel["relation_type"],
+                        rel.get("description"),
+                        rel.get("weight", 1.0),
+                        rel.get("source_item_id"),
+                        rel.get("created_at", now),
+                    ),
+                )
                 if cursor.rowcount > 0:
                     relations_rebuilt += 1
             for loc in bundle.get("source_locations", []):
                 self.db.execute(
                     "INSERT OR IGNORE INTO source_locations (id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (loc["id"], loc["item_id"], loc["source_id"], loc.get("chunk_range"),
-                     loc.get("section_title"), loc.get("anchor"), loc.get("created_at", now)))
+                    (
+                        loc["id"],
+                        loc["item_id"],
+                        loc["source_id"],
+                        loc.get("chunk_range"),
+                        loc.get("section_title"),
+                        loc.get("anchor"),
+                        loc.get("created_at", now),
+                    ),
+                )
             for m in bundle.get("mentions", []):
                 self.db.execute(
                     "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) "
                     "VALUES (?, ?, ?, ?)",
-                    (m["item_id"], m["entity_id"], m.get("context"), m.get("created_at", now)))
+                    (m["item_id"], m["entity_id"], m.get("context"), m.get("created_at", now)),
+                )
+            granted_item_ids: set = set()
+            _newly_set = set(_newly_imported_item_ids)
+            for acl in bundle.get("item_acls", []):
+                # A bundle is untrusted input: an entry that is not an object
+                # (e.g. ``[1]``) must be SKIPPED, not crash the whole import with
+                # an AttributeError -> HTTP 500. Validate the shape before reading.
+                if not isinstance(acl, dict):
+                    continue
+                # SEGMENT 3 -- grant restoration. A bundle-provided grant may only
+                # ever be MANAGED: an imported grant can carry subjects/tenant to
+                # RESTRICT, but it can never mark an item trusted-local / un-gated.
+                # So ``managed`` is FORCED to 1 regardless of what the bundle says
+                # (an explicit managed=0 is IGNORED -- an untrusted bundle cannot
+                # confer a non-managed identity). fresh_as_of is forced to 0
+                # (stale, needs revalidation) so an imported grant cannot be
+                # served live off the exporter's old confirmation.
+                item_id = acl.get("item_id")
+                if not item_id:
+                    continue
+                # Restore a grant ONLY for an item THIS import newly inserted. A
+                # bundle that names a PRE-EXISTING item must not touch its grant:
+                # attaching a stale managed ACL to a genuine local item (which
+                # carries no grant row) would make it inaccessible. A pre-existing
+                # item keeps whatever grant/trust it already had.
+                if item_id not in _newly_set:
+                    continue
+                is_managed = 1
+                # Validate the numeric field: an untrusted bundle may carry a
+                # non-numeric acl_version, and an uncaught ValueError here would
+                # 500 the whole import. A malformed entry is SKIPPED (fail-closed).
+                try:
+                    acl_version = int(acl.get("acl_version") or 1)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "import_bundle: skipping item_acl for %r with a malformed " "acl_version",
+                        item_id,
+                    )
+                    continue
+                self.db.execute(
+                    "INSERT OR IGNORE INTO item_acl "
+                    "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, "
+                    "resource_ref, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        item_id,
+                        acl.get("subjects", "[]"),
+                        acl.get("tenant", ""),
+                        acl_version,
+                        is_managed,
+                        0.0,
+                        acl.get("resource_ref"),
+                        now,
+                    ),
+                )
+                granted_item_ids.add(item_id)
+            # SEGMENT 2 -- item attribution. Every NEWLY-inserted imported item
+            # that did NOT already exist here as a genuine local item, and did not
+            # receive a grant above, gets a MANAGED, deny-all, stale grant. This
+            # makes it managed at query time REGARDLESS of the source id it names
+            # -- so a bundle cannot make new content trusted-local by pointing
+            # item.source_id at a pre-existing local source. An item that landed
+            # under a pre-existing-local source AND already existed here is an
+            # idempotent re-import (INSERT OR IGNORE no-op, not in
+            # _newly_imported_item_ids), so its real local trust is untouched.
+            for iid in _newly_imported_item_ids:
+                if iid in granted_item_ids:
+                    continue
+                # A newly-inserted item from an untrusted bundle is unverified
+                # content: force a managed, deny-all, stale grant so the query
+                # gate treats it as managed REGARDLESS of the source id it names.
+                # This is uniform -- even an item attached to a pre-existing local
+                # source is new bundle content, so it is fenced the same way;
+                # only items that ALREADY existed here (idempotent re-import, not
+                # in this list) keep their real, locally-established trust.
+                self.db.execute(
+                    "INSERT OR IGNORE INTO item_acl "
+                    "(item_id, subjects, tenant, acl_version, managed, fresh_as_of, "
+                    "resource_ref, updated_at) "
+                    "VALUES (?, '[]', '', 1, 1, 0.0, NULL, ?)",
+                    (iid, now),
+                )
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             raise
         self._load_graph()
-        return {"items_imported": items_imported, "entities_created": entities_created, "relations_rebuilt": relations_rebuilt}
+        return {
+            "items_imported": items_imported,
+            "entities_created": entities_created,
+            "relations_rebuilt": relations_rebuilt,
+        }
 
     def close(self):
         """Close the calling thread's connection (other threads' connections
