@@ -63,6 +63,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
+    app.router.add_post("/api/members/{slug}/perpetual", handlers.api_member_perpetual_set)
+    # The switch's supervised mutation tasks stop admitting on shutdown and are
+    # drained (bounded) at cleanup, on the app's own hooks.
+    handlers.register_perpetual_lifecycle(app)
 
     # Crew appearance library: the dashboard's own pack store, separate from
     # Crew Companion's. On the dashboard router so a crew's face renders while

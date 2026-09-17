@@ -112,7 +112,7 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 # back to the real count is a manual, unenforced step -- do it whenever you
 # touch this file, or the slack this floor exists to prevent regrows.
 # --------------------------------------------------------------------------- #
-_MINIMUM_GATED_ROUTES = 28
+_MINIMUM_GATED_ROUTES = 29
 
 
 class _FakeState:

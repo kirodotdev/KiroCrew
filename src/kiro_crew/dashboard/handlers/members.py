@@ -19,7 +19,10 @@ or opening threads that speak as them).
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+import uuid
+from typing import Any
 
 from aiohttp import web
 
@@ -920,3 +923,559 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         # cold session picks the new rules up at its next start regardless.
         logger.debug("could not flag member session for reinjection", exc_info=True)
     return web.json_response({"slug": slug, "ok": True})
+
+
+# ── Perpetual mode ──────────────────────────────────────────────────────────
+
+#: Wake interval a member starts on when the owner switches Perpetual mode on
+#: with no loop of its own yet. The member adjusts it from inside its wakes
+#: (``monitor_update`` interval); the owner never sets it.
+PERPETUAL_DEFAULT_IDLE_SECS = 3600
+
+#: The recurring instruction an owner-armed perpetual loop carries. The member
+#: receives it on every wake; it is the standing brief, not a task.
+PERPETUAL_INSTRUCTION = (
+    "Perpetual mode wake. Review your standing goals, your inbox and the work "
+    "you own; act on whatever is due; leave routine progress in your ledger "
+    "and message the user only for a decision they alone can make. If the "
+    "cadence is wrong, change the interval with monitor_update. End your turn "
+    "when nothing is due. Stop this loop yourself only in the rare case the "
+    "standing duty is truly over, and say why in the stop reason; otherwise "
+    "the user turns Perpetual mode off from the Crew Members page."
+)
+
+PERPETUAL_BANNER = "Perpetual mode"
+
+
+def _perpetual_error(message: str, code: str, status: int) -> web.Response:
+    return web.json_response({"error": message, "code": code}, status=status)
+
+
+def _restore_arm_party(loop_id: str, slot_key: str, party: str, token: str) -> bool:
+    """Put a loop's trust entry back after a failed owner takeover.
+
+    A thin, blocking wrapper over ``restore_arm_party_if_token``, which does
+    the compare-and-restore as ONE locked read-modify-write in the trust
+    module: the entry is rewritten to ``party`` (``"self"`` re-recorded, ``""``
+    removed) only while it still carries THIS takeover's ``token`` -- "still
+    says owner" is not an identity, since the next takeover writes owner too,
+    and an earlier takeover's late cleanup must never undo a later one's
+    entry. ``"owner"`` as the prior party is a no-op by construction. Returns
+    whether it restored. Best-effort like every revoke: the loop itself was
+    left unchanged, so the worst outcome of a failed restore is a stopped loop
+    whose entry names the owner -- which only the owner's switch can resume
+    anyway. Blocking file IO: callers offload.
+    """
+    from kiro_crew.autonudge_selfarm import restore_arm_party_if_token
+
+    try:
+        return restore_arm_party_if_token(loop_id, slot_key, token, party)
+    except (OSError, ValueError):
+        logger.warning("could not restore trust entry for loop %s", loop_id, exc_info=True)
+        return False
+
+
+async def api_member_perpetual_set(request: web.Request) -> web.Response:
+    """POST /api/members/{slug}/perpetual — the owner's Perpetual mode switch.
+
+    Body: ``{"member": <exact crew name>, "enabled": true|false}``.
+
+    The switch drives the auto-nudge loop on the member's OWN DM thread. The
+    slot key is derived server-side from the slug's binding, never taken from
+    the body, so the route can only ever touch that one thread. Owner-only by
+    construction (app tokens 404, non-owner dashboard subjects are refused by
+    ``require_owner_dashboard_request``): arming a member from outside its own
+    turn is exactly what ``autonudge_authz`` refuses everyone else, and the
+    ``owner_arm`` admission it grants this route is recorded under its own
+    ``armed_by`` in the keystone-gated trust record.
+
+    ON with no loop: arm a NEW loop with ``max_cycles=0`` and
+    ``max_runtime_secs=0`` -- unlimited, which is the point of the mode and
+    the owner's deliberate choice here. Finite loops armed anywhere else keep
+    their own caps; nothing here converts them.
+    ON with a stopped loop: resume THAT loop and lift its caps to unlimited,
+    keeping its cycle accounting and its instruction.
+    ON with an active loop: nothing to do; the current record is returned.
+    OFF: deactivate the loop (``active=False``). The record stays, with its
+    ``manual`` stop reason, so the drawer keeps saying why; the pending wake is
+    cancelled by the service and no queued wake can revive it (the timer and
+    ``notify_turn_complete`` both re-read ``active``). A turn already running
+    is not interrupted. A structured monitor (``monitor_watch``) is not this
+    switch's to convert: 409.
+    """
+    from kiro_crew.autonudge import get_instance as _autonudge_get
+
+    denied = await _deny_app_caller(request, "members.perpetual")
+    if denied is not None:
+        return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.perpetual")
+    if owner_denied is not None:
+        return owner_denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return _perpetual_error("invalid member slug", "invalid_member_slug", 400)
+    try:
+        body = await request.json()
+    except Exception:
+        return _perpetual_error("invalid JSON body", "invalid_json", 400)
+    if not isinstance(body, dict):
+        return _perpetual_error("invalid JSON body", "invalid_json", 400)
+    member = body.get("member", "")
+    enabled = body.get("enabled")
+    if not isinstance(member, str) or not member or not _AGENT_NAME_RE.match(member):
+        return _perpetual_error("member field required", "missing_member", 400)
+    # A real boolean only: bool("false") is True, and this switch runs tools
+    # unattended when it is on.
+    if not isinstance(enabled, bool):
+        return _perpetual_error("enabled must be a boolean", "not_a_boolean", 400)
+    try:
+        if members_mod.slug_for_name(member) != slug:
+            return _perpetual_error("member does not match slug", "member_slug_mismatch", 400)
+    except MemberSlugError:
+        return _perpetual_error("member does not match slug", "member_slug_mismatch", 400)
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if member not in cfg.agents:
+        return _perpetual_error("no crew member for this slug", "member_not_found", 404)
+    svc = _autonudge_get()
+    if svc is None:
+        return _perpetual_error(
+            "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", "autonudge_disabled", 503
+        )
+    state: DashboardState | None = request.app.get("state")
+    if state is None:
+        return _perpetual_error("dashboard state unavailable", "state_unavailable", 503)
+    # OWNERSHIP, the thread route's own checks in the thread route's own order
+    # (``api_member_thread``), resolved by ``_resolve_owned_member_slot``: the
+    # binding must exist and name THIS member, the bound slot key must be the
+    # CURRENT derivation for this member, and the live slot must be a
+    # member-mode slot pinned to this crew. Run once here to answer a stale
+    # page fast and to pick the lock, and run AGAIN under the lock, where the
+    # mutation reads it.
+    slot_key, denied = await _resolve_owned_member_slot(state, cfg, slug, member)
+    if denied is not None:
+        return denied
+    caller = request.remote or ""
+    # The mutation runs as ONE SUPERVISED TASK the request only waits on: a
+    # cancelled request (client gone, aiohttp handler cancellation) must never
+    # interrupt the takeover's steps mid-flight -- a trust entry rewritten with
+    # no loop resumed, or a loop resumed under an entry already put back. The
+    # task acquires and releases the slot lock itself, so the lock is held
+    # until every step INCLUDING any rollback has finished. A cancelled request
+    # gets no response; the task still completes and the store is consistent.
+    if request.app.get(_PERPETUAL_SHUTDOWN_KEY):
+        return _perpetual_error("gateway is shutting down", "shutting_down", 503)
+    task = asyncio.ensure_future(
+        _perpetual_mutation(
+            state=state,
+            cfg=cfg,
+            svc=svc,
+            slug=slug,
+            member=member,
+            slot_key=slot_key,
+            enabled=enabled,
+            caller=caller,
+        )
+    )
+    tasks = _perpetual_tasks_of(request.app)
+    tasks.add(task)
+    task.add_done_callback(functools.partial(_perpetual_task_done, tasks=tasks, slot_key=slot_key))
+    return await asyncio.shield(task)
+
+
+async def _resolve_owned_member_slot(
+    state: DashboardState, cfg: KiroCrewConfig, slug: str, member: str
+) -> tuple[str, web.Response | None]:
+    """The member's own DM slot key, or the refusal that stands in for it.
+
+    Reuses the thread route's helpers rather than re-deriving anything: the
+    binding (``read_dm_binding``) must name *member* and *member* must derive
+    *slug* (``_member_names_for_slug``) -- else 409 ``member_pin_mismatch``,
+    the pin refusal the thread route gives a binding naming another crew; the
+    bound key must equal ``_member_thread_slot``'s CURRENT derivation and name a
+    live member-mode slot -- else 409 ``member_thread_not_open``; and the live
+    slot must be pinned to *member* -- else 409 ``member_slot_conflict``. The
+    slot key is never taken from a request body.
+    """
+    binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
+    if binding is None:
+        return "", _perpetual_error(
+            "open this member's thread first", "member_thread_not_open", 409
+        )
+    if binding.get("member") != member or member not in _member_names_for_slug(cfg, slug):
+        return "", _perpetual_error(
+            "the thread is bound to a different crew", "member_pin_mismatch", 409
+        )
+    try:
+        expected_slot_key, _generation = await asyncio.to_thread(
+            _member_thread_slot, cfg, member, slug
+        )
+    except Exception as exc:
+        from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+        return "", _store_unavailable_response(cfg.agents[member].memory_store, exc)
+    slot_key = str(binding.get("slot_key", ""))
+    slot = state._slots.get(slot_key) if slot_key else None
+    if slot_key != expected_slot_key or slot is None or str(getattr(slot, "mode", "")) != "member":
+        return "", _perpetual_error(
+            "open this member's thread first", "member_thread_not_open", 409
+        )
+    if str(getattr(slot, "agent", "")) != member:
+        return "", _perpetual_error(
+            "the thread is pinned to a different crew", "member_slot_conflict", 409
+        )
+    return slot_key, None
+
+
+async def _perpetual_mutation(
+    *,
+    state: DashboardState,
+    cfg: KiroCrewConfig,
+    svc: Any,
+    slug: str,
+    member: str,
+    slot_key: str,
+    enabled: bool,
+    caller: str,
+) -> web.Response:
+    """The switch's effect, under the slot lock, start to finish.
+
+    Re-runs the ownership resolution under the lock and aborts (409
+    ``member_slot_conflict``) unless it still answers the key the lock was
+    taken for -- the binding or the live slot moved while this request waited.
+    Then re-reads the loop under the lock: two presses on the same switch, or a
+    press racing the member's own re-arm, must see each other's result.
+    """
+    from kiro_crew.autonudge import is_structured_monitor_loop
+    from kiro_crew.autonudge_authz import authorize_and_add_nudge, authorize_and_update_nudge
+    from kiro_crew.dashboard.handlers.autonudge import _serialize
+
+    async with _perpetual_lock(slot_key):
+        current_key, denied = await _resolve_owned_member_slot(state, cfg, slug, member)
+        if denied is not None:
+            return denied
+        if current_key != slot_key:
+            return _perpetual_error(
+                "member thread changed during the request", "member_slot_conflict", 409
+            )
+        existing = svc.get_by_slot(slot_key)
+        if existing is not None and is_structured_monitor_loop(existing):
+            return _perpetual_error(
+                "this member is running a structured monitor; stop it from its own thread",
+                "structured_monitor_not_convertible",
+                409,
+            )
+        if not enabled:
+            if existing is None:
+                return web.json_response({"ok": True, "loop": None})
+            if not existing.active:
+                return web.json_response({"ok": True, "loop": _serialize(existing)})
+            loop, error, status = await authorize_and_update_nudge(
+                svc=svc,
+                loop_id=existing.id,
+                active=False,
+                source="dashboard",
+                caller=caller,
+            )
+            if error is not None:
+                return _perpetual_error(error, "perpetual_off_failed", status)
+            return web.json_response({"ok": True, "loop": _serialize(loop)})
+        if existing is not None:
+            if existing.active:
+                return web.json_response({"ok": True, "loop": _serialize(existing)})
+            loop, error, status = await _takeover_stopped_loop(
+                svc, existing, slot_key, caller=caller
+            )
+            if error is not None:
+                return _perpetual_error(error, "perpetual_on_failed", status)
+            return web.json_response({"ok": True, "loop": _serialize(loop)})
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=state,
+            slot_key=slot_key,
+            message=PERPETUAL_INSTRUCTION,
+            idle_secs=PERPETUAL_DEFAULT_IDLE_SECS,
+            max_cycles=0,
+            max_runtime_secs=0,
+            banner=PERPETUAL_BANNER,
+            source="dashboard",
+            caller=caller,
+            gate=False,
+            replace_existing=False,
+            owner_arm=True,
+        )
+        if error is not None:
+            return _perpetual_error(error, "perpetual_on_failed", status)
+        return web.json_response({"ok": True, "loop": _serialize(loop)})
+
+
+#: PER-APP set of supervised mutation tasks in flight (``app[_PERPETUAL_TASKS_KEY]``,
+#: created by ``register_perpetual_lifecycle``), held so a request that stops
+#: waiting on one cannot let it be garbage-collected mid-step, and so one
+#: app's cleanup drains exactly its own tasks. Every task's outcome is read by
+#: ``_perpetual_task_done`` -- a request that stopped awaiting must not leave a
+#: failure unlogged -- and the set is drained at gateway shutdown by
+#: ``_perpetual_drain`` (registered through ``register_perpetual_lifecycle``,
+#: the same ``on_shutdown`` / ``on_cleanup`` pair every other background
+#: subsystem in ``server.py`` uses). An app that never registered the lifecycle
+#: (a bare test router) gets a set minted on first use.
+_PERPETUAL_TASKS_KEY = "members.perpetual.tasks"
+
+#: Per-app flag set by the ``on_shutdown`` hook: once true the route admits no
+#: new mutation (503 ``shutting_down``) so the drain below sees a closed set.
+_PERPETUAL_SHUTDOWN_KEY = "members.perpetual.shutting_down"
+
+
+def _perpetual_tasks_of(app: web.Application) -> set["asyncio.Task[Any]"]:
+    tasks = app.get(_PERPETUAL_TASKS_KEY)
+    if tasks is None:
+        tasks = app[_PERPETUAL_TASKS_KEY] = set()
+    return tasks
+
+
+#: Bounded drain at cleanup: outstanding mutations get this long to finish on
+#: their own (a takeover is three short steps), then are cancelled and joined
+#: for at most this long again. A task cancelled here leaves its trust entry
+#: as written (the takeover's own cancellation rule) and is logged at warning.
+_PERPETUAL_DRAIN_GRACE_SECS = 5.0
+
+
+def _perpetual_task_done(
+    task: "asyncio.Task[Any]", *, tasks: set["asyncio.Task[Any]"], slot_key: str
+) -> None:
+    """Retrieve every supervised task's outcome so none is swallowed.
+
+    The error line carries a fixed template -- exception TYPE and slot key --
+    and never the exception's message (which can echo request text or a stop
+    reason); the full chain goes to debug. A cancelled task is the shutdown
+    case: its takeover may have left the trust entry saying owner, which the
+    log states.
+    """
+    tasks.discard(task)
+    if task.cancelled():
+        logger.warning(
+            "perpetual mutation for slot %s was cancelled; a takeover in flight may "
+            "have left its trust entry saying owner (resumable by the owner's switch)",
+            slot_key,
+        )
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("perpetual mutation for slot %s failed: %s", slot_key, type(exc).__name__)
+        logger.debug("perpetual mutation failure detail for slot %s", slot_key, exc_info=exc)
+
+
+def register_perpetual_lifecycle(app: web.Application) -> None:
+    """Hook the switch's supervised tasks into the app's shutdown sequence."""
+    app[_PERPETUAL_TASKS_KEY] = set()
+    app.on_shutdown.append(_perpetual_stop_admitting)
+    app.on_cleanup.append(_perpetual_drain)
+
+
+async def _perpetual_stop_admitting(app: web.Application) -> None:
+    app[_PERPETUAL_SHUTDOWN_KEY] = True
+
+
+async def _perpetual_drain(app: web.Application) -> None:
+    """Join this app's supervised mutations, bounded, then the service's own in-flight writes.
+
+    Phase one: the app's tasks get ``_PERPETUAL_DRAIN_GRACE_SECS`` to finish on
+    their own, then are cancelled and joined for as long again. Every blocking
+    trust write a task issues (owner record -- in the takeover and in the
+    authorizer's no-loop arm -- and the restore) is awaited through
+    ``autonudge_selfarm.await_thread_to_completion``, so joining the task IS
+    joining its threads: a cancel arriving mid-write, or a second one during
+    the rejoin, finishes the thread before the task ends. The join itself is
+    bounded: a task still running when the second wait expires is given up on
+    and logged, and its thread then finishes on its own. Phase two is a
+    BOUNDED, BEST-EFFORT wait as well: the nudge service
+    runs its own add/update persists as SHIELDED internal tasks it retains in
+    ``_inflight_adds``; a takeover cancelled mid-update leaves one of those
+    running, so the drain waits on that set for the same bound -- never
+    cancelling them, they are the service's -- and logs at info how many were
+    still writing when it gave up. Nothing takes them over after that:
+    ``AutoNudgeService.stop`` cancels timers and does not join in-flight
+    persists, so a write still running when the drain returns finishes on
+    its own or not at all.
+    """
+    tasks = [t for t in _perpetual_tasks_of(app) if not t.done()]
+    if tasks:
+        _done, pending = await asyncio.wait(tasks, timeout=_PERPETUAL_DRAIN_GRACE_SECS)
+        if pending:
+            logger.warning(
+                "cancelling %d perpetual mutation task(s) still running at shutdown", len(pending)
+            )
+            for task in pending:
+                task.cancel()
+            _done, still = await asyncio.wait(pending, timeout=_PERPETUAL_DRAIN_GRACE_SECS)
+            if still:
+                logger.warning(
+                    "%d perpetual mutation task(s) did not stop within the drain", len(still)
+                )
+    from kiro_crew.autonudge import get_instance as _autonudge_get
+
+    svc = _autonudge_get()
+    inflight = [t for t in list(getattr(svc, "_inflight_adds", None) or ()) if not t.done()]
+    if inflight:
+        _done, still_writing = await asyncio.wait(inflight, timeout=_PERPETUAL_DRAIN_GRACE_SECS)
+        if still_writing:
+            logger.info(
+                "%d nudge-service write(s) were still in flight when the perpetual drain "
+                "gave up; nothing joins them after this (AutoNudgeService.stop does not)",
+                len(still_writing),
+            )
+
+
+#: One lock per member slot for THIS ROUTE's mutations, and only this route's:
+#: it serializes concurrent presses of the switch on one member (and the
+#: identity re-check + loop re-read + takeover steps of each) against each
+#: other. The member's own directives (``monitor_update`` / ``autonudge_stop``)
+#: and the fire path go through the nudge service's own locks, not this one;
+#: the takeover therefore never assumes the loop it read is the loop that is
+#: still there, and its rollback targets exactly the loop id and the takeover
+#: token it captured at its start. Process-local like the service. Entries are
+#: dropped once no request holds or waits on them (``_perpetual_lock_users``),
+#: so the map is bounded by the presses in flight, not by the members ever
+#: pressed.
+_PERPETUAL_LOCKS: dict[str, asyncio.Lock] = {}
+_PERPETUAL_LOCK_USERS: dict[str, int] = {}
+
+
+class _perpetual_lock:
+    """``async with _perpetual_lock(slot_key):`` -- the per-slot lock, refcounted."""
+
+    def __init__(self, slot_key: str) -> None:
+        self._key = slot_key
+        self._lock: asyncio.Lock | None = None
+
+    async def __aenter__(self) -> None:
+        lock = _PERPETUAL_LOCKS.get(self._key)
+        if lock is None:
+            lock = _PERPETUAL_LOCKS[self._key] = asyncio.Lock()
+        _PERPETUAL_LOCK_USERS[self._key] = _PERPETUAL_LOCK_USERS.get(self._key, 0) + 1
+        self._lock = lock
+        try:
+            await lock.acquire()
+        except BaseException:
+            self._release_use()
+            raise
+
+    async def __aexit__(self, *_exc: object) -> None:
+        assert self._lock is not None
+        self._lock.release()
+        self._release_use()
+
+    def _release_use(self) -> None:
+        left = _PERPETUAL_LOCK_USERS.get(self._key, 1) - 1
+        if left <= 0:
+            _PERPETUAL_LOCK_USERS.pop(self._key, None)
+            _PERPETUAL_LOCKS.pop(self._key, None)
+        else:
+            _PERPETUAL_LOCK_USERS[self._key] = left
+
+
+async def _takeover_stopped_loop(
+    svc: Any, existing: Any, slot_key: str, *, caller: str
+) -> tuple[Any | None, str | None, int]:
+    """OWNER TAKEOVER of a stopped member loop, as one transaction.
+
+    Runs inside the supervised mutation task, under :func:`_perpetual_lock`
+    for *slot_key*; the caller has established that *existing* is the slot's
+    loop, inactive, and not a structured monitor. Because the task is
+    shielded from the request, no step here is interrupted by a client going
+    away; the sequence runs to its end and decides on what it saw.
+
+    Steps: read the entry's current party with the STRICT reader (an
+    unreadable or malformed record is indeterminate and refuses the takeover);
+    rewrite the entry to ``owner`` stamped with THIS takeover's token (skipped
+    when it already says owner: nothing changed, nothing to restore); resume
+    the loop with its caps lifted and its cycle accounting kept; decide on the
+    update's FINAL RESULT -- the loop the awaited service call returned, never
+    the in-memory record, since the service rolls its fields back when the
+    persist fails and only the returned value reflects what was written.
+
+    Rollback: on a refused resume or a raised one (the service has rolled its
+    own state back by then), the entry is put back to the prior party -- but
+    only if it still carries this takeover's token, so a later takeover's
+    entry is never overwritten by an earlier one's cleanup. A CANCELLATION of
+    the task itself (gateway shutdown) is the one case where the outcome is
+    unknown -- the service shields its persist and may still commit -- so the
+    entry is left as written and the cancellation propagates: a stopped loop
+    under an owner entry is resumable only by the owner's switch, which is the
+    safe side. One entry per loop, one party per entry: see
+    ``record_owner_arm``.
+    """
+    from kiro_crew.autonudge_authz import authorize_and_update_nudge
+    from kiro_crew.autonudge_selfarm import (
+        ARMED_BY_OWNER,
+        await_thread_to_completion,
+        read_arm_party_strict,
+        record_owner_arm,
+    )
+
+    loop_id = str(existing.id)
+    try:
+        previous_party = await asyncio.to_thread(read_arm_party_strict, loop_id, slot_key)
+    except OSError:
+        logger.error("trust record unreadable; loop not resumed", exc_info=True)
+        return None, "trust record unreadable — loop not resumed", 503
+    token = ""
+    if previous_party != ARMED_BY_OWNER:
+        token = uuid.uuid4().hex
+        try:
+            await await_thread_to_completion(record_owner_arm, loop_id, slot_key, txn=token)
+        except asyncio.CancelledError:
+            logger.warning(
+                "cancelled while writing the owner entry for %s on %s; the write was "
+                "joined and the entry may say owner",
+                loop_id,
+                slot_key,
+            )
+            raise
+        except OSError:
+            logger.error("owner-arm record unavailable; loop not resumed", exc_info=True)
+            return None, "owner-arm record unavailable — loop not resumed", 503
+
+    async def _rollback() -> None:
+        # Awaited INSIDE the slot lock (the caller's ``async with``), so the lock
+        # is released only after the restore has run -- and a cancellation here
+        # (a second one too) still JOINS the restore thread before propagating
+        # (``await_thread_to_completion``): no detached worker outlives the
+        # lock or the shutdown drain.
+        if not token:
+            return
+        try:
+            await await_thread_to_completion(
+                _restore_arm_party, loop_id, slot_key, previous_party, token
+            )
+        except asyncio.CancelledError:
+            logger.warning(
+                "cancelled while restoring the trust entry for %s on %s; the restore was "
+                "joined, the entry may still say owner",
+                loop_id,
+                slot_key,
+            )
+            raise
+        except Exception:  # noqa: BLE001 - best-effort; the loop is unchanged
+            logger.warning("trust entry restore did not complete for %s", loop_id, exc_info=True)
+
+    try:
+        loop, error, status = await authorize_and_update_nudge(
+            svc=svc,
+            loop_id=loop_id,
+            active=True,
+            max_cycles=0,
+            max_runtime_secs=0,
+            source="dashboard",
+            caller=caller,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        await _rollback()
+        raise
+    if error is not None or loop is None or not bool(getattr(loop, "active", False)):
+        await _rollback()
+        return None, error or "loop did not resume", status if error is not None else 409
+    return loop, None, 200

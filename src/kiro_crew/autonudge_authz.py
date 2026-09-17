@@ -34,7 +34,12 @@ from kiro_crew.autonudge import (
     NudgeAdmissionRefused,
     is_channel_key,
 )
-from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
+from kiro_crew.autonudge_selfarm import (
+    await_thread_to_completion,
+    forget_self_arm,
+    record_owner_arm,
+    record_self_arm,
+)
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
@@ -729,6 +734,13 @@ async def authorize_and_add_nudge(
     initiator_slot_key: str = "",
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     grant_owner_provider_credentials: bool = False,
+    # The dashboard OWNER arming a MEMBER slot's own thread from the Crew
+    # Members page (Perpetual mode). Set ONLY by the owner-gated member route
+    # after ``require_owner_dashboard_request`` passed; every other caller
+    # leaves it False and a member slot keeps refusing outside arms. It is a
+    # second admitted party beside the self-arm, recorded under its own
+    # ``armed_by`` -- it never sets ``self_armed``.
+    owner_arm: bool = False,
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -829,6 +841,9 @@ async def authorize_and_add_nudge(
     # Set only on the dashboard branch, when a crew/member slot is armed by its
     # own turn; channel-bound loops have no slot mode and stay False.
     self_armed = False
+    # Its sibling for a member slot armed by the dashboard owner (Perpetual
+    # mode). Mutually exclusive with ``self_armed``.
+    owner_armed = False
     if is_channel_key(slot_key):
         # Channel-bound loop (Slack / Discord ...). Validate the session is
         # routable so a nudge fired later has somewhere to reply.
@@ -939,10 +954,16 @@ async def authorize_and_add_nudge(
             # MCP tool reporting the arm as "requested" and the store holding no
             # loop. Audited under its own outcome so the trail distinguishes
             # "member armed itself" from an ordinary success.
-            if not is_self_arm(slot_key, initiator_slot_key):
+            if is_self_arm(slot_key, initiator_slot_key):
+                self_armed = True
+                _audit("self_armed")
+            elif owner_arm and slot_mode == "member":
+                # The owner's Perpetual mode switch. Member only: a crew slot
+                # is driven by its orchestrator and has no such switch.
+                owner_armed = True
+                _audit("owner_armed")
+            else:
                 return _deny(external_arm_refusal(slot_mode), 409)
-            self_armed = True
-            _audit("self_armed")
         if str(getattr(authorized_slot, "memory_mode", "persistent")) != "persistent":
             return _deny("incognito and temporary sessions cannot host automation loops", 403)
 
@@ -955,7 +976,7 @@ async def authorize_and_add_nudge(
             # armed loop keeps the original rule: never into crew/member.
             mode_ok = (
                 current_mode == slot_mode
-                if self_armed
+                if (self_armed or owner_armed)
                 else current_mode not in _EXTERNAL_ARM_REFUSED_MODES
             )
             return (
@@ -1032,6 +1053,7 @@ async def authorize_and_add_nudge(
                 "max_provider_errors": monitor.budgets.max_provider_errors,
                 "caller": caller,
                 "self_armed": self_armed,
+                "owner_armed": owner_armed,
             }
         return {
             "slot_key": slot_key,
@@ -1040,6 +1062,7 @@ async def authorize_and_add_nudge(
             "max_runtime_secs": int(max_runtime_secs),
             "caller": caller,
             "self_armed": self_armed,
+            "owner_armed": owner_armed,
         }
 
     def _critical_invoked_audit() -> None:
@@ -1091,7 +1114,7 @@ async def authorize_and_add_nudge(
     ):
         return _deny("monitor authorization requires a rollback-capable loop store", 503)
     reserved_loop_id: str | None = None
-    if self_armed or owner_credentials_grant:
+    if self_armed or owner_armed or owner_credentials_grant:
         # Reserve a COLLISION-FREE id before touching the trust record. The
         # record is an upsert keyed by loop id, so an id already held by a live
         # loop would overwrite that loop's entry -- and the add's conflict
@@ -1117,6 +1140,19 @@ async def authorize_and_add_nudge(
         except OSError:
             logger.error("self-arm record unavailable; loop not armed", exc_info=True)
             return _deny("self-arm record unavailable — loop not armed", 503)
+    if owner_armed:
+        # Same fail-closed contract as the self-arm record: an owner-armed
+        # member loop the fire-time guard could not vouch for would sit armed
+        # and never wake, so it must not be reported as armed. Joined on
+        # cancellation (``await_thread_to_completion``): the owner route's
+        # supervised task may be cancelled by the shutdown drain, and this
+        # write must not outlive that join.
+        try:
+            assert reserved_loop_id is not None
+            await await_thread_to_completion(record_owner_arm, reserved_loop_id, slot_key)
+        except OSError:
+            logger.error("owner-arm record unavailable; loop not armed", exc_info=True)
+            return _deny("owner-arm record unavailable — loop not armed", 503)
 
     if owner_credentials_grant:
         assert monitor is not None and reserved_loop_id is not None
@@ -1129,7 +1165,7 @@ async def authorize_and_add_nudge(
                 monitor.target,
             )
         except OSError:
-            if self_armed:
+            if self_armed or owner_armed:
                 await asyncio.to_thread(forget_self_arm, reserved_loop_id)
             logger.error("monitor credential provenance unavailable; loop not armed", exc_info=True)
             return _deny("monitor credential authorization unavailable — loop not armed", 503)
@@ -1137,7 +1173,7 @@ async def authorize_and_add_nudge(
     def _forget_orphaned_trust() -> None:
         if reserved_loop_id is None:
             return
-        if self_armed:
+        if self_armed or owner_armed:
             forget_self_arm(reserved_loop_id)  # never raises
         if owner_credentials_grant:
             autonudge_provider_trust.forget_monitor_owner_credentials(reserved_loop_id)

@@ -7077,13 +7077,26 @@ class GatewayOrchestrator:
         loop on this slot. A forged boolean in the store has no trust entry and
         refuses. The record read is file IO, so it is offloaded.
         """
-        if str(getattr(slot, "mode", "")) not in {"crew", "member"}:
+        mode = str(getattr(slot, "mode", ""))
+        if mode not in {"crew", "member"}:
             return True
-        if getattr(loop, "self_armed", False) is not True:
-            return False
-        return bool(
+        if getattr(loop, "self_armed", False) is True and bool(
             await asyncio.to_thread(autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key)
-        )
+        ):
+            return True
+        # The second admitted party, MEMBER slots only: the dashboard owner's
+        # Perpetual mode switch. It has no store bit to agree with -- the
+        # keystone-gated record, which only the owner-gated member route
+        # writes, is the whole authorization -- and a self-arm entry never
+        # satisfies it (``armed_by`` is disjoint), so a forged ``self_armed``
+        # bit cannot ride an owner entry and vice versa.
+        if mode == "member":
+            return bool(
+                await asyncio.to_thread(
+                    autonudge_selfarm.is_recorded_owner_arm, loop.id, loop.slot_key
+                )
+            )
+        return False
 
     @staticmethod
     async def _audit_fire_refused(loop: NudgeLoop, slot: Any) -> None:

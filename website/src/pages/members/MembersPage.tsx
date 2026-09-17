@@ -78,7 +78,7 @@ import {
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
 } from './rosterFilter'
-import { Btn } from '../../components/ui'
+import { Btn, Toggle } from '../../components/ui'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -300,6 +300,7 @@ const PATROL_STOPPED_REASON: Record<string, string> = {
   cycle_cap: 'pages.membersPage.patrol_stopped_cycle_cap',
   runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
   approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
+  autonudge_stop: 'pages.membersPage.patrol_stopped_autonudge_stop',
 }
 /** Floor under the websocket-driven invalidation of the loop registry: frames
  *  fire only on change, so a frame lost to a dropped socket would otherwise
@@ -1155,6 +1156,45 @@ export default function MembersPage() {
     [patrolLoopOf],
   )
   const activePatrol = activeMemberKey ? patrol.loops[activeMemberKey] : undefined
+  // Perpetual mode switch — the owner's ON / OFF over the loop on this member's
+  // own thread. The switch holds NO truth of its own: what it shows is the
+  // registry read above (`activePatrol.active`), and a press only asks the
+  // server. The registry is re-read when the answer lands — success or
+  // failure — so a refused or failed press settles back on what the backend
+  // actually holds, never on an optimistic ON. While the request is out the
+  // switch is disabled (not flipped), which is the honest reading of "asked,
+  // not yet answered". The error is scoped to the member it was raised for and
+  // dropped when the drawer moves to another member.
+  const perpetualMutation = useMutation({
+    mutationFn: ({ slug, member, enabled }: { slug: string; member: string; enabled: boolean }) =>
+      api.memberPerpetualSet(slug, member, enabled),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+    },
+  })
+  // Keyed to the exact (slug, member) pair the request was made for: a slug is
+  // lossy (two crews can share one), so the pair is the member's identity here.
+  // A response that lands for member A after the drawer moved to member B
+  // therefore neither flips nor flashes B's block — B reads only the
+  // registry, and the mutation's own state is reset the moment the active
+  // member changes.
+  const perpetualFor =
+    !!active &&
+    perpetualMutation.variables?.slug === active.slug &&
+    perpetualMutation.variables?.member === active.name
+  const perpetualPending = perpetualMutation.isPending && perpetualFor
+  const perpetualError = perpetualMutation.isError && perpetualFor ? perpetualMutation.error : null
+  const resetPerpetual = perpetualMutation.reset
+  useEffect(() => {
+    resetPerpetual()
+  }, [active?.slug, active?.name, resetPerpetual])
+  const setPerpetual = useCallback(
+    (enabled: boolean) => {
+      if (!active || !activeMemberKey || perpetualMutation.isPending) return
+      perpetualMutation.mutate({ slug: active.slug, member: active.name, enabled })
+    },
+    [active, activeMemberKey, perpetualMutation],
+  )
   // The live facts the status filters read, resolved per row the same way the
   // row's own markers are (isRunning / isUnread / activePatrolOf), so a filter
   // can never disagree with the dot it filters on.
@@ -2157,8 +2197,53 @@ export default function MembersPage() {
               className={`lucide-inline shrink-0 ${patrolState === 'active' ? 'text-accent' : 'text-muted'}`}
               aria-hidden="true"
             />
-            <span className="flex-1">{t('pages.membersPage.patrol_title')}</span>
+            <span className="flex-1" id="member-perpetual-title">{t('pages.membersPage.patrol_title')}</span>
+            {/* The owner's switch. Shown once the registry has answered (a
+                switch over an unknown state would promise a change it cannot
+                describe) and only for an opened thread — the server refuses a
+                member whose thread is not open, so the drawer does not offer
+                it. Its position is the backend's record, disabled while a
+                press is in flight; see setPerpetual. */}
+            {patrol.loaded && !patrol.failed && activeMemberKey && (
+              <span
+                className="flex items-center gap-1.5"
+                data-testid="member-perpetual-control"
+                data-pending={perpetualPending || undefined}
+                aria-busy={perpetualPending || undefined}
+              >
+                {perpetualPending && (
+                  <span className="text-[10px] font-normal text-muted" aria-live="polite">
+                    {t('pages.membersPage.perpetual_pending')}
+                  </span>
+                )}
+                <span data-testid="member-perpetual-switch" data-checked={patrolState === 'active'}>
+                  <Toggle
+                    checked={patrolState === 'active'}
+                    onChange={setPerpetual}
+                    disabled={perpetualPending}
+                    label={t('pages.membersPage.patrol_title')}
+                    describedBy="member-perpetual-hint"
+                  />
+                </span>
+              </span>
+            )}
           </div>
+          {/* What the switch does, in the switch's own description. Stated
+              once, for both positions: the mode has no cycle or time cap by
+              design, and the interval is the member's to adjust. */}
+          <div id="member-perpetual-hint" className="text-[11px] text-muted mb-1.5" data-testid="member-perpetual-hint">
+            {t('pages.membersPage.perpetual_hint')}
+          </div>
+          {perpetualError && (
+            <div className="mb-2">
+              <ErrorNotice
+                title={t('pages.membersPage.perpetual_toggle_error')}
+                message={perpetualError instanceof Error ? perpetualError.message : String(perpetualError)}
+                variant="inline"
+                testId="member-perpetual-error"
+              />
+            </div>
+          )}
           {!patrol.loaded ? (
             <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
               <div className="h-3 rounded bg-bg-hover animate-pulse" />
@@ -2268,6 +2353,14 @@ export default function MembersPage() {
                       {PATROL_STOPPED_REASON[activePatrol.stopped_reason]
                         ? t(PATROL_STOPPED_REASON[activePatrol.stopped_reason])
                         : activePatrol.stopped_reason}
+                    </span>
+                  )}
+                  {/* The stopping party's own words (redacted and capped on
+                      the server), under the coded reason — what a member said
+                      when it stopped itself. Absent for every other stop. */}
+                  {activePatrol.stopped_detail && (
+                    <span className="block mt-0.5 italic" data-testid="member-patrol-detail">
+                      {activePatrol.stopped_detail}
                     </span>
                   )}
                   {activePatrol.last_fire_ts > 0 && (

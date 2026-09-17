@@ -32,6 +32,8 @@ vi.mock('../../api/client', () => ({
     // the default is "feature on, nothing armed" so every other case renders
     // the page without a loop in the way.
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    // The owner's Perpetual mode switch; each case installs its own answer.
+    memberPerpetualSet: vi.fn(),
     // The side panel's + menu gates its Summary row on this read; "disabled"
     // keeps the chat-style Summary row out of the menu so the Crew summary tab
     // is the one summary these cases see.
@@ -1622,7 +1624,7 @@ describe('MembersPage Crew summary — driving sessions', () => {
   })
 })
 
-describe('MembersPage auto patrol (monitor loop status)', () => {
+describe('MembersPage Perpetual mode (monitor loop status)', () => {
   // The auto-nudge loop bound to a member's own DM slot is what wakes a
   // standing member without anyone asking. The block reads the whole
   // registry (`GET /api/autonudge`) and filters on the member's slot key —
@@ -1667,7 +1669,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     await openDrawerWith({ loops: [loop()] })
     const block = screen.getByTestId('member-patrol')
     expect(block).toHaveAttribute('data-state', 'active')
-    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/patrolling/i)
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/^On, waking on its own/i)
     // Finite cap: self-describing in the drawer ("3 of 24"); the compact
     // "3/24" stays on the roster badge, where it has the tooltip's sentence.
     expect(screen.getByTestId('member-patrol-cycles')).toHaveTextContent('3 of 24')
@@ -1697,27 +1699,27 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(screen.getByTestId('member-patrol-instruction')).toHaveTextContent('watching PR #123')
   })
 
-  it('no loop on the member slot renders "no patrol scheduled" — and a loop on ANOTHER slot does not leak in', async () => {
+  it('no loop on the member slot renders the off state — and a loop on ANOTHER slot does not leak in', async () => {
     await openDrawerWith({ loops: [loop({ slot_key: 'member-research' }), loop({ slot_key: 'chat-1-abc' })] })
     expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'none')
-    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/no patrol scheduled/i)
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/nothing wakes this member on its own/i)
   })
 
-  it('a stopped loop keeps its reason visible instead of collapsing into "no patrol scheduled"', async () => {
+  it('a stopped loop keeps its reason visible instead of collapsing into the off state', async () => {
     // This is the failure the block exists for: a loop that hit its cycle
     // cap stops silently, and a page that reads that as "nothing scheduled"
     // hides the one fact that would have told someone the member is dead.
     await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'cycle_cap' })] })
     expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'stopped')
-    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/patrol stopped/i)
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/^Off\./)
     expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/wake limit/i)
-    expect(screen.queryByText(/no patrol scheduled/i)).toBeNull()
+    expect(screen.queryByText(/nothing wakes this member on its own/i)).toBeNull()
   })
 
   it('an active patrol is listed under Wake sources, so the card cannot say "nothing wakes this member" above a live one', async () => {
     await openDrawerWith({ loops: [loop()] })
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
-    expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/auto patrol/i)
+    expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/perpetual mode/i)
     expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/every 20m/i)
     expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
   })
@@ -1738,7 +1740,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     // hand-rolled alert box.
     const notice = await screen.findByTestId('member-patrol-error')
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent(/patrol status/i)
+    expect(notice).toHaveTextContent(/perpetual mode status/i)
     expect(screen.queryByTestId('member-patrol')).toBeNull()
     // The roster says so too: every badge is blank for an unknown reason,
     // which must not read as "no member has a patrol".
@@ -1749,7 +1751,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
-    expect(await screen.findByTestId('member-roster-patrol-error')).toHaveTextContent(/patrol status/i)
+    expect(await screen.findByTestId('member-roster-patrol-error')).toHaveTextContent(/perpetual mode status/i)
     expect(screen.queryByTestId('member-patrol-dot')).toBeNull()
   })
 
@@ -2324,5 +2326,186 @@ describe('MembersPage default member, memory and URL', () => {
       // against when the panel already spans the window (the chat page's rule).
       expect(overlay.querySelector('[role="separator"][aria-orientation="vertical"]')).toBeNull()
     })
+  })
+})
+
+describe('MembersPage Perpetual mode switch', () => {
+  // The switch is the owner's ON / OFF over the loop on the member's own
+  // thread. It holds no truth of its own: its position is the registry read,
+  // a press only asks the server, and the registry is re-read when the answer
+  // lands -- so a refused press settles back on the backend's record.
+  const loop = (overrides: Record<string, unknown> = {}) => ({
+    id: 'loop-1',
+    slot_key: 'member-oncall',
+    message: 'Perpetual mode wake.',
+    idle_secs: 3600,
+    max_cycles: 0,
+    max_runtime_secs: 0,
+    cycle_count: 2,
+    active: true,
+    last_fire_ts: Date.now() / 1000 - 180,
+    next_due_ts: Date.now() / 1000 + 900,
+    banner: 'Perpetual mode',
+    stopped_reason: '',
+    ...overrides,
+  })
+
+  async function openDrawerWith(loops: unknown[]) {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops })
+    const utils = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
+    return utils
+  }
+
+  const theSwitch = () => within(screen.getByTestId('member-perpetual-switch')).getByRole('switch')
+
+  beforeEach(() => {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    vi.mocked(api.memberPerpetualSet).mockReset()
+    vi.mocked(api.crons).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.webhooks).mockResolvedValue({ tokens: [] })
+  })
+
+  it('the block is titled Perpetual mode and carries one accessible switch whose position is the registry record', async () => {
+    await openDrawerWith([loop()])
+    expect(screen.getByText('Perpetual mode', { selector: '#member-perpetual-title' })).toBeInTheDocument()
+    const sw = theSwitch()
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    expect(sw).toHaveAttribute('aria-label', 'Perpetual mode')
+    expect(sw).toHaveAttribute('aria-describedby', 'member-perpetual-hint')
+    expect(screen.getByTestId('member-perpetual-hint')).toHaveTextContent(/no cycle or time limit/i)
+    expect(sw).toHaveAttribute('tabindex', '0')
+    // The readouts stay: unlimited wakes, interval, next wake. No cap form.
+    expect(screen.getByTestId('member-patrol-cycles')).toHaveTextContent(/2 · no limit/)
+    expect(screen.getByTestId('member-patrol-interval')).toHaveTextContent(/1 ?hr|60 ?m/)
+    expect(screen.queryByRole('spinbutton')).toBeNull()
+  })
+
+  it('a stopped loop and a member with no loop both show the switch OFF, with the stop reason kept', async () => {
+    await openDrawerWith([loop({ active: false, stopped_reason: 'manual' })])
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/turned off by you/i)
+  })
+
+  it('turning ON asks the server for the member by slug + name, disables the switch while pending, then re-reads the registry (no optimistic ON)', async () => {
+    let resolve!: (v: unknown) => void
+    vi.mocked(api.memberPerpetualSet).mockImplementation(
+      () => new Promise((r) => { resolve = r }) as never,
+    )
+    await openDrawerWith([])
+    const sw = theSwitch()
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    expect(api.memberPerpetualSet).toHaveBeenCalledWith('oncall', 'oncall', true)
+    // Pending: still OFF (the server has not said ON), disabled, announced.
+    await waitFor(() => expect(screen.getByTestId('member-perpetual-control')).toHaveAttribute('aria-busy', 'true'))
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(theSwitch()).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText(/saving/i)).toBeInTheDocument()
+    // A second press while pending is dropped.
+    fireEvent.click(theSwitch())
+    expect(api.memberPerpetualSet).toHaveBeenCalledTimes(1)
+    // The server arms the loop; the registry re-read is what flips the switch.
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [loop()] })
+    await act(async () => {
+      resolve({ ok: true, loop: loop() })
+    })
+    await waitFor(() => expect(theSwitch()).toHaveAttribute('aria-checked', 'true'))
+    expect(screen.getByTestId('member-perpetual-control')).not.toHaveAttribute('aria-busy')
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'active')
+  })
+
+  it('turning OFF asks for enabled=false and the switch follows the re-read record, which keeps the manual stop reason', async () => {
+    vi.mocked(api.memberPerpetualSet).mockImplementation(async () => {
+      ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({
+        enabled: true,
+        loops: [loop({ active: false, stopped_reason: 'manual', next_due_ts: 0 })],
+      })
+      return { ok: true, loop: loop({ active: false, stopped_reason: 'manual', next_due_ts: 0 }) }
+    })
+    await openDrawerWith([loop()])
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'true')
+    fireEvent.keyDown(theSwitch(), { key: ' ' })
+    expect(api.memberPerpetualSet).toHaveBeenCalledWith('oncall', 'oncall', false)
+    await waitFor(() => expect(theSwitch()).toHaveAttribute('aria-checked', 'false'))
+    expect(screen.getByTestId('member-patrol')).toHaveAttribute('data-state', 'stopped')
+    expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/turned off by you/i)
+  })
+
+  it('a refused press shows the server reason and the switch stays where the backend is (rollback by re-read, not by local state)', async () => {
+    vi.mocked(api.memberPerpetualSet).mockRejectedValue(new Error('member-mode sessions do not accept direct automation turns'))
+    await openDrawerWith([])
+    fireEvent.click(theSwitch())
+    const notice = await screen.findByTestId('member-perpetual-error')
+    expect(notice).toHaveTextContent(/couldn't change perpetual mode/i)
+    expect(notice).toHaveTextContent(/member-mode sessions do not accept/i)
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(theSwitch()).not.toHaveAttribute('aria-disabled')
+    // The registry was re-read after the failure too.
+    expect(vi.mocked(api.autonudgeList).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('a press for member A that is still pending when the drawer moves to member B neither disables nor flips B, and its late answer only re-reads the registry', async () => {
+    let resolve!: (v: unknown) => void
+    vi.mocked(api.memberPerpetualSet).mockImplementation(
+      () => new Promise((r) => { resolve = r }) as never,
+    )
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar' }),
+    ])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
+    fireEvent.click(theSwitch())
+    expect(api.memberPerpetualSet).toHaveBeenCalledWith('oncall', 'oncall', true)
+    await waitFor(() => expect(screen.getByTestId('member-perpetual-control')).toHaveAttribute('aria-busy', 'true'))
+    // Move to member B while A's request is still out.
+    fireEvent.click(await rosterRow('radar'))
+    await waitFor(() => expect(screen.getByTestId('member-thread-header')).toHaveTextContent('radar'))
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
+    // B's block is its own: not pending, not disabled, OFF per the registry.
+    expect(screen.getByTestId('member-perpetual-control')).not.toHaveAttribute('aria-busy')
+    expect(theSwitch()).not.toHaveAttribute('aria-disabled')
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByText(/saving/i)).toBeNull()
+    // A's answer lands: the registry now holds A's loop. B still reads OFF —
+    // the response for A is never applied to B's switch or shown as B's error.
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: true,
+      loops: [loop({ slot_key: 'member-oncall' })],
+    })
+    await act(async () => {
+      resolve({ ok: true, loop: loop({ slot_key: 'member-oncall' }) })
+    })
+    await waitFor(() => expect(vi.mocked(api.autonudgeList).mock.calls.length).toBeGreaterThanOrEqual(2))
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('member-perpetual-control')).not.toHaveAttribute('aria-busy')
+    expect(screen.queryByTestId('member-perpetual-error')).toBeNull()
+    // And a press on B is B's own request.
+    vi.mocked(api.memberPerpetualSet).mockResolvedValue({ ok: true, loop: null })
+    fireEvent.click(theSwitch())
+    expect(api.memberPerpetualSet).toHaveBeenLastCalledWith('radar', 'radar', true)
+  })
+
+  it('a stopped loop shows the member\'s own stop words under the reason when the record carries them', async () => {
+    await openDrawerWith([
+      loop({ active: false, stopped_reason: 'autonudge_stop', stopped_detail: 'queue drained, nothing owed' }),
+    ])
+    expect(screen.getByTestId('member-patrol-reason')).toHaveTextContent(/stopped by the member itself/i)
+    expect(screen.getByTestId('member-patrol-detail')).toHaveTextContent('queue drained, nothing owed')
+    expect(theSwitch()).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('the switch is withheld while the registry is unknown or failed — never a switch over an unknown state', async () => {
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    await screen.findByTestId('member-patrol-error')
+    expect(screen.queryByTestId('member-perpetual-switch')).toBeNull()
   })
 })
