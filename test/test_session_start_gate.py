@@ -213,7 +213,14 @@ async def test_timeout_then_late_response_is_adopted(backend):
     still owns the request id; the late answer resolves it and the registered
     adopter receives a fully built handle. Same behaviour on both harnesses:
     the gate wraps create_session, which every backend's start runs through."""
+    from kiro_crew.acp.harness import SessionExtras
+
     rt, reader, _ = _make_runtime(backend=backend)
+    # This collector test models an MCP-free agent on either harness.
+    if backend == runtime_mod.ACP_BACKEND_KAS:
+        rt._kas_custom_agents = AsyncMock(
+            return_value=SessionExtras(custom_agents=[{"id": rt._agent, "tools": []}])
+        )
     reader_task = await _start_reader(rt)
     adopted: list = []
 

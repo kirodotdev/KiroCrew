@@ -74,6 +74,8 @@ class _GateMixin(ManagerComponent):
         _window_hint: "bool | None" = None,
         _child_registration: bool = True,
         _memory_mode: str | None = None,
+        *,
+        crew: str = "",
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
@@ -376,6 +378,7 @@ class _GateMixin(ManagerComponent):
             # the concurrency gate runs against the GLOBAL memory instead
             # of the crew it was handed to.
             "memory_store": memory_store,
+            "crew": crew,
             "_memory_mode": _memory_mode,
             "_agent_prevalidated": _agent_prevalidated,
             "_preassigned_id": agent_id,
@@ -819,6 +822,7 @@ class _GateMixin(ManagerComponent):
             include_lessons=include_lessons,
             include_project=include_project,
             memory_store=memory_store or "",
+            crew=crew,
             memory_mode=_memory_mode,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution

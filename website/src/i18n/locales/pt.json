@@ -15113,6 +15113,7 @@
       "show_controls": "Mostrar controles"
     },
     "membersPage": {
+      "drawer_delegated_working": "Tarefas delegadas em execução",
       "agent_template": "Modelo de agente",
       "configuration": "Configuração",
       "crew_summary": "Resumo do membro",

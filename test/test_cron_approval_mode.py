@@ -328,6 +328,7 @@ class TestSubagentInheritsPolicy:
         # Parent session has the given policy
         sessions.get_approval_policy = MagicMock(return_value=parent_policy)
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         captured = {}
         mock_client = MagicMock()
@@ -377,6 +378,7 @@ class TestSubagentInheritsPolicy:
         ctx_builder = MagicMock()
         sessions.get_approval_policy = MagicMock(return_value=parent_policy)
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         mock_client = MagicMock()
         mock_client.approve_tool = AsyncMock()
@@ -814,6 +816,7 @@ class TestSubagentRoleModelForcesDedicatedPath:
         sessions.get_pid = MagicMock(return_value=None)
         sessions.get_approval_policy = MagicMock(return_value="")
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         ctx_builder = MagicMock()
         ctx_builder.build_message = MagicMock(return_value=("msg", None))
         ctx_builder.hooks.auto_approve_subagent_tools = False

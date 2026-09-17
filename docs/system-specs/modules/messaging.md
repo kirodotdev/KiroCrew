@@ -14,6 +14,10 @@ dispatchers validate and prepare that memory before provider acquisition. A
 missing, corrupt or unreadable member store displays its refusal reason; it
 cannot turn into a Global Memory V1 conversation. Unowned legacy conversations
 retain V1. Provider template names do not identify Crew Members.
+The channel-neutral `spawn` and `bg` command path resolves the parent's recorded
+store off-loop before dispatch and passes it to spawn admission. A protected
+binding mismatch or unreadable history stops delegation rather than selecting
+global memory.
 
 When dashboard metadata records a member alias as `agent`, resumed channels
 translate it through the private store's declared owner to the member's provider

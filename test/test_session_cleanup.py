@@ -363,6 +363,7 @@ class TestSubagentManagerCleanupIntegration:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -411,6 +412,7 @@ class TestSubagentManagerCleanupIntegration:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -458,6 +460,7 @@ class TestSubagentManagerCleanupIntegration:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()

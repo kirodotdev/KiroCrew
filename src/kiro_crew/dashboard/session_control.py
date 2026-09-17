@@ -46,7 +46,12 @@ from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+from kiro_crew.dashboard.chat_utils import (
+    drained_to_thread,
+    effective_session_key,
+    slot_history_key,
+)
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
@@ -59,6 +64,7 @@ from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
+from kiro_crew.session_agent_selection import record_agent_selection
 from kiro_crew.validation import MAX_LONG_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -957,6 +963,11 @@ async def create_session(
     if caller_slot is None:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
     _refuse_ineligible_creator(state, caller_slot)
+    caller_memory_identity = (
+        slot_history_key(caller_slot),
+        caller_slot.agent,
+        caller_slot.memory_store,
+    )
 
     # The child is created in the CALLER'S workspace, not the default one.
     # Workspace is the memory boundary and `authorize_target` refuses a
@@ -1093,6 +1104,19 @@ async def create_session(
     # decision input to the allocation and everything above this point was read
     # before the coroutine suspended.
 
+    from kiro_crew.context import require_memory_delegation
+
+    try:
+        await asyncio.to_thread(
+            require_memory_delegation, log, caller_memory_identity[0], bindings.memory_store_name
+        )
+    except (OSError, ValueError):
+        raise SessionControlError(
+            "cannot verify delegation within the caller's memory assignment",
+            code="memory_delegation_denied",
+            status=403,
+        ) from None
+
     if folder_id:
         # Confirmed under the folder-store lock -- the only place existence
         # cannot go stale against a concurrent delete (see `read_folders`) --
@@ -1112,7 +1136,7 @@ async def create_session(
 
     # Re-resolved and re-gated HERE, adjacent to the allocation, because every
     # decision above was made before this coroutine suspended -- for the
-    # project directory, the config load, and the folder confirmation -- and the
+    # project directory, agent bindings, memory delegation and folder confirmation -- and the
     # inputs to those decisions are live state that can flip inside any of those
     # windows.
     #
@@ -1144,6 +1168,15 @@ async def create_session(
         raise SessionControlError(
             "caller session changed workspace while the session was being created",
             code="caller_workspace_changed",
+        )
+    if (
+        slot_history_key(live_caller),
+        live_caller.agent,
+        live_caller.memory_store,
+    ) != caller_memory_identity:
+        raise SessionControlError(
+            "caller session changed memory assignment while the session was being created",
+            code="caller_memory_changed",
         )
     _refuse_ineligible_creator(state, live_caller)
     # The child's origin tag, read off the caller that is live NOW -- see the
@@ -1301,10 +1334,34 @@ async def create_session(
         # behind is the worse of the two outcomes, because the caller sees an error and
         # the session exists anyway. Same retraction the fork path uses on a failed
         # build.
+        session_key = slot_history_key(slot)
+        native_context = state.sessions.get_provider(session_key) is not None or bool(
+            state.sessions.resumable_sid(session_key)
+        )
+        birth_persisted = False
+
+        def _persist_birth(metadata: dict[str, Any]) -> None:
+            nonlocal birth_persisted
+            # Authorized creation selects this member before there is a transcript.
+            # The first-turn guard cannot later infer that authority from metadata:
+            # even this empty birth record would look like unverified V1 history.
+            _pin_private_agent_assignment(
+                session_key,
+                agent_name,
+                cfg,
+                conversation_log=log,
+                native_context=native_context,
+            )
+            # Preserve the namespace resolved for this request, including a
+            # template later imported as a same-named private member. Automatic
+            # publication cannot overwrite a newer explicit owner selection.
+            record_agent_selection(session_key, agent_name, bindings)
+            log.update_metadata(session_key, metadata)
+            birth_persisted = True
+
         try:
-            await asyncio.to_thread(
-                log.update_metadata,
-                slot_history_key(slot),
+            await drained_to_thread(
+                _persist_birth,
                 {
                     "_type": "metadata",
                     # The slot's OWN durable identity, and its origin, both of which
@@ -1353,7 +1410,7 @@ async def create_session(
                     ),
                 },
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             # Retract, but never at the cost of work already in flight. The slot is
             # addressable from the moment `get_or_create_slot` publishes it, which is
             # before this await, so a turn can have started on it while the write was
@@ -1361,7 +1418,17 @@ async def create_session(
             # with nothing pointing at it -- unreachable, unstoppable, and invisible to
             # the stop verb. A phantom session that vanishes on the next restart is the
             # lesser harm, so liveness wins over tidiness and the slot stays.
-            if not slot.running and not slot.messages:
+            # Drain before deciding: cancellation cannot leave a worker writing
+            # identity/history after this handler retracts its slot. A completed
+            # birth survives cancellation just as a turn already in flight does.
+            # Protected identity stays pinned even on failure; a concurrent turn
+            # may already have consumed it, and history cannot revoke authority.
+            if (
+                not birth_persisted
+                and not slot.running
+                and not slot.messages
+                and state._slots.get(slot.key) is slot
+            ):
                 state._slots.pop(slot.key, None)
             state.push_slots_update()
             raise

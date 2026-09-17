@@ -572,6 +572,7 @@ class _PumpMixin(ManagerComponent):
                 context_groups=_context_groups_field(info),
                 memory_store=info.memory_store,
                 memory_mode=info.memory_mode,
+                app=info.app,
             )
         except Exception:
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)

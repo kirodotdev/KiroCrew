@@ -349,11 +349,8 @@ async def api_spawn(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        # The crew's template too: a crew is its memory AND its harness, and
-        # honouring one without the other hands the task a persona the operator
-        # did not bind to that work. An explicit `agent` still wins -- a caller
-        # naming both is overriding deliberately.
-        agent = agent or _b.kiro_agent
+        # Keep the member name until provider allocation. An explicit template
+        # overrides this turn only; it does not replace the conversation owner.
     elif parent_session:
         from kiro_crew.context import store_of_session
 
@@ -429,6 +426,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         include_lessons=cleaned.get("include_lessons", True) is not False,
         include_project=cleaned.get("include_project", True) is not False,
         memory_store=child_memory_store,
+        crew=crew,
         _memory_mode=admitted_mode,
     )
     if not info:
@@ -467,17 +465,41 @@ async def api_spawn(request: web.Request) -> web.Response:
     # a non-sentinel global). Additive, optional key — reporting only, never
     # changes whether the spawn happened.
     if reasoning_effort:
-        # Mirror _run_inner's agent inheritance so the verdict judges the same
-        # agent the session will actually use.
-        verdict_agent = agent or (
-            state.sessions.get_agent(parent_session) if parent_session else ""
-        )
+        # Read the allocation-owned namespace on the loop. A reporting failure
+        # cannot undo the submission or turn an unknown selection into "auto".
+        selection: tuple[str, str] | None
+        try:
+            selection = (
+                ("template", agent)
+                if agent
+                else (
+                    ("member", crew)
+                    if crew
+                    else (
+                        state.sessions.get_agent_selection(parent_session)
+                        if parent_session
+                        else ("template", "")
+                    )
+                )
+            )
+        except Exception:
+            selection = None
 
         def _effort_verdict() -> tuple[str, str]:
-            d = effort_drop_reason(model, reasoning_effort, verdict_agent)
+            if (
+                not isinstance(selection, tuple)
+                or len(selection) != 2
+                or selection[0] not in ("template", "member")
+                or not isinstance(selection[1], str)
+                or (selection[0] == "member" and not selection[1])
+            ):
+                return "", ""
+            kind, verdict_agent = selection
+            claim = verdict_agent if kind == "member" else ""
+            d = effort_drop_reason(model, reasoning_effort, verdict_agent, crew_agent=claim)
             if d:
                 return d, ""
-            return "", effort_applied_note(model, reasoning_effort, verdict_agent)
+            return "", effort_applied_note(model, reasoning_effort, verdict_agent, crew_agent=claim)
 
         # The resolvers read config and glob ~/.kiro/agents — file I/O that
         # must not run on the gateway event loop (the same reason
@@ -973,7 +995,7 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "task": _redact(info.task),
             "done": info.done,
             "parent": info.parent_session_key,
-            "agent": info.agent,
+            "agent": info.agent or info.crew,
             "started": info.started,
         }
         if info.done:
@@ -1067,6 +1089,7 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         # the global store, so the failure mode is "retrying a delegation leaks
         # it" -- and a retry is exactly when nobody re-reads the scope.
         memory_store=old.memory_store,
+        crew=old.crew,
     )
     if not info:
         return web.json_response(

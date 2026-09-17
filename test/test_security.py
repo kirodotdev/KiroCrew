@@ -8638,13 +8638,13 @@ class TestSelfTokensFoldLineContinuations:
         """An UNESCAPED newline is a separator; folding must not touch it.
 
         Pins the TOKEN view, not just the verdict: a continuation folds two words
-        into one (``echo a\\<newline>b`` -> ``echo ab``) while a real newline keeps
-        them apart (``echo a<newline>b`` -> ``echo a b``), so the two spellings
-        must not tokenize alike. Asserting only ``is_denied`` here would pass even
+        into one (``echo a\\<newline>b`` -> ``echo ab``) while a real newline starts
+        another command (``echo a<newline>b`` -> ``echo a; b``). The separator
+        must survive tokenization. Asserting only ``is_denied`` here would pass even
         if the fold ate real newlines too, since neither command is a mint.
         """
         assert security._self_tokens("echo a\\\nb") == ["echo", "ab"]
-        assert security._self_tokens("echo a\nb") == ["echo", "a", "b"]
+        assert security._self_tokens("echo a\nb") == ["echo", "a", ";", "b"]
         assert security.is_denied("echo a\necho b") is None
 
     def test_a_real_newline_mint_keeps_its_denial(self) -> None:

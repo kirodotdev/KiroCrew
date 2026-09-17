@@ -307,6 +307,20 @@ must require the raw form.
 
 ### AcpProvider (`providers/acp.py`)
 
+The ACP provider carries its owning session key through the `session_key`
+argument of `AcpRuntime.create_session` and `load_session`. The same key names
+the session's broker stubs and passes through the harness's session extras;
+KAS uses it when projecting native managed MCP servers on creation and resume.
+The key is not read from the agent's editable environment and does not enable
+member-DM control tools. Kiro and Codex accept this common harness argument
+without adding custom-agent payloads; their session extras remain empty.
+
+For KAS, `start` completes only after the active agent's required
+managed MCP servers and tool exposure are ready. A failed or timed-out
+initialization surfaces an error before any prompt; it does not return a
+tool-less session. The session-scoped barrier and its budget are specified in
+[acp-client.md](acp-client.md#kas-managed-mcp-readiness).
+
 The one concrete provider. It spawns a long-lived harness subprocess — by default
 `kiro-cli acp --agent <name>` — and speaks JSON-RPC 2.0 over stdio.
 

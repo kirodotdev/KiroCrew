@@ -127,6 +127,12 @@ record. Missing, malformed or changed metadata cannot become V1 or another
 member. Removing an existing protected file also refuses; a genuinely unbound
 legacy session remains V1. Run-specific protected records remain authoritative
 for subagents. Agent processes cannot edit either protected binding tree.
+The same run directory holds `agent.json`, which records the original conversation
+template before provider allocation. Follow-ups preserve it independently of any
+one-turn agent override. Implicit continuation reads that protected template;
+an edited `subagents/<id>/state.json` cannot select a different prompt or tool
+surface. Missing, unknown or invalid template authority refuses implicit
+continuation; an explicit override cannot establish missing lineage.
 
 Private V2 execution requires a positively available Crew namespace or outer
 Seatbelt backend under the same resolved mode and governance floor as spawning.
@@ -230,7 +236,11 @@ snapshots can contain Global memory, and transcripts can contain other members'
 context. Gateway-owned history APIs remain outside that filesystem view. Before
 private launch on either OS, a bounded scan of the reserved memory-bearing
 source trees refuses hardlinked files, since a path mask cannot hide another
-name for their inode. It does not scan project trees. Scan I/O failures still
+name for their inode. It does not scan project trees. If an entry disappears,
+private startup makes at most three complete scan attempts: gateway atomic
+writes can retire `.tmp` files between listing and stat. The retry recognizes
+`FileNotFoundError` directly or as the sanitized scan error's original cause.
+No missing entry is skipped. Repeated disappearance and other I/O failures
 refuse launch and retain their original exception cause. Their bounded outer
 error preserves the `memory_unavailable: cannot verify protected memory hardlinks`
 prefix and reports only a fixed operation (`root_iterdir`, `entry_stat`, or
@@ -238,9 +248,10 @@ prefix and reports only a fixed operation (`root_iterdir`, `entry_stat`, or
 and available unsigned 32-bit integer `errno`/`winerror` values. Root enumeration
 uses the aggregate `memory` category; descendants retain their selected tree's
 category. These fields survive workflow error serialization without exposing
-paths, filenames, exception messages, or private content. Required-root remedies,
-hardlink rejection, scan selection and limits are unchanged; diagnostics neither
-retry nor skip failed I/O. The Linux canary checks
+paths, filenames, exception messages, or private content. Other I/O failures,
+missing required workspace roots and detected hardlinks refuse startup without
+retry. Required-root remedies, hardlink rejection, scan selection and per-scan
+limits are unchanged. The Linux canary checks
 that `/proc` root/cwd/fd aliases cannot cross the launcher's user-namespace
 boundary; runtime evidence still comes from CI, not profile-string inspection.
 
@@ -855,6 +866,17 @@ First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`
 **Destructive operation blocks**: `rm -rf`, `git push --force`, `aws * delete-*`, `aws ec2 terminate-instances`, `cdk destroy`, `terraform destroy`, etc.
 
 **Self-protection global options**: the `restart`, `update`, `cloud` lifecycle, and `gateway restart` self-management commands are enforced by the argv-structural floor alone (`_matches_self_subcommand`), which reads the CLI's leading operand words after any interposed top-level options and handles shell quoting for both flags and subcommands. The regex rows that once sat beside these floors (`.*kiro.?crew(?:<flag-run>)*\s+restart.*` and siblings) were deleted, not narrowed: each opened with an unbounded any-run before the product name, so the name in a worktree path plus the verb word anywhere later matched (`ls ~/kirocrew-wt/restart.log`), and a row that fires on the product's name appearing anywhere adds nothing to a predicate that requires the product to be the argv's own program. The floor covers the repeatable verbosity spellings (`-v`, `-vv`, `--verbose`) and `--no-jail`; adding or quoting a valid global option or subcommand must not turn a denied self-management command into an allowed one. The one self-management subcommand row that KEEPS a regex is `self-protection-cron-adopt`: it has no floor twin, and the ownership grab it refuses is real.
+
+**Command-ending newlines**: `_self_tokens` preserves unquoted newlines as
+separators before `shlex` tokenization, using the shared `_iter_shell_chars`
+quote/escape walk after folding line continuations. Otherwise `shlex` discards
+the newline and makes the next command part of the preceding argv: an `awk`
+formatting expression containing `$1` can then be misclassified as a dynamic
+kill program targeting a later command's `$KIROCREW_SCRATCH` path. Quoted
+newlines remain inside their operand, and escaped continuations still join the
+command. Local assignments remain available across the preserved separators.
+The existing deny catalog, nested-payload checks and real self-kill checks
+continue to apply.
 
 **Quote-normalized segment view (`_deny_segment_views` + `_shell_tokens`, `security.py`)** — both deny tiers match TEXT, while a shell strips quoting, de-escapes backslashes, resolves ANSI-C / locale quoting, collapses empty-string splices and collapses whitespace runs before the program ever sees its argv. A rule authored as a command SHAPE was therefore defeated by re-spelling any single token: `rm -rf "/"`, `"rm" -rf /`, `rm "-rf" /`, `r''m -rf /`, `rm  -rf  /`, `rm -rf \/` and `rm -rf $'/'` all run exactly what `rm -rf /` runs, and none of them *contains* the rule's own text. Only the six self-protection rules and git-publish had an argv-structural floor closing this (above); the other ~130 built-ins — including every destructive-operation and credential-exfiltration rule listed in this section — were spelling-dependent. Pass 2 now evaluates each segment in **two views**: the raw text first (byte-identical to what it matched before), then a quote/escape-normalized re-join, appended **only when it differs**, so an unquoted command pays no second pass over the catalog. Four properties are load-bearing:
 
@@ -1662,6 +1684,15 @@ existing `internal_auth_mismatch` mapping remains the wrong-instance diagnostic.
 Unknown codes and uncoded `Forbidden` responses keep the backend wording, so a real
 permission denial is never relabelled as an identity failure. Every branch keeps its
 existing HTTP status, deny decision, ordering, and SEL audit.
+
+Subagent caller lookup uses the original run record when present. If it is
+absent after eviction or gateway restart, exactly one active, non-queued run
+whose `conversation_key` matches the canonical `subagent:<original-id>` can
+establish that caller. App attribution and record-existence checks use the same
+resolver; a surviving original record retains its ownership precedence. Missing,
+ambiguous or unreadable records remain refused, and completed continuation
+records alone cannot establish the caller. This in-memory lookup neither reads
+persisted run metadata for authority nor replaces private session/store proof.
 
 **Per-session logout (CWE-613)** (`token_auth.py`): the access cookie is a self-contained HMAC-signed token, so clearing it client-side (`Set-Cookie max_age=0`) does not stop a saved copy replaying until its `session_exp` (up to 20h). `RevokedNonceStore` is a persisted denylist of explicitly-revoked access-cookie nonces (`token_revoked_nonces.json`, mode `0600`, survives gateway restart; each entry stores the token's own `session_exp` as an eviction floor so the file cannot grow unbounded). `POST /api/auth/logout` → `revoke_access_cookie()` validates the token, then records its nonce; `validate_token` (cookie path) is **deny-by-default** — a token whose nonce is revoked, or that carries no nonce at all, is rejected. Link-click token exchange also mints a SEPARATE session cookie (fresh nonce, `register_nonce=False`) rather than reusing the one-time URL/link token as the long-lived cookie, and denylists the consumed link nonce so a captured link copy cannot be replayed as `mc_token_<port>` (the query-param LINK path does not consult the denylist, so legitimate re-navigation of the same link URL within the 5-minute window still re-exchanges for a fresh session cookie).
 

@@ -171,6 +171,12 @@ nested resource jobs and breakaway refusal; injected failures run on all hosts.
 
 ## Verifying a change
 
+`rename_noreplace` uses the Linux libc wrapper when available. On older glibc
+without that symbol, it uses the same kernel operation through `syscall` with
+an architecture-specific number. Unknown architectures remain unsupported,
+and an occupied destination still refuses atomically. The fallback does not
+replace the operation with a check-then-rename sequence.
+
 CI holds all three platforms at the UNIT layer: the `backend-test` shards cover
 Linux, `backend-test-windows` covers Windows, and `backend-test-macos` covers
 macOS. All three run the whole suite, so a POSIX call that only works on Linux

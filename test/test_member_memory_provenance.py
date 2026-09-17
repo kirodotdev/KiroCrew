@@ -21,7 +21,9 @@ from kiro_crew import platform_compat as pc
 @pytest.fixture
 def provenance(tmp_path, monkeypatch):
     parent = {42: 1, 45: 42}
-    namespaces = {os.getpid(): "host", 42: "runtime", 45: "runtime"}
+    namespaces = {100: "host", 42: "runtime", 45: "runtime"}
+    # The owner belongs to the synthetic process tree, independent of pytest's PID.
+    monkeypatch.setattr(auth, "os", SimpleNamespace(**{**vars(os), "getpid": lambda: 100}))
     monkeypatch.setattr(auth, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(auth, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(auth, "private_memory_boundaries_active", lambda: True)

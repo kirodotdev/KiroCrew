@@ -169,6 +169,7 @@ class KiroHarness(MembershipHarness):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """Nothing. kiro-cli already has the agent from its spawn flag.
 

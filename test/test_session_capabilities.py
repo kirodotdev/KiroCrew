@@ -7,13 +7,16 @@ import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import _make_app_with_agent_routes, _make_state, drain_background_tasks
+from dashboard_owner_helpers import as_owner
 from member_memory_helpers import patch_private_memory_supported
 
-from kiro_crew import agent, agent_state
+from kiro_crew import agent, agent_discovery, agent_state
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.types import (
     ACP_BACKENDS_KNOWN,
@@ -22,15 +25,27 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INITIALIZED,
 )
 from kiro_crew.agent_capabilities import CapabilityService, prepare_member_capabilities
-from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
+from kiro_crew.config import loader as config_loader
+from kiro_crew.config.loader import (
+    KiroCrewAgentConfig,
+    KiroCrewConfig,
+    WorkspaceConfig,
+    refresh_materialized_agents,
+)
+from kiro_crew.context import ContextBuilder
+from kiro_crew.dashboard import chat_handlers, chat_runner
+from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
 from kiro_crew.dashboard.handlers.agent_capabilities import _SERVICE
 from kiro_crew.dashboard.routes.agents import register
 from kiro_crew.history import ConversationLog
 from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import provision_member_memory
-from kiro_crew.providers.base import LLMProvider
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent, LLMProvider
 from kiro_crew.session import SessionManager
+from kiro_crew.session_agent_selection import session_agent_selection_kind
 from kiro_crew.session_capabilities import CapabilityStartupError, runtime_view
+from kiro_crew.skills import SkillsLoader
 
 
 class FakeProvider(LLMProvider):
@@ -153,6 +168,224 @@ def world(tmp_path, monkeypatch):
         return provider
 
     return service, KiroCrewConfig.load(), factory, made, project, stores, log
+
+
+@pytest.fixture
+def dashboard_capability_world(world, tmp_path, monkeypatch):
+    """Real owner selection, enrollment and allocation; no external harness or model."""
+    # The real discovery refresh publishes these process-wide snapshots.
+    # Register their restoration before enrollment or refresh can change them.
+    for name in (
+        "_MATERIALIZED_AGENTS",
+        "_MATERIALIZED_AGENTS_READY",
+        "_MATERIALIZED_AGENTS_GENERATION",
+        "_MATERIALIZED_REFRESH_ISSUED",
+        "_MATERIALIZED_REFRESH_APPLIED",
+    ):
+        monkeypatch.setattr(config_loader, name, getattr(config_loader, name))
+    service, cfg, factory, made, project, stores, log = world
+    cfg.default_agent = "A"
+    cfg.session.pool_size = 0
+    cfg.session.eager_spawn = True
+    cfg.save()
+    save(service, enroll=True)
+    cfg = KiroCrewConfig.load()
+    prepared = prepare_member_capabilities("A", str(project))
+    template = "separate-template"
+    specs = tmp_path / "agents"
+    (specs / f"{template}.json").write_text(
+        json.dumps(
+            {"name": template, "prompt": "template only", "tools": [], "includeMcpJson": False}
+        ),
+        encoding="utf-8",
+    )
+    # Discovery reads the same real temporary specs as the capability service.
+    monkeypatch.setattr(agent_discovery, "_KIRO_AGENTS_DIR", specs)
+    monkeypatch.setattr("kiro_crew.config.loader.kiro_agents_dir", lambda: specs)
+    refresh_materialized_agents()
+    monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
+    monkeypatch.setattr(chat_runner, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
+    monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
+    monkeypatch.setattr(chat_runner, "_prewarm_allowance", lambda: 1)
+    monkeypatch.setattr(chat_runner, "_armed_prefetches", {})
+    monkeypatch.setattr(chat_runner, "_arm_generation", 0)
+    monkeypatch.setattr(chat_runner, "_eager_spawn_sem", asyncio.Semaphore(1))
+    states = []
+    prompts = []
+
+    def new_state(*, supported=True):
+        def dashboard_factory(key, **kwargs):
+            provider = factory(key, **kwargs)
+            # The external double declares the isolation requested by this
+            # fixture. Allocation still validates the real protected assignment.
+            provider._private_memory = key == "dashboard:A"
+            provider.supported = supported
+
+            async def stream(message, **stream_kwargs):
+                prompts.append((provider, message))
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="The selected task is complete.")
+                yield LLMEvent(kind=EVENT_COMPLETE)
+
+            provider.stream = stream
+            return provider
+
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=project),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        # Context generation and title models are independent of selection.
+        # Memory ownership, selection publication and allocation remain real.
+        builder.build_message = MagicMock(return_value=("task", None))
+        builder.ensure_store = AsyncMock(return_value=object())
+        state = _make_state(tmp_path, context_builder=builder)
+        state.conversation_log = log
+        state.sessions = SessionManager(cfg, provider_factory=dashboard_factory)
+        states.append(state)
+        return state
+
+    return SimpleNamespace(
+        new_state=new_state,
+        states=states,
+        made=made,
+        prompts=prompts,
+        prepared=prepared,
+        template=template,
+        project=project,
+        stores=stores,
+        log=log,
+    )
+
+
+async def _create_capability_dashboard_slot(state, name, selected, project):
+    async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+        response = await asyncio.wait_for(
+            client.post(
+                "/api/chat/slots",
+                json={"name": name, "agent": selected, "project": str(project)},
+            ),
+            15,
+        )
+        assert response.status == 200, await response.text()
+    return state._slots[name]
+
+
+async def _close_capability_dashboards(world):
+    """Join dashboard writers and real managers while the fixture homes still exist."""
+    try:
+        for state in world.states:
+            await asyncio.wait_for(drain_background_tasks(state), 15)
+    finally:
+        for state in world.states:
+            await asyncio.wait_for(state.sessions.close_all(drain_timeout=0), 15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["dispatch", "eager", "restore"])
+@pytest.mark.parametrize("supported", [True, False], ids=["full_spec_host", "unsupported_host"])
+async def test_dashboard_template_keeps_namespace_through_real_manager(
+    dashboard_capability_world, entry, supported
+):
+    """An enrolled default cannot replace an explicitly selected provider template."""
+    world = dashboard_capability_world
+    state = world.new_state(supported=supported)
+    key = "dashboard:template-chat"
+    try:
+        slot = await asyncio.wait_for(
+            _create_capability_dashboard_slot(
+                state, "template-chat", world.template, world.project
+            ),
+            20,
+        )
+        assert await asyncio.to_thread(session_agent_selection_kind, key, world.template) == (
+            "template"
+        )
+        if entry == "restore":
+            # Rehydration intentionally ignores empty newborn conversations.
+            # Seed prior messages under the owner-created protected selection;
+            # the transcript cannot manufacture that namespace itself.
+            await asyncio.to_thread(world.log.append, key, "user", "An earlier template turn.")
+            await asyncio.to_thread(world.log.append, key, "assistant", "Earlier template reply.")
+            await asyncio.to_thread(
+                world.log.update_metadata,
+                key,
+                {"agent": world.template, "project": str(world.project)},
+            )
+            state = world.new_state(supported=supported)
+            slot = _rehydrate_slot_from_history(state, "template-chat")
+            assert slot is not None
+            assert slot.agent == world.template
+        if entry == "eager":
+            await asyncio.wait_for(chat_runner._eager_spawn(state, slot), 20)
+        else:
+            await asyncio.wait_for(chat_runner._run_chat(state, slot, "Run this template."), 20)
+        await asyncio.wait_for(drain_background_tasks(state), 15)
+
+        # Assert what the real allocation boundary gave the external process,
+        # not just the agent argument that chat_runner gave SessionManager.
+        assert [provider.template for provider in world.made] == [world.template], (
+            f"{entry}: real manager substituted default A's enrolled generation "
+            f"{world.prepared['template']!r} for selected template {world.template!r}"
+        )
+        provider = world.made[0]
+        assert provider.active == world.template
+        assert provider.starts == 1
+        assert not provider._private_memory
+        assert await asyncio.to_thread(read_private_session_store, key) is None
+        assert (
+            state.sessions.capability_runtime_view("A", world.prepared["revision"])["sessions"]
+            == []
+        )
+        if entry == "eager":
+            assert world.prompts == []
+            await asyncio.wait_for(chat_runner._run_chat(state, slot, "Use the warm template."), 20)
+            await asyncio.wait_for(drain_background_tasks(state), 15)
+            assert world.made == [provider]
+            assert provider.starts == 1
+        assert [item[0] for item in world.prompts] == [provider]
+        assert await asyncio.to_thread(session_agent_selection_kind, key, world.template) == (
+            "template"
+        )
+    finally:
+        await _close_capability_dashboards(world)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supported", [True, False], ids=["adopts_member", "refuses_unsupported"])
+async def test_dashboard_enrolled_member_controls_through_real_manager(
+    dashboard_capability_world, supported, caplog
+):
+    """Keeping template chats ordinary must not bypass real member adoption or refusal."""
+    world = dashboard_capability_world
+    state = world.new_state(supported=supported)
+    key = "dashboard:A"
+    try:
+        slot = await asyncio.wait_for(
+            _create_capability_dashboard_slot(state, "A", "A", world.project), 20
+        )
+        assert await asyncio.to_thread(session_agent_selection_kind, key, "A") == "member"
+        await asyncio.wait_for(chat_runner._run_chat(state, slot, "Run the member."), 20)
+        await asyncio.wait_for(drain_background_tasks(state), 15)
+        assert len(world.made) == 1
+        provider = world.made[0]
+        assert provider.template == world.prepared["template"]
+        assert provider._private_memory is True
+        assert await asyncio.to_thread(read_private_session_store, key) == world.stores["A"]
+        view = state.sessions.capability_runtime_view("A", world.prepared["revision"])
+        if supported:
+            assert provider.active == world.prepared["template"]
+            assert provider.starts == 1
+            assert [item[0] for item in world.prompts] == [provider]
+            assert view["status"] == "applied"
+            assert [row["session_key"] for row in view["sessions"]] == [key]
+        else:
+            assert provider.starts == 0
+            assert world.prompts == []
+            assert not state.sessions.has_session(key)
+            assert view["status"] == "failed"
+            assert "capability_harness_unsupported" in caplog.text
+    finally:
+        await _close_capability_dashboards(world)
 
 
 @pytest.mark.asyncio

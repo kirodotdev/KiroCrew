@@ -441,7 +441,9 @@ export default function MembersPage() {
   const slotsLoaded = useAppSelector((s) => s.dashboard.slotsLoaded)
   const liveRunning = useMemo(() => {
     const byKey: Record<string, boolean> = {}
-    for (const s of liveSlots) if (s.mode === 'member') byKey[s.key] = !!s.running
+    for (const s of liveSlots) {
+      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running)
+    }
     return byKey
   }, [liveSlots])
   const isRunning = useCallback(
@@ -2028,6 +2030,8 @@ export default function MembersPage() {
           narrow ones make it an overlay the header button opens, with the
           panel's own close control, on the chat page's dock motion. */}
       {active && (() => {
+          const activeLiveSlot = liveSlots.find((slot) => slot.key === slotKeyOf(active))
+          const delegatedOnly = activeLiveSlot?.subagents_running && !activeLiveSlot.running
           const summaryBody = (
             <div className="px-3 py-3" data-testid="member-crew-summary" aria-label={t('pages.membersPage.crew_summary')}>
           {/* Identity + live status line — working now, or the last time
@@ -2038,7 +2042,9 @@ export default function MembersPage() {
             <span className="text-[13px] font-semibold truncate">{active.name}</span>
             <span className="text-[11px] truncate ml-auto shrink-0" data-testid="member-summary-status">
               {isRunning(active) ? (
-                <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
+                <span className="text-ok">{t(delegatedOnly
+                  ? 'pages.membersPage.drawer_delegated_working'
+                  : 'pages.membersPage.drawer_working')}</span>
               ) : active.last_active_ts ? (
                 <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
               ) : null}

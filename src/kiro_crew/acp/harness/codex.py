@@ -245,6 +245,7 @@ class CodexHarness(MembershipHarness):
         work_dir: str | Path | None,
         mcp_gateway_overlay: Any = None,
         member_dispatch: bool = False,
+        session_key: str = "",
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

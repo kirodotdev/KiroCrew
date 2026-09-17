@@ -1226,6 +1226,38 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
   })
 
+  it('keeps a member present while its delegated workers run, then clears it', async () => {
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall', running: false }),
+    ])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('member-crew-summary')
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'member-oncall', mode: 'member', running: false,
+        subagents_running: true, messages: 0,
+      }] as never))
+    })
+    expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
+    expect(screen.getByTestId('member-summary-status')).toHaveTextContent('Delegated work running')
+    expect(screen.getByTestId('member-driving-empty')).toHaveTextContent(/not driving any sessions/i)
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'member-oncall', mode: 'member', running: true,
+        subagents_running: true, messages: 0,
+      }] as never))
+    })
+    expect(screen.getByTestId('member-summary-status')).toHaveTextContent(/^Working$/)
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'member-oncall', mode: 'member', running: false,
+        subagents_running: false, messages: 0,
+      }] as never))
+    })
+    expect(screen.queryByTestId('member-presence-dot')).toBeNull()
+    expect(screen.getByTestId('member-summary-status')).not.toHaveTextContent('Delegated work running')
+  })
+
   it('the search box filters the roster by name', async () => {
     await renderPage([
       row({ name: 'radar', slug: 'radar' }),

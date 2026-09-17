@@ -53,6 +53,111 @@ existing facade/import/monkeypatch seam requires it. Individual adapters may be
 retired in follow-up changes after repository-wide callers and characterization
 tests have moved off the corresponding legacy seam.
 
+## Agent selection provenance
+
+A dashboard conversation records whether its agent name selected a provider
+template or a configured member. Discovery may later import that template as a
+same-named private member; this does not change the existing conversation's
+namespace. `session_agent_selection.py` persists the validated choice by exact
+effective session key under
+`member-memory-bindings/agent-selections/<sha256-key>.json`, inside the existing
+sandbox-readonly directory. Owner creation and authorized explicit agent
+selection record the choice, and a validated dispatch records it before provider
+allocation. There is one small selection record per effective conversation key,
+not per turn. Closing a slot does not remove it: saved history can reopen that
+conversation after restart. Records currently persist after transcript deletion
+too; history deletion has no tombstone that retires the key or fences delayed
+saves. Selection retention follows the existing protected identity lifetime,
+rather than treating removal of an editable transcript as revocation of identity.
+A permitted non-owner dashboard caller may select a provider
+template or an existing V1 member, including the default assistant. A private V2
+member choice requires the owner and is refused before provider reset or history
+mutation. Non-owner resolution retains the namespace it first resolved, even if
+discovery imports a same-named member during the request; a V1-to-V2 change during
+resolution is refused too. A non-owner choice cannot authorize private admission
+on a later turn, which still requires an existing protected private assignment.
+Selecting the default assistant resolves and publishes its choice just like a
+named selection. If lookup fails or returns an unresolved name for a conversation
+with a protected choice, the endpoint retains the old agent and returns 503
+before provider reset or metadata writes. A cancelled lookup restores only its
+own provisional agent value. Legacy conversations without a protected choice
+retain their existing unresolved-lookup behavior.
+Resolution captures the current record revision, including an absent record.
+Automatic publication compares that observation under the writer lock and
+refuses a changed selection; a same-value publication is a no-op. An owner
+choice of another agent or namespace therefore survives an obsolete prewarm or
+turn, including a writer thread that finishes after cancellation.
+If an owner switch loses its slot or session during publication, rollback
+restores only that request's record; a later successful selection keeps its win.
+Rebound responses keep the `session_rebound` code and tell the user to retry
+saving the member assignment or agent selection.
+Owner creation and selection drain their publication and rollback threads before
+honoring cancellation. Owner slot creation takes the slot lock before its first
+post-mint await and the session lock for selection publication, in the same order
+as an explicit switch. A delayed template create therefore cannot overwrite a
+later same-name member choice. Creation still explicitly replaces an existing
+protected history selection after the private-memory checks succeed. Protected
+rollback compares the published revision so it cannot erase a later choice.
+Before allocating a new local owner conversation, creation gives gateway memory
+recovery the same bounded grace period as first-turn admission. This applies to
+the default assistant too: binding resolution checks its memory readiness.
+Timeout or recovery failure returns `503 store_unavailable` before allocating a
+slot or publishing identity. The shared recovery task survives request cancellation.
+An explicit switch holds its slot and session locks through cleanup, restores its
+slot fields, and drains protected selection and history rollback as one sequence.
+If the first private-memory grant for an empty owner chat fails after selection
+publication, the same rollback restores all three records before releasing the locks.
+Repeated cancellation during publication or rebound/error cleanup cannot skip
+history restoration or leave a rollback writer running after the handler exits.
+The transcript agent write must succeed before an explicit switch publishes its
+protected selection. A failed write restores request-owned slot fields, attempts
+to restore the transcript and returns 503 without publishing a new selection.
+Cancellation drains the transcript writer and its rollback, including a rollback
+for a rebound session, before releasing the switch locks. If history restoration
+itself fails, recent-session restore, explicit resume and dormant-slot rehydration
+recover the agent from the existing protected selection. The transcript's
+provisional name cannot replace that committed choice. Async restoration fetches
+the protected name off-loop with its other disk inputs; slot mutation remains on
+the event loop. This read grants no private-memory admission and does not change
+the protected record.
+
+Real turns, completion callbacks and eager allocation resolve in that recorded
+namespace. Template allocations pass an explicit empty `crew_agent` through both
+eager and real turns, so capability preparation cannot substitute the default
+member's generation. Member allocations keep their canonical member claim.
+`SessionManager.get_agent_selection(key)` snapshots that allocation-owned
+namespace and name for child inheritance. It returns the captured member alias
+even before capability enrollment, or the literal template for a non-member
+allocation. An absent parent retains the default template; malformed live
+selection state refuses inheritance. Roster changes cannot change this snapshot.
+Templates must still exist, and a recorded member cannot fall back
+to a same-named template after removal. Default-model resolution uses the same
+namespace. The record grants no private-memory authority; all protected store,
+native-context and restored-history checks below still apply. In particular,
+reselecting a private member does not migrate an existing V1 conversation.
+The explicit empty crew claim also excludes a same-named member's model pin.
+A literal template keeps its own model pin or the global fallback; an explicit
+caller model still wins. Legacy callers without a crew claim retain their
+crew-name inference.
+
+Missing provenance retains legacy resolution, never infers a template from
+an absent private binding. An unreadable or invalid record refuses allocation.
+Live agent names that conflict with an existing protected record refuse
+allocation. History restoration instead uses the protected name, so a crash
+between an explicit switch's history and selection writes retains the last
+committed choice. A missing protected record keeps the strict legacy path; an
+unreadable record cannot authorize execution. A live provider
+switch publishes its validated template selection, with the current revision
+check, before changing the slot name that history saves. That event can select a
+new template; a restored transcript alone cannot authorize the same change.
+A cancelled provider switch drains its publication thread before restoring the
+exact selection revision it wrote. A failed post-publication slot or binding
+check uses the same rollback. Repeated cancellation cannot abandon publication
+or rollback, and rollback cannot replace a later owner's selection. The slot
+name changes only after publication and binding checks succeed.
+An already ambiguous legacy conversation therefore still needs an explicit
+owner choice or a new conversation.
+
 ## Private member session ownership
 
 Private essential-context receipts live on the serving provider, not the logical
@@ -98,8 +203,24 @@ to a private configured default. An unresolved member, changed binding or
 unreadable private store surfaces an error instead of borrowing Global Memory V1.
 
 An owner creating a private chat pins the selected member before saving history.
+Authorized `session_create` dispatch does the same before its birth metadata is
+written, so the new worker can start and resume with its protected assignment.
+It also publishes the template/member namespace captured during resolution;
+discovery before the first send cannot turn that template into a private member.
+Publication compares the protected selection revision and cannot replace a newer
+owner choice. Birth writes drain before cancellation is honored. A successful
+write keeps its slot even if the request was cancelled; a failed write retracts
+only an idle, empty slot still owned by that request. Protected identity records
+remain pinned after a history failure: the slot was already addressable, so a
+concurrent turn may have consumed that authority. The private assignment continues
+to reject Global or another member on that key, including after restart.
+The creation path still refuses pre-existing unverified history or native
+context; it cannot adopt an old conversation by writing a member name into it.
+Private callers remain excluded from the owner's session-control routes.
 Opening a member from Members can pin its canonical session after positive owner
-authorization. A transcript's linked key and the legacy DM binding file cannot
+authorization. A linked-session conflict and a live thread's private-memory
+assignment mismatch retain the same refusal code but name their distinct causes;
+running alone is not a refusal reason. A transcript's linked key and the legacy DM binding file cannot
 authorize another session; a colliding member slug needs an existing protected
 match. Uninitialized legacy members remain openable for explicit initialization.
 An explicit owner agent choice on an unbound restored ordinary chat admits its
@@ -132,6 +253,8 @@ passes the immutable template explicitly while preserving the canonical member,
 private memory binding, history key, caller model and approval policy. An explicit
 or resumed cwd wins; otherwise the member's configured workspace is used. A cwd
 that disagrees with the saved Parent identity refuses startup.
+When no caller model is supplied, allocation resolves the member's model pin by
+its canonical alias, including members that have not enrolled capabilities.
 
 Enrolled allocations bypass warm and shared processes. Full-spec loading is
 supported by the dedicated Kiro backend; other harnesses refuse explicitly rather

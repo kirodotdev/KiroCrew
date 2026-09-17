@@ -643,8 +643,8 @@ def _subagent_default_effort() -> str:
         return ""
 
 
-def _spawn_effective_model(model: str, agent: str) -> str:
-    """The model the provider factory's effort gate will actually see, or ``""``.
+def _spawn_effective_model(model: str, agent: str, *, crew_agent: str | None = None) -> str | None:
+    """Resolve the factory's model; ``""`` means auto, ``None`` means unavailable.
 
     Not a re-encoding of the factory's precedence — the selection itself is
     :meth:`KiroCrewConfig.acp_effective_model`, the same function the factory
@@ -654,14 +654,15 @@ def _spawn_effective_model(model: str, agent: str) -> str:
     per-spawn *model*, else the subagent role pin — see ``_run_inner``, which
     forwards raw ``info.model`` including an explicit ``"auto"``), and, when no
     kwarg is passed, ``session._session_model`` for *agent* (a crew's own pin,
-    else non-sentinel global; ``None`` for a named kiro agent so the factory
-    resolves the agent's own JSON pin — which ``acp_effective_model`` then
-    does, identically). Never raises; ``""`` on any resolution failure.
+    else non-sentinel global; the factory resolves a named template's JSON pin).
+    An explicit empty ``crew_agent`` retains the template namespace; a member
+    claim retains that member's pin and bound template. Omitted claims keep the
+    helper's crew-name inference. Reporting never prepares a capability runtime.
     """
     try:
         # circular imports (config.loader / session import sibling modules at
         # load time, matching the lazy-import convention of _subagent_default_*)
-        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.loader import KiroCrewConfig, resolve_crew_identity
         from kiro_crew.session import _session_model
 
         # The kwarg the spawn path actually passes (see _run_inner): raw
@@ -669,31 +670,43 @@ def _spawn_effective_model(model: str, agent: str) -> str:
         # factory treats it as a truthy override — else the role pin.
         override: str | None = model or _subagent_default_model() or None
         cfg = KiroCrewConfig.load()
+        claim = resolve_crew_identity(cfg, agent or None, crew_agent)
+        if claim:
+            member = cfg.agents.get(claim)
+            if member is None or not isinstance(member.kiro_agent, str):
+                return None
+            # The factory receives the bound provider template, never the alias.
+            # This matters when the member defers to the template's own model.
+            agent = member.kiro_agent
         if override is None:
             # No kwarg: get_or_create resolves the session chain and passes
             # its result (possibly None) as model_override.
-            override = _session_model(cfg, agent or None)
+            override = _session_model(cfg, agent or None, crew_agent=claim)
         return cfg.acp_effective_model(agent or None, override) or ""
     except Exception:
-        return ""
+        return None
 
 
-def effort_drop_reason(model: str, reasoning_effort: str, agent: str = "") -> str:
+def effort_drop_reason(
+    model: str, reasoning_effort: str, agent: str = "", *, crew_agent: str | None = None
+) -> str:
     """Why a requested per-spawn effort will not take effect, or ``""``.
 
     Mirrors the model resolution the provider factory's effort gate actually
-    sees (explicit per-spawn model, else the subagent role pin, else the
-    session-level chain for *agent*: crew pin, else non-sentinel global) — an
-    unresolved model (the provider picks a served one, or a named kiro agent's
-    own pin resolves downstream) cannot carry an effort level through the
-    overlay. Returns a human-readable reason when *reasoning_effort* is set
+    sees (explicit per-spawn model, else the subagent role pin, else the selected
+    member's pin, template pin and global fallback). A resolved ``auto`` cannot
+    carry an effort level through the overlay. Returns a human-readable reason when
+    *reasoning_effort* is set
     but the resolved model is not effort-capable; ``""`` means the effort will
-    be delivered (or none was requested). Reporting-only: never raises and
-    never influences whether or how a spawn proceeds.
+    be delivered, none was requested, or the selection could not be resolved.
+    Reporting-only: never raises and never influences whether or how a spawn
+    proceeds. ``crew_agent`` has the same namespace semantics as allocation.
     """
     if not reasoning_effort:
         return ""
-    resolved = _spawn_effective_model(model, agent)
+    resolved = _spawn_effective_model(model, agent, crew_agent=crew_agent)
+    if resolved is None:
+        return ""
     if not resolved:
         return (
             "no concrete model is pinned — the model resolves to 'auto', which "
@@ -705,7 +718,9 @@ def effort_drop_reason(model: str, reasoning_effort: str, agent: str = "") -> st
     return ""
 
 
-def effort_applied_note(model: str, reasoning_effort: str, agent: str = "") -> str:
+def effort_applied_note(
+    model: str, reasoning_effort: str, agent: str = "", *, crew_agent: str | None = None
+) -> str:
     """The delivery mirror of :func:`effort_drop_reason`, or ``""``.
 
     Names the resolved model and the family-specific cli.json settings key the
@@ -713,12 +728,13 @@ def effort_applied_note(model: str, reasoning_effort: str, agent: str = "") -> s
     Claude) when a requested per-spawn effort WILL take effect. The key matters
     because kiro-cli silently ignores a level written under the wrong family
     key, so a bare "applied" would leave that failure mode unobservable.
-    Complementary with the drop reason over a non-empty request: exactly one of
-    the two is non-empty. Reporting-only, same totality contract.
+    Complementary with the drop reason when the selection can be resolved:
+    exactly one is non-empty for a requested effort. An unavailable selection
+    leaves both empty. Reporting-only, same totality contract.
     """
     if not reasoning_effort:
         return ""
-    resolved = _spawn_effective_model(model, agent)
+    resolved = _spawn_effective_model(model, agent, crew_agent=crew_agent)
     if not resolved or not model_supports_effort(resolved):
         return ""
     return f"{resolved} → {effort_settings_key(resolved)}.effort"
@@ -1406,6 +1422,8 @@ class SubagentInfo:
     # crew reads the global store, which is what every spawn did before crews
     # had silos.
     memory_store: str = ""
+    # A named member remains the conversation owner during a template override.
+    crew: str = field(default="", kw_only=True)
     # Session key override for continuation runs: a spawn_continue run reuses
     # the ORIGINAL run's session key (``subagent:<conv-id>``) so get_or_create
     # finds the persisted sid and arms session/load. Empty ⇒ the default
@@ -2565,6 +2583,8 @@ class SubagentManager:
         _claimed: "tuple[int, bool, str] | None" = None,
         _window_hint: "bool | None" = None,
         _child_registration: bool = True,
+        *,
+        crew: str = "",
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -2596,6 +2616,7 @@ class SubagentManager:
             _claimed=_claimed,
             _window_hint=_window_hint,
             _child_registration=_child_registration,
+            crew=crew,
         )
         assert not isinstance(result, PreparedSpawn)
         # ``ClaimPoint`` comes back ONLY for ``_stop_before_claim=True``, whose

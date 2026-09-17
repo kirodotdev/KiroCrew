@@ -14729,6 +14729,7 @@
       "show_controls": "展开控制项"
     },
     "membersPage": {
+      "drawer_delegated_working": "委派的任务正在运行",
       "agent_template": "Agent 模板",
       "configuration": "配置",
       "crew_summary": "成员概览",

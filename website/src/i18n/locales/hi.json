@@ -14922,6 +14922,7 @@
       "show_controls": "नियंत्रण दिखाएँ"
     },
     "membersPage": {
+      "drawer_delegated_working": "सौंपे गए कार्य चल रहे हैं",
       "agent_template": "एजेंट टेम्पलेट",
       "configuration": "कॉन्फ़िगरेशन",
       "crew_summary": "सदस्य सारांश",

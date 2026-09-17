@@ -306,6 +306,19 @@ retains its localized error heading and structured diagnostic report. Details
 reveals the redacted reason on demand; Ask the agent receives the same report
 when navigation permits. The cached conversation and its drafts remain available.
 
+Reopening a running private Member DM, including a turn awaiting tool approval,
+reuses its existing protected assignment. The canonical session key, selected
+member, live slot store and protected session store must agree. This read does
+not pin or repair memory while work is active; missing, mismatched or unreadable
+identity still refuses. The handler rechecks slot identity after the off-loop
+store read, and a link to another session remains a conflict.
+
+The member's presence indicator includes active child runs even while its own
+turn is idle. Completion of the member's planning turn does not imply its
+delegated work has finished. When only child runs are active, the Crew summary
+status says "Delegated work running". Driving sessions still lists dashboard
+sessions created by the member; child runs do not become dashboard sessions.
+
 Facts, rules and experiences all support correction and explicit forgetting.
 Experience correction keeps the same record identity and provenance. A store
 marked unavailable still makes a scoped read to obtain its actual refusal, with
@@ -334,6 +347,15 @@ The loader is defensive about hand-edited config: a non-string `model` or
 and a junk watchdog override collapses to `0`.
 
 ## Selection: the `select_crew` contract
+
+Discovery importing a provider template as a configured member does not rebind
+an existing dashboard conversation that selected the template. Resolved bindings
+carry a positive `selection_kind`; the protected per-session record preserves
+that namespace across callbacks and restore. New member conversations still
+resolve and validate the member's private store. An explicit owner agent choice
+may replace selection provenance, but cannot migrate an existing V1 native
+conversation into private memory. The persistence and legacy-session rules are
+owned by [session](session.md#agent-selection-provenance).
 
 `select_crew` has two modes, both answered as JSON by `_do_select_crew`.
 
@@ -396,6 +418,9 @@ Explicit member delegation uses `spawn_run(crew=<member>)`. The member alias
 resolves its provider template and private memory together. The separate
 `agent=` argument identifies a provider template, not a durable member identity;
 it must not be used to infer access to a member's private memory.
+The model-facing `spawn_run` schema advertises `crew` separately from `agent`,
+so a caller can select a member through tool discovery. A batch's `crew` applies
+to every task; delegating to different members requires separate calls.
 
 A private member's own sub-tasks and schedules retain its store. It cannot select
 Global V1 or a peer through `spawn_run` or `cron_add`. The trusted owner or Crew

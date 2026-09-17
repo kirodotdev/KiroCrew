@@ -118,6 +118,7 @@ def _info(**kw: Any) -> Any:
         # The retry path reuses this alongside the context triple: a retry must
         # not widen a delegated run to the global store.
         "memory_store": "",
+        "crew": "",
         "user_stopped": False,
         "outcome": "",
         "max_turns": 0,
@@ -789,6 +790,7 @@ class TestApiSpawnRetry:
             _raw_task="t",
             include_memory=False,
             include_project=False,
+            crew="coding",
         )
         mgr.spawn.return_value = _info(id="new")
         _run(mod.api_spawn_retry, self._req(mgr))
@@ -796,6 +798,7 @@ class TestApiSpawnRetry:
         assert kwargs["include_memory"] is False
         assert kwargs["include_lessons"] is True
         assert kwargs["include_project"] is False
+        assert kwargs["crew"] == "coding"
 
 
 class TestApiSpawnDelete:

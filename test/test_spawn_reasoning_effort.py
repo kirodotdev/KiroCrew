@@ -13,6 +13,7 @@ resolution site. Each hop is a place the value can be silently dropped
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_subagent_continuable import continuation_runtime as _continuation_runtime
 
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_tool_args
@@ -27,6 +29,7 @@ from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_too
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+continuation_runtime = _continuation_runtime
 
 
 @contextmanager
@@ -351,6 +354,7 @@ def _mock_sessions() -> MagicMock:
     sessions.get_pid = MagicMock(return_value=None)
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.has_session = MagicMock(return_value=True)
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
@@ -417,7 +421,8 @@ class TestRecordAndRetry:
         assert info.reasoning_effort == ""
 
     @pytest.mark.asyncio
-    async def test_retry_re_spawns_at_the_same_effort(self):
+    @pytest.mark.parametrize("crew", ["", "coding"])
+    async def test_retry_re_spawns_at_the_same_effort(self, crew):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
 
         old = SimpleNamespace(
@@ -437,7 +442,8 @@ class TestRecordAndRetry:
             include_project=True,
             # Reused by the retry alongside the context triple: a retry must not
             # widen a delegated run to the global store.
-            memory_store="",
+            memory_store="member-coding" if crew else "",
+            crew=crew,
             done=True,
             outcome="failed",
         )
@@ -451,6 +457,8 @@ class TestRecordAndRetry:
         request.match_info = {"agent_id": "a1"}
         await api_spawn_retry(request)
         assert mgr.spawn.call_args.kwargs["reasoning_effort"] == "xhigh"
+        assert mgr.spawn.call_args.kwargs["crew"] == crew
+        assert mgr.spawn.call_args.kwargs["memory_store"] == old.memory_store
 
 
 class TestResolutionPrecedence:
@@ -467,6 +475,7 @@ class TestResolutionPrecedence:
         sessions.get_pid = MagicMock(return_value=None)
         sessions.get_approval_policy = MagicMock(return_value="")
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         ctx_builder = MagicMock()
         ctx_builder.build_message = MagicMock(return_value=("msg", None))
         ctx_builder.hooks.auto_approve_subagent_tools = False
@@ -625,6 +634,7 @@ class TestNoSpawnSiteDropWarning:
         sessions.get_pid = MagicMock(return_value=None)
         sessions.get_approval_policy = MagicMock(return_value="")
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         ctx_builder = MagicMock()
         ctx_builder.build_message = MagicMock(return_value=("msg", None))
         ctx_builder.hooks.auto_approve_subagent_tools = False
@@ -707,22 +717,39 @@ class TestApiSpawnEffortDropped:
     gateway knows the role pin and session-model chain behind an omitted
     per-call model."""
 
-    def _spawn(self, body: dict, *, role_models=None, crews=None, parent_agent="") -> dict:
+    def _spawn(
+        self,
+        body: dict,
+        *,
+        role_models=None,
+        crews=None,
+        parent_agent="",
+        parent_selection=("template", ""),
+    ) -> dict:
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
         from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.dashboard.state import _ChatSlot
 
         mgr = MagicMock()
         mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
         state = SimpleNamespace(
-            _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
+            _slots={"1": _ChatSlot("1", memory_mode="persistent")},
             _restricted_keys=set(),
             subagents=mgr,
-            sessions=SimpleNamespace(get_agent=lambda key: parent_agent),
+            sessions=SimpleNamespace(
+                get_agent=lambda key: parent_agent,
+                get_agent_selection=MagicMock(
+                    side_effect=(
+                        parent_selection if isinstance(parent_selection, Exception) else None
+                    ),
+                    return_value=parent_selection,
+                ),
+            ),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
         request.app = {"state": state}
-        request.headers = {}
+        request.headers = {"X-Session-Key": body.get("parent_session", "")}
         request.json = AsyncMock(return_value=body)
         cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
         if crews:
@@ -736,6 +763,7 @@ class TestApiSpawnEffortDropped:
         ):
             resp = asyncio.run(api_spawn(request))
         assert resp.status == 200
+        assert mgr.spawn.call_args.kwargs["_memory_mode"] == "persistent"
         import json as _json
 
         return _json.loads(resp.body)
@@ -769,6 +797,31 @@ class TestApiSpawnEffortDropped:
         data = self._spawn({"task": "x", "parent_session": "dashboard:1"})
         assert "effort_dropped" not in data
         assert data["id"] == "a1"
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            None,
+            ("member", ""),
+            ("template", None),
+            ("unknown", "worker"),
+            ("template", "worker", "extra"),
+            ValueError("parent selection unavailable"),
+            ("member", "missing-member"),
+        ],
+    )
+    def test_unavailable_selection_omits_both_claims(self, selection):
+        data = self._spawn(
+            {
+                "task": "x",
+                "reasoning_effort": "high",
+                "model": "sonnet-test-model",
+                "parent_session": "dashboard:1",
+            },
+            parent_selection=selection,
+        )
+        assert data["id"] == "a1" and data["status"] == "spawned"
+        assert "effort_applied" not in data and "effort_dropped" not in data
 
 
 class TestEffortAppliedNote:
@@ -805,6 +858,15 @@ class TestEffortAppliedNote:
     def test_auto_and_non_capable_stay_empty(self):
         assert self._note("", "high") == ""
         assert self._note("deepseek-3.2", "high") == ""
+
+    def test_unavailable_model_resolution_omits_both_claims(self):
+        from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+
+        with patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError("unreadable")
+        ):
+            assert effort_drop_reason("", "high", "worker", crew_agent="") == ""
+            assert effort_applied_note("", "high", "worker", crew_agent="") == ""
 
     def test_capable_role_pin_resolves_into_the_note(self):
         note = self._note("", "high", role_models={"subagent": "sonnet-test-model"})
@@ -936,7 +998,10 @@ class TestAppliedLineRendering:
             _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
             _restricted_keys=set(),
             subagents=mgr,
-            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            sessions=SimpleNamespace(
+                get_agent=lambda key: "",
+                get_agent_selection=lambda key: ("template", ""),
+            ),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
@@ -975,7 +1040,10 @@ class TestAppliedLineRendering:
             _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
             _restricted_keys=set(),
             subagents=mgr,
-            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            sessions=SimpleNamespace(
+                get_agent=lambda key: "",
+                get_agent_selection=lambda key: ("template", ""),
+            ),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
@@ -1070,6 +1138,7 @@ class TestSessionChainResolution:
             {"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"},
             crews={"parentcrew": KiroCrewAgentConfig(model="sonnet-test-model")},
             parent_agent="parentcrew",
+            parent_selection=("member", "parentcrew"),
         )
         assert "sonnet-test-model" in data.get("effort_applied", "")
         assert "effort_dropped" not in data
@@ -1093,7 +1162,10 @@ class TestVerdictOffTheEventLoop:
             _slots={"1": SimpleNamespace(is_restricted=False, blocks_reads=False)},
             _restricted_keys=set(),
             subagents=mgr,
-            sessions=SimpleNamespace(get_agent=lambda key: ""),
+            sessions=SimpleNamespace(
+                get_agent=lambda key: "",
+                get_agent_selection=lambda key: ("template", ""),
+            ),
             conversation_log=SimpleNamespace(get_metadata_status=lambda key: ({}, True)),
         )
         request = MagicMock()
@@ -1105,7 +1177,7 @@ class TestVerdictOffTheEventLoop:
         cfg = KiroCrewConfig(agent=AgentConfig())
         seen: list[object] = []
 
-        def _recording_drop(model, effort, agent=""):
+        def _recording_drop(model, effort, agent="", *, crew_agent=None):
             seen.append(threading.current_thread())
             return "recorded-drop"
 
@@ -1127,3 +1199,233 @@ class TestVerdictOffTheEventLoop:
         assert resp.status == 200
         assert seen, "the verdict resolver was never called"
         assert seen[0] is not loop_thread[0], "verdict ran ON the event loop thread"
+
+
+class TestAllocatedEffortReceipt:
+    """Compare the actual handler receipt with allocation and the production factory."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "selection,global_model,member_model,explicit_model,role_model,template_model",
+        [
+            pytest.param(
+                "explicit",
+                "deepseek-3.2",
+                "sonnet-test-model",
+                "",
+                "",
+                "",
+                id="literal-template-rejects-member-effort",
+            ),
+            pytest.param(
+                "explicit",
+                "sonnet-test-model",
+                "deepseek-3.2",
+                "",
+                "",
+                "",
+                id="literal-template-keeps-global-effort",
+            ),
+            pytest.param(
+                "template",
+                "deepseek-3.2",
+                "sonnet-test-model",
+                "",
+                "",
+                "",
+                id="inherited-template-rejects-member-effort",
+            ),
+            pytest.param(
+                "member",
+                "deepseek-3.2",
+                "sonnet-test-model",
+                "",
+                "",
+                "",
+                id="inherited-member-keeps-model-pin",
+            ),
+            pytest.param(
+                "explicit",
+                "deepseek-3.2",
+                "sonnet-test-model",
+                "sonnet-test-model",
+                "",
+                "",
+                id="explicit-model-control",
+            ),
+            pytest.param(
+                "explicit",
+                "deepseek-3.2",
+                "sonnet-test-model",
+                "",
+                "sonnet-test-model",
+                "",
+                id="role-model-control",
+            ),
+            pytest.param(
+                "member",
+                "deepseek-3.2",
+                "",
+                "",
+                "",
+                "sonnet-test-model",
+                id="member-defers-to-bound-template-pin",
+            ),
+        ],
+    )
+    async def test_receipt_matches_completed_allocation(
+        self,
+        continuation_runtime,
+        selection,
+        global_model,
+        member_model,
+        explicit_model,
+        role_model,
+        template_model,
+    ):
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+        from kiro_crew.dashboard.state import _ChatSlot
+        from kiro_crew.member_memory_auth import (
+            bind_private_session_store,
+            private_memory_store_for_session,
+        )
+        from kiro_crew.memory_stores import provision_member_memory
+        from kiro_crew.session_capabilities import prepare_runtime
+        from kiro_crew.subagent_persistence import read_run_memory_mode
+
+        world = continuation_runtime
+
+        def configure():
+            cfg = KiroCrewConfig.load()
+            cfg.agent.model = global_model
+            cfg.agent.role_models = {"subagent": role_model} if role_model else {}
+            cfg.agents["worker"] = KiroCrewAgentConfig(
+                kiro_agent="member-parent", model=member_model
+            )
+            member_store = provision_member_memory(cfg, "worker")
+            cfg.save()
+            # Only the bound template owns this pin. A same-named template
+            # cannot stand in for the member when the member itself is unpinned.
+            path = world.specs / "member-parent.json"
+            spec = json.loads(path.read_text(encoding="utf-8"))
+            spec["model"] = template_model
+            path.write_text(json.dumps(spec), encoding="utf-8")
+            return member_store
+
+        member_store = await asyncio.to_thread(configure)
+        sessions, manager = world.new_manager()
+        parent, store = world.parent, world.store
+        actual_inputs = {}
+        native_factory = sessions._provider_factory
+
+        def capture_factory(key, **kwargs):
+            actual_inputs[key] = dict(kwargs)
+            return native_factory(key, **kwargs)
+
+        sessions._provider_factory = capture_factory
+        member = selection == "member"
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch(
+                "kiro_crew.session_capabilities.prepare_runtime", wraps=prepare_runtime
+            ) as prepare,
+        ):
+            try:
+                if selection != "explicit":
+                    if member:
+                        parent, store = "dashboard:member-receipt", member_store
+                        await asyncio.to_thread(bind_private_session_store, parent, store)
+                        await asyncio.to_thread(
+                            world.history.update_metadata, parent, {"memory_store": store}
+                        )
+                    await asyncio.wait_for(
+                        sessions.get_or_create(
+                            parent,
+                            agent="member-parent" if member else "worker",
+                            crew_agent="worker" if member else "",
+                            cwd=world.project,
+                        ),
+                        timeout=10,
+                    )
+                    sessions.release(parent)
+                    assert sessions.get_agent_selection(parent) == (selection, "worker")
+
+                # The transport represents an authorized owner. All handler
+                # validation, private binding/delegation and allocation stay real.
+                slot = _ChatSlot(parent.removeprefix("dashboard:"), memory_mode="persistent")
+                slot.memory_store = store
+                await asyncio.to_thread(
+                    world.history.update_metadata, parent, {"memory_mode": slot.memory_mode}
+                )
+                request = MagicMock()
+                request.app = {
+                    "state": SimpleNamespace(
+                        sessions=sessions,
+                        subagents=manager,
+                        conversation_log=world.history,
+                        _slots={slot.key: slot},
+                        _restricted_keys=set(),
+                    )
+                }
+                request.headers = {"X-Session-Key": parent}
+                request.get.return_value = None
+                request.json = AsyncMock(
+                    return_value={
+                        "task": "report a small result",
+                        "agent": "worker" if selection == "explicit" else "",
+                        "parent_session": parent,
+                        "cwd": world.project,
+                        "reasoning_effort": "high",
+                        "model": explicit_model,
+                        "keep": True,
+                    }
+                )
+                response = await asyncio.wait_for(api_spawn(request), timeout=30)
+                receipt = json.loads(response.body)
+                assert response.status == 200, receipt
+                task = manager._tasks.get(receipt["id"])
+                if task is not None:
+                    await asyncio.wait_for(task, timeout=10)
+                info = manager._agents[receipt["id"]]
+                assert info.done and not info.error, info.error
+                assert info.memory_mode == slot.memory_mode
+                assert await asyncio.to_thread(read_run_memory_mode, info.id) == slot.memory_mode
+                key = f"subagent:{info.id}"
+                provider = next(p for p in world.made if p.key == key)
+                assert provider.messages
+                assert provider.template == ("member-parent" if member else "worker")
+                assert provider.crew_agent == ("worker" if member else "")
+                expected_model = (
+                    explicit_model
+                    or role_model
+                    or (member_model or template_model or global_model if member else global_model)
+                )
+                expected_override = None if template_model else expected_model
+                assert provider.model_override == expected_override
+                assert actual_inputs[key]["reasoning_effort_override"] == "high"
+                assert await asyncio.to_thread(private_memory_store_for_session, key) == store
+
+                def factory_gate():
+                    cfg = KiroCrewConfig.load()
+                    # Feed captured allocation inputs through the real factory;
+                    # only construction of the external provider is intercepted.
+                    with patch("kiro_crew.providers.acp.AcpProvider") as constructor:
+                        cfg.create_provider_factory()(key, **actual_inputs[key])
+                        return constructor.call_args.kwargs
+
+                gate = await asyncio.to_thread(factory_gate)
+                assert prepare.call_count == (2 if selection != "explicit" else 1)
+                assert gate["model"] == expected_model
+                applies = bool(gate["effort_per_model"])
+                assert bool(receipt.get("effort_applied")) == applies, (receipt, gate)
+                assert bool(receipt.get("effort_dropped")) != applies, (receipt, gate)
+                if applies:
+                    assert gate["effort_per_model"] == {expected_model: "high"}
+                    assert expected_model in receipt["effort_applied"]
+                else:
+                    assert expected_model in receipt["effort_dropped"]
+            finally:
+                await asyncio.wait_for(manager.cancel_all(), timeout=10)
+                await asyncio.wait_for(sessions.close_all(drain_timeout=0), timeout=10)

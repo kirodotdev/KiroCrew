@@ -2139,8 +2139,11 @@ async def _recognize_session(
         )
         return None
     slot_name = sk.split(":", 1)[-1] if ":" in sk else sk
-    in_slots = slot_name in state._slots
-    in_restricted = sk in state._restricted_keys
+    is_subagent = sk.startswith("subagent:")
+    # A child needs its live owner; neither a colliding dashboard slot nor a
+    # retained transcript or restriction marker can replace that allocation.
+    in_slots = not is_subagent and slot_name in state._slots
+    in_restricted = not is_subagent and sk in state._restricted_keys
     # Headless callers have no slot. A namespace only selects this lookup:
     # recognition still requires the FULL key's live owner. Dashboard/archive
     # callers keep their persisted-mode check even if a provider remains alive.
@@ -2194,7 +2197,10 @@ async def _recognize_session(
     # exist, and may it touch memory) from a single path resolution, so the
     # two decisions can never be made about different files.
     if not (in_slots or in_restricted or is_channel_ns or in_live_session):
-        exists, persisted_mode = await asyncio.to_thread(_probe_persisted_session, slot_name)
+        if is_subagent:
+            exists, persisted_mode = False, None
+        else:
+            exists, persisted_mode = await asyncio.to_thread(_probe_persisted_session, slot_name)
         if not exists:
             # Slot may have been evicted from memory (idle sweep,
             # gateway restart) while the MCP subprocess keeps its

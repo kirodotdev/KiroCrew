@@ -244,6 +244,17 @@ def schemas() -> list[dict[str, Any]]:
                         )
                         + _agent_hint,
                     },
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Crew Member name from select_crew or route_crew. "
+                            "Selects that member's private memory and provider template; "
+                            "agent alone selects only a template. The member must have "
+                            "delegated tasks enabled. A private member may delegate only "
+                            "within its own memory; cross-member delegation requires an "
+                            "owner-level caller. Applies to every task in a batch."
+                        ),
+                    },
                     "agents": {
                         "type": "array",
                         "items": {"type": "string"},

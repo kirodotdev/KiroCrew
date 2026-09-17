@@ -37,7 +37,10 @@ def assert_diagnostic(error, operation, tree, code, *, winerror=None):
 
 
 @pytest.mark.parametrize("tree", ["root_tmp", "sessions", "snapshots", "memory"])
-def test_actual_map_publication_race_retains_operation_and_errno(scan_home, monkeypatch, tree):
+@pytest.mark.parametrize("prepare", [False, True], ids=["single-scan", "private-startup"])
+def test_actual_map_publication_race_retains_operation_and_errno(
+    scan_home, monkeypatch, tree, prepare
+):
     root, layout = scan_home
     mapping = session_map.SessionMap()
     if tree != "root_tmp":
@@ -76,8 +79,11 @@ def test_actual_map_publication_race_retains_operation_and_errno(scan_home, monk
     thread.start()
     try:
         assert staged.wait(5), "writer did not stage"
-        with pytest.raises(RuntimeError, match=PREFIX) as caught:
-            sandbox._prepare_private_log_dir(layout)
+        if prepare:
+            directory = Path(sandbox._prepare_private_log_dir(layout))
+        else:
+            with pytest.raises(RuntimeError, match=PREFIX) as caught:
+                sandbox._validate_private_memory_hardlinks(layout)
     finally:
         publish.set()
         thread.join(5)
@@ -85,6 +91,11 @@ def test_actual_map_publication_race_retains_operation_and_errno(scan_home, monk
     assert not failures
     assert mapping._written_seq == 1
     assert mapping._path.read_text(encoding="utf-8") == '{"fixture":true}'
+    if prepare:
+        assert directory.is_dir()
+        assert directory.parent == root / "memory_stores" / ".execution-logs"
+        assert not temporary[0].exists()
+        return
     error = caught.value
     assert isinstance(error.__cause__, FileNotFoundError)
     assert error.__cause__.errno == errno.ENOENT
@@ -95,6 +106,47 @@ def test_actual_map_publication_race_retains_operation_and_errno(scan_home, monk
     assert not (root / "memory_stores" / ".execution-logs").exists()
     # Publication settled: the same layout still admits healthy files.
     sandbox._validate_private_memory_hardlinks(layout)
+
+
+@pytest.mark.parametrize(
+    ("operation", "relative", "tree"),
+    [
+        ("root_iterdir", "", "memory"),
+        ("entry_stat", f"{PRIVATE}.tmp", "root_tmp"),
+        ("entry_iterdir", "sessions", "sessions"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("code", "attempts"),
+    [(errno.ENOENT, 3), (errno.EACCES, 1), (errno.EIO, 1)],
+)
+def test_scan_failure_retry_budget_preserves_final_diagnostic(
+    scan_home, monkeypatch, operation, relative, tree, code, attempts
+):
+    root, layout = scan_home
+    target = root / relative
+    method = "stat" if operation == "entry_stat" else "iterdir"
+    if method == "stat":
+        target.write_text(PRIVATE, encoding="utf-8")
+    else:
+        target.mkdir(exist_ok=True)
+    original = getattr(Path, method)
+    failures = []
+
+    def fail_scan(path, *args, **kwargs):
+        if path == target:
+            cause = OSError(code, PRIVATE, str(target))
+            failures.append(cause)
+            raise cause
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, fail_scan)
+    with pytest.raises(RuntimeError, match=PREFIX) as caught:
+        sandbox._prepare_private_log_dir(layout)
+    assert len(failures) == attempts
+    assert caught.value.__cause__ is failures[-1]
+    assert_diagnostic(caught.value, operation, tree, code)
+    assert not (root / "memory_stores" / ".execution-logs").exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory mode enforcement")

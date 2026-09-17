@@ -478,10 +478,18 @@ async def _spawn_off_loop(manager: "SubagentManager | Any", task: str, session_k
     """
     import inspect
 
+    from kiro_crew.context import store_of_session
+    from kiro_crew.history import ConversationLog
+
+    kwargs: dict[str, Any] = {"parent_session_key": session_key}
+    if session_key:
+        store = await asyncio.to_thread(lambda: store_of_session(ConversationLog(), session_key))
+        if store:
+            kwargs["memory_store"] = store
     spawn_async = getattr(manager, "spawn_async", None)
     if inspect.iscoroutinefunction(spawn_async):
-        return await spawn_async(task, parent_session_key=session_key)
-    return manager.spawn(task, parent_session_key=session_key)
+        return await spawn_async(task, **kwargs)
+    return manager.spawn(task, **kwargs)
 
 
 async def spawn_task_reply(
@@ -510,7 +518,12 @@ async def spawn_task_reply(
                 f"🔹 `{agent.id}` | {elapsed}s | {_redact(agent.task)[:_SPAWN_TASK_PREVIEW_CHARS]}"
             )
         return "\n".join(lines)
-    info = await _spawn_off_loop(manager, task, session_key)
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    try:
+        info = await _spawn_off_loop(manager, task, session_key)
+    except UnknownMemoryStore as exc:
+        return f"⚠️ {_redact(str(exc))}"
     if not info:
         return f"⚠️ Subagent capacity reached ({manager.max_concurrent}). Try again later."
     return f"🚀 Spawned subagent `{info.id}`\n_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"

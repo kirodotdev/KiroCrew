@@ -33,6 +33,15 @@ encoding in an existing transcript returns an unreadable status. Identity-aware
 consumers refuse the operation; the legacy `get_metadata()` projection still
 returns an empty dictionary for callers that only display history.
 
+Template-versus-member selection survives recent-session restore, explicit
+resume and dormant-slot rehydration through the protected, exact-session record
+owned by `session_agent_selection.py`; transcript fields cannot manufacture that
+provenance. Restoring a template conversation after discovery imports a member
+with the same name keeps its original namespace. This record is separate from
+the protected private-store assignment and cannot authorize V2 memory. Old
+conversations without it keep strict legacy resolution rather than guessing
+from missing private bindings. See [session](session.md#agent-selection-provenance).
+
 Bulk clear excludes transcripts whose metadata cannot be read, including Global
 V1 transcripts. Their owner and pinned state cannot safely be inferred. An exact
 sidebar delete (`DELETE /api/sessions/{key}`) still bypasses bulk identity and
@@ -212,6 +221,14 @@ identity from its transcript. A growing source session therefore remains tied to
 the same provenance ledger entry.
 
 ## Dashboard History Persistence — Frozen Prefix + Live Window (`dashboard/chat_persistence.py`)
+
+Dashboard restoration reads an existing protected agent selection before applying
+the transcript's agent field. A provisional history write left by an interrupted
+switch therefore cannot replace the committed choice, even if its rollback could
+not acquire the history lock. Missing selection records retain legacy resolution;
+unreadable records remain execution refusals. Private-store authority is still
+checked independently. Async restore prefetches this record off-loop alongside
+the transcript and applies the resulting name on the event loop.
 
 `_save_slot_to_history` persists dashboard chat slots. It models the session
 file as a **frozen prefix + live window** so on-disk history is never

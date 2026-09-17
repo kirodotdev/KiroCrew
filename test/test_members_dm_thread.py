@@ -744,6 +744,10 @@ class TestPinEnforcement:
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
+        monkeypatch.setattr(
+            "kiro_crew.config.loader._materialized_kiro_agent",
+            lambda name, project_dir=None: name if name == switch_to else "",
+        )
         context = SimpleNamespace(
             ensure_store=AsyncMock(return_value=object()),
             build_message=lambda text, *args, **kwargs: (text, None),
@@ -1816,3 +1820,51 @@ class TestDenialAuditOffload:
             "warmed at startup (sel.warm_sel_singleton), so a non-critical audit "
             "is a direct enqueue (#8608)"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", ["linked", "store"])
+async def test_private_thread_conflict_names_its_actual_cause(tmp_path, monkeypatch, conflict):
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    patch_private_memory_supported(monkeypatch)
+
+    def configure():
+        cfg = KiroCrewConfig.load()
+        cfg.agents[CREW] = KiroCrewAgentConfig(kiro_agent=CREW)
+        provision_member_memory(cfg, CREW)
+        cfg.save()
+
+    await asyncio.to_thread(configure)
+    state = _make_state(tmp_path)
+    finished = asyncio.Event()
+    task = None
+    try:
+        async with TestClient(TestServer(_make_members_app(state))) as client:
+            opened = await client.post(f"/api/members/{CREW}/thread")
+            assert opened.status == 200, await opened.text()
+            slot = state._slots[(await opened.json())["slot_key"]]
+            if conflict == "linked":
+                slot.linked_session_key = "slack:other-session"
+            else:
+                task = asyncio.create_task(finished.wait())
+                slot._task = task
+                slot.memory_store = ""
+            response = await client.post(f"/api/members/{CREW}/thread")
+            assert response.status == 409
+            body = await response.json()
+            assert body["code"] == "member_slot_conflict"
+            expected = (
+                "the member thread is linked to another session"
+                if conflict == "linked"
+                else "the member thread has a different private-memory assignment"
+            )
+            assert body["error"] == expected
+            assert "running" not in body["error"]
+    finally:
+        finished.set()
+        if task is not None:
+            await asyncio.wait_for(task, 5)

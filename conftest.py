@@ -3286,12 +3286,14 @@ def _isolate_subagents_dir(_isolation_dirs, _floor_monkeypatch):
     stub agent folders into the operator's real ``~/.kirocrew/subagents/``. On the
     next gateway start, orphan reconciliation sweeps those stubs and floods the
     logs with "lost to gateway restart" warnings (e.g. tasks ``t`` / ``ls /tmp``).
-    Redirecting the module global gives every test an isolated, empty registry.
+    The registry lives beneath its own per-test home so sibling protected
+    identity records are isolated too, including runs with repeated ids.
     """
+
     monkeypatch = _floor_monkeypatch
     monkeypatch.setattr(
         "kiro_crew.subagent_persistence._SUBAGENTS_DIR",
-        _isolation_dirs("subagents"),
+        _isolation_dirs("subagents") / "subagents",
     )
 
 

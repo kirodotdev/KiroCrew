@@ -90,7 +90,7 @@ from kiro_crew.acp.liveness import (
     consult_offloaded,
     steady_now,
 )
-from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.mcp_session_report import KasMcpReadiness, McpSessionReport
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -4086,6 +4086,76 @@ class AcpSessionHandle:
         """
         return self._mcp_report
 
+    async def wait_mcp_ready(
+        self,
+        required: tuple[str, ...],
+        timeout: float,
+        *,
+        stale_report_frames: int = 0,
+        tool_policy: dict[str, Any] | None = None,
+        injected: frozenset[str] = frozenset(),
+    ) -> None:
+        """Wait for KAS's active managed roster and catalog, or fail before prompting.
+
+        ``injected`` is the subset of ``required`` that travelled in the request's
+        own ``mcpServers`` array; see :class:`KasMcpReadiness`.
+        """
+        readiness = KasMcpReadiness(self._session_id, required, tool_policy, injected)
+        self._mcp_report.include_configured(required)
+        deadline = time.monotonic() + timeout
+        stale = max(0, stale_report_frames)
+        while readiness.pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AcpRequestTimeout(
+                    f"KAS managed MCP readiness timed out after {timeout:g}s: {readiness.pending}"
+                )
+            try:
+                msg = await asyncio.wait_for(self._queue.get(), remaining)
+            except asyncio.TimeoutError as exc:
+                raise AcpRequestTimeout(
+                    f"KAS managed MCP readiness timed out after {timeout:g}s: {readiness.pending}"
+                ) from exc
+            if msg is None:
+                self._queue.put_nowait(None)
+                raise AcpRuntimeDead("Runtime exited while waiting for managed MCP readiness")
+            try:
+                # Config/OAuth side effects also belong to external servers and
+                # pre-mode frames. They must not become readiness requirements.
+                self._apply_init_notification(msg, classify_notification(msg))
+            except Exception:
+                logger.debug("error processing init notification", exc_info=True)
+            if stale:
+                stale -= 1
+                continue
+            self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
+            readiness.record(msg)
+            if readiness.failure:
+                raise AcpRuntimeError(f"KAS managed MCP initialization failed: {readiness.failure}")
+        for name in required:
+            self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+
+    def _apply_init_notification(self, msg: JsonRpcMessage, action: str) -> None:
+        """Initialization side effects shared by the drain and readiness barrier."""
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if action == "update":
+            update = params.get("update") or {}
+            if isinstance(update, dict) and update.get("sessionUpdate") == "config_option_update":
+                cfg = update.get("configOptions")
+                if isinstance(cfg, list):
+                    self._config_options = cfg
+                    self._sync_effort_levels()
+        elif action == "mcp_oauth_request":
+            request = self._accept_oauth_request(msg)
+            if request is not None:
+                self._pending_oauth_requests.append(request)
+        elif action == "mcp_server_init_failure":
+            logger.info(
+                "MCP server init failure on %s: %s",
+                self._session_id,
+                params.get("serverName") or "",
+            )
+
     async def drain_init(
         self,
         duration: float = _MCP_DRAIN_DURATION,
@@ -4192,28 +4262,7 @@ class AcpSessionHandle:
                     # remaining servers up to ``duration`` from this point.
                     reported = True
                     deadline = time.monotonic() + duration
-                if action == "update":
-                    params = msg.params or {}
-                    update = params.get("update") or {}
-                    if (
-                        isinstance(update, dict)
-                        and update.get("sessionUpdate") == "config_option_update"
-                    ):
-                        cfg = update.get("configOptions")
-                        if isinstance(cfg, list):
-                            self._config_options = cfg
-                            self._sync_effort_levels()
-                elif action == "mcp_oauth_request":
-                    request = self._accept_oauth_request(msg)
-                    if request is not None:
-                        self._pending_oauth_requests.append(request)
-                elif action == "mcp_server_init_failure":
-                    p = msg.params or {}
-                    logger.info(
-                        "MCP server init failure on %s: %s",
-                        self._session_id,
-                        p.get("serverName") or "",
-                    )
+                self._apply_init_notification(msg, action)
             except Exception:
                 logger.debug("drain_init: error processing init frame", exc_info=True)
         if drained:

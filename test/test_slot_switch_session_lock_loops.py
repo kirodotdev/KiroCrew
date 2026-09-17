@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
-from kiro_crew.llm_helpers import _slot_switch_session_locks, slot_switch_session_lock
+from kiro_crew import llm_helpers
+from kiro_crew.llm_helpers import slot_switch_session_lock
 
 _KEY = "dash:test-cross-loop"
 
@@ -45,10 +46,10 @@ def _bind_on_fresh_loop(key: str) -> asyncio.Lock:
 
 
 def test_lock_bound_on_a_closed_loop_is_replaced_for_the_next_loop() -> None:
-    _slot_switch_session_locks.pop(_KEY, None)
+    llm_helpers._slot_switch_session_locks.pop(_KEY, None)
     stale = _bind_on_fresh_loop(_KEY)
     assert getattr(stale, "_loop", None) is not None
-    assert _slot_switch_session_locks.get(_KEY) is stale
+    assert llm_helpers._slot_switch_session_locks.get(_KEY) is stale
 
     async def _use() -> asyncio.Lock:
         lock = slot_switch_session_lock(_KEY)
@@ -62,11 +63,11 @@ def test_lock_bound_on_a_closed_loop_is_replaced_for_the_next_loop() -> None:
     assert fresh is not stale
     # The stale lock is still alive (this test holds it) yet the cache now
     # serves the replacement.
-    assert _slot_switch_session_locks.get(_KEY) is fresh
+    assert llm_helpers._slot_switch_session_locks.get(_KEY) is fresh
 
 
 def test_lock_is_reused_within_one_loop() -> None:
-    _slot_switch_session_locks.pop(_KEY, None)
+    llm_helpers._slot_switch_session_locks.pop(_KEY, None)
 
     async def _twice() -> tuple[asyncio.Lock, asyncio.Lock]:
         first = slot_switch_session_lock(_KEY)
@@ -80,7 +81,7 @@ def test_lock_is_reused_within_one_loop() -> None:
 
 
 def test_unbound_lock_is_reused_across_loops() -> None:
-    _slot_switch_session_locks.pop(_KEY, None)
+    llm_helpers._slot_switch_session_locks.pop(_KEY, None)
     unbound = slot_switch_session_lock(_KEY)
     assert getattr(unbound, "_loop", None) is None
 

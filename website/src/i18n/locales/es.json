@@ -15114,6 +15114,7 @@
       "show_controls": "Mostrar los controles"
     },
     "membersPage": {
+      "drawer_delegated_working": "Tareas delegadas en curso",
       "agent_template": "Plantilla de agente",
       "configuration": "Configuración",
       "crew_summary": "Resumen del miembro",

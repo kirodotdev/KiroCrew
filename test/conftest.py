@@ -862,6 +862,14 @@ def _isolate_kiro_window_cache():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_advertised_model_cache(_floor_monkeypatch):
+    """Keep one session's advertised model spellings inside its own test."""
+    from kiro_crew import model_registry
+
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+
+
+@pytest.fixture(autouse=True)
 def _isolate_message_entry_cache():
     """Give every test an EMPTY ``chat_persistence`` persisted-entry cache.
 
@@ -931,6 +939,16 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_MEMHIGH_APPLIED = saved_applied
         _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
         _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
+
+
+@pytest.fixture(autouse=True)
+def _reset_session_switch_locks(monkeypatch):
+    """Tests reuse session keys across loops; the gateway has one serving loop."""
+    import weakref
+
+    from kiro_crew import llm_helpers
+
+    monkeypatch.setattr(llm_helpers, "_slot_switch_session_locks", weakref.WeakValueDictionary())
 
 
 @pytest.fixture(autouse=True)

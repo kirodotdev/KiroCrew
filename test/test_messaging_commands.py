@@ -1113,3 +1113,22 @@ class TestCompactUnsupportedBackend:
         assert "automatically" in reply
         # Informational, never an error.
         assert "❌" not in reply and "⚠️" not in reply
+
+
+@pytest.mark.asyncio
+async def test_spawn_memory_refusal_does_not_announce_or_start_work(monkeypatch):
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    manager = SimpleNamespace(spawn_async=AsyncMock())
+    loop_thread = threading.get_ident()
+
+    def refuse(log, key):
+        assert threading.get_ident() != loop_thread
+        assert key == "slack:C123:456.789"
+        raise UnknownMemoryStore("Private memory binding is unavailable")
+
+    monkeypatch.setattr("kiro_crew.context.store_of_session", refuse)
+    result = await spawn_task_reply("do work", manager, "slack:C123:456.789")
+    assert "Private memory binding is unavailable" in result
+    assert "Spawned" not in result
+    manager.spawn_async.assert_not_awaited()

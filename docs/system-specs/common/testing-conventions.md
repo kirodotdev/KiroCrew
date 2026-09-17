@@ -26,6 +26,14 @@ class TestAcpClientInit:
 ```
 
 ### Async tests
+
+Session-switch lock registries are reset per test. Reused fixture session keys
+must not retain a contended lock tied to another test's event loop.
+Dispatch doubles provide a concrete `get_agent_selection()` tuple, including
+`("template", "")` for the default template. An unconstrained mock is not a
+valid member or template identity. Session-start collector tests declare their
+MCP roster explicitly rather than inheriting the installed agent's tools.
+
 ```python
 @pytest.mark.asyncio
 async def test_read_message(self, tmp_path):
@@ -69,6 +77,8 @@ Windows pod handle-stop fixtures must also own the separate numeric `pid_exists`
 probe: after a simulated handle exits, a real host process with the same PID
 must not change the verdict. Cover both a gone PID and a recycled live PID;
 the latter must still refuse state deletion after exact-handle draining.
+Keep one numeric-liveness stub for each scenario: a later duplicate patch
+must not replace the recycled-PID case with the ordinary exited-handle case.
 
 Tests of executable ownership pin only the ancestors above their temporary tree;
 fixture files retain their real ownership and permission bits. Host kernel headers
@@ -93,7 +103,26 @@ def test_load_from_file(self, tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_file)
 ```
 
+Chat-runner fixtures that resolve agent bindings must use a concrete
+`KiroCrewConfig`. A bare `MagicMock` can claim to contain agents while yielding
+no entries, so binding resolution fails before the behavior under test runs.
+When stubbing the resolver itself, return `ResolvedBindings` with the intended
+member/template selection. A partial namespace can raise on a missing field
+before the dispatch guard under test is reached.
+Subagent session doubles must return a concrete string from `get_agent`,
+including `""` for the default template. Protected identity publication rejects
+an unconfigured mock before allocating the provider.
+
+The backend test floor gives each test an empty advertised-model cache.
+Capturing a session response updates this process-global cache, so a later
+model-selection test must not inherit another test's wire spellings. Tests that
+need advertised models seed the cache within their own fixture or body.
+
 ### Filesystem tests
+
+The subagent registry fixture nests `subagents/` beneath a per-test home.
+Protected run identities live beside the registry, so isolating only the
+registry leaf lets repeated run ids leak authority between tests.
 
 Member execution fixtures must provision their own V2 memory before resolving
 bindings. Use `provision_member_memory` inside the isolated test home; do not
@@ -185,6 +214,15 @@ Config binding tests unrelated to memory provision real private stores for named
 members through `provision_member_memory`. Only the reserved `default` assistant
 can use V1. Workspace fallback and alias resolution assertions must not depend on
 an invalid member-to-global binding or disable private-file validation.
+
+### Transport readiness before event assertions
+
+Before triggering a broadcast, a WebSocket test waits for each connection's
+initial `slots` frame. `ws_connect()` completes the HTTP upgrade, while `api_ws`
+can still be awaiting allowlist and app-scope loading before `register_ws()`.
+For SSE, the initial `dashboard` frame proves registration. A delivery fence
+orders events within registered queues; it cannot establish that a connection
+joined before an earlier event. Use bounded frame receives to establish readiness.
 
 ### Loop-wiring tests stub every dispatched operation
 
@@ -2100,6 +2138,11 @@ accusing the shim of running when it had not. Fix by kind: for a PID the code *p
 pin the probe (`patch(..., "pid_exists", side_effect=lambda p: p != 999999)`); for a
 PID that must never appear in real output, use a number no OS can allocate
 (`99999999999`) rather than one that merely looks unused.
+
+Synthetic process trees must also give the owner a synthetic PID. Mixing
+`os.getpid()` with fixed child PIDs can overwrite the owner's namespace when a
+container assigns the worker one of those child PIDs. Replace the tested module's
+`os` binding with a local proxy; never change the shared stdlib `os.getpid`.
 
 ```python
 # WRONG: ~1% of runs match a credential prefix and the exemption assert fails

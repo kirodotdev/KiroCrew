@@ -43,6 +43,7 @@ def _mock_sessions() -> MagicMock:
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     return sessions
 
 
@@ -1431,6 +1432,7 @@ class TestAgentInheritance:
 
         sessions = _mock_sessions()
         sessions.get_agent = MagicMock(return_value="parent-agent")
+        sessions.get_agent_selection = MagicMock(return_value=("template", "parent-agent"))
 
         events: list[tuple[str, dict]] = []
 

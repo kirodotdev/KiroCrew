@@ -407,6 +407,117 @@ an empty `mcpServers` map — opts out via
 `AcpRuntime(expect_mcp_reports=False)`, which passes a zero ceiling and keeps
 the idle shortcut active from the start (the pre-ceiling behavior).
 
+### KAS managed MCP readiness
+
+KAS opts into a readiness barrier through its harness notification declaration.
+Its `_kiro/mcp/status` and `_kiro/tools/didChange` notifications carry an explicit
+`params.sessionId` and full `servers` / `tags` snapshots. The reader stages both
+methods before the create/load response and transfers only that session's frames.
+Status entries carry `name`, `status`, `failedAuthorization`, `errorMessage`, and
+`_meta.kiro.resource.source.origin`; the required Crew declarations have origin
+`client`. Tool tags have `source: "mcp"` and `tag: "@server/tool"`; these establish
+exposure, not the native callable identifier.
+
+Provenance is read off the whole snapshot, not one entry. A backend that stamps
+any entry stamps them all (released 2.20.0 stamps `connecting` and `connected`
+alike), so on such a backend an unstamped or non-`client` required entry is a
+same-named foreign server and is skipped: the private declaration may still
+report, so the requirement stays pending. A backend that stamps NO entry predates
+the field. Released kiro-cli 2.18.0 is one: its captured wire emits both
+notifications under the session's own id with a connected catalog and tool tag,
+and no `_meta` on any status entry. On that release the two declaration sites
+behave differently against a same-named `~/.kiro/settings/mcp.json` server: an
+explicit session-level `mcpServers` injection wins on `session/new` and
+`session/load` alike, while the active agent's own `mcpServers` declaration is
+shadowed by the global server on `session/new` and coexists with it under one
+name on `session/load` — all reporting under the session's id, so the wire cannot
+say which server a bare name is. The barrier therefore takes the request's own
+`mcpServers` array (`injected`, intersected with the required roster) as
+positive evidence: on a provenance-less snapshot an injected required server is
+read as reported (connection and exposure still required; failure states still
+terminal), and a required server the active agent alone declared that such a
+snapshot reports as `connected` is read as `connected without provenance`, a
+terminal state that ends startup with `AcpRuntimeError` naming the server and
+the limit. With the carriage below, the ordinary install's managed servers are
+injected and therefore start on such a release; the refusal remains only for a
+managed entry the carriage leaves in the block (a `disabled`, `disabledTools`,
+`timeout` or registry customization), and it is a stated compatibility limit,
+not restored support: accepting the entry could hand the session a server
+carrying another identity's session key and memory. Missing metadata alone
+never implies `client`; the connecting state on such a backend stays pending as
+usual.
+
+After activation, create and load wait for every required managed server to be
+`connected` and represented in the tool-tag snapshot when exposure is permitted.
+The required roster is the union of the ACTIVE custom agent's `mcpServers`
+declarations and the actual session-level injection, intersected with Crew's
+managed server catalog. Inactive agents and inherited global/external servers do
+not contribute requirements or satisfy them. Other-session and sessionless reports
+are ignored. Reports queued
+before a mode change cannot satisfy the new activation; when the prior mode is
+unknown, KAS conservatively treats activation as a change. A reconnect invalidates
+that server's prior tool exposure.
+
+Before either request goes out, the runtime carries the ACTIVE agent's managed
+declarations in the session-level array (`kas_agents.hoist_managed_servers`).
+Captured released 2.18.0 honours that array over a same-named global or
+workspace `mcp.json` server on new and load alike (the member dispatch server
+already travels this way); the retained 2.20.0 capture proves a session-level
+injection reports `origin: client` and reaches readiness, and its same-name
+collision behaviour was not probed. The entries moved are the
+already projected ones (credential fields withheld, `autoApprove` dropped,
+`KIROCREW_PORT` / `KIROCREW_SESSION_KEY` applied), converted with
+`session_mcp.acp_server_element`; no spec is re-read and the derived-spec
+snapshot is unchanged. The move is bounded: only managed names, only the active
+agent, never a name the caller's array already carries (a broker stub or the
+member dispatch entry stays authoritative and a name appears once), and only a
+stdio entry whose keys are drawn only from `command`, `args`, `env`, `type` — a
+`disabled`, `disabledTools` or `timeout` customization, a registry marker, a
+remote URL or a command-less entry keeps the agent-block path where that field
+is honoured. The agent's `tools`, `excludedTools` and `permissions` are
+untouched: refs resolve wherever the server was declared, and on 2.18.0 an
+allowlist-only or `excludedTools` restriction on the hoisted server still
+yields readiness with only the permitted tag advertised. Exact legacy
+limitation: on a release that stamps no provenance, a managed entry left in the
+block by one of those extra fields is still refused as
+`connected without provenance`; it works on a release that stamps `origin:
+client`.
+
+For a derived worker, the projected payload carries both its checked specification
+snapshot and its runtime session key through create and load. Activation checks
+that same snapshot before readiness: connected tools cannot admit a revoked
+template, and an unchanged template still waits for its managed tools.
+
+The exposure check reads the active agent's projected `tools` and `excludedTools`,
+plus the connected status's `tools[].disabled` flags. If these deliberately hide
+every tool from a declared server, connection is sufficient: an absent tag must
+not make a restricted agent unusable. An empty or missing catalog alone does not
+prove that restriction. `allowedTools`/`permissions` governs approval, not
+exposure; readiness never changes grants or declarations to obtain a tag.
+
+The barrier retains the ordinary drain's config updates, pending OAuth requests,
+and initialization-failure diagnostics, including for unrelated external servers.
+These side effects do not satisfy or extend managed readiness. An agent with no
+required managed servers keeps the ordinary drain. Readiness extends the existing
+configured roster rather than resetting the report to its required subset.
+Session-owned KAS status frames also update the report for external servers,
+including failure, authorization and reconnect states. This display report is not
+the managed-server provenance and tool-exposure gate.
+
+The wait uses the existing `agent.session_start_timeout_secs` budget, with no
+idle-success shortcut or extra sleep. `failed`, `disabled`, failed
+authorization, and `connected without provenance` terminate startup with
+`AcpRuntimeError`; connecting, missing
+reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
+Errors name the required server and sanitize backend failure text. On failure,
+runtime death, or cancellation, no handle escapes. A failed fresh `session/new`
+is terminated through the bounded per-session teardown, freeing its resident state
+and MCP children without touching siblings. A failed `session/load` is only
+unregistered locally because KAS's delete verb would destroy the existing native
+history; that history remains available to a later resume. No first prompt is
+sent on these paths. Harnesses without this opt-in retain their existing
+initialization drain.
+
 ## Key APIs
 
 | Method | Purpose |
@@ -898,6 +1009,15 @@ before session creation. Tool mirroring, reload, resume and runtime recreation
 use direct MCP servers confined to that member's sandbox. Original agent server
 definitions remain available to direct-MCP-capable backends. V1 retains its
 existing broker routing.
+
+KAS projects the gateway's validated `KIROCREW_BOUND_PORT` as `KIROCREW_PORT`
+for native managed MCP servers. This value is derived inside the gateway at
+session creation, not relayed from an editable agent spec. Native children do
+not inherit the gateway environment, and private sandboxes cannot discover its
+listener through host process markers. Without this explicit address, core
+tools can dial the default port while member-scoped ledger tools reach the
+correct instance. Declared secrets and arbitrary environment values remain
+withheld, and non-managed servers receive no gateway port.
 
 The original trusted broker endpoint remains available only for sandbox
 validation. Private execution cannot reach that endpoint or its aliases. A

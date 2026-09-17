@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app_with_agent_routes, _make_state
+from dashboard_owner_helpers import as_owner
 
 MOD = "kiro_crew.dashboard.chat_handlers"
 
@@ -76,7 +77,7 @@ class TestChatSlotAgentProjectScope:
         state.sessions.reset = AsyncMock()
         _stub_agent_resolution(monkeypatch, ws_name="dev-ws", workspace_dir=_WORKSPACE_DEV_DIR)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == str(
@@ -100,7 +101,7 @@ class TestChatSlotAgentProjectScope:
         state.sessions.reset = AsyncMock()
         _stub_agent_resolution(monkeypatch, ws_name="dev-ws", workspace_dir=_WORKSPACE_DEV_DIR)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == str(folder_dir)
@@ -124,7 +125,7 @@ class TestChatSlotAgentProjectScope:
         state.sessions.reset = AsyncMock()
         _stub_agent_resolution(monkeypatch, ws_name="default", workspace_dir=_WORKSPACE_DEFAULT_DIR)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == str(
@@ -156,7 +157,7 @@ class TestChatSlotAgentProjectScope:
             default_workspace="house-default",
         )
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == str(
@@ -178,7 +179,7 @@ class TestChatSlotAgentProjectScope:
         state.sessions.reset = AsyncMock()
         _stub_agent_resolution(monkeypatch, ws_name="dev-ws", workspace_dir=_WORKSPACE_DEV_DIR)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == _WORKSPACE_DEV_DIR
@@ -202,7 +203,7 @@ class TestChatSlotAgentProjectScope:
         state.sessions.reset = AsyncMock()
         _stub_agent_resolution(monkeypatch, ws_name="dev-ws", workspace_dir=_WORKSPACE_DEV_DIR)
 
-        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "dev"})
             assert resp.status == 200
             assert slot.project == _WORKSPACE_DEV_DIR

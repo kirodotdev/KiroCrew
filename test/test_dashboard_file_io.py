@@ -869,7 +869,7 @@ class TestSendMessage:
             seen.append(threading.get_ident())
             # messages=None means "nothing persisted", so the handler falls back to
             # the notification path -- keeping this test about the read's location.
-            return ({}, True, None, {}, None)
+            return ({}, True, None, {}, None, None)
 
         with patch.object(chat_persistence, "_prefetch_rehydrate_inputs", _prefetch):
             async with TestClient(TestServer(app)) as client:

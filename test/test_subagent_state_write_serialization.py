@@ -367,21 +367,21 @@ class TestLockRegistry:
 
 
 def _park_first_writer_late(monkeypatch, inside: threading.Event, delay: float) -> None:
-    """Patch ``_atomic_write`` so the FIRST writer announces itself, then lands
-    *delay* seconds later.
+    """Park the FIRST state.json writer after its read, then land it later.
 
     The announcement marks the point where the writer's READ has already
     happened, so anything written after it is what a stale rewrite would roll
     back. The delay is what puts the writer's WRITE after the on-loop write
     under test -- unserialized and undrained, that ordering is the clobber.
     """
+
     real_atomic_write = sp._atomic_write
     seen: list[str] = []
     guard = threading.Lock()
 
     def instrumented(path, data):
         with guard:
-            first = not seen
+            first = path.name == "state.json" and not seen
             if first:
                 seen.append("parked")
         if first:
@@ -418,6 +418,7 @@ def _mock_sessions_for_run(served_model: str):
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     return sessions
 
 

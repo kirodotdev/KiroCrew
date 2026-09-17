@@ -515,33 +515,51 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
         canonical_key = members_mod.member_thread_session_alias(slug, generation)
         async with slot._lock:
-            if effective_session_key(slot) != canonical_key or slot.running:
+            if effective_session_key(slot) != canonical_key:
                 return web.json_response(
                     {
-                        "error": "the member thread is running or linked to another session",
+                        "error": "the member thread is linked to another session",
                         "code": "member_slot_conflict",
                     },
                     status=409,
                 )
-            # The owner selected this slug, not an editable transcript or DM
-            # binding. A colliding slug needs an already protected assignment.
-            slot._memory_assignment_from_history = True
             try:
-                if (
-                    len(slug_owners) != 1
-                    and (await asyncio.to_thread(read_private_session_store, canonical_key))
-                    != member_store
-                ):
-                    return web.json_response(
-                        {
-                            "error": "choose distinct member names before opening this private thread",
-                            "code": "member_pin_mismatch",
-                        },
-                        status=409,
+                if slot.running:
+                    # Opening a live DM must not assign or repair its identity.
+                    # Reuse only the already protected store, including while
+                    # the turn waits for approval. The common recheck below
+                    # rejects a slot changed during this off-loop read.
+                    protected_store = await asyncio.to_thread(
+                        read_private_session_store, canonical_key
                     )
-                assigned_store = await pin_private_agent_store(
-                    state, canonical_key, member_name, cfg
-                )
+                    if protected_store != member_store or slot.memory_store != member_store:
+                        return web.json_response(
+                            {
+                                "error": "the member thread has a different private-memory assignment",
+                                "code": "member_slot_conflict",
+                            },
+                            status=409,
+                        )
+                    assigned_store = member_store
+                else:
+                    # The owner selected this slug, not an editable transcript
+                    # or DM binding. A collision needs a protected assignment.
+                    slot._memory_assignment_from_history = True
+                    if (
+                        len(slug_owners) != 1
+                        and (await asyncio.to_thread(read_private_session_store, canonical_key))
+                        != member_store
+                    ):
+                        return web.json_response(
+                            {
+                                "error": "choose distinct member names before opening this private thread",
+                                "code": "member_pin_mismatch",
+                            },
+                            status=409,
+                        )
+                    assigned_store = await pin_private_agent_store(
+                        state, canonical_key, member_name, cfg
+                    )
             except Exception as exc:
                 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 
