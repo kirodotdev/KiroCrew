@@ -35,6 +35,7 @@ from kiro_crew.autonudge import (
     is_channel_key,
 )
 from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
+from kiro_crew.validation import SUPERVISOR_SESSION_KEY_PREFIX
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
@@ -922,6 +923,18 @@ async def authorize_and_add_nudge(
             admission_check = _webex_admission
         else:
             return _deny(f"unsupported channel session {slot_key}", 400)
+    elif slot_key.startswith(SUPERVISOR_SESSION_KEY_PREFIX):
+        # A supervising CLI session has no slot here: its turns run in the CLI's
+        # own agent, and a fire for it lands on the wake queue instead of a slot.
+        # Admission is the supervised gateway itself; a standalone gateway has no
+        # CLI to deliver to and refuses so the loop cannot arm and never wake.
+        if not bool(getattr(state, "supervised", False)):
+            return _deny(f"unknown slot {slot_key}", 404)
+
+        def _supervisor_admission() -> bool:
+            return bool(getattr(state, "supervised", False))
+
+        admission_check = _supervisor_admission
     else:
         if slot_key not in state._slots:
             return _deny(f"unknown slot {slot_key}", 404)

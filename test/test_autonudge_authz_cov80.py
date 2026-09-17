@@ -1015,3 +1015,44 @@ class TestNormalizeBannerTruncate:
         can shorten it, so silently truncating would hide their input."""
         value, error = normalize_banner("a" * (MAX_BANNER_CHARS + 1), absent_ok=True)
         assert value == "" and error and "too long" in error
+
+
+
+# --------------------------------------------------------------------------- #
+# authorize_and_add_nudge — supervised CLI owner (no dashboard slot exists)
+# --------------------------------------------------------------------------- #
+
+
+async def test_add_admits_supervised_kiro_cli_owner_without_a_slot(audits: list[dict]) -> None:
+    svc = RecordingSvc()
+    state = _state()
+    state.supervised = True
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=state,
+        slot_key="kiro-cli:sess_abc123",
+        message="watch",
+        source="dashboard",
+    )
+
+    assert error is None and status == 200, (error, status)
+    assert loop is not None and svc.added and svc.added[0]["slot_key"] == "kiro-cli:sess_abc123"
+    assert audits[-1]["outcome"] == "success"
+
+
+async def test_add_denies_kiro_cli_owner_on_unsupervised_gateway(audits: list[dict]) -> None:
+    svc = RecordingSvc()
+    state = _state()
+    state.supervised = False
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=state,
+        slot_key="kiro-cli:sess_abc123",
+        message="watch",
+        source="dashboard",
+    )
+
+    assert loop is None and status == 404 and "unknown slot" in error
+    assert svc.added == []
