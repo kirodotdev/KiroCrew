@@ -47,9 +47,15 @@ _LOCAL_CALLBACK_PORT_RE = re.compile(
     r"(?:localhost|127\.0\.0\.1):(\d{2,5})|(?:callback\s+)?port[:\s]+(\d{2,5})",
     re.IGNORECASE,
 )
-_LOGIN_LOG_PATH = "/tmp/kirocrew-kiro-login.log"
-_LOGIN_PID_PATH = "/tmp/kirocrew-kiro-login.pid"
-_LOGIN_FIFO_PATH = "/tmp/kirocrew-kiro-login.stdin"
+# The login log/PID/FIFO carry the device-code URL + code and the social-login
+# callback (auth code), so they live in a private per-user directory the guard
+# below creates and owner-checks, never a world-writable /tmp name a second
+# local user could pre-create or symlink. The values are shell expressions
+# expanded on the remote instance; they only ever appear inside double-quoted
+# shell strings, so the ``$KC_LOGIN_DIR`` reference expands there.
+_LOGIN_LOG_PATH = "$KC_LOGIN_DIR/kiro-login.log"
+_LOGIN_PID_PATH = "$KC_LOGIN_DIR/kiro-login.pid"
+_LOGIN_FIFO_PATH = "$KC_LOGIN_DIR/kiro-login.stdin"
 # Printed (and the launch skipped) when the pty driver could not be staged in a
 # fresh private directory on the instance -- the caller reports it instead of
 # guessing at a missing device-code prompt.
@@ -121,6 +127,43 @@ _KIRO_BIN_RESOLVE = (
     '/usr/bin/kiro-cli; do [ -x "$c" ] && KIRO="$c" && break; done; '
     '[ -n "$KIRO" ] || KIRO=kiro-cli'
 )
+
+
+def _login_dir_guard() -> str:
+    """Snippet that establishes the private per-user login directory.
+
+    Every remote script that touches the login log/PID/FIFO splices this in
+    before its first use of a path, so the invariant is defined once and cannot
+    drift between scripts. It walks ``$HOME/.kirocrew`` then ``$KC_LOGIN_DIR``
+    and, at each level, refuses a symlink BEFORE creating or chmod-ing
+    anything (``chmod`` follows links, so an unchecked ``chmod`` would change
+    the link target's mode), creates the level ``0700`` if absent, re-checks it
+    is a real directory the current user owns, and only then tightens its mode,
+    refusing unless ``chmod`` succeeds and the directory reads back as ``0700``
+    -- so the log/PID/FIFO are always written inside a directory only this user
+    controls, closing the ``rm -f``-then-redirect symlink window that a
+    predictable /tmp name leaves open.
+    """
+    return r"""
+KC_LOGIN_DIR="${HOME:?}/.kirocrew/login"
+for kc_dir in "${HOME:?}/.kirocrew" "$KC_LOGIN_DIR"; do
+  if [ -L "$kc_dir" ]; then
+    echo "refusing to use login directory $kc_dir: it is a symlink" >&2
+    exit 1
+  fi
+  [ -d "$kc_dir" ] || mkdir -m 0700 "$kc_dir" || { echo "refusing to use login directory $kc_dir: cannot create it" >&2; exit 1; }
+  if [ -L "$kc_dir" ] || [ ! -d "$kc_dir" ] || [ ! -O "$kc_dir" ]; then
+    echo "refusing to use login directory $kc_dir: not a private directory owned by this user" >&2
+    exit 1
+  fi
+  if ! chmod 0700 "$kc_dir" || [ "$(stat -c %a "$kc_dir" 2>/dev/null)" != "700" ]; then
+    echo "refusing to use login directory $kc_dir: cannot make it private (mode 0700)" >&2
+    exit 1
+  fi
+done
+""".strip()
+
+
 _AUTH_FAILURE_MARKERS = (
     _NOAUTH_SENTINEL.lower(),
     "not logged in",
@@ -563,6 +606,7 @@ def _logout_command() -> str:
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+{_login_dir_guard()}
 if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "kiro-cli login" 2>/dev/null || true
   pkill -u "$(id -u)" -f "kiro-cli acp" 2>/dev/null || true
@@ -647,12 +691,13 @@ fi
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+{_login_dir_guard()}
 {replace}
 rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # Restrict the login log/pid to the owner: it captures the device-code
-# verification URL + code, so a second local user must not be able to read it
-# from world-readable /tmp (default umask 0022 -> 0644). umask 077 makes the
-# files below 0600.
+# verification URL + code, so a second local user must not be able to read it.
+# The files live in the private per-user $KC_LOGIN_DIR (0700, owner-checked
+# above); umask 077 makes the files themselves 0600 on top of that.
 umask 077
 {launch_block}
 echo $! > "{_LOGIN_PID_PATH}"
@@ -758,14 +803,16 @@ def _callback_login_command() -> str:
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
+{_login_dir_guard()}
 if command -v pkill >/dev/null 2>&1; then
   pkill -u "$(id -u)" -f "kiro-cli login" 2>/dev/null || true
 fi
 rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # Owner-only for the log + FIFO: the social-login callback details (auth code)
-# flow through them, so a second local user must not read them from /tmp
-# (default umask 0022 -> 0644). umask 077 makes the log 0600; chmod hardens the
-# FIFO too (mkfifo honors umask, but be explicit).
+# flow through them, so a second local user must not read them. They live in
+# the private per-user $KC_LOGIN_DIR (0700, owner-checked above); umask 077
+# makes the log 0600 and the chmod hardens the FIFO too (mkfifo honors umask,
+# but be explicit).
 umask 077
 mkfifo "{_LOGIN_FIFO_PATH}"
 chmod 600 "{_LOGIN_FIFO_PATH}" 2>/dev/null || true
@@ -795,6 +842,7 @@ def _continue_callback_login_command() -> str:
     """Send Enter to the waiting remote login and capture the authorization URL."""
     return f"""
 set +e
+{_login_dir_guard()}
 if [ ! -p "{_LOGIN_FIFO_PATH}" ]; then
   cat "{_LOGIN_LOG_PATH}" 2>/dev/null || true
   exit 1
@@ -824,6 +872,7 @@ def _resume_login_command(
     """Build a daemon-only login command for fallback use."""
     return f"""
 set +e
+{_login_dir_guard()}
 if [ -s "{_LOGIN_PID_PATH}" ] && kill -0 "$(cat "{_LOGIN_PID_PATH}")" 2>/dev/null; then
   exit 0
 fi
