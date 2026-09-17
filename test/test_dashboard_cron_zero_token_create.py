@@ -46,7 +46,12 @@ def _request(body: dict):
     return request, add
 
 
-async def test_command_job_with_no_message_is_accepted() -> None:
+async def test_command_job_with_no_message_is_accepted(monkeypatch) -> None:
+    # Stub the POSIX-strict shell probe (exercised on its own in the Phase-4
+    # shell_refused tests): this test pins the message-relaxation contract, not
+    # the host's shell, and the probe spawns a sandboxed child that a unit test
+    # must not run.
+    monkeypatch.setattr(cron_handler, "_resolve_command_shell", lambda: "/bin/sh")
     req, add = _request({"name": "backup", "command": "echo hi", "every": 3600})
     resp = await api_crons_create(req)
     assert resp.status == 200

@@ -44,6 +44,7 @@ from kiro_crew.dashboard.cron_inject import (
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.cron_script import _resolve_command_shell
 from kiro_crew.mcp_cron import _vet_script_file, _vet_shell_command
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.executors import discovery_executor
@@ -618,6 +619,32 @@ async def api_crons_create(request: web.Request) -> web.Response:
         cmd_err = _vet_shell_command(command)
         if cmd_err is not None:
             return web.json_response({"error": cmd_err}, status=400)
+        # Residual 0: a ``command=`` job is a POSIX-shell one-liner run via
+        # ``sh -c``, and ``_resolve_command_shell`` returns None when no
+        # POSIX-strict shell can be found on this host (Windows, or a host whose
+        # ``/bin/sh`` performs brace expansion and would widen the language the
+        # vet gate above assumed). Refuse at ADD time with a legible code rather
+        # than storing a job that can only ever fail to run — the same
+        # fail-loud-not-silently-change-the-language contract the resolver
+        # documents. A ``script=`` job is unaffected: its body is scanned in
+        # full and it does not depend on a POSIX-strict shell.
+        #
+        # Off-loop: ``_resolve_command_shell`` PROBES the candidate shell (spawns
+        # ``sh -c`` under the sandbox), which is blocking work that must not run
+        # on the gateway event loop. The probe is memoized per resolved path, so
+        # only the first ``command=`` add on a given host pays it.
+        if await asyncio.to_thread(_resolve_command_shell) is None:
+            return web.json_response(
+                {
+                    "error": (
+                        "command crons are unavailable on this host: no "
+                        "POSIX-strict shell was found for `sh -c`. Ship a "
+                        "`script` job instead — its body is scanned in full."
+                    ),
+                    "code": "shell_refused",
+                },
+                status=400,
+            )
     if script:
         try:
             script_path, _func = resolve_script_path(script)

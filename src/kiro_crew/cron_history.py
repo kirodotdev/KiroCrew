@@ -57,6 +57,15 @@ class CronRunRecord:
     finished_at: float = 0.0
     duration_ms: int = 0
     status: str = "success"  # "success" | "failure" | "timeout" | "cancelled"
+    # Delivery/semantic outcome, distinct from the coarse ``status`` above. A
+    # script/command job's callback signals intent by raising Skip/Done/Report,
+    # which the executor records here as ``skip``/``done``/``report``; an
+    # agent-message job diverted to a supervised ``kiro-cli:`` session records
+    # ``injected`` (the turn was handed to the CLI, not run in a gateway
+    # session); an errored run records ``error``. Empty for a legacy record or
+    # an ordinary in-gateway run that expressed no such intent — a reader must
+    # treat "" as "no finer outcome than ``status``", never as a value.
+    outcome: str = ""
     summary: str = ""
     trace: str = ""
     error: str = ""
