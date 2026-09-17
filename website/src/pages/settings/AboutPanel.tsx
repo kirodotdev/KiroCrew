@@ -20,7 +20,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
-import { foldStableStamp } from '../../utils/displayVersion'
+import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
 /** Human-readable transfer rate for the progress label. */
@@ -696,6 +696,26 @@ export function AboutPanel() {
   const versionDisplay = info?.version
     ? foldStableStamp(info.version, info.channel, runningAheadOfLane)
     : (gatewayVersionDisplay || gatewayVersion || '—')
+  // Two version lanes. `versionDisplay` is the DESKTOP SHELL's stamp whenever
+  // `getInfo()` answered and the gateway's only as a fallback, while the branch
+  // and commit chips are always the gateway's (`status.branch` / `status.commit`,
+  // stamped from the checkout the backend runs from). A shell that spawned its
+  // own gateway keeps both lanes equal, so folding them into one row is
+  // harmless there. A shell attached to a gateway it did not spawn (dev-fleet,
+  // launchd, an SSH tunnel to a source checkout) is where the fold lies: the row
+  // reads `v0.6.0-insider.6 · main · 2ed1f603d`, a build that never existed.
+  // When the two disagree, label both and hang the chips off the gateway line,
+  // since that is what they stamp. "Agree" is EITHER of two tests, because one
+  // build is stamped in two spellings (`release_channel.py`: the shell carries
+  // SemVer `0.6.0-insider.4`, the wheel it launched carries PEP 440 `0.6.0rc4`):
+  // the raw strings name the same build (`sameBuildVersion`, so a self-spawned
+  // insider install is one lane), or the DISPLAY strings match (a promoted
+  // stable build folds its prerelease stamp on both sides — foldStableStamp
+  // here, `_display_version` on the backend — while its raw stamps differ).
+  const gatewayLaneVersion = gatewayVersionDisplay || gatewayVersion
+  const versionLanesDiffer = !!info?.version && !!gatewayLaneVersion
+    && versionDisplay !== gatewayLaneVersion
+    && !sameBuildVersion(info.version, gatewayVersion || gatewayLaneVersion)
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   // An externally-managed install (a distro/enterprise package) has no channel
@@ -1230,6 +1250,24 @@ export function AboutPanel() {
     return () => window.removeEventListener('keydown', onKey)
   }, [showConfirm, gwApply.isPending, restarting])
 
+  // Gateway-stamped build chips. Hoisted because they render in one of two
+  // places: beside the license chip when the lanes agree, or on the gateway's
+  // own version line when they do not (see `versionLanesDiffer`).
+  const branchChip = buildBranch && (
+    <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
+       title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
+       className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
+      <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
+    </a>
+  )
+  const commitChip = buildCommit && (
+    <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
+       title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
+       className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
+      <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
+    </a>
+  )
+
   return (
     <>
       <Card style={HERO_BG}>
@@ -1246,7 +1284,13 @@ export function AboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
-              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT} data-testid="about-version">{i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
+              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
+                    title={versionLanesDiffer ? i18nT('pages.settings.aboutPanel.app_lane_title') : undefined}
+                    data-testid="about-version">
+                {versionLanesDiffer && (
+                  <span className="font-sans font-medium text-muted mr-1" data-testid="about-version-lane">{i18nT('pages.settings.aboutPanel.app_lane_label')}</span>
+                )}
+                {i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
               {!isDesktop && (heroDiverged
                 // Diverged outranks BOTH other verdicts: `update_available` is
                 // false here BY DESIGN (the no-auto-apply property), and a
@@ -1294,6 +1338,21 @@ export function AboutPanel() {
               )}
             </div>
             <div className="text-[12.5px] text-muted mt-1">{i18nT('pages.settings.aboutPanel.autonomous_agent_management_runs_locally_open_so')}</div>
+            {/* The gateway's own line, only when it is not the build the shell
+                badge above names. The branch and commit chips live here in that
+                case — they are gateway stamps, so beside the shell badge they
+                described a build that never existed. */}
+            {versionLanesDiffer && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap" data-testid="about-gateway-lane">
+                <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
+                      title={i18nT('pages.settings.aboutPanel.gateway_lane_title')}
+                      data-testid="about-gateway-version">
+                  <span className="font-sans font-medium text-muted mr-1">{i18nT('pages.settings.aboutPanel.gateway_lane_label')}</span>
+                  {i18nT('pages.settings.aboutPanel.v')}{gatewayLaneVersion}</span>
+                {branchChip}
+                {commitChip}
+              </div>
+            )}
             {/* getInfo() rejected: the version chip above fell back to the
                 gateway's figure and the channel row is missing, with nothing
                 to say why. askAgent on: a read failure on a status card. */}
@@ -1311,20 +1370,8 @@ export function AboutPanel() {
 
         {/* Build + license chips */}
         <div className="mt-4 flex flex-wrap gap-2">
-          {buildBranch && (
-            <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
-               title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
-               className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
-              <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
-            </a>
-          )}
-          {buildCommit && (
-            <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
-               title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
-               className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
-              <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
-            </a>
-          )}
+          {!versionLanesDiffer && branchChip}
+          {!versionLanesDiffer && commitChip}
           <span className="inline-flex items-center gap-1.5 text-[12px] text-muted border border-border rounded-lg px-2.5 py-1 bg-bg"
                 title={i18nT('pages.settings.aboutPanel.open_source_under_the_apache_2_0_license')}>
             <Scale size={12} className="shrink-0" /> {i18nT('pages.settings.aboutPanel.apache_2_0')}

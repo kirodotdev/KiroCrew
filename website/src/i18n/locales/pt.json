@@ -13187,7 +13187,11 @@
         "auto_download_save_failed": "Não foi possível salvar a configuração de download automático.",
         "auto_update_setting_unavailable": "Não foi possível carregar a configuração de atualização automática. A chave mostra o padrão até que ela carregue.",
         "copy_failed_select_the_command_and_copy_it_manually": "Falha ao copiar. Selecione o comando e copie-o manualmente.",
-        "update_info_unavailable": "Não foi possível ler a versão e o canal de atualização desta build a partir do app."
+        "update_info_unavailable": "Não foi possível ler a versão e o canal de atualização desta build a partir do app.",
+        "app_lane_label": "Aplicativo",
+        "app_lane_title": "O app de desktop que você instalou. Sua própria versão, separada do serviço abaixo.",
+        "gateway_lane_label": "Gateway",
+        "gateway_lane_title": "O serviço em segundo plano que executa seus agentes e serve este painel. Os chips de branch e commit são o build dele."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

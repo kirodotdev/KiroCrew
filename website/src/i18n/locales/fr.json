@@ -13188,7 +13188,11 @@
         "auto_download_save_failed": "Impossible d’enregistrer le réglage de téléchargement automatique.",
         "auto_update_setting_unavailable": "Impossible de charger le réglage de mise à jour automatique. L’interrupteur affiche la valeur par défaut jusqu’au chargement.",
         "copy_failed_select_the_command_and_copy_it_manually": "Échec de la copie. Sélectionne la commande et copie-la manuellement.",
-        "update_info_unavailable": "Impossible de lire la version et le canal de mise à jour de ce build depuis l’application."
+        "update_info_unavailable": "Impossible de lire la version et le canal de mise à jour de ce build depuis l’application.",
+        "app_lane_label": "Application",
+        "app_lane_title": "L'application de bureau que vous avez installée. Sa propre version, distincte du service ci-dessous.",
+        "gateway_lane_label": "Passerelle",
+        "gateway_lane_title": "Le service en arrière-plan qui exécute vos agents et sert ce tableau de bord. Les puces de branche et de commit indiquent sa version compilée."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",

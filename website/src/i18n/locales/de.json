@@ -13004,7 +13004,11 @@
         "auto_download_save_failed": "Die Einstellung für automatische Downloads konnte nicht gespeichert werden.",
         "auto_update_setting_unavailable": "Die Auto-Update-Einstellung konnte nicht geladen werden. Der Schalter zeigt den Standardwert, bis sie geladen ist.",
         "copy_failed_select_the_command_and_copy_it_manually": "Kopieren fehlgeschlagen. Markiere den Befehl und kopiere ihn manuell.",
-        "update_info_unavailable": "Version und Update-Kanal dieses Builds konnten nicht aus der App gelesen werden."
+        "update_info_unavailable": "Version und Update-Kanal dieses Builds konnten nicht aus der App gelesen werden.",
+        "app_lane_label": "App",
+        "app_lane_title": "Die installierte Desktop-App. Ihre eigene Version, getrennt vom Dienst darunter.",
+        "gateway_lane_label": "Gateway",
+        "gateway_lane_title": "Der Hintergrunddienst, der Ihre Agenten ausführt und dieses Dashboard bereitstellt. Die Branch- und Commit-Chips zeigen seinen Build."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

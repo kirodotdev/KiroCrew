@@ -13188,7 +13188,11 @@
         "auto_download_save_failed": "No se pudo guardar el ajuste de descarga automática.",
         "auto_update_setting_unavailable": "No se pudo cargar el ajuste de actualización automática. El interruptor muestra el valor predeterminado hasta que se cargue.",
         "copy_failed_select_the_command_and_copy_it_manually": "No se pudo copiar. Selecciona el comando y cópialo manualmente.",
-        "update_info_unavailable": "No se pudo leer la versión y el canal de actualización de esta compilación desde la app."
+        "update_info_unavailable": "No se pudo leer la versión y el canal de actualización de esta compilación desde la app.",
+        "app_lane_label": "Aplicación",
+        "app_lane_title": "La aplicación de escritorio que instalaste. Su propia versión, independiente del servicio de abajo.",
+        "gateway_lane_label": "Gateway",
+        "gateway_lane_title": "El servicio en segundo plano que ejecuta tus agentes y sirve este panel. Los chips de rama y commit son su compilación."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",

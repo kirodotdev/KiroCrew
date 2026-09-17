@@ -12821,7 +12821,11 @@
         "auto_download_save_failed": "自動ダウンロードの設定を保存できませんでした。",
         "auto_update_setting_unavailable": "自動更新の設定を読み込めませんでした。読み込まれるまで、スイッチはデフォルト値を表示します。",
         "copy_failed_select_the_command_and_copy_it_manually": "コピーに失敗しました。コマンドを選択して手動でコピーしてください。",
-        "update_info_unavailable": "このビルドのバージョンと更新チャネルをアプリから読み取れませんでした。"
+        "update_info_unavailable": "このビルドのバージョンと更新チャネルをアプリから読み取れませんでした。",
+        "app_lane_label": "アプリ",
+        "app_lane_title": "インストールしたデスクトップアプリ。下のサービスとは別の独自のバージョンです。",
+        "gateway_lane_label": "ゲートウェイ",
+        "gateway_lane_title": "エージェントを実行し、このダッシュボードを提供するバックグラウンドサービス。ブランチとコミットのチップはそのビルドです。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "許可されたユーザー ID",

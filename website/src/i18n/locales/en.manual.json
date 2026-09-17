@@ -5419,7 +5419,11 @@
         "auto_download_save_failed": "Couldn't save the automatic download setting.",
         "auto_update_setting_unavailable": "Couldn't load the auto-update setting. The switch shows the default until it loads.",
         "copy_failed_select_the_command_and_copy_it_manually": "Copy failed. Select the command and copy it manually.",
-        "update_info_unavailable": "Couldn't read this build's version and update channel from the app."
+        "update_info_unavailable": "Couldn't read this build's version and update channel from the app.",
+        "app_lane_label": "App",
+        "app_lane_title": "The desktop app you installed. Its own version, separate from the service below.",
+        "gateway_lane_label": "Gateway",
+        "gateway_lane_title": "The background service that runs your agents and serves this dashboard. The branch and commit chips are its build."
       },
       "developerPanel": {
         "feature_previews": "Feature Previews",

@@ -12821,7 +12821,11 @@
         "auto_download_save_failed": "无法保存自动下载设置。",
         "auto_update_setting_unavailable": "无法加载自动更新设置。加载完成前，开关显示的是默认值。",
         "copy_failed_select_the_command_and_copy_it_manually": "复制失败。请选中命令并手动复制。",
-        "update_info_unavailable": "无法从应用读取此构建的版本和更新渠道。"
+        "update_info_unavailable": "无法从应用读取此构建的版本和更新渠道。",
+        "app_lane_label": "应用",
+        "app_lane_title": "你安装的桌面应用。它有自己的版本，与下方的服务相互独立。",
+        "gateway_lane_label": "网关",
+        "gateway_lane_title": "运行你的智能体并提供此仪表板的后台服务。分支和提交标签显示的是它的构建。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",

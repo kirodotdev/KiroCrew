@@ -13187,7 +13187,11 @@
         "auto_download_save_failed": "Impossibile salvare l’impostazione di download automatico.",
         "auto_update_setting_unavailable": "Impossibile caricare l’impostazione di aggiornamento automatico. L’interruttore mostra il valore predefinito finché non viene caricata.",
         "copy_failed_select_the_command_and_copy_it_manually": "Copia non riuscita. Seleziona il comando e copialo manualmente.",
-        "update_info_unavailable": "Impossibile leggere la versione e il canale di aggiornamento di questa build dall’app."
+        "update_info_unavailable": "Impossibile leggere la versione e il canale di aggiornamento di questa build dall’app.",
+        "app_lane_label": "App",
+        "app_lane_title": "L'app desktop che hai installato. La sua versione, separata dal servizio qui sotto.",
+        "gateway_lane_label": "Gateway",
+        "gateway_lane_title": "Il servizio in background che esegue i tuoi agenti e serve questa dashboard. I chip di branch e commit indicano la sua build."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",
