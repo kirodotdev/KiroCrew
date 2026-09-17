@@ -19,6 +19,7 @@ import { settingsPath } from '../components/settingsPath'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { useAppDispatch, useAppSelector } from '../store'
 import { useConnected } from '../hooks/useConnected'
+import OfflineMenuReason from '../components/OfflineMenuReason'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
@@ -2404,7 +2405,7 @@ const SessionRow = memo(function SessionRow({
               ? i18nT('pages.chatSidebar.opens_here_runs_on_instance', { name: peerName })
               : undefined
           }
-          {...offlineProps(connected, 'switch sessions')}
+          {...offlineProps(connected, i18nT('utils.offline.switch_sessions'))}
           role="button"
           tabIndex={0}
           data-session-row={rowIdentity}
@@ -3092,6 +3093,7 @@ function ChatSidebar({
   // update already rolls the cache back, but a rolled-back rename with no message
   // reads as a dead click.
   const [folderActionError, setFolderActionError] = useState('')
+  const [folderActionOffline, setFolderActionOffline] = useState(false)
   // A failed "New chat" (any local variant) used to be a silent no-op: the
   // react-query rejection was swallowed and nothing rendered. Mirrors
   // remoteCrewError below, but lives above the list rather than in the menu,
@@ -3629,6 +3631,15 @@ function ChatSidebar({
   const subagentApprovalCounts = useAppSelector(selectSidebarApprovalCounts, shallowEqual)
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
+  // An offline refusal stops being true once the gateway is back, and its
+  // Ask-agent button appears at that instant — so retire it on the transition.
+  const wasConnected = useRef(connected)
+  useEffect(() => {
+    if (connected && !wasConnected.current) {
+      if (folderActionOffline) { setFolderActionError(''); setFolderActionOffline(false) }
+    }
+    wasConnected.current = connected
+  }, [connected, folderActionOffline])
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
   // `slotSearchRanks` patterns elsewhere in this file).
   const unreadSet = useMemo(() => new Set(unreadSlots), [unreadSlots])
@@ -5330,12 +5341,12 @@ function ChatSidebar({
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
-    onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
+    onError: (e) => { setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))); setFolderActionOffline(false) },
   })
   const deleteFolderMutation = useMutation({
     mutationFn: (id: string) => api.deleteChatFolder(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
-    onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
+    onError: (e) => { setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))); setFolderActionOffline(false) },
   })
   const updateFolderMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: object; onCommitted?: () => void }) => api.updateChatFolder(id, body),
@@ -5363,6 +5374,7 @@ function ChatSidebar({
       // The rollback below restores the cache; this names the failure so the
       // rename / collapse / move that just snapped back is not read as a dead click.
       setFolderActionError((errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')))
+      setFolderActionOffline(false)
       if (!ctx?.before) return
       const { id, body, before } = ctx
       queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old => (old ?? []).map(f => {
@@ -6262,7 +6274,7 @@ function ChatSidebar({
             // Double-click rename is a mouse-only power shortcut; the accessible
             // path is the ⋯-menu Rename item, so scope-disable the interaction rule.
             // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-            <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
+            <span className="flex-1 truncate" title={i18nT('pages.chatSidebar.double_click_to_rename')} {...offlineProps(connected, i18nT('utils.offline.rename_folders'))} onDoubleClick={e => { e.stopPropagation(); if (!connected) { setFolderActionError(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); setFolderActionOffline(true); return } setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}>{folder.name}</span>
           )}
           <span className="text-[10px] text-muted shrink-0">{count}</span>
           {/* List-view parity: an empty folder's row keeps its action cluster
@@ -6279,8 +6291,8 @@ function ChatSidebar({
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
+                <DropdownMenuItem className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'))} onSelect={e => { if (!connected) { e.preventDefault(); return } suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
                 {(() => {
                   const rows = (
                     <>
@@ -6288,8 +6300,8 @@ function ChatSidebar({
                        *  scoped out): a menu closes on select, and Radix keyboard
                        *  activation synthesizes a modifier-free click, so the
                        *  gesture would be mouse-only and undiscoverable. */}
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
+                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.incognito'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
+                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.temporary'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
                     </>
                   )
                   // A flyout has nowhere to open at phone width, so inline the rows
@@ -6317,9 +6329,10 @@ function ChatSidebar({
                   folders={reparentTargets}
                   currentFolderId={folder.parent_id || null}
                   onPick={pid => moveFolderTo(folder.id, pid)} />
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-danger focus:text-danger" onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+                <DropdownMenuItem className={`text-danger focus:text-danger${connected ? '' : ' opacity-40'}`} {...offlineProps(connected, i18nT('utils.offline.delete_folders'))} onSelect={e => { if (!connected) { e.preventDefault(); return } if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+                <OfflineMenuReason testId="col-folder-offline-reason" />
               </DropdownMenuContent>
             </DropdownMenu>
             {/* Same three-gesture contract as the header New button; the
@@ -6714,7 +6727,7 @@ function ChatSidebar({
               {/* Double-click rename is a mouse-only power shortcut; the accessible
                *  path is the ⋯-menu Rename item, so scope-disable the interaction rule. */}
               {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
-              <span className="flex-1 text-[13px] font-medium text-text truncate text-left" title={i18nT('pages.chatSidebar.double_click_to_rename')} onDoubleClick={e => { e.stopPropagation(); setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{folder.name}</span>
+              <span className="flex-1 text-[13px] font-medium text-text truncate text-left" title={i18nT('pages.chatSidebar.double_click_to_rename')} {...offlineProps(connected, i18nT('utils.offline.rename_folders'))} onDoubleClick={e => { e.stopPropagation(); if (!connected) { setFolderActionError(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.rename_folders') })); setFolderActionOffline(true); return } setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}>{folder.name}</span>
               {/* Channel-owned folder (created by per-channel session filing):
                *  show the channel's brand mark so the folder reads as "these are
                *  the Discord conversations" at a glance. Guarded the same way the
@@ -6769,8 +6782,8 @@ function ChatSidebar({
               <button type="button" className="cursor-pointer p-[4px] rounded text-muted hover:text-text hover:bg-bg-hover transition-all bg-transparent border-none" title={i18nT('pages.chatSidebar.more')} aria-label={i18nT('pages.chatSidebar.folder_options_for', { name: folder.name })} aria-haspopup="menu" data-testid={`folder-menu-${folder.id}`} onMouseDown={e => { e.stopPropagation() }}><MoreVertical size={12} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-              <DropdownMenuItem data-testid={`folder-rename-${folder.id}`} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
+              <DropdownMenuItem data-testid={`folder-rename-${folder.id}`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'))} onSelect={e => { if (!connected) { e.preventDefault(); return } suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
+              <DropdownMenuItem className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
               {(() => {
                 const rows = (
                   <>
@@ -6778,8 +6791,8 @@ function ChatSidebar({
                      *  scoped out): a menu closes on select, and Radix keyboard
                      *  activation synthesizes a modifier-free click, so the
                      *  gesture would be mouse-only and undiscoverable. */}
-                    <DropdownMenuItem data-testid={`folder-new-incognito-${folder.id}`} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
-                    <DropdownMenuItem data-testid={`folder-new-temporary-${folder.id}`} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
+                    <DropdownMenuItem data-testid={`folder-new-incognito-${folder.id}`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.create_sessions'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
+                    <DropdownMenuItem data-testid={`folder-new-temporary-${folder.id}`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.create_sessions'))} onSelect={e => { if (!connected) { e.preventDefault(); return } createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
                   </>
                 )
                 // A flyout has nowhere to open at phone width, so inline the rows
@@ -6808,7 +6821,7 @@ function ChatSidebar({
                 folders={reparentTargets}
                 currentFolderId={folder.parent_id || null}
                 onPick={pid => moveFolderTo(folder.id, pid)} />
-              <DropdownMenuItem data-testid={`folder-settings-${folder.id}`} onClick={() => { setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
+              <DropdownMenuItem data-testid={`folder-settings-${folder.id}`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'))} onSelect={e => { if (!connected) { e.preventDefault(); return } setFolderModal({ mode: 'edit', folderId: folder.id }) }}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
               {/* Hide this folder from the session lists (flat lane + tree).
                *  Same state the filter menu's checkboxes drive, reached from the
                *  folder itself — which is where the user is looking when they
@@ -6820,10 +6833,11 @@ function ChatSidebar({
                   : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
               </DropdownMenuItem>
               {folderOffersHide(folder, foldersWithActiveSubtree) && (
-                <DropdownMenuItem data-testid={`folder-hide-${folder.id}`} onClick={() => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`folder-hide-${folder.id}`} className={connected ? undefined : 'opacity-40 text-muted'} {...offlineProps(connected, i18nT('utils.offline.hide_folders'))} onSelect={e => { if (!connected) { e.preventDefault(); return } updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) }}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-danger focus:text-danger" data-testid={`folder-delete-${folder.id}`} onClick={() => { if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+              <DropdownMenuItem className={`text-danger focus:text-danger${connected ? '' : ' opacity-40'}`} data-testid={`folder-delete-${folder.id}`} {...offlineProps(connected, i18nT('utils.offline.delete_folders'))} onSelect={e => { if (!connected) { e.preventDefault(); return } if (confirm(i18nT('pages.chatSidebar.delete_folder_confirm', { name: folder.name }))) deleteFolderMutation.mutate(folder.id) }}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
+              <OfflineMenuReason testId="folder-offline-reason" />
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Same three-gesture contract as the header New button: plain click
@@ -7198,7 +7212,7 @@ function ChatSidebar({
                  *  ordinary one reads as if autopilot were the only kind of
                  *  chat the caret can make. Listed first so the default stays
                  *  the default. */}
-                <DropdownMenuItem disabled={creatingSlot} onClick={() => { createPlainChatMutation.mutate() }}>
+                <DropdownMenuItem className={connected ? undefined : 'opacity-40 text-muted'} data-testid="new-plain-chat" {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat'))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createPlainChatMutation.mutate() }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
                 {/* The two engineered modes carry a one-line description, because the
@@ -7209,7 +7223,7 @@ function ChatSidebar({
                  *  no gloss, and describing them would bury the contrast that
                  *  actually needs drawing. `items-start` so the icon aligns to the
                  *  label, not to the middle of the two-line block. */}
-                <DropdownMenuItem className="items-start" disabled={creatingSlot} onClick={() => { createAutopilotMutation.mutate() }}>
+                <DropdownMenuItem className={`items-start${connected ? '' : ' opacity-40 text-muted'}`} data-testid="new-autopilot-chat" {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_autopilot_chat'))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createAutopilotMutation.mutate() }}>
                   <Zap size={14} className="text-muted mt-[3px] shrink-0" />
                   <span className="flex min-w-0 flex-col gap-px">
                     <span>{i18nT('pages.chatSidebar.new_autopilot_chat')}</span>
@@ -7226,14 +7240,14 @@ function ChatSidebar({
                 {(() => {
                   const ephemeralRows = (
                     <>
-                      <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }}>
+                      <DropdownMenuItem className={`items-start${connected ? '' : ' opacity-40 text-muted'}`} data-testid="new-incognito-chat" {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.incognito'))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createEphemeralChatMutation.mutate('incognito') }}>
                         <EyeOff size={14} className="text-muted mt-[3px] shrink-0" />
                         <span className="flex min-w-0 flex-col gap-px">
                           <span>{i18nT('components.welcomeView.incognito')}</span>
                           <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.incognito_desc')}</span>
                         </span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('temporary') }}>
+                      <DropdownMenuItem className={`items-start${connected ? '' : ' opacity-40 text-muted'}`} data-testid="new-temporary-chat" {...offlineProps(connected, i18nT('utils.offline.create_sessions'), i18nT('components.welcomeView.temporary'))} disabled={creatingSlot} onSelect={e => { if (!connected) { e.preventDefault(); return } createEphemeralChatMutation.mutate('temporary') }}>
                         <VenetianMask size={14} className="text-muted mt-[3px] shrink-0" />
                         <span className="flex min-w-0 flex-col gap-px">
                           <span>{i18nT('components.welcomeView.temporary')}</span>
@@ -7422,6 +7436,9 @@ function ChatSidebar({
                     </DropdownMenuSub>
                   )
                 })()}
+                {/* Last, like every other gated menu: without it the dimmed rows
+                    state that something is unavailable but never why. */}
+                {!connected && <OfflineMenuReason testId="new-menu-offline-reason" />}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -8078,12 +8095,13 @@ function ChatSidebar({
        *  so the hand-off loses nothing. Dismissable: the failure is a moment, not
        *  a state — the caches have already been re-synced. */}
       <ErrorNotice
-        title={i18nT('pages.chatSidebar.folder_update_failed')}
+        title={folderActionOffline ? undefined : i18nT('pages.chatSidebar.folder_update_failed')}
         message={folderActionError}
-        askAgent
-        onDismiss={() => setFolderActionError('')}
+        askAgent={connected}
+        onDismiss={() => { setFolderActionError(''); setFolderActionOffline(false) }}
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
+        wrapAction
       />
       <ErrorNotice
         message={newChatError}
@@ -8855,7 +8873,7 @@ function ChatSidebar({
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
                   }
                   return (
-                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
+                    <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-40 text-muted cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, i18nT('utils.offline.resume_sessions'))} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
                       // WCAG 2.1.1: history rows must be resumable via keyboard.
                       if (e.key !== 'Enter' && e.key !== ' ') return
                       if ((e.target as HTMLElement) !== e.currentTarget) return

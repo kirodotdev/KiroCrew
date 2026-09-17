@@ -6535,9 +6535,17 @@
       "saving": "Saving..."
     },
     "offline": {
+      "change_folder_settings": "change folder settings",
+      "create_folders": "create folders",
+      "create_sessions": "create sessions",
+      "delete_folders": "delete folders",
       "disabled_gateway_offline": "{{label}} disabled — gateway offline",
       "gateway_offline_reconnect": "Gateway offline — reconnect to {{action}}",
-      "submit_comments": "submit comments"
+      "hide_folders": "hide folders",
+      "rename_folders": "rename folders",
+      "resume_sessions": "resume sessions",
+      "submit_comments": "submit comments",
+      "switch_sessions": "switch sessions"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "Your browser blocked the pop-out window. Allow pop-ups for this site and try again."

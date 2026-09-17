@@ -100,10 +100,10 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname}{loc.search}</div>
 }
 
-function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string } = {}) {
+function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; connected?: boolean } = {}) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      status: {}, connected: opts.connected ?? false, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -199,7 +199,7 @@ describe('create-button caret menu', () => {
 
   it('"New chat" creates a plain session even when defaultAutopilot is on', async () => {
     cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     fireEvent.click(await screen.findByText('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
@@ -210,7 +210,7 @@ describe('create-button caret menu', () => {
   })
 
   it('"New autopilot chat" still creates an orchestrator session', async () => {
-    renderSidebar()
+    renderSidebar({ connected: true })
     openCreateMenu()
     fireEvent.click(await screen.findByText('New autopilot chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
@@ -403,7 +403,7 @@ describe('create-button caret menu', () => {
   it('still stamps the default agent on an ordinary local create', async () => {
     // The contrast that makes the subtraction above a deliberate one rather than
     // a dropped argument: the local entry DOES carry this machine's default.
-    renderSidebar({ defaultAgent: 'planner' })
+    renderSidebar({ connected: true,  defaultAgent: 'planner' })
     openCreateMenu()
     fireEvent.click(await screen.findByText('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
