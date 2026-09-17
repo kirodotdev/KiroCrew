@@ -71,7 +71,13 @@ export const CHUNK_BUDGETS = {
   // editor, store picker/card, carve, backups, retired) across all 13 catalogs
   // on top of that: with them the chunk builds at 11,332,186 B (11067 KB), so
   // the 5% headroom is taken over that measurement rather than main's.
-  all: 11620 * KB, // measured 11067 KB on feat/memory-v2-ui 2026-09-10 (~5% headroom)
+  // Re-measured 2026-09-16: main @ 26ca08524 alone builds the chunk at
+  // 11,906,099 B (11627 KB) against the 11620 KB ceiling -- 7 KB OVER, so
+  // main's own gate is red again and every frontend PR rebased onto it inherits
+  // the failure. The growth is the docx office preview's strings (#10746, 13
+  // catalogs); the chunk still holds the same 14 modules and no library reached
+  // it. Same recurrence, same remedy: back to the 5% convention.
+  all: 12210 * KB, // measured 11627 KB on main @ 26ca08524 2026-09-16 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
