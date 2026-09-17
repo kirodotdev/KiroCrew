@@ -193,6 +193,30 @@ _ENOSPC_HINT = (
 # mirrors the private constant AcpClient keeps for its own dispatch sites.
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _REQUEST_TIMEOUT = 30.0
+
+
+def _resolve_init_timeout() -> float:
+    """Timeout for the ACP ``initialize`` handshake (env-configurable).
+
+    ``initialize`` blocks while kiro-cli spawns and, on a loaded host, that
+    cold start (subprocess spawn + MCP fleet init) can legitimately exceed the
+    generic 30s ``_REQUEST_TIMEOUT`` — the symptom is a cron/background turn
+    failing with ``Request initialize timed out``. This is the same reasoning
+    ``_SESSION_NEW_TIMEOUT`` already applies to ``session/new``. Default 120s
+    is comfortably above a busy-host cold start yet still fails fast on a truly
+    wedged backend; override with ``KIROCREW_ACP_INIT_TIMEOUT_SECS``. The value
+    is floored at ``_REQUEST_TIMEOUT`` so a bad env can never shrink it below
+    the generic request bound.
+    """
+    raw = os.environ.get("KIROCREW_ACP_INIT_TIMEOUT_SECS")
+    if raw:
+        try:
+            return max(_REQUEST_TIMEOUT, float(raw))
+        except ValueError:
+            logger.warning("Invalid KIROCREW_ACP_INIT_TIMEOUT_SECS=%r — using default 120s", raw)
+    return 120.0
+
+
 # One gateway event loop owns many independent SessionManager and worker-pool
 # callers. Keep their expensive subprocess spawn + initialize handshakes behind
 # one low process-wide-per-loop bound; worker pools use the same default.
@@ -2217,7 +2241,7 @@ class AcpRuntime:
         # the process, its reader/stderr tasks, its PID-file entries AND its
         # _PROTECTED_PIDS shield would all leak. kill() reaps them (and
         # unregisters the protected PID via _mark_dead) before we re-raise.
-        # BaseException so CancelledError during the 30s handshake also cleans up.
+        # BaseException so CancelledError during the handshake also cleans up.
         try:
             # Start stderr drain
             if self._process.stderr:
@@ -2247,6 +2271,11 @@ class AcpRuntime:
                     "protocolVersion": self._harness.protocol_version,
                     "clientCapabilities": self._harness.client_capabilities,
                 },
+                # initialize blocks on the subprocess cold start + MCP init; on a
+                # loaded host that can exceed the generic 30s _REQUEST_TIMEOUT and
+                # fail a cron/background turn with "Request initialize timed out".
+                # Give it the same kind of widened budget session/new already has.
+                timeout=_resolve_init_timeout(),
             )
             _agent_caps = init_resp.get("agentCapabilities", {})
             self._agent_capabilities = _agent_caps if isinstance(_agent_caps, dict) else {}
