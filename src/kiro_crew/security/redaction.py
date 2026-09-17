@@ -1099,7 +1099,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
 # letter, ``/repos`` as a root) and the URL is destroyed.
 _LOCAL_PATH_RE = re.compile(
     r"(?:"
-    r"(?<![\w:/])/(?:home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
+    r"(?<![\w:/])/(?:local/home|home|Users|root|tmp|var|opt|usr|etc|private|mnt|srv|workspace|workplace)"
     r"|(?<![A-Za-z])[A-Za-z]:\\"
     r")"
     r"[^\s'\"<>|]*"

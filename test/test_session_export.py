@@ -180,8 +180,12 @@ async def test_source_record_carries_what_the_session_ran_under():
 
     assert source["model"] == "claude-opus-5"
     assert source["reasoning_effort"] == "high"
+    # A bare workspace NAME (not a path) is not host-identifying, so it is kept
+    # verbatim.
     assert source["workspace"] == "default"
-    assert source["project"] == "/home/me/checkout"
+    # A checkout PATH discloses the operator's login and on-disk layout, so it is
+    # redacted at the egress boundary rather than shipped in a shareable file.
+    assert source["project"] == "[redacted-path]"
     assert source["exported_at"]
     assert source["producer"].startswith("kirocrew/")
     # origin and agent already live at the top level; duplicating them would give
@@ -381,6 +385,52 @@ async def test_export_streams_a_gzipped_bundle():
         "it forwards loopback",
     ]
     assert document["source"]["approval_policy"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_export_carries_no_host_or_login_provenance():
+    """A downloaded file can be shared with anyone, so it must carry neither the
+    host's identity nor the operator's login.
+
+    Two leaks are pinned here as one class:
+
+    * ``origin`` -- the file export must NOT stamp ``local_instance_label()``
+      (the machine's hostname, which on a Linux dev host can embed the login
+      and in any case names a machine the recipient cannot act on). The tunnel
+      keeps its label; the file carries an empty ``origin`` so the "(from ...)"
+      import suffix is simply absent.
+    * ``source.project`` / ``source.workspace`` -- a checkout PATH discloses the
+      login and on-disk layout. The credential/URL scrubs miss a bare path, so
+      ``redact_local_paths`` runs over these free-text fields too.
+    * ``title`` -- a title generated after a file operation names a checkout
+      path, so it gets the path scrub too. It is the most visible field in the
+      bundle, and a short label loses nothing by carrying a placeholder.
+
+    The ``/local/home/<login>`` shape is used deliberately: it is the layout of
+    a Linux dev host, one of the roots ``redact_local_paths`` anchors, whose
+    home does not sit under ``/home``.
+    """
+    login = "somelogin"
+    slot = _slot(
+        MSGS,
+        title=f"Fixing /local/home/{login}/.kirocrew/workspace/foo.py",
+        project=f"/local/home/{login}/.kirocrew/workspace",
+        workspace=f"/local/home/{login}/workplace/_bg",
+    )
+    state = _state(MSGS, sessions=_FakeSessions({SESSION_KEY: "auto"}), slots={"slot-1": slot})
+
+    resp = await se.api_chat_slot_export(_request(state))
+    document = json.loads(gzip.decompress(resp.body))
+
+    # No host identity at the top level.
+    assert document["origin"] == ""
+    # No login-bearing path in the provenance record.
+    assert document["source"]["project"] == "[redacted-path]"
+    assert document["source"]["workspace"] == "[redacted-path]"
+    # The title kept its shape but dropped the path.
+    assert "[redacted-path]" in document["title"]
+    # And the login string appears NOWHERE in the whole serialized bundle.
+    assert login not in json.dumps(document)
 
 
 @pytest.mark.asyncio

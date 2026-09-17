@@ -100,7 +100,11 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState, _ChatSlot
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact_credentials,
+    redact_exfiltration_urls,
+    redact_local_paths,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -461,14 +465,21 @@ def build_source_record(
     # workspace name and a checkout path, both of which a user chose. The bundle
     # is an egress boundary and the same scan already runs over the title and over
     # assistant content, so it runs here too rather than leaving two unscanned
-    # strings in a document that leaves the host.
+    # strings in a document that leaves the host. The credential/URL passes alone
+    # miss a bare host path (``/local/home/<login>/...``): that shape carries no
+    # credential yet still discloses the operator's login and on-disk layout to
+    # whoever the file is shared with, so ``redact_local_paths`` runs as well.
+    # The imported session drops ``project`` anyway (module docstring), so a
+    # ``[redacted-path]`` placeholder costs the human reader nothing.
     if workspace:
         scrubbed, _ = redact_exfiltration_urls(workspace)
         scrubbed, _ = redact_credentials(scrubbed)
+        scrubbed, _ = redact_local_paths(scrubbed)
         source["workspace"] = scrubbed
     if project:
         scrubbed, _ = redact_exfiltration_urls(project)
         scrubbed, _ = redact_credentials(scrubbed)
+        scrubbed, _ = redact_local_paths(scrubbed)
         source["project"] = scrubbed
     source["exported_at"] = _iso_now()
     # Which code wrote the file, for diagnosis when a key is unexpectedly absent.
@@ -1118,8 +1129,12 @@ def _assemble_bundle(
     # resume path assigns a client-supplied ``body["title"]`` with no scan of its
     # own, so a resumed title can carry a credential that would otherwise leave
     # the host verbatim. The importer redacts again; this is the boundary.
+    # A title generated after a file operation also names a checkout path, so it
+    # gets the path scrub too: a title is a short label, not substance, so
+    # replacing a path with a placeholder there costs the reader nothing.
     title, _ = redact_exfiltration_urls(title)
     title, _ = redact_credentials(title)
+    title, _ = redact_local_paths(title)
     bundle: dict[str, Any] = {
         "bundle_version": BUNDLE_VERSION,
         "origin": origin,

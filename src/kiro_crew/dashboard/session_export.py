@@ -80,7 +80,6 @@ from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     build_transfer_bundle_async,
     bundle_rejection_reason,
-    local_instance_label,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
@@ -303,7 +302,15 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         bundle = await build_transfer_bundle_async(
             state,
             slot,
-            origin=local_instance_label(),
+            # A downloaded file can be shared with anyone, so it must not stamp
+            # this host's identity. ``local_instance_label()`` is the machine's
+            # hostname, which on a Linux dev host can embed the operator's login
+            # and in any case names a machine the
+            # recipient cannot act on. The tunnel path keeps the real label
+            # (it reaches the operator's own trusted peer instance); the file
+            # path carries none, so on import the "(from ...)" suffix is simply
+            # absent rather than disclosing where the file came from.
+            origin="",
             with_source=True,
             # Layer B -- the byte-exact, unredacted model context window -- rides
             # along ONLY when all three conditions hold: the caller is the
