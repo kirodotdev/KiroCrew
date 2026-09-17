@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -463,7 +464,13 @@ class AppearanceStore:
                 manifest = {**manifest, "sounds": kept_states}
                 files = {**{n: c for n, c in kept_files.items() if n not in files}, **files}
 
-        staging = self._root / f".tmp-{ident}-{os.getpid()}"
+        # Crew Companion offloads each request independently, so two saves can
+        # run in this process at once.  A PID-only name makes them share one
+        # directory and can publish one request's manifest with the other's art.
+        # Give every save its own transaction paths; the ``.old.`` spelling is
+        # retained so startup recovery still recognizes interrupted overwrites.
+        transaction = f"{os.getpid()}-{uuid.uuid4().hex}"
+        staging = self._root / f".tmp-{ident}-{transaction}"
         target = self._root / ident
         # Serialize and size-check the manifest BEFORE creating staging or
         # touching the target. Every pack file below is capped at
@@ -529,7 +536,7 @@ class AppearanceStore:
             # trade worth the two extra lines this avoids.
             backup: Path | None = None
             if target.exists():
-                backup = target.with_name(f"{target.name}.old.{os.getpid()}")
+                backup = target.with_name(f"{target.name}.old.{transaction}")
                 if backup.exists():
                     shutil.rmtree(backup, ignore_errors=True)
                 os.replace(target, backup)
