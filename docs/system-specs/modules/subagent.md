@@ -138,7 +138,13 @@ per operating system (see `dynamic-subagent-sizing.md`):
   A finite limit with unreadable or invalid usage contributes zero headroom:
   spare capacity cannot be established. Measured zero usage retains the full
   limit as headroom. Missing discovery retains the conventional root-path
-  fallback; ancestors hidden above a mount cannot be measured.
+  fallback; ancestors hidden above a mount cannot be measured. The agents
+  slice's own ceiling (`min(memory.high, memory.max) - memory.current` on
+  `kirocrew-agents.slice`, read via `_agents_slice_available_gb()`) is a
+  second clamp: the slice is a sibling of the gateway's cgroup, not an
+  ancestor, and the walk never reads `memory.high`, so the slice term is what
+  lets the posture go `critical` on a bare host whose `MemAvailable` is still
+  large while the kernel is already throttling every agent at that ceiling.
 - **macOS** — reclaimable memory (free + inactive + speculative + purgeable
   pages) via the Mach `host_statistics64` syscall through `ctypes`/`libSystem`
   (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.
