@@ -2535,13 +2535,14 @@ def _learn(args: argparse.Namespace) -> None:
                     category = normalize_lesson_category(le.category, strict=False)
                     # Same classification the JSONL store's scope-selective remove
                     # applies: None is global, anything else is judged admissible.
-                    scope = _lesson_scope_suffix(
-                        (
-                            ""
-                            if le.repo_scope is None
-                            else (le.repo_scope if scope_is_admissible(le.repo_scope) else None)
-                        ),
-                    )
+                    stored_scope: str | None
+                    if le.repo_scope is None:
+                        stored_scope = ""
+                    elif scope_is_admissible(le.repo_scope):
+                        stored_scope = le.repo_scope
+                    else:
+                        stored_scope = None
+                    scope = _lesson_scope_suffix(stored_scope)
                     print(
                         f"  [{_TERMINAL_CTRL_RE.sub('', category)}] {_TERMINAL_CTRL_RE.sub('', str(le.rule))}{neg}{scope}"
                     )
@@ -3736,8 +3737,22 @@ def _pod(args: argparse.Namespace) -> None:
 def _container_valued_sections() -> dict[str, type]:
     """Top-level config keys the model expects to be a JSON object or array.
 
-    Derived from the dataclass rather than hardcoded, so a section added to
-    ``KiroCrewConfig`` later is covered without anyone remembering to edit this.
+    Read off ``KiroCrewConfig``'s own fields rather than hardcoded, so most
+    sections added later are covered without an edit here. Which branch does that
+    reading is worth knowing, because it bounds the "most": ``config/loader.py``
+    carries ``from __future__ import annotations``, so every ``field.type``
+    arrives as a STRING and the string branch is the one that runs. It matches on
+    the annotation's TEXT — a ``list`` prefix, a ``dict`` prefix, a ``Config``
+    suffix for a nested config — so a section spelled another way
+    (``Optional[list[...]]``, ``Mapping[str, str]``, a nested dataclass not named
+    ``*Config``) is not recognised and gets no guard. A new section in one of
+    those spellings needs a look here. So does dropping that future import from
+    ``config/loader.py``: ``field.type`` would then arrive as a resolved object,
+    the ``isinstance`` guard would skip every field, and this map would come back
+    empty — which stops the model-derived half of the guard below, though not the
+    hardcoded ``dashboard.tailscale`` check after it. That is not a silent loss:
+    ``test_tailnet_cli.py``'s section-guard tests go red on an empty map.
+
     Both shapes matter: a nested-config or mapping field must be an object, and a
     ``list[...]`` field must be an array — the loader *iterates* the latter, so a
     scalar there is an uncaught ``TypeError`` rather than a merge that loses data.
@@ -3745,18 +3760,11 @@ def _container_valued_sections() -> dict[str, type]:
     out: dict[str, type] = {}
     for field in dataclasses.fields(KiroCrewConfig):
         ann = field.type
-        if isinstance(ann, str):  # from __future__ import annotations
-            if ann.startswith("list"):
-                out[field.name] = list
-            elif ann.endswith("Config") or ann.startswith("dict"):
-                out[field.name] = dict
+        if not isinstance(ann, str):
             continue
-        origin = getattr(ann, "__origin__", None)
-        if origin is list:
+        if ann.startswith("list"):
             out[field.name] = list
-        elif origin is dict or ann is dict:
-            out[field.name] = dict
-        elif dataclasses.is_dataclass(ann):
+        elif ann.endswith("Config") or ann.startswith("dict"):
             out[field.name] = dict
     return out
 
