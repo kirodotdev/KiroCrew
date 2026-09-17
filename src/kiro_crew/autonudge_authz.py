@@ -681,6 +681,8 @@ async def authorize_and_update_nudge(
             max_runtime_secs=max_runtime_secs,
             banner=banner,
         )
+    except MonitorUpdateConflict as exc:
+        return _deny(str(exc), 409)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.update failed: {type(exc).__name__}")
         raise

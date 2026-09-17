@@ -121,6 +121,8 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
+    runtime_budget_spent: loop.runtimeBudgetSpent,
+    stopped_reason: loop.stoppedReason,
   }
 }
 

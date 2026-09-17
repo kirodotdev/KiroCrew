@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AutoNudgePopover, { STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
-import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
+import { __resetForTests, loadGoalDraft, saveGoalDraft, type GoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 const SLOT = 'chat-1-100'
@@ -28,7 +28,7 @@ function renderPopover(loop: AutoNudgeLoop | null) {
 const makeLoop = (over: Partial<AutoNudgeLoop> = {}): AutoNudgeLoop => ({
   id: 'l1', slot_key: SLOT, message: 'active loop goal',
   idle_secs: 90, max_cycles: 3, cycle_count: 1, active: true, last_fire_ts: 0,
-  next_due_ts: 0, ...over,
+  next_due_ts: 0, runtime_budget_spent: false, ...over,
 })
 
 describe('AutoNudgePopover goal persistence', () => {
@@ -141,6 +141,7 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
   const fields = () => screen.getAllByRole('spinbutton') as HTMLInputElement[]
   const idleField = () => fields()[0]
   const cyclesField = () => fields()[1]
+  const goalBox = () => screen.getByRole('textbox', { name: 'Goal description' }) as HTMLTextAreaElement
 
   it('allows clearing the idle field to empty while typing, then defaults to 60 on blur (the reported bug)', () => {
     renderPopover(null)
@@ -189,6 +190,263 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     expect(save, 'no /api/autonudge write was issued').toBeTruthy()
     const body = JSON.parse(save![1]!.body!)
     expect(body.idle_secs).toBe(45)
+  })
+
+  it('withholds Save on a runtime-budget-stopped goal: the clear the help names is its only exit', async () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'runtime_budget',
+      runtime_budget_spent: true,
+    }))
+
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped · Reached its maximum runtime.')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Clear stopped goal, then start a new goal.')
+    // The popover carries no runtime field, so nothing it could PATCH revives
+    // this record: a Save here edited a goal that can never run again, beside a
+    // help line saying the only step left is to clear it.
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Start loop/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeEnabled()
+    // Readable, not dead: "start a new goal" needs the old text, and a confirmed
+    // clear closes the popover without copying the erased record into the draft.
+    expect(goalBox().readOnly).toBe(true)
+    expect(goalBox().disabled).toBe(false)
+    expect(goalBox().value).toBe('active loop goal')
+    expect(idleField().readOnly).toBe(true)
+    expect(cyclesField().readOnly).toBe(true)
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    expect(calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')).toBeUndefined()
+  })
+
+  it('keeps Stop loop and Save on a loop that is still active when its runtime budget flips', () => {
+    // The budget is checked at serialization, the terminal stop lands on the
+    // timer's next tick: between them the record reads active with a spent
+    // budget. The active shape is authoritative for that window -- Stop must
+    // stay reachable, and the row must not retire a goal the service still runs.
+    renderPopover(makeLoop({ active: true, runtime_budget_spent: true }))
+
+    expect(screen.getByRole('button', { name: /Stop loop/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Save$/i })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
+    expect(goalBox().readOnly).toBe(false)
+  })
+
+  it('keeps the retired goal readable when its clear fails', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: { method?: string }) => Promise.resolve(
+      init?.method === 'DELETE'
+        ? { ok: false, status: 500, json: () => Promise.resolve({ error: 'store unavailable' }) }
+        : { ok: true, json: () => Promise.resolve({ loop: null }) },
+    )) as unknown as typeof fetch)
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'runtime_budget',
+      runtime_budget_spent: true,
+    }))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' })) })
+
+    expect(screen.getByTestId('auto-nudge-error').textContent).toContain('store unavailable')
+    // A failed erase leaves the record where it was: still retired, still
+    // copyable, still without a Save that would pretend otherwise, and still
+    // holding the primed confirmation so the user can retry or back out.
+    expect(goalBox().value).toBe('active loop goal')
+    expect(goalBox().readOnly).toBe(true)
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear goal for good' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
+  it('uses a non-repeating approval-stalled suffix', () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'approval_stalled',
+    }))
+
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped · Waiting for a tool approval in this conversation.')
+  })
+
+  it('restarts after another caller lifts a stale runtime budget', async () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'runtime_budget',
+      runtime_budget_spent: false,
+    }))
+
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the unspent goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
+  })
+
+  it('restarts a reasonless legacy stop when its bounds still allow work', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: '' }))
+
+    expect(screen.getByRole('button', { name: /Start loop/i })).toBeTruthy()
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the legacy goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
+  })
+
+  it('shows a disabled Start loop on a cycle-capped goal and enables it once the cap is raised (the two-step revival)', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'cycle_cap', cycle_count: 3, max_cycles: 3 }))
+    expect(screen.getByTestId('auto-nudge-loop-paused').textContent)
+      .toBe('Stopped · Reached Max cycles.')
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Raise Max cycles, then press Start loop to resume this goal. Clear stopped goal removes it for good.')
+    // The control the help names is on the surface BEFORE the field is raised
+    // -- disabled, because the record cannot be revived yet -- and nothing in
+    // the row reads Save: a Save here edited a goal that stayed stopped, beside
+    // a line telling the reader to press a button they could not find.
+    expect(screen.getByRole('button', { name: 'Start loop' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeEnabled()
+    // A press on the disabled control issues nothing -- neither a restart nor
+    // the configuration-only PATCH the old Save sent.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start loop' })) })
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    expect(calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')).toBeUndefined()
+
+    fireEvent.change(cyclesField(), { target: { value: '4' } })
+
+    // Raising the cap ENABLES the button the copy told the user to press next;
+    // the label does not change, only its state, and the help drops the first
+    // step it no longer needs.
+    expect(screen.getByRole('button', { name: 'Start loop' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Start loop resumes this goal. Clear stopped goal removes it for good.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start loop' })) })
+
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the capped goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toEqual({
+      message: 'active loop goal',
+      idle_secs: 90,
+      max_cycles: 4,
+      active: true,
+    })
+  })
+
+  it('re-disables Start loop when the cap is lowered back onto the delivered count, and reads an emptied field as no cap', () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'cycle_cap', cycle_count: 3, max_cycles: 3 }))
+    const startLoop = () => screen.getByRole('button', { name: 'Start loop' })
+    expect(startLoop()).toBeDisabled()
+    // An emptied field commits to 0 on blur, and 0 is "infinite": the cap is
+    // lifted as-typed, so the button enables before the blur.
+    fireEvent.change(cyclesField(), { target: { value: '' } })
+    expect(startLoop()).toBeEnabled()
+    // Back onto the delivered count blocks again; below it blocks too. The
+    // state tracks the field on every edit, not only on the first raise.
+    fireEvent.change(cyclesField(), { target: { value: '3' } })
+    expect(startLoop()).toBeDisabled()
+    fireEvent.change(cyclesField(), { target: { value: '2' } })
+    expect(startLoop()).toBeDisabled()
+    fireEvent.change(cyclesField(), { target: { value: '5' } })
+    expect(startLoop()).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+  })
+
+  it('keeps an ordinary, enabled Save on an ACTIVE loop whose field is at or below the delivered count', async () => {
+    // The cap gates RESTART, not configuration: a running loop that has reached
+    // its cap (the window between the last delivery and the timer's terminal
+    // stop), or whose field the user lowers while it runs, still saves its
+    // edits with the Save it always had -- not a disabled Start loop.
+    renderPopover(makeLoop({ active: true, cycle_count: 3, max_cycles: 3 }))
+    expect(screen.getByRole('button', { name: /^Save$/i })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Start loop' })).toBeNull()
+    fireEvent.change(cyclesField(), { target: { value: '1' } })
+    expect(screen.getByRole('button', { name: /^Save$/i })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Start loop' })).toBeNull()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /^Save$/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no config PATCH for the active goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toEqual({ message: 'active loop goal', idle_secs: 90, max_cycles: 1 })
+  })
+
+  it('retires a cycle-capped loop whose runtime budget is also spent: raising the cap reveals nothing', async () => {
+    renderPopover(makeLoop({
+      active: false,
+      next_due_ts: 0,
+      stopped_reason: 'cycle_cap',
+      cycle_count: 3,
+      max_cycles: 4,
+      runtime_budget_spent: true,
+    }))
+
+    // The runtime bound wins over the cycle cap for the help AND for the row:
+    // the two-step revival the cycle-cap help describes has no second step
+    // here, so neither Save nor Start loop -- enabled or disabled -- is offered.
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Clear stopped goal, then start a new goal.')
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Start loop/i })).toBeNull()
+    expect(cyclesField().readOnly).toBe(true)
+    // Even an edit that lifts the cap reveals nothing: the retired shape owns the
+    // row, and the clear the help names is its only control.
+    fireEvent.change(cyclesField(), { target: { value: '9' } })
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Start loop/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeEnabled()
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    expect(calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')).toBeUndefined()
+  })
+
+  it('holds an approval-stalled loop whose cycle cap is spent on a disabled Start loop until the cap is raised', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'approval_stalled', cycle_count: 3, max_cycles: 3 }))
+
+    // The stall is the reason shown, but the cap is the bound that blocks the
+    // restart, so the row takes the capped shape: the help names the two steps,
+    // the button they name is present and disabled, and no Save offers a
+    // configuration write that could read as a way back.
+    expect(screen.getByTestId('auto-nudge-stopped-help').textContent)
+      .toBe('Raise Max cycles, then press Start loop to resume this goal. Clear stopped goal removes it for good.')
+    expect(screen.getByRole('button', { name: 'Start loop' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start loop' })) })
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    expect(calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')).toBeUndefined()
+
+    fireEvent.change(cyclesField(), { target: { value: '4' } })
+    expect(screen.getByRole('button', { name: 'Start loop' })).toBeEnabled()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start loop' })) })
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the approval-stalled goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
+  })
+
+  it('restarts an approval-stalled loop when its bounds still allow work', async () => {
+    renderPopover(makeLoop({ active: false, next_due_ts: 0, stopped_reason: 'approval_stalled', cycle_count: 0, max_cycles: 0 }))
+
+    expect(screen.getByRole('button', { name: /Start loop/i })).toBeTruthy()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+
+    const calls = (fetch as unknown as { mock: { calls: [string, { method?: string, body?: string }?][] } }).mock.calls
+    const patch = calls.find(c => c[0] === '/api/autonudge/l1' && c[1]?.method === 'PATCH')
+    expect(patch, 'no restart PATCH for the approval-stalled goal was issued').toBeTruthy()
+    expect(JSON.parse(patch![1]!.body!)).toHaveProperty('active', true)
   })
 })
 
@@ -611,13 +869,11 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     expect((triggerButton() as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('names the way OUT of a paused loop instead of leaving Save to do it silently', () => {
-    // The primary button PATCHes `active: true`, so on a paused loop it is the
-    // resume control -- and it used to read "Save", which said nothing. A blind
-    // reader found no resume path at all and called "Stop loop" risky as a
-    // result. Both directions asserted: an active loop must still read Save, or
-    // this would just move the confusion.
-    renderWith(makeLoop({ active: false }))
+  it('names the way OUT of a manually paused loop instead of leaving Save to do it silently', () => {
+    // A manual pause has no terminal bound to lift, so the primary button may
+    // explicitly restart it. Reasonless legacy stops stay config-only because
+    // the client cannot prove why they became inactive.
+    renderWith(makeLoop({ active: false, stopped_reason: 'manual' }))
     expect(screen.getByRole('button', { name: 'Start loop' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     cleanup()
@@ -722,7 +978,7 @@ describe('AutoNudgePopover Trigger nudge (#8212)', () => {
     // than the resumable-sounding Paused, and a help line names both exits
     // because the erase has no undo. Both directions asserted so this cannot
     // just move the confusion.
-    renderWith(makeLoop({ active: false }))
+    renderWith(makeLoop({ active: false, stopped_reason: 'manual' }))
     const clear = screen.getByRole('button', { name: 'Clear stopped goal' })
     expect(clear).toBeTruthy()
     // Danger-coloured unconditionally, not on :hover -- a touch viewport never
@@ -927,5 +1183,227 @@ describe('AutoNudgePopover {{STOP_FILE}} help line (#10458)', () => {
     renderPopover(makeLoop({ message: `Keep going. To halt, create ${STOP_FILE_TOKEN}` }))
     expect(helpLine()).toBeTruthy()
     expect(noneLine()).toBeNull()
+  })
+})
+
+/** Clearing a stopped goal is answered as "Clear goal for good". The press must
+ *  therefore write NOTHING to the slot's draft store: copying the erased record
+ *  into it would make the freed slot reopen on the goal the user just removed.
+ *  The store keeps only what was typed on an empty slot, so a draft from before
+ *  the loop is neither resurrected as the record's text nor deleted by the clear.
+ *  The real parent (`SessionAutomationPopover`) keys this popover on the loop id,
+ *  so the clear is a remount and the close-flush, unmounting with the erased loop
+ *  still in hand, skips too -- storage is byte-identical across the whole press. */
+describe('AutoNudgePopover confirmed clear writes no draft', () => {
+  beforeEach(() => { localStorage.clear(); __resetForTests() })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  /** The DELETE answers `status`; every other read answers empty. A successful
+   *  clear is a bodiless 204, so its `json` rejecting pins that the success path
+   *  never parses one. */
+  function stubDelete(status: number, deletes: string[] = []) {
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') {
+        deletes.push(String(url))
+        return status < 400
+          ? Promise.resolve({ ok: true, status, json: () => Promise.reject(new Error('204 carries no body')) })
+          : Promise.resolve({ ok: false, status, json: () => Promise.resolve({ error: 'goal changed under you' }) })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(String(url).startsWith('/api/crons') ? { jobs: [] } : { loop: null }),
+      })
+    }) as unknown as typeof fetch)
+  }
+
+  /** The real parent, reduced to the three things that matter here: `loop` is
+   *  fed back from `onChange`, `open` from `onOpenChange`, and the popover is
+   *  KEYED on the loop id exactly as `SessionAutomationPopover` keys it -- that
+   *  key is what turns a clear into a remount. A fixed key would let the
+   *  close-flush run against a null loop and could write a draft the component
+   *  itself never wrote, hiding a reintroduced post-clear write behind it. */
+  function renderParent(initial: AutoNudgeLoop, onSlotFreed: () => void = () => {}) {
+    const onChange = vi.fn((next: AutoNudgeLoop | null) => { if (next === null) onSlotFreed() })
+    const onOpenChange = vi.fn()
+    const Parent = () => {
+      const [loop, setLoop] = useState<AutoNudgeLoop | null>(initial)
+      const [open, setOpen] = useState(true)
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>reopen</button>
+          <AutoNudgePopover
+            key={loop?.id ?? `bounded:${SLOT}`}
+            slotKey={SLOT}
+            loop={loop}
+            open={open}
+            onOpenChange={v => { onOpenChange(v); setOpen(v) }}
+            onChange={next => { onChange(next); setLoop(next) }}
+          />
+        </>
+      )
+    }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Parent />
+      </QueryClientProvider>,
+    )
+    return { onChange, onOpenChange }
+  }
+
+  const goal = () => screen.getByLabelText('Goal description') as HTMLTextAreaElement
+  const numbers = () => screen.getAllByRole('spinbutton') as HTMLInputElement[]
+
+  async function pressClear() {
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear goal for good' })) })
+  }
+
+  /** The empty-slot template, read through the component (an empty slot shows
+   *  it; an untouched open writes nothing) rather than duplicated as a string. */
+  function readTemplate(): string {
+    renderPopover(null)
+    const template = goal().value
+    cleanup()
+    expect(loadGoalDraft(SLOT)).toBeNull()
+    return template
+  }
+
+  it('leaves the draft store byte-identical and reopens on the template, not the cleared goal (the reported contradiction)', async () => {
+    stubDelete(204)
+    const template = readTemplate()
+    const draftsBefore = localStorage.getItem('mc-goal-drafts')
+    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
+    let draftWhenSlotFreed: GoalDraft | null | undefined
+    const { onOpenChange } = renderParent(
+      makeLoop({ active: false, message: 'finish the migration', idle_secs: 120, max_cycles: 5 }),
+      () => { draftWhenSlotFreed = loadGoalDraft(SLOT) },
+    )
+    // Opening on a loop writes nothing: the record is authoritative until it is gone.
+    expect(loadGoalDraft(SLOT)).toBeNull()
+
+    await pressClear()
+
+    // Nothing was written BEFORE the slot was handed back (the window a
+    // post-erase write would use) ...
+    expect(draftWhenSlotFreed).toBeNull()
+    expect(onOpenChange).toHaveBeenLastCalledWith(false)
+    expect(screen.queryByLabelText('Goal description')).toBeNull()
+    // ... nor by the close/remount that followed: byte-identical storage.
+    expect(loadGoalDraft(SLOT)).toBeNull()
+    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
+    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
+
+    // Reopen on the freed slot: the template, not the goal the user erased.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'reopen' })) })
+    expect(goal().value).toBe(template)
+    expect(numbers().map(n => n.value)).toEqual(['60', '0'])
+    // And it is a fresh start, not a stopped record's controls.
+    expect(screen.getByRole('button', { name: 'Start loop' })).toBeTruthy()
+    expect(screen.queryByTestId('auto-nudge-loop-paused')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
+  })
+
+  it('does not keep an edit made on the stopped record once that record is cleared', async () => {
+    // A stopped loop's fields are editable (raising Max cycles is the way back
+    // to Start loop). Editing and then confirming the erase is still an erase:
+    // the edited text belongs to the record the user just chose to remove, so
+    // it must not survive as the slot's draft either.
+    stubDelete(204)
+    const template = readTemplate()
+    renderParent(makeLoop({ active: false, message: 'record text', idle_secs: 90, max_cycles: 3 }))
+    fireEvent.change(goal(), { target: { value: 'reworded before clearing' } })
+    fireEvent.change(numbers()[1], { target: { value: '8' } })
+    const draftsBefore = localStorage.getItem('mc-goal-drafts')
+    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
+
+    await pressClear()
+
+    expect(loadGoalDraft(SLOT)).toBeNull()
+    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
+    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'reopen' })) })
+    expect(goal().value).toBe(template)
+    expect(numbers().map(n => n.value)).toEqual(['60', '0'])
+  })
+
+  it('neither resurrects the record over, nor deletes, a draft typed before the loop existed', async () => {
+    // The draft store holds what the user typed on the EMPTY slot. A record
+    // armed afterwards never overwrote it (drafts are not written while a loop
+    // is present), and clearing that record must not overwrite it now: the
+    // confirmation named the record, not the user's own unsent text. The clear
+    // therefore leaves the older draft exactly as it was, and the reopen seeds
+    // from it rather than from the erased record.
+    stubDelete(204)
+    saveGoalDraft(SLOT, { message: 'pre-loop draft', idleSecs: 45, maxCycles: 2 })
+    const draftsBefore = localStorage.getItem('mc-goal-drafts')
+    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
+    renderParent(makeLoop({ active: false, message: 'record text', idle_secs: 90, max_cycles: 3 }))
+    expect(goal().value).toBe('record text')
+
+    await pressClear()
+
+    expect(loadGoalDraft(SLOT)).toEqual({ message: 'pre-loop draft', idleSecs: 45, maxCycles: 2 })
+    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
+    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'reopen' })) })
+    expect(goal().value).toBe('pre-loop draft')
+    expect(numbers().map(n => n.value)).toEqual(['45', '2'])
+  })
+
+  it('leaves the record, the popover and any prior draft untouched when the server refuses the clear', async () => {
+    // A refused erase (409: the record changed under the popover) must not be
+    // reported as one. No draft write, no false deletion of the prior draft, no
+    // close, no `onChange(null)` -- the fields stay where they were, with the
+    // refusal inline, so the user can decide again against what is really there.
+    const deletes: string[] = []
+    stubDelete(409, deletes)
+    saveGoalDraft(SLOT, { message: 'prior draft', idleSecs: 45, maxCycles: 2 })
+    const draftsBefore = localStorage.getItem('mc-goal-drafts')
+    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
+    const { onChange, onOpenChange } = renderParent(
+      makeLoop({ active: false, message: 'finish the migration', idle_secs: 120, max_cycles: 5 }),
+    )
+
+    await pressClear()
+
+    expect(deletes).toEqual(['/api/autonudge/l1?intent=clear'])
+    expect(screen.getByText('goal changed under you')).toBeTruthy()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalled()
+    // Still the stopped record, still its text, still the primed confirmation
+    // (unchanged behaviour: the user can retry against the refusal or back out).
+    expect(goal().value).toBe('finish the migration')
+    expect(numbers().map(n => n.value)).toEqual(['120', '5'])
+    expect(screen.getByTestId('auto-nudge-loop-paused')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Clear goal for good' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy()
+    // Byte-identical storage: neither a draft write nor a TTL bump happened.
+    expect(loadGoalDraft(SLOT)).toEqual({ message: 'prior draft', idleSecs: 45, maxCycles: 2 })
+    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
+    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
+  })
+
+  it('writes no draft when stopping an ACTIVE loop, whose record survives and stays authoritative', async () => {
+    // A stop keeps the record; on reopen the record seeds the fields, and a
+    // draft mirrored from it would be the live-config-in-the-draft-store leak
+    // the persistence rules exist to prevent. Pinned with a prior draft in
+    // place so "no write" is observable as byte-identical storage rather than
+    // as a still-empty store.
+    const deletes: string[] = []
+    stubDelete(204, deletes)
+    saveGoalDraft(SLOT, { message: 'prior draft', idleSecs: 45, maxCycles: 2 })
+    const draftsBefore = localStorage.getItem('mc-goal-drafts')
+    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
+    const { onChange, onOpenChange } = renderParent(makeLoop({ active: true, message: 'active loop goal' }))
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Stop loop' })) })
+
+    expect(deletes).toEqual(['/api/autonudge/l1?intent=stop'])
+    expect(onChange).toHaveBeenCalledWith(null)
+    expect(onOpenChange).toHaveBeenLastCalledWith(false)
+    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
+    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
+    expect(loadGoalDraft(SLOT)).toEqual({ message: 'prior draft', idleSecs: 45, maxCycles: 2 })
   })
 })

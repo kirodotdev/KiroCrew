@@ -43,7 +43,8 @@ const activeMonitor: StructuredMonitor = {
 const activeLegacyLoop: LegacyGoalLoop = {
   kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1', message: 'Keep checking.',
   idleSecs: 300, maxCycles: 24, cycleCount: 2, active: true, lastFireAt: 0,
-  nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, stoppedReason: '',
+  nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, runtimeBudgetSpent: false,
+  stoppedReason: '',
 }
 
 /* The popover opens on the goal loop, so a test about the BOUNDED form has to
@@ -194,6 +195,47 @@ describe('SessionAutomationPopover', () => {
 
     expect(screen.queryByText('Next cycle not yet scheduled')).toBeNull()
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['spent runtime budget', true, 'cycle_cap'],
+    ['manual stop', false, 'manual'],
+  ])('keeps a legacy %s stopped through the compatibility bridge', (
+    _case,
+    runtimeBudgetSpent,
+    stoppedReason,
+  ) => {
+    const wire = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep checking.', idle_secs: 300,
+      max_cycles: 4, cycle_count: 3, active: false, last_fire_ts: 0,
+      next_due_ts: 0, runtime_budget_spent: runtimeBudgetSpent,
+      stopped_reason: stoppedReason,
+    }
+    const record = normalizeAutomationRecord(wire)
+    expect(record).toMatchObject({ runtimeBudgetSpent, stoppedReason })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ loop: wire }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderPopover(record, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+    if (runtimeBudgetSpent) {
+      // Retired through the bridge exactly as on the bare editor: no Save that
+      // would PATCH a record the service will never run again, no restart, only
+      // the clear the help line names. Nothing is fetched until that press.
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Start loop' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeEnabled()
+      expect(screen.getByText('Clear stopped goal, then start a new goal.')).toBeInTheDocument()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } else {
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Start loop' })).toBeEnabled()
+      expect(screen.getByText('Stopped')).toBeInTheDocument()
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
   })
 
   it('centres the radar glyph and its count in the composer trigger', () => {
@@ -710,7 +752,7 @@ describe('SessionAutomationPopover', () => {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
+        message: 'Keep checking.', idle_secs: 300, max_cycles: 24,
       }),
     }))
   })

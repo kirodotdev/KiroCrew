@@ -22,6 +22,7 @@ import ast
 import asyncio
 import inspect
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -118,9 +119,13 @@ class TestOnLoopGuard:
 _DB_TOUCHING_FNS = frozenset(
     {
         "_get_db",
+        "_delete_campaign_row",
+        "_restore_deleted_campaign_row",
         "_guarded_txn",
         "update_campaign_status",
         "delete_campaign",
+        "_fork_child_is_absent",
+        "_compensate_fork_child",
         "create_campaign",
         "get_campaign",
         "list_campaigns",
@@ -128,13 +133,36 @@ _DB_TOUCHING_FNS = frozenset(
         "_campaign_execution_mode",
         "_campaign_run_has_status",
         "_campaign_run_is_current",
+        "_cycle_cap_generation_complete",
         "_persist_new_cycle_bookkeeping",
+        "_restore_campaign_after_failed_launch",
+        "_recover_campaign_after_failed_launch",
+        "_persisted_campaign_status",
+        "_force_failed_after_rollback_storage_error",
+        "_run_finding_snapshot",
+        "_stalled_campaign_verdict",
         "_should_finalize",
         "_ingest_emergent_questions",
         "_activate_emergent",
         "_advance_exploration",
     }
 )
+
+# Any synchronous helper that reaches one of these primitives performs campaign
+# descriptor, pathname, or content-identity work. The test below derives the
+# complete transitive closure from the AST so a new sibling helper cannot escape
+# the off-loop rule by being omitted from a hand-maintained list. Pinning has no
+# module-level wrapper: any sync function that calls ``<identity>.pin(...)`` is
+# discovered structurally as a root as well.
+_CAMPAIGN_FS_ROOTS = frozenset(
+    {
+        "_campaign_identity",
+        "_campaign_dir",
+        "_read_campaign_file_bytes",
+        "_finding_content_identity",
+    }
+)
+_CAMPAIGN_PIN_METHOD = "pin"
 
 
 def _module_tree() -> ast.Module:
@@ -237,6 +265,100 @@ class TestStaticRatchet:
             "asyncio.to_thread / run_in_executor):\n" + "\n".join(violations)
         )
 
+    def test_no_async_def_calls_campaign_filesystem_functions_directly(self):
+        """Every sync campaign filesystem closure must cross an offload call."""
+        tree = _module_tree()
+        sync_calls: dict[str, set[str]] = {}
+        pinning: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                sync_calls[node.name] = {
+                    child.func.id
+                    for child in ast.walk(node)
+                    if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+                }
+                if any(
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and child.func.attr == _CAMPAIGN_PIN_METHOD
+                    for child in ast.walk(node)
+                ):
+                    pinning.add(node.name)
+        assert pinning, "no sync helper pins a campaign identity; the seam moved"
+        filesystem = set(_CAMPAIGN_FS_ROOTS) | pinning
+        changed = True
+        while changed:
+            changed = False
+            for name, called in sync_calls.items():
+                if name not in filesystem and called & filesystem:
+                    filesystem.add(name)
+                    changed = True
+
+        violations: list[str] = []
+
+        def _sync_closure_touches_fs(fn: ast.FunctionDef) -> bool:
+            return any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id in filesystem
+                for child in ast.walk(fn)
+            )
+
+        def _is_offload_call(call: ast.Call) -> bool:
+            return isinstance(call.func, ast.Attribute) and call.func.attr in (
+                "to_thread",
+                "run_in_executor",
+            )
+
+        def scan(node: ast.AsyncFunctionDef) -> None:
+            fs_closures = {
+                child.name
+                for child in ast.walk(node)
+                if isinstance(child, ast.FunctionDef) and _sync_closure_touches_fs(child)
+            }
+            flagged = filesystem | fs_closures
+            offloaded: set[str] = set()
+            stack = list(ast.iter_child_nodes(node))
+            while stack:
+                child = stack.pop()
+                if isinstance(child, ast.FunctionDef):
+                    continue
+                if isinstance(child, ast.Call):
+                    if _is_offload_call(child):
+                        offloaded.update(
+                            arg.id
+                            for arg in child.args
+                            if isinstance(arg, ast.Name) and arg.id in flagged
+                        )
+                    elif (
+                        isinstance(child.func, ast.Name) and child.func.id == "_guarded_transition"
+                    ):
+                        offloaded.update(
+                            keyword.value.id
+                            for keyword in child.keywords
+                            if keyword.arg == "on_commit"
+                            and isinstance(keyword.value, ast.Name)
+                            and keyword.value.id in flagged
+                        )
+                    elif isinstance(child.func, ast.Name) and child.func.id in flagged:
+                        violations.append(
+                            f"{node.name}:{child.lineno} calls {child.func.id}() on the loop"
+                        )
+                stack.extend(ast.iter_child_nodes(child))
+            for name in sorted(fs_closures - offloaded):
+                violations.append(
+                    f"{node.name}: nested campaign-filesystem helper {name}() is "
+                    "defined but never offloaded"
+                )
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef):
+                scan(node)
+        assert not violations, (
+            "campaign descriptor/hash call(s) on the event loop (offload the "
+            "whole ownership operation):\n" + "\n".join(violations)
+        )
+
 
 class TestContention:
     @pytest.fixture
@@ -249,6 +371,32 @@ class TestContention:
         a = web.Application(middlewares=[_inject_user])
         register_routes(a)
         return a
+
+    @pytest.mark.asyncio
+    async def test_campaign_identity_probe_stalls_worker_not_heartbeat(self, monkeypatch):
+        """A slow open/fstat/close sequence cannot stall other loop work."""
+        started = threading.Event()
+        release = threading.Event()
+        real_identity = h._campaign_identity
+
+        def _blocked_identity(campaign_id: str):
+            started.set()
+            assert release.wait(2)
+            return real_identity(campaign_id)
+
+        monkeypatch.setattr(h, "_campaign_identity", _blocked_identity)
+        probe = asyncio.create_task(h._campaign_identity_off_loop("a1b2c3d4"))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            ticks = 0
+            for _ in range(5):
+                await asyncio.sleep(0)
+                ticks += 1
+            assert ticks == 5
+            assert not probe.done()
+        finally:
+            release.set()
+        await probe
 
     @pytest.mark.asyncio
     async def test_held_write_lock_stalls_handler_not_heartbeat(self, app, tmp_path: Path):
@@ -351,9 +499,9 @@ class TestAddQuestionAtomicity:
 
             subs = await asyncio.to_thread(_read_subs)
             manual = {s["text"] for s in subs if s.get("origin") == "manual"}
-            assert manual == {f"q-{i}" for i in range(n)}, (
-                f"lost questions under concurrency: {sorted(manual)}"
-            )
+            assert manual == {
+                f"q-{i}" for i in range(n)
+            }, f"lost questions under concurrency: {sorted(manual)}"
 
 
 class TestGuardedTransition:
@@ -362,7 +510,9 @@ class TestGuardedTransition:
 
     @pytest.mark.asyncio
     async def test_stale_observation_is_refused(self):
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         # User Stop commits between the observer's read and its write.
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.STOPPED)
@@ -375,7 +525,9 @@ class TestGuardedTransition:
 
     @pytest.mark.asyncio
     async def test_current_observation_proceeds(self):
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         result = await h._guarded_transition(
             cid, CampaignStatus.NEEDS_INPUT, allowed_current=(CampaignStatus.RUNNING,)
@@ -387,7 +539,9 @@ class TestGuardedTransition:
         """GPT scenario end-to-end: Stop committed, then a nudge whose question
         file still exists tries to restore RUNNING — the campaign stays STOPPED
         (a RUNNING row with no worker would be a zombie the watchdog re-adopts)."""
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.STOPPED)
         result = await h._guarded_transition(
             cid, CampaignStatus.RUNNING, allowed_current=(CampaignStatus.NEEDS_INPUT,)
@@ -401,26 +555,30 @@ class TestGuardedTransition:
         """24h expiry races a user Stop. When the guarded
         transition is refused, no synthetic question file may remain — it would
         drag a later Resume straight back into NEEDS_INPUT."""
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         row = await asyncio.to_thread(get_campaign, cid)
         observed = row["started_at"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.STOPPED)
         await h._expire_trust(cid, observed)
-        qp = h._questions_path(cid)
+        qp = h._campaign_dir(cid) / "questions.json"
         assert qp is None or not qp.exists(), "refused expiry left a stale question file"
         row = await asyncio.to_thread(get_campaign, cid)
         assert row["status"] == CampaignStatus.STOPPED
 
     @pytest.mark.asyncio
     async def test_successful_expiry_writes_question_and_parks(self, tmp_path):
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         row = await asyncio.to_thread(get_campaign, cid)
         await h._expire_trust(cid, row["started_at"])
         row = await asyncio.to_thread(get_campaign, cid)
         assert row["status"] == CampaignStatus.NEEDS_INPUT
-        qp = h._questions_path(cid)
+        qp = h._campaign_dir(cid) / "questions.json"
         assert qp is not None and qp.exists()
         assert "re-authorize" in qp.read_text()
 
@@ -430,10 +588,12 @@ class TestGuardedTransition:
         directory (or link) at questions.json. The expiry write must clear it
         and publish the prompt — and even if the write fails, the audit + SSE
         for the already-persisted NEEDS_INPUT must not be suppressed."""
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         row = await asyncio.to_thread(get_campaign, cid)
-        qp = h._questions_path(cid)
+        qp = h._campaign_dir(cid) / "questions.json"
         assert qp is not None
         qp.mkdir(parents=True)  # squat a directory on the prompt path
         await h._expire_trust(cid, row["started_at"])
@@ -451,7 +611,9 @@ class TestGuardedTransition:
         thread, so the side effect survives the cancel deterministically."""
         import threading
 
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         row = await asyncio.to_thread(get_campaign, cid)
 
@@ -515,9 +677,7 @@ class TestGuardedTransition:
         )
         await h._poll_workflow_campaign(cid, state, old_generation)
         row = await asyncio.to_thread(get_campaign, cid)
-        assert row["status"] == CampaignStatus.RUNNING, (
-            "stale poll terminated the replacement run"
-        )
+        assert row["status"] == CampaignStatus.RUNNING, "stale poll terminated the replacement run"
         findings = h._campaign_dir(cid) / "FINDINGS.md"
         assert not findings.exists(), "stale poll wrote FINDINGS.md into the replacement run"
 
@@ -526,7 +686,9 @@ class TestGuardedTransition:
         """An ABA scenario: a Pause→Resume mints a NEW started_at, so
         the status is RUNNING again — but an old run's verdict carrying the OLD
         generation must not terminate the replacement run."""
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         row = await asyncio.to_thread(get_campaign, cid)
         old_generation = row["started_at"]
@@ -547,7 +709,9 @@ class TestGuardedTransition:
 
     @pytest.mark.asyncio
     async def test_current_generation_proceeds(self):
-        cid = create_campaign({"question": "Does edge caching reduce latency?", "sources": ["web"]})["id"]
+        cid = create_campaign(
+            {"question": "Does edge caching reduce latency?", "sources": ["web"]}
+        )["id"]
         await asyncio.to_thread(update_campaign_status, cid, CampaignStatus.RUNNING)
         row = await asyncio.to_thread(get_campaign, cid)
         result = await h._guarded_transition(
@@ -607,23 +771,23 @@ class TestBriefTransactionality:
         src = self._producer_source(h._launch_loop)
         assert "_brief_publish_lock" in src, "launch producer lost the publish lock"
         closure = src[src.index("_brief_publish_lock") :]
-        assert closure.index("db.commit()") < closure.index("_write_brief("), (
-            "launch publishes the brief before its transaction commits"
-        )
+        assert closure.index("db.commit()") < closure.index(
+            "_write_brief("
+        ), "launch publishes the brief before its transaction commits"
 
     def test_append_question_publishes_after_commit_under_the_lock(self):
         src = self._producer_source(h._handle_add_question)
         assert "_brief_publish_lock" in src, "append producer lost the publish lock"
-        assert src.index("db.commit()") < src.index("_write_brief("), (
-            "_handle_add_question publishes the brief before commit"
-        )
+        assert src.index("db.commit()") < src.index(
+            "_write_brief("
+        ), "_handle_add_question publishes the brief before commit"
 
     def test_activate_emergent_publishes_after_commit_under_the_lock(self):
         src = self._producer_source(h._activate_emergent)
         assert "_brief_publish_lock" in src, "emergent producer lost the publish lock"
-        assert src.index("db.commit()") < src.index("_write_brief("), (
-            "_activate_emergent publishes the brief before commit"
-        )
+        assert src.index("db.commit()") < src.index(
+            "_write_brief("
+        ), "_activate_emergent publishes the brief before commit"
 
     def test_emergent_ledger_persists_before_the_brief_publish(self):
         """The dedup ledger (mark_analyzed + save_queue) must be
@@ -634,11 +798,11 @@ class TestBriefTransactionality:
         src = inspect.getsource(h._activate_emergent)
         i_commit = src.index("db.commit()")
         i_mark = src.index("_sq.mark_analyzed(")
-        i_save = src.index("_sq.save_queue(")
+        i_save = src.index("_save_subquestion_queue(")
         i_brief = src.index("_write_brief(")
-        assert i_commit < i_mark < i_save < i_brief, (
-            "emergent activation order must be commit -> ledger -> brief publish"
-        )
+        assert (
+            i_commit < i_mark < i_save < i_brief
+        ), "emergent activation order must be commit -> ledger -> brief publish"
 
     def test_every_write_brief_producer_holds_the_publish_lock(self):
         """Drift guard: any function that calls _write_brief must also acquire

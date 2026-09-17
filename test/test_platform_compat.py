@@ -1145,6 +1145,80 @@ class TestPinDirectory:
         target.rename(tmp_path / "swapped")
         assert (tmp_path / "swapped").is_dir()
 
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="handle-bound directory removal is Windows-only")
+    def test_removal_pin_deletes_only_its_opened_directory(self, tmp_path):
+        target = tmp_path / "owned"
+        target.mkdir()
+        replacement = tmp_path / "replacement"
+        replacement.mkdir()
+        marker = replacement / "keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+
+        fd = pc.pin_directory_for_removal(target)
+        try:
+            with pytest.raises(OSError):
+                target.rename(tmp_path / "parked")
+            pc.remove_pinned_directory(fd)
+        finally:
+            os.close(fd)
+
+        assert not target.exists()
+        assert marker.read_text(encoding="utf-8") == "keep"
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows DELETE access is handle-specific")
+    def test_ordinary_pin_does_not_gain_removal_authority(self, tmp_path):
+        target = tmp_path / "ordinary"
+        target.mkdir()
+        fd = pc.pin_directory(target)
+        try:
+            with pytest.raises(OSError):
+                pc.remove_pinned_directory(fd)
+        finally:
+            os.close(fd)
+        assert target.is_dir()
+
+    def test_handle_removal_dispatches_the_open_directory_object(self, tmp_path, monkeypatch):
+        # This test owns only the Win32 dispatch shape. A real Windows directory
+        # handle carries no-delete sharing semantics and belongs in the native
+        # removal tests above, not in a ctypes-mocked unit that must clean up.
+        sentinel = tmp_path / "dispatch-handle"
+        fd = os.open(sentinel, os.O_RDWR | os.O_CREAT, 0o600)
+        real_fstat = pc.os.fstat
+        calls: list[tuple[object, ...]] = []
+
+        class _SetFileInformation:
+            argtypes = None
+            restype = None
+
+            def __call__(self, *args):
+                calls.append(args)
+                return 1
+
+        kernel32 = type("Kernel32", (), {"SetFileInformationByHandle": _SetFileInformation()})()
+        msvcrt = type("Msvcrt", (), {"get_osfhandle": staticmethod(lambda _fd: 991)})()
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "msvcrt", msvcrt, raising=False)
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda candidate: (
+                types.SimpleNamespace(st_mode=stat.S_IFDIR)
+                if candidate == fd
+                else real_fstat(candidate)
+            ),
+        )
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
+        try:
+            pc.remove_pinned_directory(fd)
+        finally:
+            os.close(fd)
+            sentinel.unlink()
+
+        assert len(calls) == 1
+        assert calls[0][0].value == 991
+        assert calls[0][1] == pc._WIN_FILE_DISPOSITION_INFO_CLASS
+        assert calls[0][3] > 0
+
 
 # ---------------------------------------------------------------------------
 # POSIX-branch coverage for the new platform_compat helpers. The

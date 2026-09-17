@@ -117,6 +117,57 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   const parseIdle = (s: string) => parseInt(s, 10) || 60
   const parseCycles = (s: string) => parseInt(s, 10) || 0
+  const parsedMaxCycles = parseCycles(maxCyclesInput)
+  const capAllowsAnotherCycle = parsedMaxCycles === 0 || parsedMaxCycles > (loop?.cycle_count ?? 0)
+  // Restart is an explicit submit action, never a side effect of a button that
+  // still reads Save. The service owns revival admission and rejects the two
+  // terminal bounds; this client mirrors only those facts it can read. Manual,
+  // approval-stalled, and legacy reasonless stops stay explicitly restartable.
+  const restartOnSubmit = !!loop
+    && !loop.active
+    && capAllowsAnotherCycle
+    && !loop.runtime_budget_spent
+  // The cycle cap is the one terminal bound this editor can lift, because the
+  // field is right here. Until it is raised the record cannot be revived, so
+  // the submit control already reads Start loop -- the press the help line
+  // tells the reader to make next -- and is DISABLED, rather than reading Save
+  // beside a line that names a button not on the surface. Raising the field is
+  // what enables it: the two steps the help describes are the two states of one
+  // control. Gated on `active` like `restartOnSubmit`: a running loop that has
+  // reached its cap keeps an enabled Save, since the cap gates restart, not
+  // configuration. Complementary to `restartOnSubmit` on every stopped,
+  // unretired record, so exactly one of them holds.
+  const capBlocksRestart = !!loop
+    && !loop.active
+    && !loop.runtime_budget_spent
+    && !capAllowsAnotherCycle
+  // A stopped goal whose wall-clock budget is spent has no way back from THIS
+  // surface: the editor carries no runtime field, so nothing it could PATCH
+  // lifts the bound, and the service refuses to revive the record. The
+  // cycle-cap stop is different -- raising Max cycles here is the first of its
+  // two revival steps -- so it keeps its submit control, disabled until the cap
+  // is raised. This one has exactly one exit, the clear the help line names,
+  // and offering a Save that edits a goal which can never run again
+  // contradicted that line. Gated on `active` as well: a loop still running
+  // when the budget flips stays on Stop loop + Save until the timer's own
+  // terminal stop lands, which is the state the record reports.
+  const goalRetired = !!loop && !loop.active && loop.runtime_budget_spent
+  const stoppedReason = !loop || loop.active
+    ? ''
+    : loop.runtime_budget_spent
+      ? i18nT('components.autoNudgePopover.stopped_reason_runtime_budget')
+      : loop.stopped_reason === 'cycle_cap'
+        ? i18nT('components.autoNudgePopover.stopped_reason_cycle_cap')
+        : loop.stopped_reason === 'approval_stalled'
+          ? i18nT('components.autoNudgePopover.stopped_reason_approval_stalled')
+          : ''
+  const stoppedHelp = restartOnSubmit
+    ? i18nT('components.autoNudgePopover.stopped_help')
+    : loop?.runtime_budget_spent
+      ? i18nT('components.autoNudgePopover.stopped_help_runtime_budget')
+      : !capAllowsAnotherCycle
+        ? i18nT('components.autoNudgePopover.stopped_help_cycle_cap')
+        : i18nT('components.autoNudgePopover.stopped_help')
 
   // Only a genuine user edit should persist a draft. Seeding from the live loop
   // or restoring a remembered draft on open must NOT re-write the store (doing
@@ -216,7 +267,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       const max_cycles = parseCycles(maxCyclesInput)
       const body = JSON.stringify({ slot_key: slotKey, message, idle_secs, max_cycles })
       const resp = loop
-        ? await fetch(`/api/autonudge/${loop.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message, idle_secs, max_cycles, active: true }) })
+        ? await fetch(`/api/autonudge/${loop.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, idle_secs, max_cycles, ...(restartOnSubmit ? { active: true } : {}) }),
+          })
         : await fetch('/api/autonudge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
       const data = await resp.json()
       if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
@@ -246,6 +301,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         const data = await resp.json().catch(() => ({}))
         throw new Error(data.error || `HTTP ${resp.status}`)
       }
+      // No draft write on either intent. A confirmed clear was answered as
+      // "Clear goal for good", so copying the erased record into the slot's
+      // draft store would make the reopen show the goal the user just removed;
+      // the store keeps only what the user typed on an EMPTY slot, which the
+      // effects above already own, and stays byte-identical here. A plain stop
+      // keeps its record, which stays authoritative on reopen.
       onChange(null)
       onOpenChange(false)
     } catch (e: unknown) {
@@ -489,10 +550,16 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         ) : null}
 
         <div className="text-muted text-[11px] mb-1">{i18nT('components.autoNudgePopover.goal_description')}</div>
+        {/* Read-only, not disabled, on a retired goal: with no Save to reach, an
+            edit here would go nowhere, but the text itself is what the reader
+            most needs -- the help says "start a new goal", and clearing this
+            one closes the popover without copying the erased record into the
+            slot's draft. Readable fields let the goal be copied out first. */}
         <textarea
           aria-label={i18nT('components.autoNudgePopover.goal_description')}
           value={message}
           disabled={writeDisabled}
+          readOnly={goalRetired}
           onChange={e => { hasEdited.current = true; setMessage(e.target.value) }}
           rows={6}
           className="w-full bg-bg border border-border rounded p-2 text-[12px] font-mono resize-y mb-3 text-text"
@@ -526,6 +593,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               max={86400}
               value={idleInput}
               disabled={writeDisabled}
+              readOnly={goalRetired}
               onChange={e => { hasEdited.current = true; setIdleInput(e.target.value) }}
               onBlur={() => setIdleInput(String(parseIdle(idleInput)))}
               className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
@@ -539,6 +607,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
               min={0}
               value={maxCyclesInput}
               disabled={writeDisabled}
+              readOnly={goalRetired}
               onChange={e => { hasEdited.current = true; setMaxCyclesInput(e.target.value) }}
               onBlur={() => setMaxCyclesInput(String(parseCycles(maxCyclesInput)))}
               className="w-full bg-bg border border-border rounded px-2 py-1 text-[12px] text-text"
@@ -618,16 +687,20 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                   className="text-muted text-[11px] shrink-0"
                 >
                   {i18nT('components.autoNudgePopover.loop_stopped')}
+                  {stoppedReason && <span> · {stoppedReason}</span>}
                 </span>
                 {/* While confirming, this line must not keep naming the two
                     buttons that just left the row -- a blind reader looked for
                     the "Start loop" it describes and could not find it -- and
                     the confirmation row itself renders no question. So the help
-                    line BECOMES the question for that state. */}
+                    line BECOMES the question for that state. Outside confirmation,
+                    it names only controls that are actually present: on a capped
+                    goal the Start loop it names is already in the row, disabled,
+                    and the field edit it asks for is what enables it. */}
                 <span data-testid="auto-nudge-stopped-help" className="text-muted text-[11px]">
                   {confirmClear
                     ? i18nT('components.autoNudgePopover.clear_goal_question')
-                    : i18nT('components.autoNudgePopover.stopped_help')}
+                    : stoppedHelp}
                 </span>
               </div>
             )}
@@ -685,11 +758,16 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           {/* Withheld while the clear is being confirmed: three controls in one
               row breaks the two-per-row cap (website/AUTOSDE.yaml:230), and the
               confirmation should hold the reader's whole choice -- the monitor
-              surface's own confirm replaces its row for the same reason. */}
-          {!confirmClear && (
+              surface's own confirm replaces its row for the same reason.
+              Withheld too on a retired goal, where the help line above says the
+              one thing left to do is clear it: a Save beside that line PATCHed a
+              record the service will never run again, and read as a second way
+              out that did not exist. The clear stays where it is, behind its
+              confirm, as the row's only control. */}
+          {!confirmClear && !goalRetired && (
             <button
               onClick={save}
-              disabled={saving || writeDisabled || !message.trim()}
+              disabled={saving || writeDisabled || !message.trim() || capBlocksRestart}
               className="px-3 py-1 rounded bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-50 hover:bg-accent/90"
             >
               {/* A paused loop's way out was invisible: this button silently PATCHes
@@ -697,10 +775,15 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                   reader found no resume control at all and called both "Stopped" and
                   "Stop loop" risky as a result. Gated on `active`, not on existence,
                   which is the bug -- and it reuses the `start_loop` key the no-loop
-                  case already uses, so no catalogue gains a string. */}
-              {loop?.active
-                ? i18nT('components.autoNudgePopover.save')
-                : i18nT('components.autoNudgePopover.start_loop')}
+                  case already uses, so no catalogue gains a string.
+                  A cycle-capped goal reads Start loop too, disabled (see
+                  `capBlocksRestart`): the help beside it says "press Start loop",
+                  and a button that read Save until the field was raised named a
+                  control the reader could not find. Save is what an ACTIVE loop's
+                  edit does, and only that. */}
+              {!loop || restartOnSubmit || capBlocksRestart
+                ? i18nT('components.autoNudgePopover.start_loop')
+                : i18nT('components.autoNudgePopover.save')}
             </button>
           )}
         </div>

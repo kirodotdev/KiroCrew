@@ -45,7 +45,7 @@ describe('automation transport normalizer', () => {
       kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1',
       message: 'Keep going', idleSecs: 60, maxCycles: 0, cycleCount: 7,
       active: true, lastFireAt: 123, nextDueAt: 0, maxRuntimeSecs: 0,
-      stoppedReason: '',
+      runtimeBudgetSpent: false, stoppedReason: '',
     })
   })
 

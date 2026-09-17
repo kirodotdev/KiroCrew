@@ -4615,12 +4615,26 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 #: name is seen for what it is rather than silently traversed. The share mode
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
+_WIN_DELETE = 0x00010000
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WIN_FILE_DISPOSITION_INFO_CLASS = 4
+
+
+def _validate_pinned_directory(fd: int, path: str | os.PathLike) -> int:
+    """Return *fd* only when it names a real, non-reparse directory."""
+    try:
+        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
+        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def pin_directory(path: str | os.PathLike) -> int:
@@ -4655,24 +4669,74 @@ def pin_directory(path: str | os.PathLike) -> int:
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
 
-    fd = _win_open_without_following(path)
-    try:
-        attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
-        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
-            raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+    return _validate_pinned_directory(_win_open_without_following(path), path)
 
 
-def _win_open_without_following(path: str | os.PathLike) -> int:
+def pin_directory_for_removal(path: str | os.PathLike) -> int:
+    """Pin a directory with the Windows DELETE right needed for handle removal.
+
+    This is deliberately separate from :func:`pin_directory`: ordinary pins do
+    not acquire deletion authority, while removal owners need one handle that is
+    both the validated identity and the final mutation authority. The Windows
+    share mode remains unchanged and still omits ``FILE_SHARE_DELETE``, so no
+    second open can rename or delete the directory while this handle lives.
+    """
+    if IS_POSIX:
+        return pin_directory(path)
+    return _validate_pinned_directory(
+        _win_open_without_following(path, desired_access=_WIN_GENERIC_READ | _WIN_DELETE),
+        path,
+    )
+
+
+def remove_pinned_directory(fd: int) -> None:
+    """Mark the empty Windows directory held by *fd* for deletion.
+
+    The handle must come from :func:`pin_directory_for_removal`. The kernel
+    applies the disposition to that open directory object, not to a pathname
+    resolved after validation. Actual removal completes when the last duplicate
+    of the handle closes. POSIX callers use descriptor-relative ``rmdir`` and
+    are rejected here so a future caller cannot silently substitute a by-name
+    fallback.
+    """
+    if IS_POSIX:
+        raise NotImplementedError("POSIX directory removal requires a parent descriptor")
+    if not stat.S_ISDIR(os.fstat(fd).st_mode):
+        raise NotADirectoryError(errno.ENOTDIR, "descriptor is not a directory")
+
+    class _FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("delete_file", ctypes.c_ubyte)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    info = _FileDispositionInfo(1)
+    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))  # type: ignore[attr-defined]
+    if not kernel32.SetFileInformationByHandle(
+        handle,
+        _WIN_FILE_DISPOSITION_INFO_CLASS,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+
+
+def _win_open_without_following(
+    path: str | os.PathLike,
+    *,
+    desired_access: int = _WIN_GENERIC_READ,
+) -> int:
     """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
 
-    Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
-    not carry separate copies of the same security-critical flags. What each of
-    them then asserts about the descriptor differs; how the object is reached must
-    not.
+    Shared by :func:`pin_directory`, :func:`pin_directory_for_removal`, and
+    :func:`open_file_no_reparse` so they do not carry separate copies of the
+    same security-critical flags. What each of them then asserts about the
+    descriptor differs; how the object is reached must not.
 
     ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
     opened AS ITSELF, so the caller sees what is really there and the target is
@@ -4708,7 +4772,7 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     kernel32.CreateFileW.restype = wintypes.HANDLE
     handle = kernel32.CreateFileW(
         os.fspath(path),
-        _WIN_GENERIC_READ,
+        desired_access,
         _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING,
