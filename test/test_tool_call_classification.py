@@ -131,6 +131,7 @@ class TestClassifyToolCall:
         )
         assert got.is_shell is True
         assert got.tool_name == "execute_bash"
+        assert got.tool_identity_trusted is True
         assert got.mcp_server_name == ""
         assert got.identity_trusted is False
 
