@@ -819,7 +819,6 @@ test/test_prepare_pr_local_review.py
 test/test_prepare_pr_profiles.py
 test/test_prepare_pr_status.py
 test/test_previous_result_read_off_loop.py
-test/test_process_tree.py
 test/test_process_tree_kill.py
 test/test_project_alias.py
 test/test_project_git.py

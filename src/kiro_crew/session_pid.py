@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -1731,6 +1731,90 @@ def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
                 entry = f"{key}:{token}" if token else key
                 f.write(f"{entry}\n")
                 existing.add(entry)
+
+
+def _recorded_start_token(record: object) -> str | None:
+    """The start identity a caller already captured, as a file field.
+
+    The write path must NEVER read a live pid's identity for itself. Reading it
+    at write time reopens the reuse window the caller closed: a descendant that
+    exited and had its number taken would be written with the STRANGER's token,
+    and the sweep's guard compares live against recorded -- both the stranger's,
+    so they match, and it kills an unrelated process. A caller earns the right to
+    write a token by capturing it while the pid was confirmed to be its own; this
+    only carries that value through.
+
+    Accepts the ``(start_id, basename)`` record shape and the legacy scalar. A
+    value that cannot be a field -- absent, or carrying the ``:`` the format
+    separates on -- degrades to ``None``, which writes the two-field shape and
+    leaves the sweep with no token to match on.
+    """
+    value = record[0] if isinstance(record, tuple) and record else record
+    if value is None:
+        return None
+    token = str(value)
+    return token if token and ":" not in token else None
+
+
+def _replace_child_pids(
+    pids: Mapping[int, object], parent_pid: int, *, drop: Iterable[int] = ()
+) -> bool:
+    """Rewrite this parent's lines for the children the caller names.
+
+    The whole-set counterpart to :func:`_track_child_pids`, for a caller that
+    re-enumerates its tree and knows the complete answer each time. It is what
+    :func:`~kiro_crew.acp.runtime.AcpRuntime._snapshot_descendants` needs and an
+    append cannot give: a pid whose start identity changed already has a line
+    under the same ``child:parent`` key, and the append dedupes on that prefix,
+    so the stale identity would survive. Removing the line and appending a fresh
+    one is two writes, and a caller cannot tell that the first one failed --
+    ``_untrack_child_pids`` discards the rewrite's answer, by design, because
+    pruning a dead entry is self-retrying. Replacing a live entry is not.
+
+    One lock, one atomic rewrite, and the answer is returned.
+
+    **Only the caller's own children are touched.** A line is removed when its
+    child pid is named in *pids* or in *drop* -- never merely because it sits
+    under this ``parent_pid``. A root pid is reused like any other: a descendant
+    that outlived an earlier runtime holding this number is still tracked under
+    it, and wiping the block by owner alone would untrack that survivor
+    permanently, which is the leak this file exists to prevent. Lines under
+    another parent, and the bare root lines, are likewise untouched.
+
+    *drop* names the children to remove without rewriting -- the ones the caller
+    has confirmed gone. Passing neither *pids* nor *drop* writes nothing.
+
+    Field 3 is :func:`_recorded_start_token` of the mapping's VALUE, so the
+    identity written is the one the caller captured under confirmation. Same
+    two-field fallback as :func:`_track_child_pids`, so the file stays one
+    format.
+
+    Returns ``False`` when the rewrite failed, so the caller can leave its own
+    in-memory state alone and retry on its next pass.
+    """
+    if not parent_pid:
+        return False
+    owned = {str(p) for p in pids} | {str(p) for p in drop}
+    if not owned:
+        return True
+    with _pid_file_lock():
+        path = _pid_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        kept: list[str] = []
+        for raw in lines:
+            entry = raw.strip()
+            if not entry:
+                continue
+            fields = entry.split(":")
+            if len(fields) >= 2 and fields[1] == str(parent_pid) and fields[0] in owned:
+                continue
+            kept.append(entry)
+        for pid, record in pids.items():
+            key = f"{pid}:{parent_pid}"
+            token = _recorded_start_token(record)
+            kept.append(f"{key}:{token}" if token else key)
+        return _rewrite_pid_file(path, "\n".join(kept) + "\n" if kept else "")
 
 
 def _untrack_child_pids(pids: Mapping[int, object]) -> None:

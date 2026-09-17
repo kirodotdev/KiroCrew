@@ -156,6 +156,105 @@ class TestTrackUntrack:
         lines = pid_file.read_text(encoding="utf-8").strip().splitlines()
         assert "100" in lines  # bare line preserved
 
+    def test_replace_child_pids_rewrites_only_the_children_it_names(self, pid_file: Path) -> None:
+        """A whole-set write for the caller's OWN children, nothing else."""
+        from kiro_crew.session_pid import _replace_child_pids, _track_child_pids, _track_pid
+
+        _track_pid(100)  # bare root line, another owner's business
+        with patch("kiro_crew.session_pid._pid_start_token", return_value=None):
+            _track_child_pids({200: None, 300: None}, parent_pid=999)
+            _track_child_pids({400: None}, parent_pid=888)  # a different parent
+
+        assert (
+            _replace_child_pids(
+                {300: ("t300", b"x"), 500: ("t500", b"y")}, parent_pid=999, drop=(200,)
+            )
+            is True
+        )
+
+        lines = set(pid_file.read_text(encoding="utf-8").strip().splitlines())
+        # 200 dropped, 500 arrived, and neither the bare root nor 888's child moved.
+        assert lines == {"100", "300:999:t300", "500:999:t500", "400:888"}
+
+    def test_replace_child_pids_keeps_a_child_it_was_not_given(self, pid_file: Path) -> None:
+        """A root PID is reused like any other number.
+
+        A descendant that outlived an earlier runtime holding this number is
+        still tracked under it. Wiping the block by owner alone would untrack
+        that survivor permanently — the leak this file exists to prevent.
+        """
+        from kiro_crew.session_pid import _replace_child_pids, _track_child_pids
+
+        with patch("kiro_crew.session_pid._pid_start_token", return_value=None):
+            _track_child_pids({777: None}, parent_pid=999)  # an older runtime's survivor
+
+        assert _replace_child_pids({300: ("t300", b"x")}, parent_pid=999) is True
+
+        lines = set(pid_file.read_text(encoding="utf-8").strip().splitlines())
+        assert lines == {"777:999", "300:999:t300"}
+
+    def test_replace_child_pids_writes_the_recorded_token_not_a_live_read(
+        self, pid_file: Path
+    ) -> None:
+        """The writer must never read a live pid's identity for itself.
+
+        Reading it here reopens the window the caller closed: a descendant that
+        exited and had its number taken would be written with the STRANGER's
+        token, and the sweep compares live against recorded — both the
+        stranger's, so they agree and it kills an unrelated process.
+        """
+        from kiro_crew.session_pid import _replace_child_pids, _track_child_pids
+
+        with patch("kiro_crew.session_pid._pid_start_token", return_value="old"):
+            _track_child_pids({200: None}, parent_pid=999)
+        assert pid_file.read_text(encoding="utf-8").strip() == "200:999:old"
+
+        with patch("kiro_crew.session_pid._pid_start_token", return_value="live-stranger") as live:
+            assert _replace_child_pids({200: ("recorded", b"x")}, parent_pid=999) is True
+
+        live.assert_not_called()
+        assert pid_file.read_text(encoding="utf-8").strip() == "200:999:recorded"
+
+    def test_replace_child_pids_falls_back_to_two_fields(self, pid_file: Path) -> None:
+        """An identity that cannot be a field leaves the sweep nothing to match."""
+        from kiro_crew.session_pid import _replace_child_pids
+
+        assert _replace_child_pids({200: (None, b"x"), 300: ("has:colon", b"y")}, 999) is True
+
+        lines = set(pid_file.read_text(encoding="utf-8").strip().splitlines())
+        assert lines == {"200:999", "300:999"}
+
+    def test_replace_child_pids_drops_a_parents_last_child(self, pid_file: Path) -> None:
+        from kiro_crew.session_pid import _replace_child_pids, _track_child_pids
+
+        with patch("kiro_crew.session_pid._pid_start_token", return_value=None):
+            _track_child_pids({200: None}, parent_pid=999)
+
+        assert _replace_child_pids({}, parent_pid=999, drop=(200,)) is True
+        assert pid_file.read_text(encoding="utf-8").strip() == ""
+
+    def test_replace_child_pids_with_nothing_named_writes_nothing(self, pid_file: Path) -> None:
+        from kiro_crew.session_pid import _replace_child_pids, _track_child_pids
+
+        with patch("kiro_crew.session_pid._pid_start_token", return_value=None):
+            _track_child_pids({200: None}, parent_pid=999)
+
+        assert _replace_child_pids({}, parent_pid=999) is True
+        assert pid_file.read_text(encoding="utf-8").strip() == "200:999"
+
+    def test_replace_child_pids_reports_a_failed_write(self, pid_file: Path) -> None:
+        """The caller publishes nothing on False, so the answer must be truthful."""
+        from kiro_crew.session_pid import _replace_child_pids
+
+        with patch("kiro_crew.session_pid._rewrite_pid_file", return_value=False):
+            assert _replace_child_pids({200: ("t", b"x")}, parent_pid=999) is False
+
+    def test_replace_child_pids_refuses_a_parentless_call(self, pid_file: Path) -> None:
+        """parent_pid=0 names no owner's block, so there is nothing to replace."""
+        from kiro_crew.session_pid import _replace_child_pids
+
+        assert _replace_child_pids({200: ("t", b"x")}, parent_pid=0) is False
+
 
 class TestCleanupOrphanedMcpServers:
     def test_dead_child_pruned(self, pid_file: Path) -> None:

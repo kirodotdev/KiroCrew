@@ -43,9 +43,12 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp._frame_record import record_frame
 from kiro_crew.acp.client import (
+    ChildRecord,
     OversizeLineUnrecoverable,
     _apply_pod_home_remap,
+    _capture_child_records,
     _drain_oversize_line,
+    _get_child_pids,
     _KiroExecutableTrustError,
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
@@ -133,8 +136,11 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_pid import (
+    _pid_gone_or_unmanaged,
+    _replace_child_pids,
     _track_pid,
     _track_session_pid,
+    _untrack_child_pids,
     _untrack_pid,
     _untrack_session_pid,
     register_protected_pid,
@@ -143,6 +149,51 @@ from kiro_crew.session_pid import (
 from kiro_crew.validation import MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
+
+
+def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
+    """Whether a descendant outside the walk is still the process we recorded.
+
+    Liveness alone cannot answer this, and answering it with liveness is how a
+    stranger gets killed: a descendant that exited and had its number taken
+    reads as alive, and carrying its record forward would publish the number as
+    ours. The sweep then finds live identity and recorded identity in agreement
+    -- both the stranger's -- and signals it.
+
+    So compare the identity instead. A pid that is gone reads ``None`` and fails
+    the same comparison, which is the answer we want for it too. An unreadable
+    identity (a live process we may not introspect) also fails: we cannot vouch
+    for it, and a record we cannot vouch for must not be written.
+    """
+    recorded = record[0] if isinstance(record, tuple) and record else None
+    if recorded is None:
+        return False
+    return platform_compat.get_process_start_id(pid) == recorded
+
+
+def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
+    """Untrack the descendants that are gone; return the ones still alive.
+
+    A descendant's entry is pruned by ITS OWN liveness, never by the root's
+    fate. One that escaped the group kill (it called setsid, so killpg never
+    reached it) must keep its entry: that entry is the only handle the periodic
+    sweep and the next startup cleanup have on it, and dropping it is precisely
+    the leak this tracking exists to close.
+
+    A synchronous unit so the caller can hand the whole thing to a worker
+    thread: the liveness probes read ``/proc`` and the untrack takes the PID
+    file's exclusive lock, neither of which may run on the event loop.
+    """
+    dead = {pid: rec for pid, rec in saved.items() if _pid_gone_or_unmanaged(pid)}
+    if dead:
+        try:
+            _untrack_child_pids(dead)
+        except Exception:
+            logger.debug(
+                "AcpRuntime: untracking descendant PIDs %s failed", list(dead), exc_info=True
+            )
+    return [pid for pid in saved if pid not in dead]
+
 
 __all__ = [
     "AcpRuntime",
@@ -1317,7 +1368,13 @@ class AcpRuntime:
         self._pid: int | None = None
         self._start_time: str | None = None
         self._spawn_monotonic: float | None = None
-        self._child_pids: dict[int, int | None] = {}
+        # pid -> (start_id, basename): the record shape session_pid verifies a
+        # descendant's identity against before it signals one, so a recycled pid
+        # is skipped. Written by _snapshot_descendants at spawn and on every
+        # session start -- nothing populated it before, which left
+        # _provider_descendant_records with only its live walk, and a walk can
+        # run only while the root is alive.
+        self._child_pids: dict[int, ChildRecord] = {}
         # Names THIS spawn of the shared child process (fresh per spawn, cleared
         # with the process) — the identity a resource minted by the child is
         # compared against later. See AcpClient.process_instance for why the
@@ -1378,6 +1435,12 @@ class AcpRuntime:
         # Entitlement probe state (probe_advertised_models): single-flight lock
         # plus a short-TTL cache of the last non-empty answer.
         self._entitlement_probe_lock = asyncio.Lock()
+        # One descendant pass at a time. Each pass reads the tree and rewrites
+        # this root's block from what it read, so two overlapping passes race:
+        # the one that finishes last wins, and if that is the OLDER read, the
+        # newer pass's descendants are dropped from both the record and the file.
+        # Sessions start concurrently on a shared runtime, so this is reachable.
+        self._descendant_scan_lock = asyncio.Lock()
         self._entitlement_probe_at = 0.0
         self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
@@ -2300,6 +2363,15 @@ class AcpRuntime:
             await asyncio.to_thread(require_unchanged_derived_spec, self._derived_spec_snapshot)
             self._initialized = True
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
+            # INSIDE the guard, which is what makes a cancelled scan safe. The
+            # runtime is already `_initialized` here and the caller does not hold
+            # it yet, so a CancelledError raised inside the scan -- an ordinary
+            # shutdown or a spawn-budget timeout during a /proc walk -- would
+            # otherwise leave a live process nobody owns. The guard's kill is the
+            # right answer to that, and it cannot fire for a merely FAILED scan:
+            # _snapshot_descendants swallows every Exception itself, so only a
+            # cancellation reaches this arm.
+            await self._snapshot_descendants(retry_when_empty=True)
         except BaseException:
             try:
                 # This death IS abnormal (failed spawn/handshake): kill()'s
@@ -2310,6 +2382,153 @@ class AcpRuntime:
                     "AcpRuntime: cleanup kill after failed spawn/handshake failed", exc_info=True
                 )
             raise
+
+    #: One retry for a descendant scan that came back empty. The spawned root
+    #: is a launcher that forks the agent, which forks again, so a scan racing a
+    #: cold start can legitimately see nothing. A single retry is enough because
+    #: every later session start scans again. Class attribute so tests can zero
+    #: it rather than pay it.
+    _DESCENDANT_RESCAN_DELAY = 0.5
+
+    def _root_identity_holds(self) -> bool:
+        """Whether this runtime's PID is still the process it spawned.
+
+        ``_start_time`` is read once, at spawn (``get_process_start_id``), and a
+        pid plus a start instant name one process for good: two processes on the
+        same number at different times cannot share it. Without a recorded
+        identity there is nothing to compare, and the answer is no -- recording a
+        tree we cannot prove is ours is how a stranger gets signalled.
+        """
+        pid = self._pid
+        recorded = self._start_time
+        if pid is None or recorded is None:
+            return False
+        if platform_compat.get_process_start_id(pid) == recorded:
+            return True
+        logger.warning(
+            "AcpRuntime: root PID %d is no longer the process spawned for this "
+            "runtime -- recording nothing",
+            pid,
+        )
+        return False
+
+    async def _snapshot_descendants(self, *, retry_when_empty: bool = False) -> None:
+        """Record this runtime's descendant PIDs in the tracking file.
+
+        The PID this runtime registers is the sandbox launcher, not the agent:
+        the tree is ``launcher -> agent -> agent chat process -> MCP servers``,
+        and every one of those below the root held no entry in either PID file.
+        A root that died before its subtree -- a teardown race, a crash mid-init
+        -- therefore left a multi-hundred-MB subtree reparented to init that no
+        reaper could act on, because every sweep keys off those files.
+
+        Every pass re-enumerates the tree and writes the whole answer, because
+        nothing tells this process when a descendant exits: they are its
+        grandchildren, so there is no ``SIGCHLD`` and no wait to reap. Looking is
+        the only way to learn, and the record has to be corrected in both
+        directions -- a pid that left keeps or loses its line by its own
+        liveness, and a pid still there gets the identity read on THIS pass, not
+        the one recorded earlier. A stale identity is what would make the
+        teardown sweep read a live descendant as recycled and skip it.
+
+        A pid the walk cannot reach but which is still alive keeps its record:
+        that is the child that left the process group, and its record is the only
+        handle the teardown and the sweeps have on it. One confirmed gone is
+        dropped from both the record and the file.
+
+        The identity captured is re-confirmed against a second walk before it is
+        persisted. A pid released between the enumeration and the capture can be
+        held by an unrelated process by the time its identity is read, and that
+        identity would then be recorded as OURS -- self-consistent, so every
+        later ownership check passes and the teardown signals a stranger. A pid
+        absent from the second walk is not a descendant of this root and is
+        dropped. The window is not closed, but crossing it now needs a pid to
+        become a stranger and then become our descendant again.
+
+        The file is written BEFORE the in-memory record is replaced, and a failed
+        write publishes nothing: the next pass re-reads the tree and tries again.
+
+        Never raises on failure. A failed scan must not fail the spawn or the
+        session start that called it -- the cost is a leak the sweep still
+        reports, not a broken session -- but it logs at WARNING, because that
+        report is then the only signal left. A CANCELLATION is not a failure and
+        is deliberately NOT swallowed: it reaches the caller's cleanup guard,
+        which owns the half-built runtime or session it must tear down.
+
+        POSIX-shaped: ``_get_child_pids`` short-circuits on Windows, where the
+        tree kill walks descendants itself through ``taskkill /T``.
+        """
+        pid = self._pid
+        if pid is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            async with self._descendant_scan_lock:
+                # The root's own number can be reused too, and a walk from a
+                # recycled root enumerates a stranger's whole tree -- which would
+                # then be recorded as ours and signalled at teardown. Verified
+                # before the walk and again before the write, because the root can
+                # exit while the walk runs. No recorded identity means it cannot
+                # be verified at all, so nothing is recorded.
+                if not self._root_identity_holds():
+                    return
+                # /proc reads on Linux, `pgrep`/`ps` subprocesses on macOS:
+                # blocking either way, so they ride the same dedicated executor
+                # the client path and the teardown sweep use, not the event loop.
+                descendants = await loop.run_in_executor(
+                    subprocess_executor(), _get_child_pids, pid
+                )
+                if not descendants and retry_when_empty:
+                    await asyncio.sleep(self._DESCENDANT_RESCAN_DELAY)
+                    descendants = await loop.run_in_executor(
+                        subprocess_executor(), _get_child_pids, pid
+                    )
+                if not descendants:
+                    return
+                fresh: dict[int, ChildRecord] = await loop.run_in_executor(
+                    subprocess_executor(), _capture_child_records, descendants
+                )
+                still_ours = set(
+                    await loop.run_in_executor(subprocess_executor(), _get_child_pids, pid)
+                )
+                confirmed = {p: rec for p, rec in fresh.items() if p in still_ours}
+                escaped = {
+                    p: rec
+                    for p, rec in self._child_pids.items()
+                    if p not in confirmed and _escapee_is_still_ours(p, rec)
+                }
+                merged = {**escaped, **confirmed}
+                gone = [p for p in self._child_pids if p not in merged]
+                if merged == self._child_pids:
+                    return
+                if not self._root_identity_holds():
+                    return
+                if not await loop.run_in_executor(
+                    subprocess_executor(),
+                    functools.partial(
+                        _replace_child_pids, merged, parent_pid=pid, drop=tuple(gone)
+                    ),
+                ):
+                    logger.warning(
+                        "AcpRuntime: could not write the descendant PIDs of root %d -- "
+                        "retrying on the next scan",
+                        pid,
+                    )
+                    return
+                self._child_pids = merged
+            logger.info(
+                "AcpRuntime: tracking %d descendant PID(s) of root %d (%d outside the tree)",
+                len(merged),
+                pid,
+                len(escaped),
+            )
+        except Exception:
+            logger.warning(
+                "AcpRuntime: descendant PID snapshot failed for root %s -- a tree "
+                "that outlives this runtime would be invisible to every reaper",
+                pid,
+                exc_info=True,
+            )
 
     # Grace window for SIGTERM before escalating, and the post-SIGKILL reap
     # window. Class attributes so tests can shrink them.
@@ -2427,6 +2646,21 @@ class AcpRuntime:
                     unregister_protected_pid(pid)
                 except Exception:
                     logger.debug("AcpRuntime: PID untracking failed for %s", pid, exc_info=True)
+
+            # Runs on BOTH branches above: whether the root died or survived says
+            # nothing about a descendant that left the process group, and the
+            # entry of one still running is what the sweep needs to reap it.
+            saved_children = dict(self._child_pids)
+            self._child_pids = {}
+            if saved_children:
+                survivors = await asyncio.to_thread(_prune_dead_descendants, saved_children)
+                if survivors:
+                    logger.warning(
+                        "AcpRuntime: retained tracking for %d descendant PID(s) that "
+                        "survived teardown; the orphan sweep will reap them: %s",
+                        len(survivors),
+                        survivors,
+                    )
 
     # ── Reader Task (single owner of stdout) ──
 
@@ -4898,6 +5132,21 @@ class AcpRuntime:
                     "prompt"
                 ]
 
+        # Each session start forks another agent process under the root, and
+        # its MCP servers have just reported, so scan again: the spawn snapshot
+        # predates all of them. Safe to repeat -- see _snapshot_descendants.
+        #
+        # Guarded like every other post-session/new step here: session/new has
+        # already succeeded, so a cancellation inside the scan would leave the
+        # session live in the shared process with no handle returned to anyone.
+        # Only a cancellation can reach this arm; the scan swallows its own
+        # failures.
+        try:
+            await self._snapshot_descendants()
+        except BaseException:
+            await self.terminate_session(session_id)
+            raise
+
         logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
         return handle
 
@@ -5277,6 +5526,16 @@ class AcpRuntime:
             )
         else:
             await handle.drain_init(no_report_ceiling=0.0)
+
+        # A resume re-initializes the MCP servers and forks the same agent
+        # processes a fresh session does, so it needs the same scan; without it
+        # every descendant a resumed session created stays unrecorded. Guarded
+        # for the same reason as create_session: session/load already succeeded.
+        try:
+            await self._snapshot_descendants()
+        except BaseException:
+            await self.terminate_session(resume_sid)
+            raise
 
         logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
         return handle

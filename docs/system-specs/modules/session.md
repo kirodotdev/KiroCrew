@@ -1847,15 +1847,87 @@ the internal MCP server, slack-mcp) in separate process groups.  When a
 session dies, `killpg` only reaches the kiro-cli process group — MCP servers
 in other groups get reparented to init and leak memory.
 
-**Tracking**: at session init, `AcpClient.ensure_ready()` snapshots all
-descendant PIDs and persists them to `kiro_pids.txt` as
-`child_pid:parent_pid[:start-id]` entries via
-`_track_child_pids(pids, parent_pid=self._pid)`; the third field is the
+**Tracking**: both transports snapshot their descendant PIDs and persist
+them to `kiro_pids.txt` as `child_pid:parent_pid[:start-id]` entries —
+`AcpClient` appends them with `_track_child_pids(pids, parent_pid=<root pid>)`,
+`AcpRuntime` rewrites its root's whole block with `_replace_child_pids` (see
+below); the third field is the
 child's process-start identity (`_pid_start_token`, colon-free, in-process
 and non-blocking on every platform), omitted only when unreadable at track
-time.  On clean shutdown,
-`_reset_state()` removes them via `_untrack_child_pids()`.  If the gateway
-crashes, the entries remain in the file for the next startup.
+time.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
+`_snapshot_descendants()`, called repeatedly for a reason the one-shot client
+scan does not face: the runtime's registered PID is the sandbox launcher, and
+the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
+so the scan runs when the initialize handshake proves the agent came up and
+then at the end of every `_finish_create_session()` and `load_session()`,
+because each session start — fresh or resumed — forks another agent process
+and re-initializes MCP servers the earlier scan could not have seen.
+
+Nothing announces a descendant's exit: they are the gateway's
+GRANDchildren, so there is no `SIGCHLD` to catch and no wait to reap (the
+gateway does not set `PR_SET_CHILD_SUBREAPER`).  Looking is the only way to
+learn, so each pass re-enumerates the tree and writes the whole answer through
+`_replace_child_pids(records, parent_pid=<root>, drop=<gone>)` — one lock, one
+atomic rewrite, a `bool` back.
+
+One rule governs every field-3 write, and the reason is asymmetric harm.  A
+token that is stale costs a MISSED reap: the sweep compares live against
+recorded, sees them differ, and prunes the line without killing — a leak, and
+the sweep still reports it.  A token that names the wrong process costs a WRONG
+KILL: live and recorded agree (both the stranger's), the recycle guard does not
+fire, and `_cleanup_orphaned_mcp_servers` signals a process that merely reused
+the number.  So when identity is in doubt the answer is always "do not record",
+never "record whatever holds the number now":
+
+> **An identity may be written only if it was captured while that pid was
+> confirmed to be ours.**
+
+Everything else follows from it:
+
+- **The writer never reads a live identity.**  `_replace_child_pids` persists
+  `_recorded_start_token` of the mapping's value — the token its caller
+  captured — and calls no reader of its own.  An append-based writer had no
+  such hazard because it never refreshed field 3 at all.
+- **A pid in the tree is confirmed by a second walk before its fresh identity
+  is kept.**  One released between the enumeration and the capture can be held
+  by an unrelated process when its identity is read; absent from the second
+  walk it is not a descendant of this root, and it is dropped.  The window is
+  not closed — crossing it now needs a pid to become a stranger and then become
+  our descendant again.
+- **A pid outside the tree is kept by IDENTITY, not liveness.**
+  `_escapee_is_still_ours` compares its live start id against the recorded one.
+  Liveness alone is the kill-a-stranger case: a descendant that exited and had
+  its number taken reads as alive.  A match keeps the child that left the
+  process group, whose record is the only handle anything has on it; a mismatch,
+  an unreadable identity and an exit are all "not ours" and drop the line.
+- **The root is bracketed too.**  `_root_identity_holds` compares the runtime's
+  own pid against the start id recorded at spawn, before the first walk and
+  again before the write, because a walk from a recycled root enumerates a
+  stranger's whole tree.  No recorded identity means nothing is recorded.
+- **Only the caller's own children are rewritten.**  A line is removed when its
+  child pid is named in `records` or in `drop`, never merely for sitting under
+  this `parent_pid`: a root pid is reused like any other, and a descendant that
+  outlived an earlier runtime holding this number is still tracked under it.
+- **One pass at a time per runtime.**  Each pass rewrites the block from what it
+  read, so two overlapping passes let the older read win and drop the newer
+  descendants; sessions start concurrently on a shared runtime, so the pass is
+  serialized on a per-runtime lock.
+- **The file is written before the in-memory record.**  A `False` publishes
+  nothing, so the record never claims a line the file does not carry, and the
+  next pass retries.
+- **A failure never raises, a cancellation always does.**  Losing a snapshot
+  must not fail a live session, so every `Exception` is logged at WARNING and
+  swallowed.  A `CancelledError` is not a failure and reaches the caller's
+  cleanup guard, which kills the half-built runtime or terminates the session
+  it owns.
+
+On clean shutdown each transport prunes entries by the DESCENDANT's own
+liveness, never by the root's fate: `AcpClient._reset_state()` and
+`AcpRuntime._kill_inner()` (through `_prune_dead_descendants`) untrack only the
+children confirmed gone and log the survivors at WARNING.  A child that
+escaped the group kill by calling `setsid` keeps its entry, because that entry
+is the only handle the periodic sweep and the next startup cleanup have on it.
+If the gateway crashes, the entries remain in the file for the next startup.
 
 **Detection**: reads `kiro_pids.txt`, processes only `child:parent` lines
 (bare PID lines are kiro-cli parents handled by `cleanup_orphaned_sessions()`).
