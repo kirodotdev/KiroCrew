@@ -3796,6 +3796,15 @@ the message against each skill's `triggers` (negative `!`-prefixed triggers
 exclude). To keep it off the per-message filesystem/config hot path:
 - the discovered skill-file list is TTL-cached (`_iter`, `_ITER_CACHE_TTL_SECS`),
   invalidated by `create_auto_skill`;
+- the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
+  sensitive-path fence through `is_sensitive_resolved_path` against the
+  `realpath` it has already computed for loop detection and containment, with
+  the fence's anchors resolved on that same thread, so the ~1.4k per-scan
+  checks on an install with a few provider packages submit nothing to the
+  two-worker `mc-pathres` pool. That pool is FIFO and sized for
+  the event loop; a scan flooding it from worker threads queued the loop's own
+  resolutions behind the backlog until the loop-stall watchdog fired
+  (see [security.md](security.md));
 - the `max_triggered` cap is read from the config watcher's snapshot
   (`_max_triggered_now`) — a plain attribute read, so still no
   `KiroCrewConfig.load()` per message, and `kirocrew config set

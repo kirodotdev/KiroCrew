@@ -5137,14 +5137,45 @@ class KiroCrewConfig:
         ``model`` slot only; ``""`` when the agent declares none, so the caller
         falls back to the global. ``agents_dir`` overrides the lookup directory
         (a dependency-injection seam for tests); defaults to ``kiro_agents_dir()``.
+
+        Reads the ``agent_discovery.parsed_agent_specs`` snapshot -- the same
+        stat-signature-revalidated cache behind ``agent_skill_globs`` -- rather
+        than re-parsing every spec per call. This runs SYNCHRONOUSLY on the event
+        loop from the provider factory (every session start, every background
+        recycle), and a per-call scan of a ~125-file agents directory is ~125
+        ``realpath`` calls plus twice as many ``is_sensitive_path`` round trips
+        through the two-worker ``mc-pathres`` pool; when that pool is also
+        serving the skill scanner's bulk traffic, those waits queue and their
+        sum crosses the loop-stall watchdog. A warm call now costs one
+        ``scandir``. On the loop, cold or changed snapshots refresh in the
+        ``mc-discovery`` pool while this lookup serves previous rows (or no
+        pin until the first refresh lands). Off-loop callers parse inline.
+
+        JSON-first precedence is kept: with two live specs of DIFFERENT stems
+        both declaring this name, the ``.json`` one wins, as the unordered
+        first-match scan this replaces guaranteed (``iter_agent_spec_files``
+        lists JSON entries first). Never raises -- a failure to import, walk or
+        parse is "no pin here", never an exception into model resolution.
         """
         if not agent:
             return ""
         base = agents_dir if agents_dir is not None else kiro_agents_dir()
-        for af in iter_agent_spec_files(base, ordered=False):
-            ad = _read_hardened_agent_spec(af)
-            if ad is None:
-                continue
+        try:
+            # Deferred import: agent_discovery imports kiro_crew.hooks, whose
+            # closure reaches back into this module (see _project_declares_agent).
+            from kiro_crew.agent_discovery import cached_agent_specs, parsed_agent_specs
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                rows = parsed_agent_specs(base, operation="load_config", source="unknown")
+            else:
+                rows = cached_agent_specs(base, operation="load_config", source="unknown")
+        except Exception:
+            return ""
+        # Stable sort: JSON rows first, filename order preserved within each group.
+        rows.sort(key=lambda row: row[1].suffix.lower() != ".json")
+        for ad, af in rows:
             # Skip stray non-object JSON a user may have dropped in the dir.
             if isinstance(ad, dict) and (ad.get("name") == agent or af.stem == agent):
                 return ad.get("model") or ""

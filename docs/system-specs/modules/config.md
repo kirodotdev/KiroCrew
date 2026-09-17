@@ -927,6 +927,24 @@ a per-agent model pin (per-agent pin > global default). Reads only the kiro
 `model` slot. `agents_dir` is a dependency-injection seam for tests; defaults to
 `kiro_agents_dir()`.
 
+Reads the `agent_discovery.parsed_agent_specs` snapshot (stat-signature
+revalidated, the same cache behind `agent_skill_globs`) rather than re-parsing
+every spec per call. It runs synchronously on the event loop from the provider
+factory — every session start and every background recycle — and a per-call
+scan of a ~125-file agents directory was ~125 `realpath` calls plus twice as many
+`is_sensitive_path` round trips through the two-worker `mc-pathres` pool; with
+the skill scanner's bulk traffic on the same pool those waits queued and their
+sum crossed the loop-stall watchdog (eight of eight dumps on the reporting host).
+On-loop calls read only the cached snapshot dict and schedule at most one
+in-flight revalidation per directory on `mc-discovery`; every `scandir`, stat
+and parse stays on that worker. Cold or changed snapshots serve previous rows
+(or no pin until the first refresh lands). A warm worker revalidation costs one
+`scandir` and no parses, whereas off-loop callers revalidate and parse inline.
+JSON-first
+precedence for two live specs of different stems declaring one name is kept by
+a stable sort on suffix, and any failure to import, walk or parse is `""`, never
+an exception into model resolution.
+
 ### `kiro_agents_dir() -> Path` (`config/paths.py`)
 Leaf helper returning `~/.kiro/agents` — the **user-level** scope. Lives in the leaf
 module so `loader.py` (and `_resolve_named_agent_model`'s `agents_dir` DI seam) can

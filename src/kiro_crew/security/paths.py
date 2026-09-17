@@ -1736,7 +1736,9 @@ def _realpath_or_none(path: str) -> str | None:
         return None
 
 
-def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
+def _candidate_forms(
+    path_str: str, base_dir: str | None = None, *, pre_resolved: bool = False
+) -> set[str]:
     """Expand *path_str* into every candidate form the sensitive-path gates match.
 
     Symlink-resolved forms defeat a link bypass; the lexical forms are the
@@ -1746,6 +1748,13 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     :func:`_path_in_home_dirs` (is the path INSIDE a protected location?) and
     :func:`path_contains_sensitive` (does the path CONTAIN one?) so the
     symlink/anchoring hardening cannot drift between the two directions.
+
+    *pre_resolved* says the caller ALREADY holds the canonical spelling -- the
+    output of ``os.path.realpath`` computed on its own thread -- so no
+    resolution is submitted to the ``mc-pathres`` pool: the candidates are the
+    input and its ``normpath``, which is exactly what :func:`_resolved_spellings`
+    returns for a path that has no link left to follow. Reserved for
+    :func:`is_sensitive_resolved_path`; see there for why a caller may claim it.
     """
     # Expand ~ and $HOME
     expanded = os.path.expanduser(os.path.expandvars(path_str))
@@ -1766,7 +1775,7 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     # A resolution that does not COMPLETE raises PathResolutionStalled through
     # here, and every gate turns that into a refusal: no lexical-only matching
     # of a path whose canonical form is unknown.
-    candidates: set[str] = _resolved_forms_bounded(expanded)
+    candidates: set[str] = set() if pre_resolved else _resolved_forms_bounded(expanded)
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
     return candidates
@@ -2209,11 +2218,23 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
     (see the note above the constant for why the raw env vars are not enough).
+
+    *inline* resolves the anchors and rebuilds the set on the CALLING thread
+    instead of through the bounded ``mc-pathres`` hop -- the same stance
+    :func:`sandbox_credential_targets` takes, and for the same reason: the
+    bound exists to keep the EVENT LOOP responsive, and a caller that is
+    already on a worker thread gains nothing from it while its submissions
+    queue ahead of the loop's own. Reserved for :func:`is_sensitive_resolved_path`,
+    whose contract is exactly such a caller. The freshness invariant is kept:
+    the roots are still resolved on every call and key the cache, so a repointed
+    root still invalidates; what changes is only WHERE the ``realpath`` runs. A
+    wedged mount blocks the calling thread here rather than raising a stall --
+    which is what the same thread's own ``os.walk`` on that mount does anyway.
 
     ponytail: the returned set is the cached instance, not a copy — both
     callers only iterate it. A future caller that MUTATES the result would
@@ -2224,13 +2245,16 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
-    roots = _resolved_root_key()
+    roots = _resolve_root_anchors(str(Path.home())) if inline else _resolved_root_key()
     key = (tuple(home_dirs),) + roots
     now = time.monotonic()
     cached = _home_targets_cache.get(key)
     if cached is not None and now < cached[0]:
         return cached[1]
-    targets = _rebuild_targets_bounded(home_dirs, roots)
+    if inline:
+        targets = _home_dir_targets_uncached(home_dirs, roots)
+    else:
+        targets = _rebuild_targets_bounded(home_dirs, roots)
     # Bound the dict: the key space is tiny (two constant home_dirs lists ×
     # roots), but a test or embedder that churns KIROCREW_HOME must not grow it
     # without limit.
@@ -2294,6 +2318,7 @@ def _path_in_home_dirs(
     base_dir: str | None = None,
     *,
     strict: bool = False,
+    pre_resolved: bool = False,
 ) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
@@ -2323,15 +2348,19 @@ def _path_in_home_dirs(
     ``sub/cfg.ini`` resolves against the real directory rather than whatever CWD
     the gateway process happens to have.  Absolute inputs are unaffected;
     ``base_dir=None`` preserves the historical CWD-relative behavior.
+    ``pre_resolved`` is :func:`_candidate_forms`'s flag of the same name, and
+    such a caller is by contract on its own worker thread, so the anchors are
+    resolved inline as well (``_home_dir_targets(inline=True)``): the whole
+    check then performs no ``mc-pathres`` submission.
     """
     if not path_str:
         return False
 
     try:
-        candidates = _candidate_forms(path_str, base_dir)
+        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
-        sensitive_targets = _home_dir_targets(home_dirs)
+        sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
@@ -2359,7 +2388,11 @@ def _path_in_home_dirs(
 
 
 def _is_keystone_publish_artifact(
-    path_str: str, base_dir: str | None = None, *, strict: bool = False
+    path_str: str,
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+    pre_resolved: bool = False,
 ) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
@@ -2384,8 +2417,8 @@ def _is_keystone_publish_artifact(
     if not path_str:
         return False
     try:
-        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS)
-        candidates = _candidate_forms(path_str, base_dir)
+        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, inline=pre_resolved)
+        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         if strict:
             raise
@@ -2436,6 +2469,43 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     consumers' business.
     """
     return sensitive_path_refusal(path_str, base_dir) is not None
+
+
+def is_sensitive_resolved_path(resolved: str) -> bool:
+    """:func:`is_sensitive_path` for a path the caller has ALREADY canonicalised.
+
+    Same decision and same targets, with NO ``mc-pathres`` submission on either
+    half: the candidate is matched lexically, and the anchors (``$HOME``, the
+    override roots, the keystone leaves) are resolved inline on the calling
+    thread (:func:`_home_dir_targets` with ``inline=True``), fresh on every call
+    and keying the same TTL cache the bounded path uses. *resolved* MUST be the
+    output of ``os.path.realpath`` (or ``Path.resolve``) that the caller computed
+    on its OWN worker thread: the only thing the bounded resolution would add for
+    such an input is the same string back, since a canonical path has no link
+    left to follow. Handing this an unresolved spelling is a link bypass, and
+    calling it from the event loop forfeits the bound the pool exists to give
+    that loop -- so it is for exactly one shape of caller: a bulk WALK on a
+    worker thread that already resolves every entry to detect symlink loops and
+    prove containment, and only then asks whether the entry is fenced.
+
+    Why a separate entry point rather than "just call the pool anyway": the pool
+    is sized for the event loop (two workers, so a wedged mount can pin at most
+    two threads), and it is FIFO. A walk over a thousand skill directories, each
+    submitting a resolution the walk had already performed plus an anchor
+    resolution per call, fills that queue from worker threads while the loop's
+    own latency-critical resolutions wait behind it -- not for a slow disk, for
+    the queue -- and the accumulated waits cross the loop-stall watchdog. The
+    scanner's realpath is unbounded either way (it runs off the loop, and
+    ``os.walk`` on the same mount is unbounded too), so the pool bought that
+    caller nothing and cost the loop its budget.
+
+    A wedged mount therefore does not surface here as a refusal: it blocks the
+    calling thread inside ``realpath``, exactly as that thread's own walk of the
+    same mount would. Nothing is admitted while it blocks.
+    """
+    return _path_in_home_dirs(
+        resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True
+    ) or _is_keystone_publish_artifact(resolved, pre_resolved=True)
 
 
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a

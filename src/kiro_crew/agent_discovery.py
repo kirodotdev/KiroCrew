@@ -96,6 +96,7 @@ _PROJECT_NAMES_CACHE: dict[str, tuple[tuple[_ListAgentsSig, ...], frozenset[str]
 # ``data`` dicts as read-only.
 _PARSED_SPECS_LOCK = threading.Lock()
 _PARSED_SPECS_CACHE: dict[str, tuple[_ListAgentsSig, list[tuple[dict[str, Any], Path]]]] = {}
+_PARSED_SPECS_REFRESHING: set[str] = set()  # Guarded by _PARSED_SPECS_LOCK.
 # Bumped by clear_list_agents_cache() under the lock. A parse snapshot records
 # the generation it started under and is discarded instead of stored when a
 # clear landed meanwhile — otherwise an in-flight parse could re-publish rows
@@ -979,6 +980,55 @@ def parsed_agent_specs(
         if _PARSED_SPECS_GEN == gen:
             _PARSED_SPECS_CACHE[key] = (signature, rows)
     return list(rows)
+
+
+def cached_agent_specs(
+    agents_dir: Path | None = None,
+    *,
+    operation: str,
+    source: str,
+) -> list[tuple[dict[str, Any], Path]]:
+    """Return cached specs without filesystem calls on the caller's thread.
+
+    The caller only reads the snapshot dict; every scandir, stat and parse runs
+    on ``mc-discovery``. A cold, just-cleared or changed snapshot serves the
+    previous rows (or none) until the worker refresh lands. A loop-thread model
+    lookup therefore briefly degrades rather than blocking on filesystem I/O or
+    queuing a full parse behind ``mc-pathres`` and triggering the watchdog exit.
+    Off-loop callers needing current rows should use :func:`parsed_agent_specs`
+    directly.
+
+    Returned lists are copies; their rows remain read-only. Revalidations
+    preserve the caller's *operation*/*source* audit labels, with at most one
+    in-flight revalidation per directory, even across cache invalidation. A
+    warm worker revalidation scans the signature without parsing specs again.
+    """
+    d = agents_dir or _kiro_agents_dir()
+    key = str(d)
+    with _PARSED_SPECS_LOCK:
+        cached = _PARSED_SPECS_CACHE.get(key)
+        rows = list(cached[1]) if cached is not None else []
+        if key in _PARSED_SPECS_REFRESHING:
+            return rows
+        _PARSED_SPECS_REFRESHING.add(key)
+
+    def refresh() -> None:
+        try:
+            parsed_agent_specs(d, operation=operation, source=source)
+        except Exception:
+            # The future is fire-and-forget, so nothing else surfaces this:
+            # without the log a persistent parse failure degrades silently.
+            logger.warning("agent spec snapshot refresh failed for %s", d, exc_info=True)
+        finally:
+            with _PARSED_SPECS_LOCK:
+                _PARSED_SPECS_REFRESHING.discard(key)
+
+    try:
+        discovery_executor().submit(refresh)
+    except RuntimeError:  # The executor is shutting down; leave the lookup degraded.
+        with _PARSED_SPECS_LOCK:
+            _PARSED_SPECS_REFRESHING.discard(key)
+    return rows
 
 
 def agent_skill_globs(agent: str, agents_dir: Path | None = None) -> list[str]:

@@ -362,6 +362,7 @@ from .paths import (
     crew_home_prefixes,
     is_sensitive_bash_command,
     is_sensitive_path,
+    is_sensitive_resolved_path,
     is_sensitive_write_path,
     is_unverifiable_path_refusal,
     path_contains_sensitive,

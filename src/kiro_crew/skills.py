@@ -47,6 +47,7 @@ from kiro_crew.platform_compat import (
 from kiro_crew.project_scope import project_scope_satisfied
 from kiro_crew.security import (
     is_sensitive_path,
+    is_sensitive_resolved_path,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -777,13 +778,23 @@ def _iter_skill_files(
         if not _within_any(real, allowed_roots):
             _dirs.clear()
             continue
-        if is_sensitive_path(real):
+        # ``real`` IS the canonical spelling this walk just computed, so the
+        # fence is asked lexically against it (is_sensitive_resolved_path)
+        # instead of through is_sensitive_path, which would resolve the same
+        # path a second time via the ``mc-pathres`` pool. That pool is sized
+        # for the event loop, and this walk runs on worker threads over every
+        # directory and SKILL.md of every root -- a thousand entries on an
+        # install with a few provider packages -- so each redundant submission
+        # queued ahead of the loop's own resolutions. The decision is
+        # unchanged: same targets, same cache; the anchors are resolved on
+        # this thread rather than through the pool.
+        if is_sensitive_resolved_path(real):
             _dirs.clear()  # never traverse into credential stores
             continue
         if "SKILL.md" in files:
             skill_file = Path(dirpath) / "SKILL.md"
             real_file = os.path.realpath(str(skill_file))
-            if is_sensitive_path(real_file):
+            if is_sensitive_resolved_path(real_file):
                 continue
             # Containment for the FILE, not just its directory. The directory
             # check above cannot cover this: a symlinked SKILL.md sits inside a
