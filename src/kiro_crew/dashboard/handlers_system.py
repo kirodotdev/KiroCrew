@@ -336,6 +336,43 @@ async def api_crew_mcp_servers(request: web.Request) -> web.Response:
     return web.json_response({"mcpServers": servers})
 
 
+async def api_crew_injection_context(request: web.Request) -> web.Response:
+    """GET /api/crew/injection-context — memory/lessons/ledger blocks (Plane B).
+
+    Returns ``{sessionId, blocks: [{kind, text}]}`` for the caller's own
+    ``X-Session-Key``. Each ``text`` is the SAME rendering
+    ``ContextBuilder.build_session_context`` prepends (via the shared section
+    renderers), and a kind with nothing to inject is omitted. KAS appends these
+    to ``session.globalLearnings`` and emits
+    ``_kiro/crew/memory/injectionContext`` so the injection becomes native
+    instead of a shared-agent-home rewrite.
+
+    The ledger is keyed by the session, so the ``X-Session-Key`` is required as
+    both the identity to render for and the owner scope — a request without it is
+    refused, like the wake-queue routes.
+
+    Admitted only to a supervised internal-secret caller (the allowlist gates
+    that); this still refuses a caller that reached it without ``internal_auth``.
+    """
+    if request.get("internal_auth") is not True:
+        return web.json_response(
+            {"error": "internal caller required", "code": "internal_required"}, status=403
+        )
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        return web.json_response(
+            {"error": "X-Session-Key required", "code": "session_required"}, status=400
+        )
+    state: DashboardState = request.app["state"]
+    builder = getattr(state, "context_builder", None)
+    if builder is None:
+        # No builder wired (a bare-state launch) means nothing to render — an
+        # empty block list, not an error, so the caller injects nothing.
+        return web.json_response({"sessionId": session_key, "blocks": []})
+    blocks = await asyncio.to_thread(builder.render_injection_blocks, session_key)
+    return web.json_response({"sessionId": session_key, "blocks": blocks})
+
+
 async def api_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     uptime = time.time() - state.start_time

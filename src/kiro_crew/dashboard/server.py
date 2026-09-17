@@ -1790,9 +1790,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/crew/wakes/{wake_id}/ack", api_crew_wakes_ack)
     # Plane B (Phase 5): the sidecar's managed MCP spec + injection blocks.
     # Supervised-only reads (the allowlist gates that); GET only.
-    from kiro_crew.dashboard.handlers_system import api_crew_mcp_servers
+    from kiro_crew.dashboard.handlers_system import (
+        api_crew_injection_context,
+        api_crew_mcp_servers,
+    )
 
     app.router.add_get("/api/crew/mcp-servers", api_crew_mcp_servers)
+    app.router.add_get("/api/crew/injection-context", api_crew_injection_context)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
     app.router.add_post("/api/autonudge/{loop_id}/fire", api_autonudge_fire)
