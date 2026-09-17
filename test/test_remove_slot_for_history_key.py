@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from ledger_type_helpers import minimal_data
 
 from kiro_crew import cron as cron_module
 from kiro_crew import session_ledger
@@ -3494,7 +3495,16 @@ class TestSessionLedgerOnPermanentDelete:
         held = self._ledger("acp-busy")
         # The append is what claims the lease -- ownership is taken lazily, on a
         # handle's first write.
-        held.append("session/opened", {"resumed": False}, src="gateway")
+        held.append(
+            "session/opened",
+            minimal_data("session", "session/opened")
+            | {
+                "agent": "kirocrew",
+                "owner": "default",
+                "slot": "dashboard_chat-1-100",
+            },
+            src="gateway",
+        )
         slot = _make_slot("dashboard_chat-1-100")
         state = _make_state({"dashboard_chat-1-100": slot})
         state.sessions.resumable_sid = MagicMock(return_value="acp-busy")
