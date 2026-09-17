@@ -21048,6 +21048,55 @@ class TestRunChatModelFallback:
         assert slot._active_fallback_model == "fallback-model"
 
     @pytest.mark.asyncio
+    async def test_fallback_swap_serialises_on_the_session_lock(self, tmp_path, monkeypatch):
+        """The swap awaits set_model and then snapshots the shared client pick
+        epoch. The per-slot pick lock is disjoint across aliases, so a pick made
+        through a DIFFERENT alias of the same wire session could land in that
+        await and be absorbed into the snapshot, after which the restore reads
+        not-stale and silently overwrites the user's choice. The swap must hold
+        the session-scoped switch lock too — with it pre-acquired, the swap may
+        not advance until release. Mirrors the restore probe and refusal path.
+
+        Mutation guard: drop the slot_switch_session_lock acquisition around the
+        swap and this test reddens, because the swap reaches set_model while the
+        session lock is held elsewhere."""
+        import asyncio
+
+        from kiro_crew.dashboard.chat_runner import _fallback_swap_for_turn
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.llm_helpers import slot_switch_session_lock
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_runner._agent_fallback_chain",
+            lambda: ("fallback-model",),
+        )
+        state = self._make_state(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+
+        entered = asyncio.Event()
+
+        class _Client:
+            async def set_model(self, target):
+                entered.set()
+                self._model = target
+
+        client = _Client()
+
+        _session_lock = slot_switch_session_lock(effective_session_key(slot))
+        await _session_lock.acquire()
+        try:
+            task = asyncio.create_task(_fallback_swap_for_turn(slot, client))
+            await asyncio.sleep(0.05)
+            # Session lock held ⇒ the swap must not have reached set_model yet.
+            assert not entered.is_set()
+            assert not task.done()
+        finally:
+            _session_lock.release()
+        candidate = await asyncio.wait_for(task, timeout=2)
+        assert candidate == "fallback-model"
+        assert slot._active_fallback_model == "fallback-model"
+
+    @pytest.mark.asyncio
     async def test_stop_during_fallback_backoff_drops_the_requeue(self, tmp_path, monkeypatch):
         """REGRESSION (review finding on 1a61ddcf): a Stop pressed during the
         fallback backoff sleep resolves while no prompt is active; without the

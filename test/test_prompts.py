@@ -208,6 +208,15 @@ class _Slot:
         self.model = None
         self._queue = []
         self._stop_generation = 0
+        self._stopping = False
+        # Mirrors _ChatSlot's model-access / fallback defaults. _run_chat's
+        # per-turn reset reads _model_access_recovery_pending on EVERY turn
+        # (including the slash-command turns these tests drive); the companion
+        # fields are read/written in that same block once the guard is True.
+        self._model_access_recovery_pending = False
+        self._model_access_recovery_stop_gen = 0
+        self._model_access_fallback_used = False
+        self._active_fallback_model = ""
         # Mirrors _ChatSlot._chunk_seq: the per-slot chunk counter _run_chat continues.
         self._chunk_seq = 0
         # Mirrors _ChatSlot._refusal_retry_text/_refusal_fallback_attempted: the
