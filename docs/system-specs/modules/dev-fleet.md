@@ -337,12 +337,26 @@ name never has two workers racing to remove the same worktree. The frontend rend
 failure reason); the preview dialog maps the kept-list verdict codes to human-readable
 reasons so users can see why a worktree is a candidate or is kept.
 
-**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` —
-and for merged-verdict candidates a `gh` lookup — per worktree, so on a large fleet the
-click is followed by seconds of silence before the dialog can appear. The Prune merged
-button therefore swaps its trash glyph for a spinner and sets `aria-busy` for the
-duration: disabling alone is indistinguishable from a wedged page, and a user who reads
-it as hung clicks again or reloads mid-scan.
+**Scan feedback:** the preview that opens that dialog (`prune-candidates`) runs `git` --
+and for merged- or closed-verdict candidates a `gh` lookup -- per worktree. Those
+per-worktree verdicts run concurrently, bounded by `_PRUNE_CONCURRENCY` (the same bound
+the parallel prune workers use), because a serial scan of a large fleet exceeds the
+gateway app proxy's 30s `_PROXY_TIMEOUT` and returns a 504. The scan is read-only git
+(`rev-parse`, `status`, `rev-list`/`cherry`, `merge-base`) and never takes
+`_GIT_MUTATION_LOCK`, which only the destructive removal path holds; candidate and kept
+lists are emitted in discovery order regardless of which verdict finishes first. Even
+concurrent, the scan takes time on a large fleet, so the Prune merged button swaps its
+trash glyph for a spinner and sets `aria-busy` for the duration: disabling alone is
+indistinguishable from a wedged page, and a user who reads it as hung clicks again or
+reloads mid-scan.
+
+The merged/closed head-OID check (`_fetch_pr_head_oid`) resolves the PR by
+`gh pr list --head <branch> --state all`, not `gh pr view <branch>`, so a merged PR whose
+head branch was deleted on merge still resolves its head OID and its worktree becomes a
+candidate rather than being withheld as `merged_unverified` forever. The lookup reads the
+whole PR set for the head and authorizes removal only when no `OPEN` PR is present; it
+requests one row beyond a fixed ceiling and fails closed if the head carries more PRs than
+that ceiling, so a reused branch name can never authorize removing new work.
 
 ## Pod Integration
 

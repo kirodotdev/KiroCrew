@@ -4421,3 +4421,91 @@ async def test_post_discard_dirt_reports_the_approved_files_as_gone(monkeypatch,
     assert res["ok"] is False
     assert "1 untracked file(s) remain" in res["error"]
     assert "1 of 1 approved untracked file(s) were already deleted" in res["error"]
+
+
+# --------------------------------------------------------------------------
+# _prune_candidates -- concurrent bounded scan, deterministic output (Defect 1)
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_prune_candidates_scans_concurrently(monkeypatch):
+    """The per-worktree verdicts must run CONCURRENTLY, not one-at-a-time.
+
+    A serial loop over 111 worktrees at ~0.5s each floors past the gateway's
+    30s proxy cap and 504s. This pins that more than one _prunable is in flight
+    at once (so the scan is issued concurrently) and that it stays within the
+    _PRUNE_CONCURRENCY bound.
+    """
+    n = worktree_ops._PRUNE_CONCURRENCY * 3
+    wts = [{"path": f"/repo/wt-{i}", "branch": f"feat/{i}", "is_main": False} for i in range(n)]
+    wts.insert(0, {"path": "/repo/main", "branch": "main", "is_main": True})
+
+    in_flight = 0
+    peak = 0
+    started = asyncio.Event()
+
+    async def fake_prunable(path, branch):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        started.set()
+        try:
+            # Yield so siblings queued in the same gather can start before this
+            # one finishes -- a serial loop would resolve each before the next.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return {"ok": True, "code": "merged"}
+        finally:
+            in_flight -= 1
+
+    monkeypatch.setattr(repository, "_discover_worktrees", AsyncMock(return_value=wts))
+    monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+
+    out = await worktree_ops._prune_candidates()
+
+    assert out["ok"] is True
+    # More than one verdict was in flight at the same time -> concurrent, and
+    # never more than the configured bound.
+    assert peak > 1
+    assert peak <= worktree_ops._PRUNE_CONCURRENCY
+    # main is excluded; scanned counts only non-main worktrees.
+    assert out["scanned"] == n
+    assert len(out["candidates"]) == n
+
+
+@pytest.mark.asyncio
+async def test_prune_candidates_output_order_is_deterministic(monkeypatch):
+    """Candidate/kept order follows DISCOVERY order, not completion order.
+
+    Verdicts finish out of order (later worktrees resolve first), but the
+    result lists must still be in the input worktree order so the checklist is
+    stable across previews.
+    """
+    wts = [
+        {"path": "/repo/main", "branch": "main", "is_main": True},
+        {"path": "/repo/wt-a", "branch": "feat/a", "is_main": False},
+        {"path": "/repo/wt-b", "branch": "feat/b", "is_main": False},
+        {"path": "/repo/wt-c", "branch": "feat/c", "is_main": False},
+        {"path": "/repo/wt-d", "branch": "feat/d", "is_main": False},
+    ]
+    # Finish delay is INVERTED to path order: wt-d resolves first, wt-a last.
+    delays = {"/repo/wt-a": 0.04, "/repo/wt-b": 0.03, "/repo/wt-c": 0.02, "/repo/wt-d": 0.01}
+    # Alternate candidate / kept so both lists are exercised for ordering.
+    verdicts = {
+        "/repo/wt-a": {"ok": True, "code": "merged"},
+        "/repo/wt-b": {"ok": False, "code": "active", "dirty": False},
+        "/repo/wt-c": {"ok": True, "code": "merged"},
+        "/repo/wt-d": {"ok": False, "code": "active", "dirty": False},
+    }
+
+    async def fake_prunable(path, branch):
+        await asyncio.sleep(delays[path])
+        return verdicts[path]
+
+    monkeypatch.setattr(repository, "_discover_worktrees", AsyncMock(return_value=wts))
+    monkeypatch.setattr(worktree_ops, "_prunable", fake_prunable)
+
+    out = await worktree_ops._prune_candidates()
+
+    assert [c["name"] for c in out["candidates"]] == ["wt-a", "wt-c"]
+    assert [k["name"] for k in out["kept"]] == ["wt-b", "wt-d"]
+    assert out["scanned"] == 4

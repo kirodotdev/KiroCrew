@@ -5892,16 +5892,17 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
 async def test_fetch_pr_head_oid_refuses_non_merged(monkeypatch):
     """Branch-name reuse: a fresh OPEN PR on a recycled name must NOT yield a
     head OID at the destructive boundary, even if a stale MERGED verdict is
-    cached elsewhere."""
+    cached elsewhere. The query is ``gh pr list`` (a JSON array) so it survives
+    the head branch being deleted on merge."""
     async def fake_run(cmd, **kw):
-        return 0, json.dumps({"headRefOid": "a" * 40, "state": "OPEN"}), ""
+        return 0, json.dumps([{"headRefOid": "a" * 40, "state": "OPEN"}]), ""
 
     monkeypatch.setattr(fleet_state_mod, "_get_owner_repo", AsyncMock(return_value="o/r"))
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run)
     assert await mod._fetch_pr_head_oid("feature-x") is None
 
     async def fake_run_merged(cmd, **kw):
-        return 0, json.dumps({"headRefOid": "b" * 40, "state": "MERGED"}), ""
+        return 0, json.dumps([{"headRefOid": "b" * 40, "state": "MERGED"}]), ""
 
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_merged)
     assert await mod._fetch_pr_head_oid("feature-x") == "b" * 40

@@ -2427,12 +2427,32 @@ async def _prunable(path: str, branch: str | None) -> dict:
 
 async def _prune_candidates() -> dict:
     worktrees = await repository._discover_worktrees()
+    # The per-worktree verdict (_prunable) is several read-only git calls plus
+    # one or more networked gh calls (a PR-status lookup, its per-repo fallback
+    # traversal, and a merged/closed head-OID check), so a plain serial loop
+    # scales with fleet size: a 111-worktree fleet floors at ~57s even at one gh
+    # call each, double the gateway app proxy's 30s _PROXY_TIMEOUT, so the
+    # preview returns 504 and the button never renders. Run the verdicts
+    # concurrently under the same _PRUNE_CONCURRENCY bound the parallel prune
+    # workers use -- this path is read-only git (rev-parse, status,
+    # rev-list/cherry, merge-base) so it never touches _GIT_MUTATION_LOCK, which
+    # only the destructive removal path holds.
+    prunable = [w for w in worktrees if not w.get("is_main")]
+    sem = asyncio.Semaphore(_PRUNE_CONCURRENCY)
+
+    async def _verdict(w: dict) -> tuple[dict, dict]:
+        async with sem:
+            v = await _prunable(w["path"], w.get("branch"))
+        return w, v
+
+    # gather preserves the argument order in its result list regardless of
+    # completion order, so candidates/kept below stay deterministic (input
+    # discovery order) even though the verdicts finish out of order.
+    verdicts = await asyncio.gather(*(_verdict(w) for w in prunable))
+
     candidates, kept = [], []
-    for w in worktrees:
-        if w.get("is_main"):
-            continue
+    for w, v in verdicts:
         name = Path(w["path"]).name
-        v = await _prunable(w["path"], w.get("branch"))
         row = {"name": name, "code": v["code"], "branch": w.get("branch")}
         if v["ok"]:
             # A closed-PR candidate carries the ancestry warning so the
@@ -2457,7 +2477,7 @@ async def _prune_candidates() -> dict:
                 row["dirty_untracked"] = v.get("dirty_untracked")
                 row["dirty_untracked_paths"] = v.get("dirty_untracked_paths")
             kept.append(row)
-    return {"ok": True, "candidates": candidates, "kept": kept, "scanned": len(worktrees) - 1}
+    return {"ok": True, "candidates": candidates, "kept": kept, "scanned": len(prunable)}
 
 
 async def _prune_run(
