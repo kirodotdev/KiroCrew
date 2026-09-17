@@ -27,6 +27,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
+import { useComposerSendMode } from '../hooks/useComposerSendMode'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { pickToolLabel } from '../utils/toolLabel'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
@@ -601,7 +602,8 @@ interface ChatInputProps {
   automationSnapshotFailed?: boolean
   /** Session routing mode; crew/member cannot host direct monitor turns. */
   sessionMode?: string
-  /** Send-key mode. Default 'enter'. */
+  /** Send-key mode. Omitted means the user's stored Settings -> Chat ->
+   *  Composer preference; pass it only to override that (e.g. mobile). */
   sendOnEnter?: SendMode
   /** Follow-up options from assistant message */
   followUpOptions?: string[]
@@ -948,7 +950,7 @@ function ChatInput({
   automationCreationReady,
   automationSnapshotFailed,
   sessionMode,
-  sendOnEnter = 'enter',
+  sendOnEnter: sendOnEnterProp,
   followUpOptions,
   followUpPicked,
   onFollowUpSelect,
@@ -1097,6 +1099,11 @@ function ChatInput({
   // Read the composer-spellcheck preference here rather than as a prop, so every
   // render site of this component honours it and none can forget to pass it.
   const spellCheck = useComposerSpellcheck()
+  // Same for the send-key mode: the stored preference is the fallback, not a
+  // hardcoded 'enter'. A host omitting the prop (session-grid pane, side panel)
+  // would otherwise send on plain Enter for a user who chose Ctrl/Cmd+Enter.
+  const storedSendMode = useComposerSendMode()
+  const sendOnEnter = sendOnEnterProp ?? storedSendMode
   const uiLang = useLanguage().resolved
   const approvalLabelRaw = sanitizeLlmOutput(pendingApproval?.content || '').replace(/^🔧\s*/, '')
 
