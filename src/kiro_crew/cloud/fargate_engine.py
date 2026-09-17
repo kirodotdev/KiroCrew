@@ -49,7 +49,7 @@ import threading
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
-from kiro_crew.cloud import aws
+from kiro_crew.cloud import aws, sizes
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
 from kiro_crew.cloud.fargate import (
     CPU_ARCHITECTURES,
@@ -408,23 +408,64 @@ class FargateLaunchSpec:
     cpu_architecture: str
 
 
+def _tier_as_pair(size_key: str) -> Optional[str]:
+    """*size_key* respelled as ``"<cpu>/<memory>/<gib>"`` when it is one of the three
+    interactive tier keys, else ``None``.
+
+    RFC section 9 promises this twice: "The existing size keys keep working", and
+    "the Fargate backend maps the same three keys to CPU and memory pairs, so a
+    launch that does not name a backend behaves as it does today". Without it a
+    caller who never asked for Fargate, and whose ``size_key`` is therefore
+    ``light``/``balanced``/``power``, is refused by a lane that claims nothing
+    above the seam changes. ``sizes.DEFAULT_TIER_KEY`` is ``balanced``, so the
+    key refused is the one a caller gets by not choosing.
+
+    The shape is DERIVED from ``sizes.py``'s own tier table rather than written
+    out again here. That table is where a tier's vCPU, RAM and disk are decided,
+    and it has been changed before -- its own comment records a raised ladder
+    while the keys stayed. Deriving means such a raise reaches this lane too; a
+    second table here would keep answering with the retired shape, and nothing
+    would compare the two.
+
+    Returned as a KEY rather than a finished :class:`TaskSize`, so the derived
+    numbers run through exactly the bounds check a hand-written pair does. A tier
+    whose shape leaves Fargate's own table is then refused by name instead of
+    being handed to ``RunTask``.
+    """
+    if size_key not in sizes.INTERACTIVE_TIER_KEYS:
+        return None
+    tier = sizes.get_tier(size_key)
+    return FARGATE_SIZE_SEP.join(
+        (str(tier.vcpu * 1024), str(tier.ram_gb * 1024), str(tier.disk_gb))
+    )
+
+
 def _parse_size(size_key: str) -> TaskSize:
     """Map a Fargate ``size_key`` to a :class:`TaskSize`, or raise.
 
+    Two spellings are accepted. The first is Fargate's own vocabulary, a
+    cpu/memory pair in Fargate units, ``"<cpu>/<memory>"``, with an optional
+    ephemeral-storage GiB as a third field, ``"<cpu>/<memory>/<gib>"``;
     ``launch_job.py`` states that a non-EC2 provisioner's ``size_key`` is that
-    provisioner's own vocabulary, validated in its own ``provision``; ``sizes.py``
-    is the EC2 ladder and is not widened. The Fargate vocabulary is a cpu/memory
-    pair in Fargate units, ``"<cpu>/<memory>"``, with an optional ephemeral-storage
-    GiB as a third field, ``"<cpu>/<memory>/<gib>"``. The cpu is validated against
+    provisioner's own vocabulary, validated in its own ``provision``. The second
+    is one of the three interactive tier keys, which :func:`_tier_as_pair`
+    respells into the first form.
+
+    The EC2 ladder is READ for that mapping and is not widened: no Fargate shape
+    is added to ``sizes.py``, and an instance type is never consulted. Whichever
+    spelling arrives, the numbers are validated identically -- the cpu against
     :data:`FARGATE_MEMORY_FOR_CPU`, the memory against that entry's minimum,
-    maximum and step, and the storage against Fargate's GiB range -- the same
-    checks ``run_task_request`` makes, run here so an unusable key is refused with
-    the legal pairs listed before any AWS call.
+    maximum and step, and the storage against Fargate's GiB range, the same
+    checks ``run_task_request`` makes, run here so an unusable key is refused
+    with the legal pairs listed before any AWS call. A refusal names the key the
+    caller passed, never its respelling.
     """
-    parts = size_key.split(FARGATE_SIZE_SEP)
+    parts = (_tier_as_pair(size_key) or size_key).split(FARGATE_SIZE_SEP)
     legal = (
         'a Fargate size is "<cpu>/<memory>" in Fargate units, with an optional '
-        '"/<gib>" ephemeral storage; the cpu/memory pairs are '
+        '"/<gib>" ephemeral storage, or one of '
+        + ", ".join(sizes.INTERACTIVE_TIER_KEYS)
+        + "; the cpu/memory pairs are "
         + "; ".join(
             f"{cpu}/{low}..{high} step {step}"
             for cpu, (low, high, step) in sorted(
@@ -440,26 +481,30 @@ def _parse_size(size_key: str) -> TaskSize:
     allowed = FARGATE_MEMORY_FOR_CPU.get(cpu)
     if allowed is None:
         raise ValueError(
-            f"size cpu={cpu!r} is not a Fargate CPU size; choose one of "
-            f"{', '.join(sorted(FARGATE_MEMORY_FOR_CPU, key=int))}"
+            f"size {size_key!r} resolves to cpu={cpu!r}, which is not a Fargate CPU size; "
+            f"choose one of {', '.join(sorted(FARGATE_MEMORY_FOR_CPU, key=int))}"
         )
     low, high, step = allowed
     mem = int(memory)
     if mem < low or mem > high or (mem - low) % step:
         raise ValueError(
-            f"size memory={memory!r} is not a Fargate memory value for cpu={cpu!r}, which "
-            f"takes {low} to {high} MiB in steps of {step}"
+            f"size {size_key!r} resolves to memory={memory!r}, which is not a Fargate memory "
+            f"value for cpu={cpu!r}, which takes {low} to {high} MiB in steps of {step}"
         )
     storage: Optional[int] = None
     if len(parts) == 3:
         gib = parts[2].strip()
         if not gib.isdigit():
-            raise ValueError(f"ephemeral storage {gib!r} is not a whole number of GiB; {legal}")
+            raise ValueError(
+                f"size {size_key!r} resolves to ephemeral storage {gib!r}, which is not a "
+                f"whole number of GiB; {legal}"
+            )
         storage = int(gib)
         if not (EPHEMERAL_STORAGE_MIN_GIB <= storage <= EPHEMERAL_STORAGE_MAX_GIB):
             raise ValueError(
-                f"ephemeral storage {storage} GiB is outside Fargate's "
-                f"{EPHEMERAL_STORAGE_MIN_GIB} to {EPHEMERAL_STORAGE_MAX_GIB} GiB range"
+                f"size {size_key!r} resolves to ephemeral storage {storage} GiB, which is "
+                f"outside Fargate's {EPHEMERAL_STORAGE_MIN_GIB} to "
+                f"{EPHEMERAL_STORAGE_MAX_GIB} GiB range"
             )
     return TaskSize(cpu=cpu, memory=memory, ephemeral_storage_gib=storage)
 
