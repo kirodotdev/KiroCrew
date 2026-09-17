@@ -2502,6 +2502,7 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         default_agent=agent_data.get("default_agent", ""),
         sweep_agents_backups=_safe_bool(agent_data.get("sweep_agents_backups", False), False),
         sandbox=agent_data.get("sandbox", "auto"),
+        sandbox_wsl_distro=agent_data.get("sandbox_wsl_distro", "") or "",
         sandbox_allow_no_isolation=bool(agent_data.get("sandbox_allow_no_isolation", False)),
         sandbox_allow_unsandboxed_exec=bool(
             agent_data.get(

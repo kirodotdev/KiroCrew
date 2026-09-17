@@ -11690,6 +11690,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Genehmigungsmodus",
         "auto": "automatisch",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' aktiviert die Sandbox für nicht vertrauenswürdige Tools. Ein Wechsel zu oder von 'wsl2' wird nach einem Neustart des Gateways wirksam.",
         "auto_size_max": "Maximale automatische Größe",
         "auto_update": "Automatische Aktualisierung",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Obergrenze für die automatisch ermittelte Anzahl gleichzeitiger Subagenten (gilt nur, wenn Max. gleichzeitige Subagenten = 0). Die Speicher-/CPU-Formel des Hosts überschreitet sie nie. Bereich 1–64. Standard: 16.",
@@ -11725,6 +11726,7 @@
         "pool_size": "Poolgröße",
         "pool_ttl": "Pool-TTL",
         "provider": "Anbieter",
+        "restart_required_which_wsl2_distribution_to_sand": "Neustart erforderlich. Welche WSL2-Distribution zum Sandboxing verwendet wird — die internen Docker-Desktop-Instanzen werden hier nicht angeboten.",
         "sandbox": "Sandbox",
         "save": "Speichern",
         "saved": "Gespeichert",
@@ -11742,7 +11744,9 @@
         "number_of_pre_spawned_processes_0_disables": "Anzahl vorab gestarteter Prozesse. 0 deaktiviert dies.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agent für Pool-Prozesse. Leer verwendet den Standardagenten.",
         "warm_pool_description": "Startet ACP-CLI-Prozesse vorab, damit Sitzungen sofort beginnen.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf."
+        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf.",
+        "wsl2_distribution": "WSL2-Distribution",
+        "wsl_default_distro": "(WSL-Standard)"
       },
       "mcpTab": {
         "actions": "Aktionen",

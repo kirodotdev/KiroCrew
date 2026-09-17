@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -85,22 +85,62 @@ def registry():
     }
 
 
-@pytest.fixture(scope="module")
-def sandbox_keys() -> set[str]:
-    """Every `agent` setting the gateway has whose name begins with ``sandbox``.
+#: The value a sandbox knob has to be forced to, keyed by the type it is DECLARED as.
+#:
+#: Every one of these settings is a way to be less sandboxed, so the value the
+#: container writes is the one that grants nothing: ``False`` for a flag that would
+#: enable a fallback, ``""`` for a string that would name an alternative. Keyed by
+#: type rather than by key name so the next non-boolean knob is covered on the day it
+#: is added, instead of standing this assertion off against a field whose safe value
+#: was never spellable as ``False``.
+#:
+#: A type that is NOT in here gets no guess: the test fails and names the field. That
+#: keeps the human decision where it belongs for a knob whose safe value is not its
+#: type's empty one -- an int where ``0`` means "unlimited", say, which the empty-value
+#: rule would wave through as safe while it removed a ceiling.
+SAFE_FORCED_VALUE: dict[type, object] = {bool: False, str: ""}
 
-    The rule is deliberately by PREFIX rather than a list of the three that exist
+
+class _Knob(NamedTuple):
+    """One ``sandbox*`` setting as `AgentConfig` declares it.
+
+    ``choices`` is the field's ``enum`` metadata, empty for a free-form field. It is
+    carried because it is what separates a MODE from an opt-out, and the two have
+    opposite safe values -- see
+    :func:`test_the_forced_sandbox_values_are_the_sandboxed_ones`.
+    """
+
+    declared: type
+    choices: tuple[str, ...]
+
+
+@pytest.fixture(scope="module")
+def sandbox_fields() -> dict[str, _Knob]:
+    """Every `agent` setting whose name begins with ``sandbox``, as declared.
+
+    The rule is deliberately by PREFIX rather than a list of the ones that exist
     today. A sandbox knob added to `AgentConfig` then reds this test until the
     container decides what to write for it, which is the only way a container that
     refuses to run unsandboxed stays true as the gateway grows more ways to not be.
+
+    The declaration travels with the name because the safe value depends on it. The
+    type is resolved with ``get_type_hints`` rather than read off ``field.type``,
+    which under `AgentConfig`'s ``from __future__ import annotations`` is the SOURCE
+    TEXT ``"bool"`` and would match no entry in :data:`SAFE_FORCED_VALUE`.
     """
     import dataclasses
+    import typing
 
     from kiro_crew.config.sections import AgentConfig
 
-    keys = {f.name for f in dataclasses.fields(AgentConfig) if f.name.startswith("sandbox")}
-    assert keys, "no sandbox settings found on AgentConfig; this test would be vacuous"
-    return keys
+    hints = typing.get_type_hints(AgentConfig)
+    fields = {
+        f.name: _Knob(hints[f.name], tuple(f.metadata.get("enum", ())))
+        for f in dataclasses.fields(AgentConfig)
+        if f.name.startswith("sandbox")
+    }
+    assert fields, "no sandbox settings found on AgentConfig; this test would be vacuous"
+    return fields
 
 
 def test_the_container_disables_every_channel_the_gateway_can_start(registry) -> None:
@@ -143,7 +183,7 @@ def test_the_container_strips_no_variable_the_gateway_never_reads(registry) -> N
     )
 
 
-def test_the_container_forces_every_sandbox_setting_the_gateway_reads(sandbox_keys) -> None:
+def test_the_container_forces_every_sandbox_setting_the_gateway_reads(sandbox_fields) -> None:
     """Each one is a way to be less sandboxed, and the container refuses to be.
 
     The supervisor refuses to start where the model subprocess cannot be sandboxed and
@@ -152,7 +192,7 @@ def test_the_container_forces_every_sandbox_setting_the_gateway_reads(sandbox_ke
     a supplied file says is a way to defeat that refusal without tripping it.
     """
     forced = set(_literal("FORCED_AGENT_SETTINGS"))
-    missing = sorted(sandbox_keys - forced)
+    missing = sorted(sandbox_fields.keys() - forced)
     assert not missing, (
         "the crew container does not write these sandbox settings, so a config file "
         f"supplied to the task decides them: {missing}. Add them to "
@@ -160,16 +200,53 @@ def test_the_container_forces_every_sandbox_setting_the_gateway_reads(sandbox_ke
     )
 
 
-def test_the_forced_sandbox_values_are_the_sandboxed_ones(sandbox_keys) -> None:
+def test_the_forced_sandbox_values_are_the_sandboxed_ones(sandbox_fields) -> None:
     """Writing the key is half of it; the value has to be the safe one.
 
     Checked against the values rather than against the schema defaults, because a
     default is what this container is declining to rely on.
+
+    ``sandbox`` is the one knob whose safe value is not empty: it names the MODE, and
+    the sandboxed mode is ``auto``, not the absence of a mode. Every other one is a way
+    to opt OUT of that mode, so the value that opts out of nothing is its type's empty
+    value -- ``False`` for a flag, ``""`` for a name. See :data:`SAFE_FORCED_VALUE` for
+    why that is keyed by type rather than by field.
+
+    A second MODE-shaped knob would break that rule, so the shape is checked rather
+    than assumed: a field declaring ``enum`` choices has no empty value to fall back
+    to, and the empty-value rule would quietly accept a value its own schema rejects.
+    Such a field reds here instead, and is named by hand as ``sandbox`` is.
     """
     forced = dict(_literal("FORCED_AGENT_SETTINGS"))
+    mode = sandbox_fields["sandbox"]
     assert forced.get("sandbox") == "auto", forced.get("sandbox")
-    for key in sorted(sandbox_keys - {"sandbox"}):
-        assert forced.get(key) is False, f"{key} is forced to {forced.get(key)!r}, not False"
+    # Non-vacuity for the line above: if the mode enum is ever respelled, writing the
+    # stale "auto" would otherwise keep passing while the container emitted a value
+    # `agent.sandbox` does not accept.
+    assert "auto" in mode.choices, f"sandbox no longer offers 'auto'; it offers {mode.choices}"
+    for key in sorted(sandbox_fields.keys() - {"sandbox"}):
+        knob = sandbox_fields[key]
+        assert knob.declared in SAFE_FORCED_VALUE, (
+            f"{key} is declared as {knob.declared!r}, a type with no entry in "
+            f"SAFE_FORCED_VALUE. Decide what value of that type leaves the container "
+            f"fully sandboxed, force it in {BACKEND_SRC}, and add the type here."
+        )
+        safe = SAFE_FORCED_VALUE[knob.declared]
+        assert not knob.choices or safe in knob.choices, (
+            f"{key} is a mode: it offers {list(knob.choices)}, and the empty value "
+            f"{safe!r} is not among them. Its safe value is a named member, not an "
+            f"absence, so pick the member that leaves the container fully sandboxed, "
+            f"force it in {BACKEND_SRC}, and assert it by name here as `sandbox` is."
+        )
+        actual = forced.get(key)
+        # The type is compared as well as the value, and with ``type(...) is`` rather
+        # than ``isinstance``: ``0 == False`` and ``False`` is an ``int`` subclass, so
+        # an equality-only or isinstance check would accept a value of an entirely
+        # different shape as the safe one. An absent key arrives here as ``None``,
+        # which fails on the type and is reported with the same message.
+        assert (
+            type(actual) is knob.declared and actual == safe
+        ), f"{key} is forced to {actual!r}, not {safe!r}"
 
 
 def test_the_container_forces_no_agent_setting_the_gateway_does_not_have() -> None:

@@ -47,9 +47,14 @@ def test_the_sandbox_cannot_be_turned_off_by_an_existing_config(tmp_path: Path) 
 
     ``verify_sandbox`` refuses to start where the model subprocess cannot be
     sandboxed, and the container offers no unsandboxed posture. The gateway reads its
-    sandbox mode and two fallback flags from this same file, so a file arriving with
+    sandbox mode and the knobs beside it from this same file, so a file arriving with
     them relaxed would let the worker run with no backend while the supervisor's
     refusal reported nothing wrong.
+
+    The supplied file names a WSL2 distribution too. It cannot engage here -- the mode
+    above is forced away from ``wsl2`` and this container is Linux -- but the value has
+    to be overwritten rather than kept, because the container's posture is not allowed
+    to rest on that coupling holding elsewhere.
     """
     settings = make_settings(tmp_path)
     settings.config_dir.mkdir(parents=True, exist_ok=True)
@@ -58,6 +63,7 @@ def test_the_sandbox_cannot_be_turned_off_by_an_existing_config(tmp_path: Path) 
             {
                 "agent": {
                     "sandbox": "off",
+                    "sandbox_wsl_distro": "supplied-by-the-task",
                     "sandbox_allow_no_isolation": True,
                     "sandbox_allow_unsandboxed_exec": True,
                     "default_agent": "kept",
@@ -70,6 +76,7 @@ def test_the_sandbox_cannot_be_turned_off_by_an_existing_config(tmp_path: Path) 
     config = json.loads(backend_mod.write_backend_config(settings).read_text(encoding="utf-8"))
 
     assert config["agent"]["sandbox"] == "auto"
+    assert config["agent"]["sandbox_wsl_distro"] == ""
     assert config["agent"]["sandbox_allow_no_isolation"] is False
     assert config["agent"]["sandbox_allow_unsandboxed_exec"] is False
     assert config["agent"]["default_agent"] == "kept", "only the forced keys are overwritten"

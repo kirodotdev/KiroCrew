@@ -12022,6 +12022,7 @@
       "kiroCrewCfgTab": {
         "approval_mode": "Режим подтверждения",
         "auto": "auto",
+        "auto_enables_sandbox_for_untrusted_tools_switchi": "'auto' включает песочницу для недоверенных инструментов. Переключение на 'wsl2' или с него вступает в силу после перезапуска шлюза.",
         "auto_size_max": "Макс. авторазмер",
         "auto_update": "Автообновление",
         "ceiling_on_the_auto_sized_concurrent_subagent_co": "Предел автоматически подобранного числа одновременных субагентов (действует только при «Макс. одновременных субагентов» = 0). Формула по памяти и CPU хоста никогда его не превышает. Диапазон 1–64. По умолчанию: 16.",
@@ -12057,6 +12058,7 @@
         "pool_size": "Размер пула",
         "pool_ttl": "TTL пула",
         "provider": "Провайдер",
+        "restart_required_which_wsl2_distribution_to_sand": "Требуется перезапуск. Какой дистрибутив WSL2 использовать для песочницы — служебные экземпляры Docker Desktop здесь не предлагаются.",
         "sandbox": "Песочница",
         "save": "Сохранить",
         "saved": "Сохранено",
@@ -12074,7 +12076,9 @@
         "number_of_pre_spawned_processes_0_disables": "Количество заранее запущенных процессов. 0 отключает.",
         "agent_for_pool_processes_empty_uses_default_agent": "Агент для процессов пула. Пусто — используется агент по умолчанию.",
         "warm_pool_description": "Заранее запускает процессы ACP CLI для мгновенного старта сессии.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение."
+        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение.",
+        "wsl2_distribution": "Дистрибутив WSL2",
+        "wsl_default_distro": "(по умолчанию WSL)"
       },
       "mcpTab": {
         "actions": "Действия",
