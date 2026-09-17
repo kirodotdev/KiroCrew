@@ -558,13 +558,16 @@ jobs:
     # move once a non-root custom image exists -- see docs/ci/ci-and-reviews.md,
     # "CodeBuild-hosted runner (pilot)".
     runs-on: ubuntu-latest
-    # The slowest 3.12 shard runs 34 to 36 minutes on a hosted runner, and the
-    # per-shard time swings by several minutes run to run (a 28-minute shard
-    # reached 99% at 40 on the next run of the same tree). A cap that a green
-    # shard can hit kills the job at the coverage step with every test passed
-    # and Coverage Gate then reds on the missing artifact, so the cap carries
-    # headroom over the slowest observed shard. Per-test hangs are still bounded
-    # by pytest-timeout, not by this number.
+    # Per-shard time is NOT balanced: with no committed .test_durations file
+    # pytest-split falls back to an even-by-count split, so the slowest shard
+    # can ride the cap. A cap that a green shard can hit kills the job at the
+    # coverage step with every test passed, and Coverage Gate then reds on the
+    # missing artifact. At SHARD_COUNT=4 the worst shard reached 50.2 min against
+    # this 50-min cap (#11526). The fix is more shards (see the matrix comment),
+    # not a higher cap -- the ~33-min fixed collection+coverage cost per shard
+    # does not divide, so raising the wall alone would only defer the same hit.
+    # The cap stays 50 to keep real per-test hangs bounded (pytest-timeout still
+    # bounds individual tests regardless of this number).
     timeout-minutes: 50
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
@@ -572,13 +575,22 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12"]
-        # Duration-balanced shards (pytest-split). 4 groups x 1 Python = 4
-        # parallel jobs, each on its own runner (4 cores via -n auto). To add
-        # shards, extend this list AND bump SHARD_COUNT to match -- mind the
-        # ~20 concurrent-job ceiling for public repos.
-        group: [1, 2, 3, 4]
+        # Shards split by pytest-split. With no committed .test_durations file
+        # (a durations file was declined in #8506 over its rewrite-every-refresh
+        # cost) the split falls back to even-by-COUNT, so per-shard time is not
+        # balanced and the slowest shard rides the cap. 8 groups x 1 Python = 8
+        # parallel jobs, each on its own runner (-n auto across cores). Raised
+        # from 4 to 8 in #11526: at 4 the worst shard hit 50.2 min against the
+        # 50-min cap (killed at 99% all-passing, zero failures) while 3 of 4 ran
+        # within 7 min of the wall; the ~33-min fixed collection+coverage cost
+        # does not divide, so more shards -- not a higher cap -- is what buys
+        # headroom. This mirrors the Windows job, which went to 8 for the same
+        # count-split reason. To add shards, extend this list AND bump
+        # SHARD_COUNT to match -- mind the ~20 concurrent-job ceiling for public
+        # repos.
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
