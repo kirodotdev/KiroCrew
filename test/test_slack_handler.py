@@ -379,6 +379,64 @@ class TestHandleMessage:
         assert any(r[1]["emoji"] == "lobster" for r in reacts)
 
     @pytest.mark.asyncio
+    async def test_working_indicators_cleared_on_cancellation(self):
+        """Regression: a turn cancelled mid-stream must still tear down the
+        'working' indicators.
+
+        asyncio.CancelledError is a BaseException, so it is not caught by the
+        handler's ``except Exception``; before the fix, it propagated out of
+        handle_message before the post-try/finally cleanup ran, leaving the
+        native "…is working" thread-status label and the inline Stop button
+        (posted for threaded turns) stuck. The clears now live in ``finally``,
+        so they must fire even though the CancelledError still propagates.
+        """
+
+        class _CancellingProvider(FakeProvider):
+            async def stream(self, message, timeout=120.0):
+                yield LLMEvent(kind="text_chunk", text="partial")
+                raise asyncio.CancelledError()
+
+        slack = MockSlackClient()
+        sessions = FakeSessionManager(_CancellingProvider())
+        # thread_ts truthy → the inline "⏳ Working… / ⏹ Stop" block is posted.
+        with pytest.raises(asyncio.CancelledError):
+            await handle_message(slack, sessions, "C1", "hi", "thr1", "msg1", "U1")
+
+        # The Stop button block was posted, then deleted on the cancellation path.
+        block_ts = [a[1]["ts"] for a in slack.actions if a[0] == "blocks"]
+        assert block_ts, "inline Stop button was never posted"
+        deleted = [a[1]["ts"] for a in slack.actions if a[0] == "delete"]
+        assert block_ts[0] in deleted, "inline Stop button not removed on cancellation"
+        # The native thread status was cleared (set back to empty string).
+        status_clears = [
+            a for a in slack.actions if a[0] == "set_thread_status" and a[1]["status"] == ""
+        ]
+        assert status_clears, "thread status not cleared on cancellation"
+
+    @pytest.mark.asyncio
+    async def test_working_indicators_cleared_on_unexpected_error(self):
+        """A generic exception mid-stream must also clear both indicators (the
+        handler swallows Exception, so this exits normally through the cleanup)."""
+
+        class _RaisingProvider(FakeProvider):
+            async def stream(self, message, timeout=120.0):
+                yield LLMEvent(kind="text_chunk", text="partial")
+                raise RuntimeError("boom")
+
+        slack = MockSlackClient()
+        sessions = FakeSessionManager(_RaisingProvider())
+        await handle_message(slack, sessions, "C1", "hi", "thr1", "msg1", "U1")
+
+        block_ts = [a[1]["ts"] for a in slack.actions if a[0] == "blocks"]
+        assert block_ts, "inline Stop button was never posted"
+        deleted = [a[1]["ts"] for a in slack.actions if a[0] == "delete"]
+        assert block_ts[0] in deleted, "inline Stop button not removed on error"
+        status_clears = [
+            a for a in slack.actions if a[0] == "set_thread_status" and a[1]["status"] == ""
+        ]
+        assert status_clears, "thread status not cleared on error"
+
+    @pytest.mark.asyncio
     async def test_thinking_posted_then_updated(self):
         slack = MockSlackClient()
         provider = FakeProvider([LLMEvent(kind="text_chunk", text="hello")])
