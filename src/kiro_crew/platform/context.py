@@ -880,6 +880,40 @@ def redact_via_context(text: str) -> str:
 #: the failed companion composition, not the missing line.
 LOG_WITHHELD_PLACEHOLDER = "<withheld: redaction unavailable>"
 
+#: Prefix of every tag the redactors substitute. The locale gate already treats this
+#: literal as a contract, so keying on the shape adds no coupling to the tag constants.
+_REDACTION_TAG_PREFIX = "[REDACTED: "
+
+
+class _ScrubbedRow(str):
+    """A scrubbed row body that REMEMBERS the scrub changed it.
+
+    Only the scrub holds both sides, so the fact rides out ON the value: inferring it from
+    the replacement text misses a companion policy's own tag spelling. A plain ``str``
+    otherwise, so a JSONL row and a wire frame are byte-unchanged. Any derived value drops
+    the flag, so a caller that COMPOSES around this body must carry the answer itself, and
+    the shape test stays the fallback -- this can only add marks, never remove one.
+    """
+
+    row_rewritten = True
+
+
+def carries_redaction_marker(text: str) -> bool:
+    """True when *text* is a REWRITTEN row rather than what its author wrote.
+
+    Prefers the scrub's own before/after answer, carried by :class:`_ScrubbedRow`;
+    falls back to the stored text's shape once that is gone, which is all a row read
+    back off disk has left.
+
+    A row whose author literally typed the tag reads as rewritten. That direction is
+    the safe one -- it over-marks a cue, where missing the mark hides a mutation.
+    """
+    if getattr(text, "row_rewritten", False):
+        return True
+    if not text:
+        return False
+    return _REDACTION_TAG_PREFIX in text or LOG_WITHHELD_PLACEHOLDER in text
+
 
 def redact_log_via_context(text: str) -> str:
     """Context-aware redaction for an operational LOG line, which must not raise.
@@ -944,3 +978,27 @@ def redact_log_via_context(text: str) -> str:
         return redact_via_context(text)
     except PlatformCompositionError:
         return LOG_WITHHELD_PLACEHOLDER
+
+
+def redact_row_via_context(text: str) -> str:
+    """A persisted conversation row: the same contract as :func:`redact_log_via_context`.
+
+    A row and a log line answer both no-companion states alike, so this is that function
+    under the name its call sites read by, not a second implementation of it.
+
+    Warns when the row CHANGED, giving the ten persisters the visibility the write
+    boundary has. Safe to log -- no stdio MCP server calls this. No text is logged.
+    """
+    out = redact_log_via_context(text)
+    if out != text:
+        _logger.warning(
+            "conversation row rewritten at the write boundary: %d chars in, %d out",
+            len(text),
+            len(out),
+        )
+        # Carry the comparison out with the value: a companion policy's own tag
+        # spelling is not detectable from the replacement text.
+        return _ScrubbedRow(out)
+    # The caller's object, not the redactor's copy: a second scrub of an already
+    # scrubbed row finds nothing and would otherwise strip the answer.
+    return text

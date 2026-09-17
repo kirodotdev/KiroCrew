@@ -9926,6 +9926,7 @@
         "cancel_esc": "Abbrechen (Esc)",
         "copy": "Kopieren",
         "copy_link_to_message": "Link zur Nachricht kopieren",
+        "row_redacted": "[REDACTED...] Original nicht behalten",
         "edit_message": "Nachricht bearbeiten",
         "edit_resend": "Bearbeiten & erneut senden",
         "send": "Senden",

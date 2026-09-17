@@ -6294,6 +6294,7 @@
         "cancel_esc": "Cancel (Esc)",
         "copy": "Copy",
         "copy_link_to_message": "Copy link to message",
+        "row_redacted": "[REDACTED...] original not kept",
         "edit_message": "Edit message",
         "edit_resend": "Edit & Resend",
         "send": "Send",

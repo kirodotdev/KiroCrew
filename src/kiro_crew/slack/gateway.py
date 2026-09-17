@@ -255,6 +255,7 @@ from kiro_crew.platform.context import (
     PlatformCompositionError,
     current_context,
     redact_log_via_context,
+    redact_row_via_context,
     redact_via_context,
     safe_context_call,
 )
@@ -6511,15 +6512,13 @@ class GatewayOrchestrator:
         # Persist for dashboard replay (mirrors subagent Slack injection).
         if self.conv_log and not (is_thread_temporary(key) or is_thread_incognito(key)):
             try:
-                safe_nudge, _ = redact_exfiltration_urls(tagged)
-                safe_nudge, _ = redact_credentials(safe_nudge)
-                safe_response, _ = redact_exfiltration_urls(response or "")
-                safe_response, _ = redact_credentials(safe_response)
+                # The ROW spelling: the turn already reached Slack, so a miscomposed host must
+                # withhold the text rather than raise and drop the completed turn.
                 await save_conversation_turn_off_loop(
                     self.conv_log,
                     key,
-                    safe_nudge,
-                    safe_response,
+                    redact_row_via_context(tagged),
+                    redact_row_via_context(response or ""),
                     source_thread=key,
                     source_user="autonudge",
                     agent=_get_agent_for_session(key),
@@ -8048,8 +8047,9 @@ class GatewayOrchestrator:
             failures = slot._pending_subagent_failures[:]
             slot._pending_subagent_failures.clear()
             msg = "\n\n".join(failures)
-            msg, _ = redact_exfiltration_urls(msg)
-            msg, _ = redact_credentials(msg)
+            # The composed host's own patterns, not the baseline pair: this row persists and
+            # is served to dashboard readers, so it is an egress like every other user row.
+            msg = redact_row_via_context(msg)
             slot.append("user", msg, "msg msg-u auto-go")
             logger.info(
                 "Re-triggering recovery _run_chat for %s (%d queued failures)",
@@ -9060,22 +9060,13 @@ class GatewayOrchestrator:
                             is_thread_temporary(parent_key) or is_thread_incognito(parent_key)
                         ):
                             try:
-                                # Defense-in-depth: `announce` is composed from
-                                # already-redacted parts plus identifiers such as
-                                # `info.agent`; we re-redact before persisting to the
-                                # dashboard replay (an external surface), mirroring the
-                                # dashboard branch. `response` is fresh LLM output from
-                                # stream_and_collect and is NOT yet redacted, so its
-                                # redaction here is strictly required.
-                                safe_announce, _ = redact_exfiltration_urls(announce)
-                                safe_announce, _ = redact_credentials(safe_announce)
-                                safe_response, _ = redact_exfiltration_urls(response or "")
-                                safe_response, _ = redact_credentials(safe_response)
+                                # The ROW spelling: the announce already went out, so a
+                                # miscomposed host must withhold, never drop the turn.
                                 await save_conversation_turn_off_loop(
                                     self.conv_log,
                                     parent_key,
-                                    safe_announce,
-                                    safe_response,
+                                    redact_row_via_context(announce),
+                                    redact_row_via_context(response or ""),
                                     source_thread=parent_key,
                                     source_user="subagent",
                                     agent=_get_agent_for_session(parent_key),

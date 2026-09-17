@@ -31,6 +31,7 @@ from kiro_crew.hooks import (
     get_global_hook_store,
     hook_gate_kwargs,
 )
+from kiro_crew.platform.context import redact_row_via_context
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -2864,7 +2865,9 @@ def save_conversation_turn(
     log.append(
         key,
         "user",
-        user_text,
+        # The one place all twelve callers of this helper persist a user row, which is
+        # served back to dashboard readers; each caller's prompt value is untouched.
+        redact_row_via_context(user_text),
         source_thread=source_thread,
         source_user=source_user,
         agent=agent,

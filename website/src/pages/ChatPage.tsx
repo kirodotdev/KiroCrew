@@ -5593,6 +5593,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             <UserMessage
               content={m.content}
               meta={m.meta}
+              redacted={m.redacted === true}
               timestamp={chatConfig.showTimestamps ? msgTime : undefined}
               timestampTitle={msgTimeFull}
               renderContent={renderUserContentCb}

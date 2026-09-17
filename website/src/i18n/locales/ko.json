@@ -9784,6 +9784,7 @@
         "cancel_esc": "취소 (Esc)",
         "copy": "복사",
         "copy_link_to_message": "메시지 링크 복사",
+        "row_redacted": "[REDACTED...] 원본 미보관",
         "edit_message": "메시지 편집",
         "edit_resend": "편집 후 다시 보내기",
         "send": "보내기",
