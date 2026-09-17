@@ -35,10 +35,13 @@ from kiro_crew.apps.bridges import (
     register_app,
     register_app_crons_with_service,
 )
+from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script, sanitize_script_output
 from kiro_crew.apps.manager import (
+    app_enabled_state,
     disable_app,
     enable_app,
     get_app,
+    get_app_manifest,
     install_app,
     list_apps,
     trust_grant_removal_blocked,
@@ -977,8 +980,87 @@ def _handle_app(args: argparse.Namespace) -> None:
     elif action == "enable":
         if _run_app_action_through_gateway("enable", args.name):
             return
+        # Snapshot BEFORE enable_app flips the flag: a FAILED re-enable of an
+        # already-enabled app must leave it enabled — that was its working
+        # state, and disabling here would strand its registered resources
+        # under a disabled flag. Only an enable this command itself performed
+        # gets rolled back.
+        prior_enabled = app_enabled_state(args.name) is True
         result = enable_app(args.name)
         if result.ok:
+            # Run the manifest's setup.onEnable, matching the dashboard enable
+            # route: following the CLI's own "Run: kirocrew app enable <name>"
+            # hint must leave an app whose script installs its backend
+            # dependencies startable. A failure rolls the enable back (app
+            # stays disabled), same as the route.
+            app_manifest = get_app_manifest(args.name)
+            setup = app_manifest.setup if app_manifest is not None else None
+            on_enable = setup.onEnable if setup is not None else ""
+            enable_timeout = setup.onEnableTimeout if setup is not None else 30
+            # Mirror the dashboard route's two platform carve-outs: skip the
+            # script on an unsupported OS, and treat a client-install app's
+            # script as advisory (failure neither gates nor rolls back) — it
+            # launches a separately-distributed desktop companion that may
+            # legitimately not be installed yet.
+            platform_cfg = app_manifest.platform if app_manifest is not None else None
+            client_platform = (
+                platform_cfg
+                if platform_cfg is not None and platform_cfg.installMode == "client"
+                else None
+            )
+            skip_on_enable = bool(
+                on_enable
+                and client_platform is not None
+                and not client_platform.supports_platform(sys.platform)
+            )
+            if skip_on_enable:
+                print("   onEnable: skipped (unsupported platform)")
+            elif on_enable:
+                # run_lifecycle_script converts sandbox refusals and launch
+                # failures into a failed result, so a scripted enable fails
+                # CLOSED through the rollback below instead of crashing with
+                # the app left enabled. The guard keeps that guarantee if a
+                # future exception escapes the runner.
+                try:
+                    script_output = asyncio.run(
+                        run_lifecycle_script(
+                            args.name,
+                            on_enable,
+                            timeout=enable_timeout,
+                            action="on_enable",
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - rollback over crash
+                    script_output = {"output": f"lifecycle runner failed: {exc}", "failed": True}
+                # Third-party script output never reaches the terminal raw:
+                # strip control sequences, then run the full shared chain
+                # (credentials + exfiltration URLs), matching the manager's
+                # install-failure surface.
+                raw_output = str(script_output.get("output", ""))
+                safe_output, _ = redact_credentials(sanitize_script_output(raw_output))
+                safe_output, _ = redact_exfiltration_urls(safe_output)
+                if script_output.get("failed") and client_platform is None:
+                    if prior_enabled:
+                        print(
+                            "❌ onEnable script failed — app was already enabled;"
+                            " leaving it enabled\n"
+                            f"{safe_output}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    disable_app(args.name)
+                    print(
+                        "❌ onEnable script failed — app remains disabled\n" f"{safe_output}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                if script_output.get("failed"):
+                    print(
+                        "⚠️  onEnable script failed (advisory for a client-install"
+                        f" app): {safe_output}"
+                    )
+                elif safe_output:
+                    print(f"   onEnable: {safe_output}")
             reg = register_app(args.name)
             _print_file_only_app_result(args.name, enabled=True)
             if reg.agents:

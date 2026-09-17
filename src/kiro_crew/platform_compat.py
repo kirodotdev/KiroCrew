@@ -4460,6 +4460,50 @@ def kill_process_tree_pinned(pid: int, expected_start_time: str, sig: int = SIGT
         _close_process_handle(handle)
 
 
+def posix_getpgid(pid: int) -> int:
+    """Return the POSIX process group id of *pid* (``os.getpgid``).
+
+    Thin routing shim so callers outside this module never touch the raw
+    POSIX-only primitive. POSIX ONLY, deliberately unguarded: ``os.getpgid``
+    does not exist on Windows, so a caller reaching here on Windows gets
+    ``AttributeError``. Capture-before-wait callers (see :func:`kill_pgid`)
+    call this while the leader is still alive.
+    """
+    return os.getpgid(pid)
+
+
+def kill_pgid(pgid: int, sig: int = SIGTERM) -> bool:
+    """Signal an ALREADY-CAPTURED POSIX process group.
+
+    :func:`kill_process_tree` resolves the group through the leader's live
+    PID, so a caller that waits on the leader first (reaping it) can no
+    longer kill the survivors: ``os.getpgid(pid)`` raises
+    ``ProcessLookupError`` against the dead leader while backgrounded
+    descendants still hold the group alive. This variant takes the pgid
+    itself, captured while the leader was alive.
+
+    Same guards as :func:`kill_process_tree`'s broadcast protection: refuse
+    a non-int or reserved group (pgid <= 1) and this process's own group, so
+    a captured value can never turn into a broadcast to every process this
+    uid owns. Raises ``ValueError`` for a refused group — callers already
+    wrapping kills in ``suppress(OSError, ProcessLookupError, ValueError)``
+    keep working unchanged.
+
+    POSIX-only by design: Windows has no process groups, so callers there
+    must use the PID/handle-addressed kill functions
+    (:func:`kill_process_tree`, :func:`kill_process_tree_pinned`).
+    """
+    if not IS_POSIX:
+        raise NotImplementedError("kill_pgid is POSIX-only; use kill_process_tree on Windows")
+    if type(pgid) is not int or pgid <= 1:
+        raise ValueError(f"kill_pgid: refusing non-int/reserved pgid {pgid!r}")
+    if pgid == _OWN_PGID:
+        logger.error("kill_pgid: refusing broadcast to our own process group %d", pgid)
+        raise ValueError(f"kill_pgid: refusing our own process group {pgid}")
+    os.killpg(pgid, sig)
+    return True
+
+
 def kill_pid_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> bool:
     """Kill *pid* only while its verified identity is PINNED OPEN.
 
