@@ -54,9 +54,13 @@ def test_unsupervised_set_is_exactly_the_base_set() -> None:
     assert supervised_mixed_internal_method_paths(False) == {}
 
 
-def test_supervised_prefix_additions_are_exactly_the_phase3_reads_plus_approvals() -> None:
+def test_supervised_prefix_additions_include_the_phase3_reads_plus_approvals() -> None:
+    # Contains rather than equals: later phases add their own supervised routes
+    # to the same shared set (Phase 4 adds the Plane C wake/autonudge routes),
+    # so this pins that the Phase-3 additions are still present, not that the
+    # set is frozen at Phase 3.
     added = supervised_mixed_internal_paths(True) - _MIXED_INTERNAL_API_PATHS
-    assert added == {"/api/approvals", *_PHASE3_PREFIX_ROUTES}
+    assert {"/api/approvals", *_PHASE3_PREFIX_ROUTES} <= added
 
 
 def test_supervised_method_scoped_map_is_only_knowledge_sources_get() -> None:

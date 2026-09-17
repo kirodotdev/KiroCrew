@@ -480,8 +480,22 @@ async def api_autonudge_list(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return web.json_response({"enabled": False, "loops": []})
-    loops = [_serialize_for_legacy_reader(lp) for lp in svc.list_all()]
-    return web.json_response({"enabled": True, "loops": loops})
+    loops = svc.list_all()
+    # Owner scoping for the supervised bridge: an internal-secret caller
+    # carrying its ``kiro-cli:<id>`` session key sees ONLY the loops it owns
+    # (its own session key is the loop's binding ``slot_key``). This mirrors the
+    # Phase-3 cron ``GET /api/crons`` contract — empty means none owned HERE, not
+    # none exist. A browser reader (no internal grant) is unchanged: it gets the
+    # full presence-reduced list, because the dashboard's Agent Monitor needs to
+    # show every armed loop, and this route already withholds the watched
+    # subject from every reader.
+    if request.get("internal_auth") is True:
+        owner = request.headers.get("X-Session-Key", "").strip()
+        if owner:
+            loops = [lp for lp in loops if getattr(lp, "slot_key", "") == owner]
+    return web.json_response(
+        {"enabled": True, "loops": [_serialize_for_legacy_reader(lp) for lp in loops]}
+    )
 
 
 async def api_autonudge_get(request: web.Request) -> web.Response:
@@ -891,10 +905,21 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
             {"error": "gate must be a boolean", "code": "not_a_boolean"}, status=400
         )
     gate = False if raw_gate is None else raw_gate
+    # Owner (binding slot_key) resolution. The supervised bridge caller
+    # (``monitor/start``) sends no body slot_key: its identity is the
+    # authenticated ``X-Session-Key`` (``kiro-cli:<id>``), and recording THAT as
+    # the binding is what makes ``GET /api/autonudge`` scope back to it and the
+    # fire path enqueue a wake for it. Only honored for a constant-time-verified
+    # internal caller, so a browser POST cannot bind a loop to another session by
+    # sending the header. A body-supplied slot_key still wins when present (the
+    # dashboard goal popover path), and the header is the fallback owner.
+    owner_slot = body.get("session_key") or body.get("slot_key") or ""
+    if not owner_slot and request.get("internal_auth") is True:
+        owner_slot = request.headers.get("X-Session-Key", "").strip()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
-        slot_key=(body.get("session_key") or body.get("slot_key") or ""),
+        slot_key=owner_slot,
         message=(body.get("message") or ""),
         idle_secs=idle_secs,
         max_cycles=max_cycles,

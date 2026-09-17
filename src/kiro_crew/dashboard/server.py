@@ -921,6 +921,39 @@ _SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS = frozenset(
         # GET path; the same coarse readiness/version the ``/api/health`` probe
         # already exposes unauthenticated, plus uptime/rss — read-only.
         "/api/status",
+        # Phase-4 Plane C. Each route below is reached by the supervising CLI
+        # with its ``X-Internal-Secret`` + ``X-Session-Key: kiro-cli:<id>``; the
+        # rationale for each is why an internal-secret caller in supervised mode
+        # may hold it.
+        #
+        # Plane C wake queue (``monitor/wake`` long-poll, ``wake/ack``). The
+        # prefix covers ``GET /api/crew/wakes`` and ``POST /api/crew/wakes/{id}/
+        # ack``. Every wake is OWNED by the caller's own session key, resolved
+        # from the authenticated header, never a body field — a caller can only
+        # read and ack its own wakes, so the prefix sweeps in no cross-session
+        # reach. This is the reverse-direction turn delivery the supervising CLI
+        # exists to run in its own session; without it a monitor/cron wake for a
+        # ``kiro-cli:`` owner has no path to the CLI at all.
+        "/api/crew/wakes",
+        # Auto-nudge CRUD for ``monitor/start|update|stop|inspect``. GET
+        # ``/api/autonudge`` (list, presence-reduced), GET ``/api/autonudge/
+        # {loop_id}`` and ``.../slot/{slot_key}`` (inspect), POST (arm), PATCH
+        # (update), DELETE (stop). The prefix also admits POST ``/api/autonudge/
+        # {loop_id}/fire`` — intended: manually firing a loop the supervising CLI
+        # armed is the same authority as arming it, and for a ``kiro-cli:`` owner
+        # the fire enqueues a wake it then runs itself. The write the CLI is the
+        # legitimate author of; owner scoping on POST records the caller's
+        # session key and GET filters to it (mirrors the Phase-3 cron pattern).
+        "/api/autonudge",
+        # The workflow routes the bridge uses (``run_intent``, ``runs``,
+        # ``definitions``) are NOT added here: ``/api/workflows`` is already in
+        # the BASE mixed set above (the DW engine's MCP tools reach it in every
+        # mode), so an internal-secret caller already holds them and a supervised
+        # duplicate would be dead weight. The mutation children under it stay
+        # refused to this transport by their own ``_require_dashboard_user``
+        # gate, which an internal-secret human caller cannot satisfy (its
+        # dashboard-user claim is deliberately absent), so no supervised
+        # narrowing is needed.
     }
 )
 
@@ -1722,10 +1755,24 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_session_monitor_get,
     )
 
+    from kiro_crew.dashboard.handlers.crew_wakes import (
+        api_autonudge_get_by_id,
+        api_crew_wakes_ack,
+        api_crew_wakes_poll,
+    )
+
     app.router.add_get("/api/autonudge", api_autonudge_list)
     app.router.add_get("/api/autonudge/session-monitor", api_session_monitor_get)
     app.router.add_post("/api/autonudge", api_autonudge_start)
     app.router.add_get("/api/autonudge/slot/{slot_key}", api_autonudge_get)
+    # Inspect-by-handle (``monitor/inspect``). Registered AFTER the literal
+    # ``session-monitor`` and ``slot/{slot_key}`` GETs so those are not captured
+    # as a ``{loop_id}``; aiohttp matches in registration order.
+    app.router.add_get("/api/autonudge/{loop_id}", api_autonudge_get_by_id)
+    # Plane C wake queue: long-poll and ack. Owner is the authenticated
+    # supervised session key; no body-supplied owner.
+    app.router.add_get("/api/crew/wakes", api_crew_wakes_poll)
+    app.router.add_post("/api/crew/wakes/{wake_id}/ack", api_crew_wakes_ack)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
     app.router.add_post("/api/autonudge/{loop_id}/fire", api_autonudge_fire)
