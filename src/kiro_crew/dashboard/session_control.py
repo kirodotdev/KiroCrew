@@ -1073,32 +1073,38 @@ async def create_session(
             code="agent_unresolved",
         )
 
-    # A workspace is not a memory silo: it can host agents on different stores,
-    # so a private member could otherwise mint a worker on `default`/global or a
-    # peer's store. require_memory_delegation is the guard the private spawn path
-    # uses -- a no-op for a caller with no private record, a refusal of any
-    # target_store that is not a private V2 caller's own. Off-loop: it reads the
+    # Only a protected caller record can authorize a child's private binding.
+    # Agent selection and editable slot metadata are not private authority. This
+    # reads that record and nothing else: the delegation refusal itself belongs to
+    # the `require_memory_delegation` gate further down, which already refuses any
+    # target store that is not a private V2 caller's own. Off-loop: it reads the
     # caller's binding from disk.
-    from kiro_crew.context import require_memory_delegation
+    #
+    # Keyed on `caller_memory_identity[0]` -- the CANONICAL history key -- and NOT
+    # on `caller_session_key`. The argument arrives as whatever spelling the caller
+    # used for itself (canonical key, slot key, or transcript stem), while
+    # `read_private_session_store` recognizes only the canonical form, so keying
+    # this on the raw argument makes the caller's private authority depend on how
+    # it spelled its own name: the slot and stem spellings read back as unbound.
+    # For an authorization input that is not a lenient read, it is a bypass -- the
+    # caller chooses the spelling.
     from kiro_crew.member_memory_auth import read_private_session_store
-    from kiro_crew.memory_stores import UnknownMemoryStore
 
     try:
-        await asyncio.to_thread(
-            require_memory_delegation, log, caller_session_key, bindings.memory_store_name
-        )
-        # Only a protected caller record can authorize a child's private binding.
-        # Agent selection and editable slot metadata are not private authority.
         caller_private_store = await asyncio.to_thread(
-            read_private_session_store, caller_session_key
+            read_private_session_store, caller_memory_identity[0]
         )
-    except (UnknownMemoryStore, ValueError) as exc:
-        # UnknownMemoryStore is the delegation refusal proper; ValueError is the
-        # corrupt/unreadable binding-file case require_memory_delegation surfaces
-        # through read_private_session_store. Both are a store the caller may not
-        # delegate into -- map to one refusal rather than letting the bare
-        # ValueError escape as an unhandled 500.
-        raise SessionControlError(str(exc), code="agent_store_mismatch") from exc
+    except (OSError, ValueError):
+        # The same refusal, in the same words, as the delegation gate below: a
+        # protected record that cannot be read authorizes nothing. `from None` and
+        # a fixed message on purpose -- the exception text of a function that reads
+        # a binding FILE can carry that file's path, and a refusal must not hand
+        # the caller the location of another member's record.
+        raise SessionControlError(
+            "cannot verify delegation within the caller's memory assignment",
+            code="memory_delegation_denied",
+            status=403,
+        ) from None
 
     # SlotOrigin.USER, not SYSTEM: the visibility semantics must match an
     # ordinary session, because the point of creating it here is that the user
@@ -1411,6 +1417,12 @@ async def create_session(
                 cfg,
                 conversation_log=log,
                 native_context=native_context,
+                # The store this creation was actually cleared for. The pin derives
+                # its own store from the selected agent's config entry, which is a
+                # different value from the one `require_memory_delegation` checked
+                # above -- so without this the gate authorizes one store and the
+                # pin binds another.
+                authorized_store=bindings.memory_store_name,
             )
             # Preserve the namespace resolved for this request, including a
             # template later imported as a same-named private member. Automatic

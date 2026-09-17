@@ -835,12 +835,25 @@ def _pin_private_agent_assignment(
     *,
     conversation_log=None,
     native_context: bool = False,
+    authorized_store: str | None = None,
 ) -> str:
     """Pin an authorized member selection, never a name recovered from history.
 
     Callers must authorize the owner's request or its session-control creation
     before using this helper. The session-control route rejects private callers
     from these aggregate controls. Legacy members keep their declared V1 memory.
+
+    ``authorized_store`` is the store a caller's authorization actually covers,
+    for the one caller that HAS such a value: ``create_session`` runs
+    ``require_memory_delegation`` against ``bindings.memory_store_name``, so that
+    is the only store its creation is cleared for. The store pinned here is
+    derived from the SELECTED AGENT's config entry instead, and the two are not
+    the same value -- so without this fence the gate authorizes one store and the
+    pin writes another, and the new session runs on private memory its own
+    ``slot.memory_store`` does not name. Passing it makes the act match the check.
+
+    Left ``None`` by the owner's own agent picks, where the pick IS the authority
+    and there is no separately-authorized store to compare against.
     """
     selected = agent or config.default_agent
     if selected == "default":
@@ -848,6 +861,10 @@ def _pin_private_agent_assignment(
     member = config.agents.get(selected)
     store = getattr(member, "memory_store", "")
     if not store:
+        return ""
+    if authorized_store is not None and named_store_or_empty(store) != named_store_or_empty(
+        authorized_store
+    ):
         return ""
     record = config.memory_stores.get(store) if isinstance(store, str) else None
     if record is None or record.memory_version != 2:

@@ -448,11 +448,13 @@ class TestMemberDispatchEndToEnd:
         # mint a worker whose resolved agent is bound to `default`/global or a
         # peer's store, laundering work out of its own private memory. The
         # `require_memory_delegation` guard (the same one the private spawn path
-        # uses) refuses that, and `create_session` maps it to
-        # `agent_store_mismatch`. The child agent-workspace check must pass first,
-        # so pin `_workspace_name_for_dir` as the other end-to-end tests do; the
-        # delegation guard itself is stubbed to reject, isolating this seam from
-        # the member-binding plumbing exercised in test_member_memory_api.
+        # uses) refuses that, and `create_session` maps it to the
+        # `memory_delegation_denied` 403 -- an AUTHORIZATION refusal, because the
+        # store is legal and the caller simply may not delegate into it. The child
+        # agent-workspace check must pass first, so pin `_workspace_name_for_dir`
+        # as the other end-to-end tests do; the delegation guard itself is stubbed
+        # to reject, isolating this seam from the member-binding plumbing exercised
+        # in test_member_memory_api.
         import kiro_crew.context as context
         from kiro_crew.memory_stores import UnknownMemoryStore
 
@@ -471,7 +473,11 @@ class TestMemberDispatchEndToEnd:
 
         with pytest.raises(sc.SessionControlError) as exc:
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
-        assert exc.value.code == "agent_store_mismatch"
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
+        # The guard reads binding FILES, so its own text is not safe to echo: the
+        # refusal carries a fixed message and nothing the guard said.
+        assert "private memory" not in exc.value.message
         # No session is left behind on refusal.
         assert state.creator_slot_count(_MEMBER) == 0
 
@@ -480,8 +486,8 @@ class TestMemberDispatchEndToEnd:
     ):
         # require_memory_delegation reads the caller's binding from disk; a
         # corrupt/unreadable binding file surfaces as a bare ValueError, not
-        # UnknownMemoryStore. It must map to the same agent_store_mismatch refusal
-        # rather than escaping create_session as an unhandled 500.
+        # UnknownMemoryStore. It must map to the same memory_delegation_denied
+        # refusal rather than escaping create_session as an unhandled 500.
         import kiro_crew.context as context
 
         state = _make_state(tmp_path)
@@ -497,7 +503,9 @@ class TestMemberDispatchEndToEnd:
 
         with pytest.raises(sc.SessionControlError) as exc:
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
-        assert exc.value.code == "agent_store_mismatch"
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
+        assert "binding" not in exc.value.message
         assert state.creator_slot_count(_MEMBER) == 0
 
 
@@ -611,9 +619,68 @@ class TestMemberChildPrivateBinding:
         child_key = effective_session_key(child)
         assert read_private_session_store(child_key) == "member-radar"
 
-    def test_global_caller_cannot_grant_a_child_private_authority(
+    @pytest.mark.parametrize("caller_form", ["canonical", "slot", "stem"])
+    def test_the_child_binding_ignores_how_the_caller_spelled_itself(
+        self, tmp_path, monkeypatch, _fresh_create_budget, caller_form
+    ):
+        """A member's authority is its protected record, not the name it types.
+
+        ``caller_session_key`` arrives as any of three spellings of the same
+        session -- canonical history key, slot key, transcript stem -- and
+        ``read_private_session_store`` recognizes only the canonical one. Reading
+        the caller's protected record under the raw argument makes that caller's own
+        authority depend on which spelling it chose: the slot and stem forms read
+        back as unbound, the pre-birth binding does not happen, and the member's
+        worker cannot take its first turn.
+        """
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.history import transcript_stem
+        from kiro_crew.member_memory_auth import read_private_session_store
+
+        state = _make_state(tmp_path)
+        caller = _member_tab(state)
+        self._pin_v2_bindings(monkeypatch, tmp_path, state, caller, "member-radar")
+        canonical = slot_history_key(caller)
+        identity = {
+            "canonical": canonical,
+            "slot": caller.key,
+            "stem": transcript_stem(canonical),
+        }[caller_form]
+
+        bound_before_birth: list[bool] = []
+        real_pin = chat_persistence._pin_private_agent_assignment
+
+        def _watch(session_key, *args, **kwargs):
+            bound_before_birth.append(read_private_session_store(session_key) is not None)
+            return real_pin(session_key, *args, **kwargs)
+
+        monkeypatch.setattr(sc, "_pin_private_agent_assignment", _watch)
+
+        result = asyncio.run(sc.create_session(state, caller_session_key=identity))
+        child = state.get_slot(result["target"])
+        assert read_private_session_store(effective_session_key(child)) == "member-radar"
+        # Written BEFORE the birth record, for every spelling. The birth pin would
+        # otherwise be the only writer, and it derives its store from the selected
+        # agent's config rather than from the caller's own record.
+        assert bound_before_birth == [True]
+
+    def test_global_caller_binds_a_child_only_to_the_member_it_selected(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
+        # What needs guarding here is not whether the child has a binding but WHICH
+        # store that binding names. The delegation gate authorizes the selected
+        # member's own store, and that is the only store the child may land on.
+        #
+        # "No binding at all" is not the safe reading: this test also pins
+        # `child.memory_store == "member-radar"`, and for a slot on a V2 store
+        # `chat_runner._bind_private_slot_memory` raises `UnknownMemoryStore` ->
+        # `memory_unavailable` when `read_private_session_store` returns None. A V2
+        # store in the metadata with no binding on disk is a session that cannot
+        # take a turn.
+        #
+        # A child aimed at a store the gate does NOT authorize is covered by
+        # `test_a_v1_child_writes_no_private_binding`.
         from kiro_crew.dashboard.chat_utils import effective_session_key
         from kiro_crew.member_memory_auth import read_private_session_store
 
@@ -626,7 +693,37 @@ class TestMemberChildPrivateBinding:
         child = state.get_slot(result["target"])
         assert child is not None
         assert child.memory_store == "member-radar"
-        assert read_private_session_store(effective_session_key(child)) is None
+        assert read_private_session_store(effective_session_key(child)) == "member-radar"
+        # The creation did not write anything onto the caller's own identity.
+        assert read_private_session_store(slot_history_key(caller)) is None
+
+    def test_a_corrupt_caller_record_refuses_without_naming_it(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The caller's own protected record is read before the slot is minted, to
+        # decide whether the child may inherit private authority. A record that
+        # cannot be read authorizes nothing, so the creation is refused -- and the
+        # refusal must not echo the reader's own text, which names the file.
+        from kiro_crew import member_memory_auth
+
+        state = _make_state(tmp_path)
+        caller = _member_tab(state)
+        monkeypatch.setattr(sc, "_workspace_name_for_dir", lambda cfg, ws_dir: caller.workspace)
+        monkeypatch.setattr(sc, "session_control_enabled", lambda: False)
+        monkeypatch.setattr(sc, "member_dispatch_enabled", lambda: True)
+
+        def _corrupt(_key):
+            raise ValueError("/private/bindings/9f2c/memory.json is unreadable")
+
+        monkeypatch.setattr(member_memory_auth, "read_private_session_store", _corrupt)
+
+        with pytest.raises(sc.SessionControlError) as exc:
+            asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
+        assert "/private/bindings" not in exc.value.message
+        assert "/private/bindings" not in str(exc.value)
+        assert state.creator_slot_count(_MEMBER) == 0
 
     @pytest.mark.parametrize("target_store", ["default", "member-peer"])
     def test_private_caller_cannot_delegate_into_another_store(
@@ -639,7 +736,13 @@ class TestMemberChildPrivateBinding:
 
         with pytest.raises(sc.SessionControlError) as exc:
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
-        assert exc.value.code == "agent_store_mismatch"
+        # `memory_delegation_denied` 403, the one refusal `create_session` has for
+        # this: the caller may not delegate into that store. Not a 4xx validation
+        # code -- the store is a legal name and nothing about the request is
+        # malformed, so a "fix your input" answer would be a lie to the caller and
+        # would read as a client bug in the audit trail.
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
         assert state.creator_slot_count(_MEMBER) == 0
 
     def test_a_v1_child_writes_no_private_binding(
