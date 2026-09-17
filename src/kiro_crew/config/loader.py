@@ -6509,11 +6509,18 @@ def _read_hardened_agent_spec(path: Path) -> dict | None:
         return None
 
 
-def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
-    """Whether *project_dir* declares a dispatchable agent called *agent_name*.
+def _project_declares_agent(
+    agent_name: str,
+    project_dir: str,
+    *,
+    effective_name: str = "",
+) -> bool:
+    """Whether *project_dir* shadows *agent_name* or its effective template.
 
     Delegates to ``agent_discovery``, which owns the scan, its sensitive-path guards,
-    and the stat-signature cache.
+    and the stat-signature cache. *effective_name* is the template the backend will
+    actually dispatch for an alias. Both names are judged against one name-set
+    lookup, so they cannot observe different project snapshots.
 
     Splits on whether an event loop is running, because that decides what is safe:
 
@@ -6543,6 +6550,7 @@ def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
         # kiro_crew.config.loader in sys.modules. A module-scope import here would
         # therefore be a cycle; the deferral is load-bearing, not stylistic.
         from kiro_crew.agent_discovery import (
+            agent_binding_is_shadowed,
             cached_project_agent_names,
             project_agent_names,
         )
@@ -6550,18 +6558,19 @@ def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return agent_name in project_agent_names(
+            names = project_agent_names(
                 project_dir, operation="project_declares_agent", source="unknown"
             )
-        names = cached_project_agent_names(project_dir)
-        if names is None:
+            return agent_binding_is_shadowed(names, agent_name, effective_name)
+        cached_names = cached_project_agent_names(project_dir)
+        if cached_names is None:
             logger.debug(
                 "Project agent cache cold on the event loop for %r; falling back "
                 "(warm it off-loop before resolving to dispatch a project agent)",
                 agent_name,
             )
             return False
-        return agent_name in names
+        return agent_binding_is_shadowed(cached_names, agent_name, effective_name)
     except Exception:  # noqa: BLE001 — a probe failure only costs a fallback
         logger.debug("Project agent probe failed for %r", agent_name, exc_info=True)
         return False
@@ -6594,12 +6603,164 @@ def resolve_crew_identity(
     return ""
 
 
-def _resolve_agent_selection(config, agent_name=None, project_dir=None, *, selection_kind=""):
-    """Select a config record/template without accessing any memory files."""
+# ``resolved_source`` for the one resolution that refuses instead of answering:
+# a member-bound caller whose bound directory declares its name (see
+# _resolve_agent_selection's docstring for why that must refuse). A NAMED
+# constant rather than the bare literal its sibling sources use, because this is
+# the only one read in another module -- slack/gateway.py words the operator's
+# skip message from it -- and a literal matched in two files drifts silently the
+# moment one side is reworded.
+RESOLVED_SOURCE_MEMBER_SHADOWED = "member_shadowed_by_project"
+
+#: A project's own ``.kiro/agents`` definition WON over a same-named alias. Named
+#: for the same reason as its sibling above: slack/gateway.py reads it to decide a
+#: sequence member's dispatch execution, because that member's resolution is not
+#: handed the job's own carrier and so cannot have been projected inside
+#: :func:`resolve_agent_bindings`.
+RESOLVED_SOURCE_PROJECT = "project"
+
+
+def _resolve_agent_selection(
+    config, agent_name=None, project_dir=None, *, selection_kind="", allow_project_override=True
+):
+    """Select a config record/template without accessing any memory files.
+
+    Returns ``(record, alias, passthrough, requested_resolved, source)``.
+
+    Within a bound *project_dir* a project's own ``.kiro/agents`` definition BEATS a
+    same-named ``config.agents`` alias: a project's agents join the crew as
+    subject-matter experts for that project, and the precedence is contextual, so
+    outside that directory the alias is untouched and a chat session opened in the
+    folder resolves the name the same way a cron bound to it does. It is also the
+    precedence of the layer beneath -- kiro-cli searches ``<project>/.kiro/agents``
+    before the user-level registry and resolves a same-name conflict in the
+    project's favour, and the session runs with that directory as its cwd -- so the
+    project file answers whichever definition this step names, and naming the alias
+    would advertise one answer while another runs.
+
+    The override deliberately carries the alias's INFRASTRUCTURE away with it: once a
+    project file wins there is no ``config.agents`` record, so bindings come from
+    ``default_agent`` exactly as a project-only agent's do. That is the safe
+    direction as well as the consistent one -- a project file is writable by anyone
+    who can write that checkout (or land a branch in it), so letting one inherit a
+    named crew's PRIVATE memory store would turn "add a file to a repo" into a read
+    of that crew's private memory. The sibling ``private_template_shadowed`` /
+    ``parent_identity_changed`` error codes exist because the codebase already
+    treats project-file shadowing of a crew template as a hazard.
+
+    *allow_project_override* is how a MEMBER-BOUND caller opts out. Substituting a
+    same-named project definition under a member would re-base it onto a different
+    parent template and trip ``parent_identity_changed``, so a member keeps its
+    global lineage and the folder supplies only its cwd.
+
+    It is a separate parameter rather than ``selection_kind == "member"``, which
+    names the same caller but does MORE: that value also forces *passthrough*
+    empty, because the callers who pass it already hold the template. A
+    member-bound cron job does NOT -- its agent name IS the member's provider
+    template, which lives in the user-level registry and has to be materialized
+    from there. Routing this opt-out through ``selection_kind`` therefore makes
+    every project-bound member job resolve to nothing and skip its own fire.
+
+    ``selection_kind == "template"`` needs no gate here: it already leaves
+    ``alias_hit`` False, so there is no alias for a project file to displace.
+
+    When the override is opted OUT of (a member-bound caller) and the bound
+    *project_dir* STILL declares an agent of the same name, resolving to the
+    alias anyway would answer with a name kiro-cli will not actually run: the
+    fire's cwd is *project_dir*, and the backend resolves that name
+    project-first regardless of what this step decides. Silently keeping the
+    alias would hand the member's PRIVATE memory store to whatever the
+    project file's own turn does — and a project's ``.kiro/agents`` file is
+    writable by anyone who can land a branch there, so "land a branch" would
+    become "read that member's private memory". This is the same hazard the
+    ``private_template_shadowed`` capability check exists for (a project/local
+    definition outranking a private one); refuse here exactly as that check
+    does, rather than resolving to a name the fire will not honor.
+    """
     alias_hit = selection_kind != "template" and bool(agent_name) and agent_name in config.agents
+    # Two callers need this probe, and the condition is a UNION rather than
+    # `alias_hit` alone because the member case does not imply an alias: a
+    # member-bound job's agent name can be the provider template itself, which
+    # lives in the user-level registry and resolves by MATERIALIZATION, so
+    # `alias_hit` is False for it (pinned by
+    # test_a_member_bound_job_still_resolves_its_provider_template, which asserts
+    # resolved_source == "materialized"). Gating the refusal below on alias_hit
+    # therefore makes it fail OPEN for exactly the case it exists to stop.
+    #
+    # A matched alias has another backend-visible name: the provider template in
+    # its config record. The member opt-out checks that effective name in the SAME
+    # project-name lookup as the alias; otherwise a project file named after the
+    # template runs under the alias's private memory. Ordinary callers keep the
+    # alias-only probe, and that leaves a RESIDUAL rather than answering the same
+    # question: a differently named project template does not displace their
+    # explicit alias SELECTION, but it is still the name the backend activates in
+    # that cwd, so the project's file can answer under the alias's own store.
+    # Widening here does not close it -- the store a chat turn runs under comes
+    # from the session's captured execution record, not from this answer (see
+    # docs/system-specs/modules/config.md, "an ORDINARY caller's probe judges the
+    # selected name only", for why that seam owns it and what an operator can do).
+    # The cron fire re-checks the DISPATCHED template instead, at the one site
+    # where a bound folder was newly put in front of a captured private store
+    # (slack/gateway.py, _unshadowed_dispatch_execution).
+    #
+    # `not allow_project_override` is what keeps the widening safe. Only the
+    # member-bound cron/save sites pass it, and those run off-loop; every
+    # ordinary and app-bound resolution keeps the default True and so reaches no
+    # extra probe, which is what
+    # test_user_level_hit_does_no_project_filesystem_io pins (that path runs on
+    # EVERY turn of an app-bound session, where a scan stalls chat, WebSocket and
+    # heartbeat processing).
+    effective_name = config.agents[agent_name].kiro_agent if alias_hit else agent_name
+    project_declares_same_name = (
+        bool(agent_name)
+        and bool(project_dir)
+        and (alias_hit or not allow_project_override)
+        and _project_declares_agent(
+            agent_name,
+            project_dir,
+            effective_name=effective_name if not allow_project_override else "",
+        )
+    )
+    if not allow_project_override and project_declares_same_name:
+        # Named refusal, not a silent substitution: the caller opted OUT of
+        # letting the project win (it is member-bound), yet the project still
+        # declares the same name, so resolving it at all would run the project's
+        # file under the member's PRIVATE memory bindings -- the fire's cwd is
+        # that directory and the backend resolves the name project-first
+        # regardless of what this step answers. requested_resolved False routes
+        # this through the same "agent not found" skip every other unresolved
+        # name takes (see resolve_agent_bindings / the gateway fire paths' checks
+        # on ``requested_resolved``) rather than a parallel refusal path.
+        return None, "", "", False, RESOLVED_SOURCE_MEMBER_SHADOWED
+    # Reuses the probe above rather than calling _project_declares_agent a second
+    # time. `alias_hit` is re-applied because a WIN needs an alias to displace,
+    # while the refusal above needed only a declaration; and the two stay
+    # equivalent to the pre-union form because the only input where
+    # `allow_project_override` could still matter here is the one that already
+    # returned. A single lookup cannot disagree with itself the way two
+    # coordinated ones can be raced apart between the calls.
+    project_wins = alias_hit and project_declares_same_name
+    if project_wins:
+        # Falling through to _materialized_kiro_agent rather than short-circuiting
+        # to *agent_name*: its own last branch IS this same _project_declares_agent
+        # call, so a True here guarantees it returns the name, and one lookup
+        # cannot disagree with itself the way two coordinated ones can.
+        alias_hit = False
+    # The `"member"` arm forces passthrough empty because those callers already
+    # hold the template -- the ALIAS's template. Once a project file has won, the
+    # alias's template is not the one that answers: the override carries the
+    # alias's infrastructure away, and the winner must resolve exactly as a
+    # project-only agent does (passthrough = the name, `default_agent`'s
+    # bindings, Global memory). Applying the arm to a won override would leave
+    # `requested_resolved` False
+    # for a member-kind caller in a folder declaring the member's name, so every
+    # turn of that chat slot raised "Crew Member 'X' is unavailable"; and an
+    # explicit member pick in such a folder would have recorded the member's
+    # PRIVATE store under a name the project file answers -- the leak the
+    # override exists to prevent. `project_wins` therefore bypasses the arm.
     passthrough = (
         ""
-        if alias_hit or selection_kind == "member"
+        if alias_hit or (selection_kind == "member" and not project_wins)
         else _materialized_kiro_agent(agent_name, project_dir)
     )
     requested_resolved = (not agent_name) or alias_hit or bool(passthrough)
@@ -6612,7 +6773,24 @@ def _resolve_agent_selection(config, agent_name=None, project_dir=None, *, selec
         logger.warning("default_agent %r not found; using %r", config.default_agent, alias)
     else:
         alias = ""
-    return config.agents.get(alias), alias, passthrough, requested_resolved
+    if not agent_name:
+        source = ""
+    elif alias_hit:
+        source = "alias"
+    elif project_wins:
+        source = RESOLVED_SOURCE_PROJECT
+    elif passthrough:
+        # Deliberately NOT split into project-vs-user-level provenance. Doing so
+        # needs to know whether the project declares the name, and the user-level
+        # snapshot answers FIRST inside _materialized_kiro_agent -- so learning
+        # that would mean probing the project on a hot path that is pinned
+        # filesystem-free (see the comment on project_declares_same_name). GPT F1
+        # asks for that split; its own adjudication records that both sides force
+        # DEFAULT_MEMORY_STORE here, so no private-memory boundary rides on it.
+        source = "materialized"
+    else:
+        source = "default"
+    return config.agents.get(alias), alias, passthrough, requested_resolved, source
 
 
 def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tuple[str, str, str]:
@@ -6621,7 +6799,7 @@ def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tup
     This does not authorize memory access. Runtime callers must resolve the full
     bindings; a model chip remains inspectable while learned memory is unavailable.
     """
-    record, alias, passthrough, _ = _resolve_agent_selection(
+    record, alias, passthrough, _, _ = _resolve_agent_selection(
         config, agent_name, selection_kind=selection_kind
     )
     return (
@@ -6639,11 +6817,15 @@ def resolve_agent_bindings(
     validate_memory_files: bool = True,
     selection_kind: str = "",
     execution_context=None,
+    allow_project_override: bool = True,
 ) -> ResolvedBindings:
     """Resolve workspace, memory store, and kiro agent for a session.
 
     Resolution:
-    1. If agent_name is given and exists in config.agents → use its bindings
+    1. If agent_name is given and exists in config.agents → use its bindings,
+       UNLESS *project_dir* declares an agent of the same name, which wins (see
+       :func:`_resolve_agent_selection`) and carries the alias's infrastructure away
+       with it, landing on ``default_agent``'s bindings like any project-only agent.
     2. Otherwise use config.default_agent (guaranteed to exist by load()), but
        keep dispatching *agent_name* itself when a materialized kiro agent
        declares it (see :func:`_materialized_kiro_agent`) — an app's agents are
@@ -6652,18 +6834,65 @@ def resolve_agent_bindings(
        running the default agent.
 
     *project_dir* is the session's active project directory, which widens step 2 to
-    that project's own ``.kiro`` scope. It must be the same directory Kiro Crew
-    passes as the kiro-cli cwd, so an agent found through it is one the backend
-    will genuinely resolve; passing a directory the session does not run in would
-    reintroduce the silent-substitution bug this lookup exists to prevent.
+    that project's own ``.kiro`` scope and enables the step-1 override. It must be
+    the same directory Kiro Crew passes as the kiro-cli cwd, so an agent found
+    through it is one the backend will genuinely resolve; passing a directory the
+    session does not run in would reintroduce the silent-substitution bug this
+    lookup exists to prevent.
+
+    Two opt-outs from the step-1 override exist, and they ride on DIFFERENT
+    parameters. ``selection_kind="template"`` opts out by construction (no alias is
+    matched, so there is nothing for a project file to displace). The MEMBER
+    opt-out must be requested explicitly with ``allow_project_override=False``;
+    ``selection_kind="member"`` alone does NOT opt out -- a member-kind caller in a
+    folder that declares the member's name gets the project override like any
+    other alias, resolving as a project-only agent on ``default_agent``'s bindings.
+    The folder still supplies cwd either way. See :func:`_resolve_agent_selection`
+    for why the two are separate parameters.
     """
     import dataclasses as _dc
 
-    agent_cfg, resolved_alias, passthrough, requested_resolved = _resolve_agent_selection(
-        config, agent_name, project_dir, selection_kind=selection_kind
+    (
+        agent_cfg,
+        resolved_alias,
+        passthrough,
+        requested_resolved,
+        resolved_source,
+    ) = _resolve_agent_selection(
+        config,
+        agent_name,
+        project_dir,
+        selection_kind=selection_kind,
+        allow_project_override=allow_project_override,
     )
+    if resolved_source == RESOLVED_SOURCE_PROJECT and execution_context is not None:
+        from kiro_crew.execution_context import execution_for_project_override
+
+        execution_context = execution_for_project_override(
+            execution_context, template_id=passthrough or config.agent.default_agent
+        )
+
     if agent_cfg is None:
-        logger.warning("No agents configured, using bare defaults")
+        if resolved_source == RESOLVED_SOURCE_MEMBER_SHADOWED:
+            # The refusal above returns no record BY DESIGN, so it lands in this
+            # branch on a host whose config.agents is fully populated -- where
+            # "No agents configured" is simply false and makes a deliberate
+            # shadow refusal indistinguishable from an empty roster in triage.
+            # A string comparison only: this resolver runs on every turn, so the
+            # branch must add no filesystem access (see
+            # test_user_level_hit_does_no_project_filesystem_io). The bound
+            # directory is deliberately NOT named -- the gateway words the
+            # operator's message for this source from
+            # RESOLVED_SOURCE_MEMBER_SHADOWED and redacts the path there,
+            # because the log stream is not owner-scoped.
+            logger.warning(
+                "Crew Member %r is declared by the bound project directory; "
+                "refusing to resolve it rather than running that definition "
+                "under the member's own bindings",
+                agent_name,
+            )
+        else:
+            logger.warning("No agents configured, using bare defaults")
         return ResolvedBindings(
             workspace_dir=Path("workspace"),
             memory_store_name=DEFAULT_MEMORY_STORE,
@@ -6671,6 +6900,7 @@ def resolve_agent_bindings(
             kiro_agent=passthrough or config.agent.default_agent,
             requested_resolved=requested_resolved,
             selection_kind="template" if passthrough else "",
+            resolved_source=resolved_source,
         )
 
     # Resolve workspace
@@ -6721,6 +6951,7 @@ def resolve_agent_bindings(
         requested_resolved=requested_resolved,
         resolved_alias=resolved_alias,
         selection_kind="template" if passthrough else "member",
+        resolved_source=resolved_source,
     )
 
 

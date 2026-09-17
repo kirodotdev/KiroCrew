@@ -36,7 +36,12 @@ from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+    resolve_project_path,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -481,19 +486,19 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
         return "", None
     if not os.path.isabs(raw) and not raw.startswith("~"):
         return "", "Project directory must be an absolute path"
-    resolved = os.path.realpath(os.path.expanduser(raw))
-    if is_sensitive_path(resolved):
+    verdict = resolve_project_path(raw)
+    if verdict.sensitive:
         sel().log_api_access(
             caller="dashboard",
             operation="chat.folder_project_dir",
             outcome="denied",
-            resources=resolved,
+            resources=verdict.resolved,
             error="sensitive path",
         )
         return "", "project_dir refers to a sensitive path"
-    if not os.path.isdir(resolved):
+    if not verdict.is_dir:
         return "", "Project directory must be an existing directory"
-    return resolved, None
+    return verdict.resolved, None
 
 
 def _folder_project_overlap_denied(resolved: str) -> str | None:

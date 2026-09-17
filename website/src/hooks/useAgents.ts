@@ -25,11 +25,11 @@ export const HIDE_CREWMATE_CHOICES = true
  *
  * @param sessionKey Chat-slot key whose project scope should apply. Omit on
  *   surfaces with no slot context; project-scoped agents are then excluded.
- * @param projectDir The slot's current project directory. The server resolves
- *   project-scoped agents from it, so it is part of this fetch's identity, not
- *   just an input to it: pointing the SAME slot at a different project changes
- *   the roster without changing `sessionKey`. Omit on surfaces with no slot
- *   context (the roster is then global-only and cannot go stale this way).
+ * @param projectDir The slot's current project directory. It is part of this
+ *   fetch's identity, not an argument to it: it is deliberately NOT sent to the
+ *   API (the server derives the slot's project itself), but pointing the SAME
+ *   slot at a different project must refetch and drop the previous project's
+ *   roster. Omit on surfaces with no slot context.
  *
  * @returns `choices` — the catalog rows a namespace-aware picker (the chat agent
  *   pop-up) renders, keyed by (selection_kind, name). While

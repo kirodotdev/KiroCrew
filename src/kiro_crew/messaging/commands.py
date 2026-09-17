@@ -55,6 +55,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
 )
 from kiro_crew.cron import (
+    CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
     compute_next_run_ts,
@@ -851,7 +852,39 @@ async def cron_command_reply(
     if action in ("pause", "resume"):
         enabled = action == "resume"
         try:
-            changed = await cron_service.enable_job_async(job_id, enabled=enabled)
+            # A channel's allow-list establishes who may drive a turn, not who
+            # owns an arbitrary project directory. The shared messaging layer
+            # has no authenticated install-owner identity to compare, so resume
+            # only when the locked record is still unbound. This reuses the
+            # dashboard gate's atomic project-path precondition and closes both
+            # the direct project-bound case and an unbound-to-bound race without
+            # a caller-side read. Pause needs no gate: it removes execution
+            # permission rather than granting it.
+            if enabled:
+                changed = await cron_service.enable_job_async(
+                    job_id, enabled=True, expect_project_path=""
+                )
+            else:
+                changed = await cron_service.enable_job_async(job_id, enabled=False)
+        except CronPendingMismatch:
+            try:
+                sel().log_api_access(
+                    caller=caller or source or "system",
+                    operation="cron.enable.project_bound_job",
+                    outcome="denied",
+                    source=source or "messaging",
+                    resources=job_id,
+                    error="project-bound resume unavailable on messaging",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for messaging project-bound cron resume denial",
+                    exc_info=True,
+                )
+            return (
+                "🔒 Project-bound cron jobs cannot be resumed from a messaging channel. "
+                "Resume this job from the owner dashboard or the `kirocrew cron` CLI."
+            )
         except CronStoreBusy:
             return _CRON_BUSY
         except CronStoreUnreadable as exc:

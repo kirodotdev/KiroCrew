@@ -133,9 +133,7 @@ class TestAgentOrderingFallback:
     async def test_history_unreadable_returns_config_order(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
-        with patch.object(
-            state.conversation_log, "agent_usage", side_effect=OSError("boom")
-        ):
+        with patch.object(state.conversation_log, "agent_usage", side_effect=OSError("boom")):
             data = await _get_agents(state, CONFIG_ORDER)
 
         order = [a["name"] for a in data["agents"]]
@@ -175,8 +173,8 @@ class TestProjectScopeRoster:
         (proj / ".kiro" / "agents" / "repo-bot.json").write_text(_json.dumps({"name": "repo-bot"}))
         clear_project_agent_cache()
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: str(proj),
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: proj,
         )
         state = _make_state(tmp_path)
 
@@ -188,7 +186,16 @@ class TestProjectScopeRoster:
         assert rows["alpha"]["scope"] == "global"
 
     @pytest.mark.asyncio
-    async def test_alias_shadows_project_agent_of_same_name(self, tmp_path, monkeypatch):
+    async def test_project_agent_wins_over_an_alias_of_the_same_name(self, tmp_path, monkeypatch):
+        """One row per name, and it is the PROJECT one.
+
+        The project definition is what a fire in this directory resolves --
+        kiro-cli searches ``<project>/.kiro/agents`` before the user-level
+        directory and the session runs with the project as cwd -- so serving the
+        alias row would advertise an agent that cannot answer here. Serving
+        BOTH is not an option either: ``agent_id`` is a bare name, so a second
+        row would be a choice no caller could record.
+        """
         import json as _json
 
         from kiro_crew.agent_discovery import clear_project_agent_cache
@@ -199,8 +206,8 @@ class TestProjectScopeRoster:
         (proj / ".kiro" / "agents" / "alpha.json").write_text(_json.dumps({"name": "alpha"}))
         clear_project_agent_cache()
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: str(proj),
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: proj,
         )
         state = _make_state(tmp_path)
 
@@ -208,14 +215,14 @@ class TestProjectScopeRoster:
 
         alphas = [a for a in data["agents"] if a["name"] == "alpha"]
         assert len(alphas) == 1, "alias + project twin must list once"
-        assert alphas[0]["scope"] == "global"
+        assert alphas[0]["scope"] == "project"
 
     @pytest.mark.asyncio
     async def test_no_project_dir_keeps_roster_global_only(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.agents.active_project_dir",
-            lambda state, key: "",
+            "kiro_crew.dashboard.handlers.agents.requesting_slot_project",
+            lambda state, key: None,
         )
         state = _make_state(tmp_path)
 

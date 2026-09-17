@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import kiro_crew.messaging.commands as commands
-from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
+from kiro_crew.cron import CronJob, CronSchedule, CronService, CronStoreBusy
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import (
     _CRON_BUSY,
@@ -738,7 +738,48 @@ class TestCron:
         svc.enable_job_async = AsyncMock(return_value=True)
         out = await cron_command_reply(f"cron {verb} j1", svc) or ""
         assert mark in out and "`j1`" in out
-        assert svc.enable_job_async.await_args.kwargs == {"enabled": enabled}
+        expected_kwargs = {"enabled": enabled}
+        if enabled:
+            expected_kwargs["expect_project_path"] = ""
+        assert svc.enable_job_async.await_args.kwargs == expected_kwargs
+
+    @pytest.mark.asyncio
+    async def test_messaging_resume_refuses_a_project_bound_job_atomically(
+        self, tmp_path: Path
+    ) -> None:
+        """A channel identity is not proof of ownership of a job's project cwd."""
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(
+            name="project job",
+            message="work",
+            every_secs=3600,
+            project_path=str(tmp_path),
+        )
+        svc.enable_job(job.id, enabled=False)
+
+        with patch.object(commands, "sel") as mock_sel:
+            out = (
+                await cron_command_reply(
+                    f"cron resume {job.id}", svc, source="telegram", caller="7"
+                )
+                or ""
+            )
+
+        assert out == (
+            "🔒 Project-bound cron jobs cannot be resumed from a messaging channel. "
+            "Resume this job from the owner dashboard or the `kirocrew cron` CLI."
+        )
+        stored = svc.get_job(job.id)
+        assert stored is not None and stored.enabled is False
+        assert job.id not in svc._claims
+        mock_sel.return_value.log_api_access.assert_called_once_with(
+            caller="7",
+            operation="cron.enable.project_bound_job",
+            outcome="denied",
+            source="telegram",
+            resources=job.id,
+            error="project-bound resume unavailable on messaging",
+        )
 
     @pytest.mark.asyncio
     async def test_a_missing_job_is_reported_not_claimed_as_done(self) -> None:

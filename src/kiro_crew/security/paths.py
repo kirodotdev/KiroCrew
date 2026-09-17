@@ -3262,6 +3262,49 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
     return None
 
 
+class ProjectPathVerdict(NamedTuple):
+    """The shared realpath -> sensitivity -> existing-directory verdict.
+
+    ``resolved`` is ``realpath(expanduser(raw))`` -- always populated, so a
+    caller that logs a denial can name the path it rejected. ``sensitive``
+    reports whether that resolved path is protected. ``is_dir`` reports whether
+    a non-sensitive path is an existing directory; sensitive paths are never
+    probed for directory existence and report ``False``. These are the two axes
+    a project-path binding is held to everywhere (a cron job's ``project_path``,
+    a chat folder's ``project_dir``, the ``/api/agents`` query param). What each
+    caller DOES with them differs -- raise, return an error string, or return a
+    bool, and which side logs the SEL denial -- so this returns the raw verdict
+    and leaves the shape to the caller. The absolute/``~`` gate is deliberately
+    NOT here: a query param is not held to it, only the create-time surfaces are.
+
+    Synchronous filesystem I/O (``realpath`` and, for non-sensitive paths,
+    ``isdir``); callers on the event loop MUST run it via a worker thread, never
+    inline.
+    """
+
+    resolved: str
+    sensitive: bool
+    is_dir: bool
+
+
+def resolve_project_path(raw: str) -> ProjectPathVerdict:
+    """Resolve *raw* and report the shared project-path verdict.
+
+    The one place the ``realpath(expanduser)`` -> :func:`is_sensitive_path` ->
+    non-sensitive ``isdir`` core lives, shared by cron, agent-roster, and
+    chat-folder validation. See :class:`ProjectPathVerdict` for what each field
+    means and why the return shape (and the absolute-path gate) stays with the
+    caller.
+    """
+    resolved = os.path.realpath(os.path.expanduser(raw))
+    sensitive = is_sensitive_path(resolved)
+    return ProjectPathVerdict(
+        resolved=resolved,
+        sensitive=sensitive,
+        is_dir=not sensitive and os.path.isdir(resolved),
+    )
+
+
 def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
     """Return True if a read+write-sensitive location lies UNDER *dir_str*.
 

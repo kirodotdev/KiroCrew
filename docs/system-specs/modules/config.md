@@ -1105,11 +1105,57 @@ template namespace even if discovery has imported a same-named member.
 `selection_kind="member"` requires the configured alias instead of falling back
 to a same-named template. Both still report an unavailable explicit selection
 through `requested_resolved=False`; neither flag authorizes member memory.
+Neither flag is the member opt-out from the project override: within a bound
+`project_dir` a project's own `.kiro/agents` definition beats a same-named
+`config.agents` alias for a `"member"` selection exactly as for an unqualified
+one, and the winner resolves as a project-only agent (`requested_resolved=True`,
+`resolved_source="project"`, `selection_kind="template"`, `default_agent`'s
+bindings on the Global store — never the shadowed member's private store). Only
+`allow_project_override=False`, which member-bound cron jobs pass, opts out of
+that override. A project file colliding with either the selected alias or its
+effective provider-template name is then a named refusal rather than a
+resolution (see [learn-cron-dashboard](learn-cron-dashboard.md)).
 Dashboard callers obtain this choice from the canonical session execution record
 described in [session](session.md#agent-selection-provenance).
 The session resolver rejects a different agent name when a execution record
 exists. Live provider switches publish their validated template choice before
 history changes; ordinary resolution cannot replace provenance from metadata.
+
+**Documented residual: an ORDINARY caller's probe judges the selected name only.**
+The effective provider template is compared in the same name-set lookup only for
+`allow_project_override=False`; every ordinary and app-bound resolution gets the
+alias-only probe. So an alias whose `kiro_agent` names a template the bound
+checkout also declares resolves normally, keeps its own `memory_store`, and
+dispatches that template into a session whose cwd is the checkout — where kiro-cli
+resolves it project-first, so the project's own file can answer under the alias's
+store. This is the same shape the member opt-out refuses, unrefused for an
+ordinary alias, and it is pre-existing behaviour rather than something the override
+introduced: before the override existed an alias hit short-circuited with no
+project probe at all and reached the identical outcome.
+
+Widening the probe here does not close it, for two reasons that are about
+OWNERSHIP rather than cost. The store a chat turn runs under is not this
+resolver's answer: `session_agent_selection.resolve_session_agent_bindings`
+overwrites `memory_store_name` and `kiro_agent` from the session's captured
+execution record on every turn EXCEPT a `resolved_source="project"` win, where the
+resolver has already projected that record onto an unowned template on the
+`default` store and the wrapper leaves the projection in place instead of
+restoring the captured one — that seam is `RESOLVED_SOURCE_PROJECT`-scoped, not the
+alias-only probe this residual is about, so it narrows the OVERRIDE case without
+answering the ordinary-alias collision described above. At selection time
+`record_agent_selection` mints a `"member"`-kind execution through
+`execution_context.resolve_member_execution`, which reads
+`config.agents[<alias>].memory_store` directly. Re-pointing the store here would
+therefore be overwritten in the first case and bypassed in the second; moving it
+is a change to the execution-record seam, which is that module's contract. And
+refusing instead would make a legitimate folder unusable for its own crew, which
+is a fence nobody asked to widen. What an operator can do: rename the project's
+file, or the crew's `kiro_agent`, so the two namespaces do not collide — the
+project roster (`GET /api/agents?project_path=`) lists exactly the names a
+checkout declares. The one surface where the dispatched template IS re-checked is
+the cron fire, because that is where this change put a project directory in front
+of a captured private store; see
+[learn-cron-dashboard](learn-cron-dashboard.md).
 
 Rung 2 exists because an app's agents are materialized into `~/.kiro/agents/` by
 `bridges._register_agents` under a namespaced FILENAME (`<app>--<agent>.json`)

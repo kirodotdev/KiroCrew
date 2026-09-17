@@ -68,6 +68,7 @@ def _run_cron_runs(
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._no_crons = False
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
@@ -115,8 +116,25 @@ def _run_cron_runs(
 
     captured_cb = None
 
+    def _resolve_stub(_cfg, agent, _project_path=None, **_kwargs):
+        # These tests are about the failure tally, auto-pause and delivery -- not
+        # agent resolution -- but the fire path now validates EVERY job's agent
+        # (not just a project-bound one), so a named agent_sequence entry that is
+        # not a real config alias would skip the run before any gate verdict and
+        # starve the very tally under test. Resolve every name as itself so the
+        # subject of each test is still what runs. The single-agent cases pass an
+        # empty name, which resolves as "the default" without this stub.
+        b = MagicMock()
+        b.requested_resolved = True
+        b.kiro_agent = agent or ""
+        b.model = ""
+        b.resolved_alias = agent or ""
+        b.resolved_source = "alias"
+        return b
+
     with (
         patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.resolve_agent_bindings", _resolve_stub),
         patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
     ):
 

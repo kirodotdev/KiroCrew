@@ -46,6 +46,12 @@ def _run_silent_cron(gate: GateScript, reply: str = "", runs: int = 1) -> CronJo
     gw.subagent_mgr = None
     gw._cron_injecting = {}
     gw._no_crons = False
+    # `__new__` above skips `__init__`, so every attribute this code path reads
+    # has to be supplied here. `_cron_callback` prunes the project-agent session
+    # bindings on each fire (`_prune_cron_session_bindings`), which reads these
+    # two -- an empty map and a zero count are exactly what `__init__` sets.
+    gw._cron_session_binding = {}
+    gw._cron_session_binding_overflow_count = 0
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
     gw.sessions.reset = AsyncMock()

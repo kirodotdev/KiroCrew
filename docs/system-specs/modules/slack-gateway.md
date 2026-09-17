@@ -4,6 +4,14 @@
 
 The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
 
+**The package name understates its scope.** `slack/gateway.py` also hosts
+`GatewayOrchestrator` and `run_gateway`, the entry point `kirocrew gateway`
+starts, so it owns the cron, heartbeat, subagent and task callbacks for EVERY
+surface. Slack itself is optional inside it (`_slack_enabled` requires both
+tokens; the client is `None` otherwise), so the scheduling and session machinery
+documented here runs unchanged on a dashboard-only install. Read a section's
+subject from the section, not from the package name.
+
 Independently scheduled agent runs admit their exact execution key as durable
 work before provider allocation, publishing its privacy mode in the canonical
 session execution record. Single and sequential-agent paths share that
@@ -174,6 +182,72 @@ core-managed interpreter resolver loaded before apply. Launcher selection and th
 companion integration contract are defined in
 [platform-context](platform-context.md#gateway-restart-launcher); the callback
 fence and final yield-free drain-to-exec handoff apply to both launch paths.
+
+### Cron fire-time binding (`GatewayOrchestrator._init_cron`)
+
+**This path is channel-independent.** Despite living under `kiro_crew/slack/`,
+`GatewayOrchestrator` is the whole gateway's orchestrator, and `run_gateway` is
+the entry point `kirocrew gateway` starts (`cli_server.py`). Slack is optional
+within it — `_slack_enabled` is `bool(app_token and bot_token)` and the client is
+`None` without both — so everything below runs unchanged on a dashboard-only
+install with no Slack credentials configured. A job scheduled from the desktop
+app or the web dashboard fires through exactly this code.
+
+The `_cron_callback` closure owns everything a fire needs to decide WHICH agent
+runs and WHERE, for both the single-agent and the sequential (`agent_sequence`)
+dispatch sites. Four behaviours belong to this file rather than to `cron.py`,
+which deliberately does not re-validate at fire time:
+
+- **Operating-folder re-check.** `_project_path_still_canonical` (an `isdir` plus
+  an exact `realpath` string match) runs off-loop before launching. A folder that
+  is gone, or whose canonical form changed, SKIPS the run —
+  `last_status="error"`, `run_never_started=True`, no `record_failure()` strike —
+  rather than silently running against the global agent.
+- **Agent resolution and validation.** `warm_project_agent_names` then
+  `resolve_agent_bindings` run per fire, so resolution is never served from a
+  stale snapshot. An unresolvable name skips the run in the same neutral shape.
+  The sequential path pre-resolves EVERY member before any turn runs, so a later
+  member's failure cannot discard an earlier member's completed work.
+- **Session-reuse binding.** `_cron_session_binding` maps a cron session key to
+  the resolved identity it last fired with. A live `persistent_session` is
+  otherwise reused regardless of the arguments passed, which is the whole reason
+  this map exists; a prior binding that differs from the current one resets before
+  acquisition. An absent entry is a normal first fire only while the key has no
+  live session. If the key is live, absence means lifecycle pruning or removal
+  eviction separated the binding proof from the provider, so both dispatch paths
+  fail closed by resetting before acquisition. A crew alias is held as `str |
+  None` and deliberately NOT coerced to `""` — a namespace fallback and an
+  explicit no-crew opt-out are different identities. Both dispatch paths retain
+  through one atomic helper capped by `_CRON_SESSION_BINDING_LIMIT`; that
+  admission also gates CronService's active-session registry. Every identity
+  string is bounded at retention, and the key is bounded by its own derived cap
+  rather than the field cap — see learn-cron-dashboard for why sharing it would
+  silently defer a valid job forever. Refused snapshots are counted and produce
+  one aggregate warning.
+- **Lifecycle eviction.** `CronService._remove_job_rows` notifies a gateway
+  observer for every structural deletion. The observer hands eviction to the
+  gateway loop and removes the job's single and sequence binding keys; the same
+  chokepoint retires CronService's active-session rows. It does not tear down the
+  provider there: a removed job can still have a subagent completion committed to
+  that session, and the ordinary completion path owns its guarded reset. Instead,
+  any later acquisition that finds a live key without binding metadata resets at
+  the read site, so deterministic reuse of an imported job id cannot inherit the
+  removed job's cwd, agent, or memory context. Every fire also prunes the job's
+  other keys by job-id prefix, which is what retires a non-persistent job's
+  fresh-per-fire key — the growth that neither the count ceiling nor deletion
+  eviction reaches. Sequence preflight prunes keys outside the current agent list
+  by the same call.
+- **Deferral over a pending subagent.** A binding change that collides with a
+  pending subagent skips the whole fire rather than dispatching the stale
+  session under the old permissions. Sequence pruning retains an obsolete key
+  while that key has pending work or an in-progress completion injection. It
+  continues to consume the count budget, so admission refuses a new snapshot
+  when necessary instead of discarding the identity required to retry the reset.
+
+Semantics, precedence and the owner gate live in
+[learn-cron-dashboard](learn-cron-dashboard.md) → "Project directory
+(`project_path`) and the project-bound job owner gate"; this section documents
+only that the fire path is where they are enforced.
 
 ### Shutdown Sequence
 
@@ -411,7 +485,7 @@ Available to all allowed users.
 | `cron list` | `_handle_cron` | List cron jobs |
 | `cron remove <id>` | `_handle_cron` | Remove a cron job |
 | `cron pause <id>` | `_handle_cron` | Pause a cron job |
-| `cron resume <id>` | `_handle_cron` | Resume a paused cron job |
+| `cron resume <id>` | `_handle_cron` | Resume an unbound paused job; project-bound jobs require the owner dashboard or CLI |
 | `task run <path>` | `_handle_task_run` | Start autonomous task runner |
 | `run status` | `_handle_task_run` | Check task runner status |
 

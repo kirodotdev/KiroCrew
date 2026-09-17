@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Zap } from 'lucide-react'
+import { Zap, FolderOpen } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
+import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
 import type { ChatFolder, CronJob } from '../types'
 import { orderFoldersWithPaths } from '../utils/folderTree'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
+import { useDebouncedValue } from '../apps/file-explorer/hooks'
 
 import { i18nT } from '../i18n/t'
 import { fmtWeekday } from '../i18n/format'
@@ -65,7 +67,7 @@ export function jobKindOf(job?: CronJob): JobKind {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '', projectPath: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -112,7 +114,42 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw, projectPath: job.project_path || '' }
+}
+
+/** Remap the backend's raw `project_path` validation errors (which use the
+ *  wire field name and say nothing about the field being optional) to the
+ *  UI's own field label, so a rejected path reads as a helpful correction
+ *  rather than "failed to save" with no clue why. The backend's error
+ *  vocabulary is shared with the CLI/MCP tool and other callers, so this
+ *  stays a display-only remap here rather than a change to those strings.
+ *  Falls through to the raw message for anything else (network errors,
+ *  other 4xx/5xx) so nothing is silently swallowed. */
+function friendlyProjectPathError(raw: string): string {
+  if (raw.includes('project_path must be an absolute path')) {
+    return i18nT('components.jobForm.project_directory_must_be_an_absolute_path')
+  }
+  if (raw.includes('project_path refers to a sensitive path')) {
+    return i18nT('components.jobForm.project_directory_refers_to_a_protected_path')
+  }
+  if (raw.includes('project_path must be an existing directory')) {
+    return i18nT('components.jobForm.project_directory_must_be_an_existing_directory')
+  }
+  return raw
+}
+
+/** Whether a backend save rejection is one of the three `project_path`
+ *  validation refusals `friendlyProjectPathError` remaps. Kept in lock-step
+ *  with the substrings above so the caller can route those messages to the
+ *  notice beside the project-directory field rather than the form-wide notice
+ *  at the very bottom — the field sits mid-form, so a reject rendered only at
+ *  the foot of the form made the user scroll to find what to fix (UX Review
+ *  span=d88c9e1f411b). Any OTHER rejection (a bad agent name, a transport
+ *  failure) is form-wide, because it is not about this one field. */
+function isProjectPathError(raw: string): boolean {
+  return raw.includes('project_path must be an absolute path')
+    || raw.includes('project_path refers to a sensitive path')
+    || raw.includes('project_path must be an existing directory')
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -165,6 +202,16 @@ function buildBody(
   // that unchecking restores what was there, and a reader who checks the box,
   // saves, and unchecks it later would instead find the folder silently gone.
   body.chat_folder_id = isLlmless ? '' : f.chatFolderId
+  // "" is a valid, meaningful value here (clears the binding back to
+  // global-agent-only on an edit), so it is sent unconditionally rather than
+  // gated behind a truthiness check like the optional fields above.
+  //
+  // It is cleared for a script/command job for the same reason
+  // `chat_folder_id` is: the field is rendered only under `!isLlmless`, and a
+  // subprocess dispatch derives no cwd from it. Re-persisting the binding a
+  // converted job no longer shows would leave a folder the form cannot
+  // display, the dispatch never reads, and the owner gate still enforces.
+  body.project_path = isLlmless ? '' : f.projectPath
   if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
@@ -311,6 +358,322 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [weekTime, setWeekTime] = useState(init.weekTime)
   const [tz, setTz] = useState(() => job ? (job.timezone || 'UTC') : Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cronExpr, setCronExpr] = useState(init.cronExpr)
+  const [projectPath, setProjectPath] = useState(init.projectPath)
+  // Keep the input itself immediate, but wait for typing to settle before the
+  // path becomes a server-state identity. Querying every intermediate path can
+  // load an empty roster and reconcile a deliberate project-agent pick away.
+  const debouncedProjectPath = useDebouncedValue(projectPath, 250)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const browseRef = useRef<HTMLButtonElement>(null)
+  // Project-scoped roster for THIS job's project_path — a raw path, no live
+  // chat slot behind it, so this is the project_path fallback (Decision 1).
+  // A local effect rather than useAgents(): that hook unconditionally syncs +
+  // fetches on every mount regardless of its args, which would double every
+  // JobForm's roster work even for the common case of no project_path set.
+  // This only does anything once a path is actually present.
+  const [projectAgents, setProjectAgents] = useState<KiroCrewAgent[]>([])
+  // Mirror of `projectAgents` for the clear-on-unbind effect below. That effect
+  // must know which names the FOLDER contributed, but it cannot depend on the
+  // state: its `!projectPath` branch calls `setProjectAgents([])` with a fresh
+  // array every run, so listing `projectAgents` as a dependency would re-fire
+  // it forever. A ref is never stale and needs no dependency entry.
+  const projectAgentsRef = useRef<KiroCrewAgent[]>([])
+  useEffect(() => {
+    projectAgentsRef.current = projectAgents
+  }, [projectAgents])
+  // Separate from the form-wide `error` (validation failures on Save): a
+  // background roster fetch failing must not borrow that channel, which
+  // (1) auto-scrolls the page to the bottom-of-form notice on every set,
+  // interrupting a user who is calmly typing elsewhere in the form for a
+  // failure unrelated to what they are doing, and (2) shares one string with
+  // Save-time validation, so a stale roster error can sit through an
+  // otherwise-successful save (only `handleSave`'s `setError('')` clears it),
+  // or a validation error can be silently clobbered by a late-resolving
+  // roster retry. Rendered beside the working-directory field itself instead.
+  const [projectRosterError, setProjectRosterError] = useState('')
+  // The agent name a project-directory change cleared, or '' when nothing was
+  // cleared. Its own state rather than a flag on the roster error: a reset is not
+  // a failure, and folding the two would make one clear the other. The reason
+  // selects clear-specific wording while keeping one notice mechanism.
+  const [agentResetFrom, setAgentResetFrom] = useState('')
+  const [agentResetReason, setAgentResetReason] = useState<'project-cleared' | 'not-in-project'>('not-in-project')
+  // Whether the clear-on-unbind branch has already run for the CURRENT empty
+  // field. It must act on the TRANSITION into the empty state, not on every
+  // re-run: clearing the field fires the effect twice -- once when
+  // `projectPath` empties, then again when `debouncedProjectPath` settles and
+  // `enabled: !!debouncedProjectPath` turns the roster query off, which moves
+  // `projectAgentsData` to `undefined` and so changes a dependency. The second
+  // run sees the agent the first one just cleared, computes `cleared === false`
+  // and writes `setAgentResetFrom('')`, wiping the notice the first run set --
+  // it rendered for ~200ms and then vanished, so the acknowledgment UX Review
+  // asked for was unreadable in practice while every test asserting it
+  // synchronously still passed.
+  const unbindHandledRef = useRef(false)
+  // The project agent a directory EDIT reconciled away, held until either the
+  // user picks something themselves or a settled roster defines that name again.
+  //
+  // The debounce above only protects a path typed faster than 250ms. Hand-editing
+  // a bound job's directory pauses longer than that, so an intermediate path
+  // becomes a roster identity of its own -- and `/api/agents?project_path=`
+  // answers an unusable path with HTTP 200 and the configured agents alone, so
+  // that roster legitimately lacks the pick and the reconcile below clears it.
+  // Clearing on what is known is right; leaving it cleared once the FINISHED path
+  // loads a roster that DOES define the name is not, and makes every path edit on
+  // a bound job force a re-pick (UX Review). Restoring needs no knowledge of
+  // whether a path was "half typed" -- a question the endpoint cannot answer
+  // anyway, since an unusable path and a usable one with no agents are the same
+  // 200 -- only that the name is resolvable again and the user has not chosen
+  // since. A ref rather than state: the effect that writes it must not re-run on
+  // it, exactly as `projectAgentsRef` above.
+  const editClearedAgentRef = useRef('')
+  // A deliberate pick supersedes the reset bookkeeping above: the notice now
+  // describes nothing the user can still act on, and the remembered name is no
+  // longer theirs to restore -- a later settled roster defining it must not
+  // override the choice they just made.
+  const pickAgent = (name: string) => {
+    editClearedAgentRef.current = ''
+    setAgent(name)
+    setAgentResetFrom('')
+  }
+  // The fetch itself lives in useQuery (per-frontend convention: server state
+  // goes through React Query, not manual useState+useEffect+fetch) — keyed on
+  // the DEBOUNCED mirror so a half-typed path never becomes a roster identity.
+  // Once typing settles, switching folders naturally supersedes an in-flight
+  // fetch the same way the old `cancelled` flag did: a stale response for a
+  // FORMER key can never land against the current one. `enabled` skips the
+  // request entirely while no settled path is set, matching the effect below's
+  // own early-return for an empty input.
+  const {
+    data: projectAgentsData,
+    error: projectAgentsQueryError,
+    refetch: refetchProjectAgents,
+  } = useQuery<{ agents?: KiroCrewAgent[] }, Error>({
+    queryKey: ['project-agents', debouncedProjectPath],
+    queryFn: () => api.kirocrewAgents(undefined, debouncedProjectPath),
+    enabled: !!debouncedProjectPath,
+  })
+  // Same shape as `retryChatFolders`/`rosterFailure.onReload`: refetch the ONE
+  // query in place, no page reload and no hand-off, because the notice sits
+  // beside unsaved form input. Held state rather than reading `isFetching` for
+  // the same reason it is below the chat-folder retry — the notice's own
+  // message survives from the effect, but the button needs its own pending
+  // flag. The prior notice offered no retry at all, so the only recovery was
+  // re-typing the path to re-key the query (UX Review span=6409bbff1088).
+  const [projectRosterRetrying, setProjectRosterRetrying] = useState(false)
+  const retryProjectRoster = () => {
+    setProjectRosterRetrying(true)
+    void refetchProjectAgents().finally(() => setProjectRosterRetrying(false))
+  }
+  useEffect(() => {
+    if (!projectPath) {
+      setProjectAgents([])
+      setProjectRosterError('')
+      // An emptied field ends the edit, so there is no later roster for a
+      // path-edit restore to land against: the clear below is its own
+      // announcement and stands. Written on every re-run for this empty field,
+      // which is safe -- unlike the reset below, writing '' twice is idempotent.
+      editClearedAgentRef.current = ''
+      // Idempotent past the first run for this empty field -- see
+      // `unbindHandledRef`. The two statements above are safe to repeat; the
+      // reset below is not, because it would clear its own notice.
+      if (unbindHandledRef.current) return
+      unbindHandledRef.current = true
+      // The selected agent may have been a project-scoped one that only
+      // existed because THIS folder was open (effectiveAgents merged it in
+      // from projectAgents, now cleared above). Left alone, that name is
+      // still sent on save (`agent: locked ?? agent`) with an empty
+      // project_path -- a project agent EXISTS only inside its folder, so
+      // without the folder the name resolves to nothing and the run would
+      // silently take the default agent's prompt, tools, and permissions.
+      //
+      // Decide on POSITIVE knowledge, not absence: clear the name when
+      // `projectAgents` -- the folder's own roster, still holding its
+      // pre-clear value on this render because React state updates are not
+      // synchronous -- is what contributed it. Testing "not in the global
+      // roster" instead was wrong twice over: an empty global roster is
+      // legitimate (a project-only install, and `CrewWakeSection` passes
+      // `agents={[]}` deliberately), and app agents under `~/.kiro/agents/`
+      // are dispatchable without ever appearing in it, so absence proves
+      // nothing. A project agent that shares a global agent's name is left
+      // alone -- the global one survives the folder being cleared, matching
+      // effectiveAgents' own dedup-by-name rule.
+      setAgent(a => {
+        const cleared = !!(
+          a
+          && projectAgentsRef.current.some(p => p.scope === 'project' && p.name === a)
+          && !agents.some(g => g.name === a)
+        )
+        setAgentResetReason('project-cleared')
+        setAgentResetFrom(cleared ? a : '')
+        return cleared ? '' : a
+      })
+      return
+    }
+    // A bound path re-arms the guard, so a LATER clear announces its reset
+    // again rather than staying silent after the first one.
+    unbindHandledRef.current = false
+    if (projectAgentsQueryError) {
+      // A roster-fetch failure must be VISIBLE, not a silent empty list: the
+      // user picked this folder specifically to see its agents, and an empty
+      // roster with no explanation reads as "this folder has none" rather
+      // than "the request failed" -- indistinguishable failure modes that
+      // need different next actions (retry vs. pick a different folder).
+      // api.kirocrewAgents throws ApiError/Error with an already-friendly
+      // message (apiFailure's friendlyErrText), so no remap is needed here --
+      // friendlyProjectPathError is for the three raw project_path validation
+      // strings the SAVE path can surface, which this read endpoint does not.
+      setProjectAgents([])
+      // Suffixed with the hand-off this failure causes: the agent picker
+      // below falls back to the global roster (effectiveAgents returns
+      // `agents` when projectAgents is empty), which the raw fetch error
+      // alone does not say -- without it, an empty-looking roster and a
+      // silently-substituted one are indistinguishable. A fixed lead-in
+      // sentence names what failed instead of gluing the raw backend text
+      // onto the fallback notice with no sentence boundary (UX Review):
+      // "<raw error> Showing the global agent list instead." reads as one
+      // run-on fragment, not two facts. Keeps the existing (already
+      // translated in every locale) fallback-notice string as its own
+      // sentence rather than inventing a new untranslated key for it.
+      const rosterErr = projectAgentsQueryError.message
+      // A detail is only worth showing when it is PROSE. `friendlyErrText`
+      // unwraps `error`/`detail`/`message` when present, returns '' for an HTML
+      // error page, and otherwise hands back the raw body — so a body with no
+      // message field (a bare `{}`) arrives verbatim and interpolated as
+      // "Couldn't load this folder's agents: {}." and an HTML page as
+      // "…agents: ." Bare punctuation is worse than no clause at all (UX
+      // Review), so the two non-prose shapes take the detail-less sentence.
+      // Keyed on the same '{' test friendlyErrText uses to decide it found no
+      // message, rather than a second guess at what a message looks like.
+      const detail = rosterErr.trim()
+      const hasProse = detail !== '' && !detail.startsWith('{')
+      setProjectRosterError(
+        (hasProse
+          ? i18nT('components.jobForm.couldnt_load_this_folders_agents_detail', { detail })
+          : i18nT('components.jobForm.couldnt_load_this_folders_agents'))
+        + ' '
+        + i18nT('components.jobForm.project_roster_error_falls_back_to_global_agents'),
+      )
+      return
+    }
+    if (projectAgentsData === undefined) {
+      // Still in flight for this projectPath (useQuery hasn't resolved yet).
+      // Clear immediately on folder change, before the fetch settles: the
+      // query-key supersession above only stops a SUPERSEDED fetch's result
+      // from overwriting a newer one, but leaves the PREVIOUS folder's
+      // now-stale agents selectable in the picker for the whole in-flight
+      // gap. A user who switches folders and picks an agent in that gap
+      // would get an agent from the folder they just left.
+      setProjectAgents([])
+      setProjectRosterError('')
+      return
+    }
+    const newProjectAgents: KiroCrewAgent[] = projectAgentsData.agents || []
+    setProjectAgents(newProjectAgents)
+    setProjectRosterError('')
+    // Switching from folder A to folder B: the agent selected under A may
+    // not exist under B at all. Reconcile against the union of the NEW
+    // project roster and the global roster (mirrors the `!projectPath`
+    // branch's own rule above) -- a name recognized by either is left
+    // alone, everything else is cleared back to default. Without this,
+    // save persists an agent name B's project cannot resolve, and the
+    // scheduled fire silently falls back to the default agent's prompt,
+    // tools, and permissions with no error surfaced anywhere.
+    setAgent(a => {
+      // A name either roster recognizes is resolvable under this project --
+      // `newProjectAgents` is the successfully loaded WHOLE roster for it,
+      // including global rows, so this also preserves a valid global pick when
+      // the separate global-catalog request failed and the `agents` prop is
+      // empty. The old `agents.length > 0` guard tried to protect that transient
+      // failure, but also retained a project-A-only pick after project B had
+      // authoritatively loaded without it.
+      const known = (n: string) =>
+        agents.some(g => g.name === n) || newProjectAgents.some(g => g.name === n)
+      const restorable = editClearedAgentRef.current
+      // Restore BEFORE considering a clear, so the two can never both fire on
+      // one run: an earlier, unfinished path took this name away, this roster
+      // settled with it defined again, and `!a` says the user has not chosen
+      // anything since -- so the pick is still theirs to have back. The ref is
+      // deliberately not cleared here: it holds the same name that is now
+      // selected, so a further edit re-reaches this branch with nothing stale,
+      // and leaving it untouched keeps this updater idempotent if React invokes
+      // it twice.
+      if (!a && restorable && known(restorable)) {
+        // Nothing was lost after all, so the acknowledgment must not linger.
+        setAgentResetFrom('')
+        return restorable
+      }
+      const cleared = !!(a && !known(a))
+      if (cleared) editClearedAgentRef.current = a
+      setAgentResetReason('not-in-project')
+      // Announced, not just performed (UX Review): the reset is correct, but
+      // doing it silently meant the job saved under "default" with no
+      // acknowledgment anywhere -- the user's deliberate pick vanished between
+      // one keystroke in the directory field and pressing Save. Recording the
+      // NAME rather than a boolean so the notice can say which pick went.
+      if (cleared) {
+        setAgentResetFrom(a)
+      } else if (!(a === '' && restorable)) {
+        // Withheld while a restore is pending: the reset that notice describes is
+        // still in force, and a FURTHER unfinished path settling must not erase
+        // its acknowledgment -- erasing it is the same defect as the double-run
+        // the `unbindHandledRef` guard above covers, and if the operator's
+        // finished path never does define the name they are left with the silent
+        // reset the notice exists against.
+        setAgentResetFrom('')
+      }
+      return cleared ? '' : a
+    })
+  }, [projectPath, agents, projectAgentsData, projectAgentsQueryError])
+  // Global roster (the `agents` prop) plus this job's own project-scoped
+  // agents, deduped by name. Project rows arrive tagged `source: 'project'`
+  // by the server, and are shown as such without a per-folder relabel: this
+  // form only ever merges ONE folder's agents at a time, so the generic
+  // "project" badge already identifies where an agent came from
+  // unambiguously — a folder-name badge would only earn its keep if more than
+  // one folder's agents could appear in the same dropdown at once, which does
+  // not happen here. Merging here is the only way a per-job path (not known
+  // to the page-level roster) can ever appear in this picker at all.
+  //
+  // On a NAME COLLISION the project row is the one kept, because it is the one
+  // dispatch runs: inside a bound folder a project definition outranks a
+  // same-named configured agent (see `_resolve_agent_selection`). Keeping the
+  // global row instead would advertise an agent that cannot answer — the
+  // picker would name the configured one while the fire resolved the project
+  // file. The displaced names are reported separately so the surviving row can
+  // say so out loud rather than leaving the user to infer it from a badge:
+  // "this is a project agent" and "this project agent took over a global name"
+  // are different facts, and only the second explains why the global one has
+  // vanished from the list.
+  //
+  // One row per name, not two. `agent` is a bare string, so the form cannot
+  // record WHICH of two same-named rows was picked; a second row would be an
+  // option that could neither be selected nor persisted. It could not be
+  // honoured downstream either — kiro-cli resolves `--agent` against its cwd
+  // and searches the project scope first, and the job runs with the bound
+  // folder as cwd, so "use the global one here" is not ours to guarantee.
+  const effectiveAgents = useMemo(() => {
+    if (!projectPath || projectAgents.length === 0) return agents
+    const projectNames = new Set(projectAgents.map(a => a.name))
+    const kept = agents.filter(a => !projectNames.has(a.name))
+    return [...kept, ...projectAgents]
+  }, [agents, projectAgents, projectPath])
+  // Names where a project agent displaced a same-named global one. Derived from
+  // the same two rosters `effectiveAgents` merges, so the marker cannot drift
+  // from the dedup that produced the list.
+  //
+  // Filtered on `scope === 'project'` because the project-scoped response is the
+  // WHOLE roster, not just the folder's half: it carries the configured agents
+  // too. Matching on the name alone would therefore mark every configured agent
+  // as overridden the moment any folder is bound, since each one appears in both
+  // the `agents` prop and the fetched payload.
+  const shadowedGlobals = useMemo(() => {
+    if (!projectPath || projectAgents.length === 0) return undefined
+    const globalNames = new Set(agents.map(a => a.name))
+    const shadowed = projectAgents
+      .filter(a => a.scope === 'project' && globalNames.has(a.name))
+      .map(a => a.name)
+    return shadowed.length ? new Set(shadowed) : undefined
+  }, [agents, projectAgents, projectPath])
   // Touched = any field diverged from what the form OPENED with. Compared
   // against `init`/`defaults` (the same sources the state seeded from), so a
   // value typed and then typed back reads as untouched again — the same rule
@@ -328,6 +691,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     chatFolderId !== defaults.chatFolderId ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
     weekTime !== init.weekTime || cronExpr !== init.cronExpr ||
+    projectPath !== init.projectPath ||
     weekDays.length !== init.weekDays.length || weekDays.some((d, i) => d !== init.weekDays[i])
   const dirtyChangeRef = useRef(onDirtyChange)
   dirtyChangeRef.current = onDirtyChange
@@ -349,6 +713,19 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   useEffect(() => {
     if (error) errorRef.current?.scrollIntoView?.({ block: 'nearest' })
   }, [error, errorTick])
+  // A project_path SAVE rejection rendered beside the field it names, not in
+  // the form-wide notice at the foot of the form (UX Review span=d88c9e1f411b).
+  // Its own scroll-into-view (mirroring `errorRef` above) because the field
+  // sits mid-form while Save is at the bottom, so without it a reject would
+  // land off-screen above the button the user just pressed. The tick makes a
+  // REPEATED identical reject scroll again, exactly as the form-wide notice does.
+  const projectPathErrorRef = useRef<HTMLDivElement | null>(null)
+  const [projectPathSaveError, setProjectPathSaveErrorState] = useState('')
+  const [projectPathErrorTick, setProjectPathErrorTick] = useState(0)
+  const setProjectPathSaveError = (e: string) => { setProjectPathSaveErrorState(e); if (e) setProjectPathErrorTick(t => t + 1) }
+  useEffect(() => {
+    if (projectPathSaveError) projectPathErrorRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [projectPathSaveError, projectPathErrorTick])
   const [saving, setSavingState] = useState(false)
   const setSaving = (v: boolean) => { setSavingState(v); onSavingChange?.(v) }
 
@@ -454,8 +831,8 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   }, [modelList, model])
 
   const submit = async () => {
-    setError(''); setSaving(true)
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    setError(''); setProjectPathSaveError(''); setSaving(true)
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr, projectPath }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     if (privateMember && !isLlmless) {
@@ -479,19 +856,35 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       // gateway error can be raised before the app ever saw the POST, or after it
       // applied it and the response was lost. Anything without a status (a dropped
       // connection, an offline tab) reached no verdict either.
+      // Both routes carry the same catch, not just create: the project-binding
+      // validation refuses an UPDATE with the same field-scoped 400 (an agent the
+      // bound directory does not declare, a relative or sensitive path), and
+      // without it that reason fell to the outer handler and showed the generic
+      // "failed to save" instead of the sentence naming the field to fix.
+      const classify = (e: unknown) => ({
+        error: e instanceof Error ? e.message : String(e),
+        errorConfirmed: e instanceof ApiError && e.status >= 400 && e.status < 500,
+      })
       const res = job
-        ? await api.updateCron(job.id, body)
-        : await api.createCron(body).catch((e: unknown) => ({
-          error: e instanceof Error ? e.message : String(e),
-          errorConfirmed: e instanceof ApiError && e.status >= 400 && e.status < 500,
-        }))
+        ? await api.updateCron(job.id, body).catch(classify)
+        : await api.createCron(body).catch(classify)
       if (res.error) {
-        setError(res.error)
-        onSubmitError?.(res.error, 'errorConfirmed' in res ? !!res.errorConfirmed : true, f.name)
+        // Rewritten for the field it belongs to before BOTH consumers see it:
+        // the host's onSubmitError gets the same sentence the user reads, so a
+        // dialog that surfaces the message itself cannot show the raw backend
+        // wording while the inline notice shows the friendly one.
+        const shown = friendlyProjectPathError(res.error)
+        // A project_path refusal names the project-directory field, so it is
+        // rendered beside that field rather than the form-wide notice at the
+        // foot of the form (UX Review span=d88c9e1f411b). Any other rejection
+        // is not about that one field and stays form-wide.
+        if (isProjectPathError(res.error)) setProjectPathSaveError(shown)
+        else setError(shown)
+        onSubmitError?.(shown, 'errorConfirmed' in res ? !!res.errorConfirmed : true, f.name)
         setSaving(false)
         return
       }
-      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId('') }
+      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId(''); setProjectPath('') }
       // Cleared BEFORE onSaved, so `onSavingChange` is symmetric: it reports
       // false on EVERY outcome, not only on failure. An asymmetric version made
       // the flag a host's problem to unlearn — a host that lifts it out of its
@@ -569,7 +962,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} />
-            : <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />}
+            : <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={pickAgent} rosterFailure={rosterFailure} shadowedGlobals={shadowedGlobals} modal />}
           <SimpleSelect
             options={modelOptions.values}
             optionLabels={modelOptions.labels}
@@ -638,16 +1031,101 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
       {/* Vertical-only: agent, channel, actions */}
       {vertical && (<>
-        {/* Agent and Approval are agent/message concepts — script/command crons
-            run no LLM, so hide them (consistent with the LLM-less create surface). */}
+        {/* Working directory (like Agent/Approval below) is an agent/message
+            concept: it is only ever read at fire time by the LLM-agent cron
+            paths in gateway.py (single-agent and sequential), never by a
+            script/command job's subprocess dispatch in cron.py, which passes
+            no cwd derived from it. Showing the field for script/command jobs
+            would display help text that talks about "this job's agent" when
+            that job kind has none, and — since save-time validation holds
+            any non-empty project_path that differs from the stored one to
+            the existing-directory bar — could 400 the
+            save over a value the job would never actually use. Guarding it
+            the same as Agent/Approval keeps the field's presence consistent
+            with what fire time actually reads. */}
         {!isLlmless && (<>
+        <div className="flex flex-col gap-1">
+          <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.project_directory')} <span className="text-muted/60 font-normal">({i18nT('components.jobForm.optional')})</span></span>
+          <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.run_this_job_s_agent_in_this_folder_and_offer')}</span>
+          <div className="flex gap-2">
+            <Input
+              className="flex-1 min-w-0 font-mono text-[12px]"
+              id="jobform-project-path"
+              aria-label={i18nT('components.jobForm.project_directory')}
+              value={projectPath}
+              onChange={e => { setProjectPath(e.target.value); setProjectPathSaveError('') }}
+              placeholder={i18nT('components.jobForm.project_directory_placeholder')}
+            />
+            <Btn ref={browseRef} onClick={() => setPickerOpen(true)}>
+              <FolderOpen size={13} /> {i18nT('components.jobForm.browse')}
+            </Btn>
+          </div>
+          {/* No hand-off: this notice sits inside the job form whose fields
+              (name, message, schedule, working directory) are still live —
+              the hand-off navigates to chat and would discard them. The retry
+              refetches the ONE roster query in place, the same shape as the
+              chat-folder retry below and the agent roster's `onReload`: the
+              failure "need[s] different next actions (retry vs. pick a
+              different folder)" and now offers both, not just re-typing the
+              path (UX Review span=6409bbff1088). */}
+          {projectRosterError && (
+            <div className="flex items-center justify-between gap-2">
+              <ErrorNotice variant="inline" testId="jobform-project-roster-error" message={projectRosterError} />
+              <Btn
+                type="button"
+                onClick={retryProjectRoster}
+                disabled={projectRosterRetrying}
+                aria-busy={projectRosterRetrying}
+                className="text-[12px] px-2 py-1 shrink-0"
+              >
+                {projectRosterRetrying
+                  ? i18nT('components.jobForm.project_roster_retrying')
+                  : i18nT('components.jobForm.project_roster_retry')}
+              </Btn>
+            </div>
+          )}
+          {/* A save-time project_path rejection, beside the field it names
+              rather than the form-wide notice at the foot of the form (UX
+              Review span=d88c9e1f411b). Same inline ErrorNotice the roster
+              failure above uses — no new notice system. No hand-off: this is
+              a save refusal inside a form whose unsaved fields would be lost
+              when the hand-off navigates to chat. */}
+          <div ref={projectPathErrorRef}>
+            {projectPathSaveError && (
+              <ErrorNotice variant="inline" testId="jobform-project-path-save-error" message={projectPathSaveError} askAgent={false} />
+            )}
+          </div>
+        </div>
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.agent')}</span>
           {locked
             ? <LockedAgentValue name={locked} member={memberNoun} />
             : (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
-              <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} modal />
+              <AgentSelector agents={effectiveAgents} defaultAgent={defaultAgent} value={agent} onChange={pickAgent} rosterFailure={rosterFailure} shadowedGlobals={shadowedGlobals} modal />
+              {/* Beside the Agent field rather than in the form-wide notice: the
+                  reset happened to THIS control, and it is information, not an
+                  error -- the directory change was legitimate and so was the
+                  reset. Cleared as soon as the user picks an agent again, since
+                  by then the sentence describes nothing they can still act on.
+
+                  role="status" for the same reason the sibling
+                  `chat_folder_was_deleted` notice below carries it: the system
+                  discarded a choice the reader made deliberately, so a reader on
+                  assistive tech must hear that it happened rather than discover a
+                  silently different agent later. A status (polite) rather than an
+                  alert, because the reset itself was legitimate and there is
+                  nothing to interrupt for. */}
+              {agentResetFrom && (
+                <span role="status" className="text-[11px] text-warn" data-testid="jobform-agent-reset-note">
+                  {i18nT(
+                    agentResetReason === 'project-cleared'
+                      ? 'components.jobForm.agent_reset_project_cleared'
+                      : 'components.jobForm.agent_reset_not_in_folder',
+                    { name: agentResetFrom },
+                  )}
+                </span>
+              )}
             </>)}
         </div>
         </>)}
@@ -811,6 +1289,17 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       <div ref={errorRef}>
         <ErrorNotice message={error} />
       </div>
+      {/* Portals at z-[9999] via createPortal — reused rather than
+       *  reimplemented so this folder picker is IDENTICAL to every other
+       *  project-directory picker in the app (chat's own, FolderConfigModal's). */}
+      {pickerOpen && (
+        <ProjectPicker
+          open={true}
+          onOpenChange={o => { if (!o) setPickerOpen(false) }}
+          anchorRef={browseRef}
+          onSelect={path => { setProjectPath(path); setPickerOpen(false) }}
+        />
+      )}
     </div>
   )
 }
