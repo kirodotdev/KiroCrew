@@ -27,6 +27,7 @@ import kiro_crew
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.validation import SUPERVISOR_SESSION_KEY_PREFIX
 from kiro_crew.dashboard.state import (
     DashboardState,
 )
@@ -322,15 +323,31 @@ async def api_crew_mcp_servers(request: web.Request) -> web.Response:
         )
     supervised = bool(request.app.get("supervised", False))
     home = str(config_dir()) if supervised else None
+    # Session identity for the proxies (P5-2). When the gateway spawns kiro-cli
+    # itself it injects ``KIROCREW_SESSION_KEY`` into that process tree and the
+    # stdio proxies inherit it; a foreign spawner (KAS) has no such ancestor, so
+    # ``_resolve_session_key`` in the proxy comes up empty and every
+    # session-keyed tool (``learn_add``, cron management, callback delivery) fails
+    # with ``missing X-Session-Key``. Pin the CALLER's own session key -- the
+    # ``kiro-cli:<sessionId>`` owner every other plane already uses -- so the
+    # proxies act as that session. Only a supervisor-prefixed key is pinned: a
+    # dashboard or other caller keeps the proxy's own resolution chain.
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    pin_session = (
+        session_key if supervised and session_key.startswith(SUPERVISOR_SESSION_KEY_PREFIX) else None
+    )
 
     servers: dict[str, dict] = {}
     for name in _MANAGED_MCP_SERVERS:
         entry = managed_mcp_spec_entry(name)
         if entry is None:
             continue
-        if home is not None:
+        if home is not None or pin_session is not None:
             env = dict(entry.get("env") or {})
-            env["KIROCREW_HOME"] = home
+            if home is not None:
+                env["KIROCREW_HOME"] = home
+            if pin_session is not None:
+                env["KIROCREW_SESSION_KEY"] = pin_session
             entry["env"] = env
         servers[name] = entry
     return web.json_response({"mcpServers": servers})

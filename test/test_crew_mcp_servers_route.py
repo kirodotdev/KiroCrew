@@ -36,13 +36,16 @@ pytestmark = pytest.mark.asyncio
 SECRET = "phase5-plane-b-secret"
 
 
-def _request(*, supervised: bool, internal_auth: bool = True) -> MagicMock:
+def _request(
+    *, supervised: bool, internal_auth: bool = True, session_key: str | None = None
+) -> MagicMock:
     request = MagicMock()
     # MagicMock.get would auto-create a child mock, so back the two keys the
     # handler reads with a dict and a real .get.
     store = {"internal_auth": internal_auth}
     request.get.side_effect = store.get
     request.app = {"supervised": supervised}
+    request.headers = {"X-Session-Key": session_key} if session_key is not None else {}
     return request
 
 
@@ -70,6 +73,25 @@ async def test_each_entry_has_command_args_and_pinned_home() -> None:
         sub = name.replace("kirocrew-", "mcp-")
         assert sub in entry["args"], (name, entry["args"])
         assert entry["env"]["KIROCREW_HOME"] == home, name
+
+
+async def test_supervised_kiro_cli_caller_gets_its_session_key_pinned() -> None:
+    """P5-2: a KAS-spawned proxy has no gateway ancestor to inherit
+    KIROCREW_SESSION_KEY from, so every session-keyed tool failed with
+    'missing X-Session-Key'; the caller's own kiro-cli: key is pinned instead."""
+    servers = (await _body(_request(supervised=True, session_key="kiro-cli:sess-42")))["mcpServers"]
+    for name, entry in servers.items():
+        assert entry["env"]["KIROCREW_SESSION_KEY"] == "kiro-cli:sess-42", name
+        assert entry["env"]["KIROCREW_HOME"] == str(config_dir()), name
+
+
+async def test_non_supervisor_caller_key_is_not_pinned() -> None:
+    servers = (await _body(_request(supervised=True, session_key="dashboard:slot-1")))["mcpServers"]
+    for entry in servers.values():
+        assert "KIROCREW_SESSION_KEY" not in entry["env"]
+    servers = (await _body(_request(supervised=False, session_key="kiro-cli:sess-42")))["mcpServers"]
+    for entry in servers.values():
+        assert "KIROCREW_SESSION_KEY" not in (entry.get("env") or {})
 
 
 async def test_opt_in_and_gated_servers_are_absent() -> None:
