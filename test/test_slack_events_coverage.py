@@ -1868,6 +1868,41 @@ class TestRouteMessageGuards:
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "channels governance policy"
 
     @pytest.mark.asyncio
+    async def test_stop_is_recorded_before_the_liveness_checks(self):
+        """A turn between its abandoned attempt and its compaction replay has
+        no session and, when it started from an interaction, no registered
+        task either -- so this handler would answer "Nothing running." and
+        call nothing. The Stop is recorded on the manager FIRST, so the
+        replay reads it and stays dropped."""
+        orch = _make_orch()
+        orch.sessions.has_session = MagicMock(return_value=False)
+        orch.sessions.get_session_for_thread = MagicMock(return_value=None)
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+        orch.sessions.note_stop.assert_called_once_with("100.0")
+        orch.sessions.stop_turn.assert_not_awaited()
+        orch.slack.post_message.assert_awaited_with("D1", "Nothing running.", "100.0")
+
+    @pytest.mark.asyncio
+    async def test_stop_is_recorded_against_the_threads_owning_session(self):
+        """A linked thread's turns -- and their compaction replay -- run under
+        the dashboard session that owns the thread, so the Stop must be recorded
+        under that key, not the bare thread ts the replay never reads."""
+        orch = _make_orch()
+        orch.sessions.has_session = MagicMock(return_value=False)
+        orch.sessions.get_session_for_thread = MagicMock(return_value="dashboard:chat-7")
+        orch.sessions.note_stop = MagicMock(return_value=True)
+        orch.sessions.stop_turn = AsyncMock()
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.is_owner", return_value=True):
+                await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+        orch.sessions.get_session_for_thread.assert_called_with("100.0")
+        orch.sessions.note_stop.assert_called_once_with("dashboard:chat-7")
+
+    @pytest.mark.asyncio
     async def test_pure_stop_is_exempt_from_governance_denial(self):
         orch = _make_orch()
         orch.sessions.has_session = MagicMock(return_value=False)

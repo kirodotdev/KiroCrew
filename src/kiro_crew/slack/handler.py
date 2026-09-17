@@ -95,10 +95,11 @@ from kiro_crew.messaging.commands import (
     compact_unsupported_backend,
     compact_unsupported_reply,
     cron_command_reply,
+    note_user_stop,
     spawn_command_reply,
     task_command_reply,
 )
-from kiro_crew.messaging.dispatch import admit_inbound_callback
+from kiro_crew.messaging.dispatch import admit_inbound_callback, session_stop_generation
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
@@ -685,6 +686,41 @@ _thread_projects: dict[str, str] = {}
 
 # Guard set for _hydrate_thread_overrides to avoid repeated I/O per session.
 _hydrated_sessions: set[str] = set()
+
+# Retries granted to a Slack turn abandoned after a TRANSIENT compaction failure
+# (a throttled or 5xx'd summarization call). Per message: the replay is a nested
+# ``handle_message`` call carrying the attempt number, so the budget travels
+# with the message and needs no per-thread state. Same count as the dashboard's
+# _COMPACTION_FAILED_RETRIES and for the same reason: a throttle still firing
+# after two session resets is not clearing, and every attempt costs the
+# summarization call again.
+_COMPACTION_FAILED_RETRIES = 2
+
+# Posted to the thread when the abandoned message is about to be replayed. Sent
+# directly, never through the turn's own reply path: the abandoned attempt
+# persists nothing and mirrors nothing, so the conversation log records the
+# message once, with the reply the replay produces.
+_COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
+
+
+@dataclass(frozen=True)
+class _CompactionReplay:
+    """Why a ``handle_message`` call is running: it is replay ``attempt`` of a
+    message whose previous attempt was abandoned after a transient compaction
+    failure.
+
+    ``stop_gen_at_entry`` is the session manager's user-Stop count when the
+    FIRST attempt acquired its session, carried unchanged across attempts. The
+    replay compares against it right before it opens a prompt: any Stop issued
+    since -- on any surface, including one that landed while the key had no
+    live session between the reset and this attempt's acquire, which the caller
+    keeps recordable with ``open_replay_gap`` -- means the user does not want
+    this message run, and the replay ends without a turn.
+    """
+
+    attempt: int
+    stop_gen_at_entry: int
+
 
 # The privacy-mode machinery lives in ``messaging.privacy_mode`` so a second
 # channel gets the same trackers, the same durable flag and the same audit rather
@@ -1773,6 +1809,13 @@ async def _handle_slash_command(
     # ── !stop — defensive fallback (normally intercepted in events.py
     #    _route_message before handle_message is called) ──
     if cmd == "!stop":
+        # Recorded BEFORE the liveness check: a turn between its abandoned
+        # attempt and its compaction replay has no session at this moment, and
+        # the replay reads this record to stay dropped (``note_user_stop``).
+        # Against the thread's OWNING session -- a linked thread's turns run
+        # under the dashboard session that owns it, and that is the key the
+        # replay reads -- resolved the way the OPTIONS expiry below resolves it.
+        note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
         has_session = sessions.has_session(session_key)
         if not has_session:
             sel().log_tool_invocation(
@@ -3020,6 +3063,7 @@ async def handle_message(
     from_trusted_bot: bool = False,
     channel_activation: str | None = None,
     had_voice_input: bool = False,
+    _compaction_replay: _CompactionReplay | None = None,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -3034,6 +3078,14 @@ async def handle_message(
 
     *channel_agent* overrides the default agent for this channel (set via
     per-channel config in ``slack.channels``).
+
+    *_compaction_replay* is set only by this function itself, when it re-runs a
+    message whose previous attempt was abandoned after a transient compaction
+    failure (see the ``STOP_REASON_COMPACTION_FAILED`` branch). Every other
+    argument is passed through unchanged, so the replay resolves the same
+    session, keeps the same activation and pinning, and can still read the
+    attachment files the original text refers to -- their cleanup runs when the
+    OUTER call's task ends, after this nested call has returned.
     """
     Stats().inc_message_received()
     _t0 = time.monotonic()
@@ -3322,6 +3374,7 @@ async def handle_message(
     status_ctrl.set_phase("queued")
     _had_error = False
     _stop_reason = ""
+    _replayed = False  # set when a transient-compaction replay took over this message
 
     # Set assistant thread status while we wait for the LLM to respond.
     # Defer start_stream until the first text chunk arrives so the user
@@ -3672,6 +3725,18 @@ async def handle_message(
             session_key, agent=_agent, channel_id=channel
         )
         _acquired = True
+        if _compaction_replay is not None:
+            # The gap the outer attempt opened stays open until this replay has
+            # settled and released its permit (the outer's ``finally`` closes it):
+            # a message admitted now would park on this session's semaphore,
+            # which a further retry's reset would pop from under it.
+            _stop_gen_at_entry = _compaction_replay.stop_gen_at_entry
+        else:
+            # The user's Stop count for this key at turn start; a replay of
+            # this message re-reads it before opening its prompt, so a Stop
+            # issued anywhere in between -- on any surface -- keeps the
+            # abandoned message dropped.
+            _stop_gen_at_entry = session_stop_generation(sessions, session_key)
         # Expire AGAIN now the turn is serialized — see the same call in
         # transport_dispatch. The pass earlier in this function runs before
         # `get_or_create` waits its turn, so two messages arriving together both
@@ -3725,6 +3790,13 @@ async def handle_message(
                 model_window=_model_window,
             )
 
+        # The user's message as it arrived. The block below may fold a
+        # cancelled-turn preamble into ``text`` for the model; a
+        # transient-compaction replay must re-run THIS value, so the nested call
+        # derives its own preamble (its own gate, its own one-shot flag) and
+        # persists what the user actually typed, not a preamble a previous
+        # attempt prepended.
+        _user_text = text
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but the user+assistant text is persisted to our
         # local conversation_log. Re-inject just the cancelled turn as a
@@ -3841,6 +3913,21 @@ async def handle_message(
         if sessions.is_cancelled(session_key, msg_ts):
             logger.info("Message %s cancelled before LLM call — skipping", msg_ts)
             await slack.set_thread_status(channel, reply_ts, "")
+            return
+        # A replay must not run a message the user has stopped since its first
+        # attempt began. Same shape and same placement as the check above: the
+        # last look before the prompt opens.
+        if (
+            _compaction_replay is not None
+            and session_stop_generation(sessions, session_key) != _stop_gen_at_entry
+        ):
+            logger.info("Message %s stopped before its compaction replay — skipping", msg_ts)
+            await slack.set_thread_status(channel, reply_ts, "")
+            if _working_ts:
+                try:
+                    await slack.delete_message(channel, _working_ts)
+                except Exception:
+                    pass
             return
 
         # Lease-dispatch race gate: the session lease was taken by
@@ -4304,17 +4391,129 @@ async def handle_message(
             # still counts the prompt as in progress. Reset now (mirrors the
             # dashboard runner's needs_session_reset) or the NEXT message
             # collides with "prompt already in progress" and burns the busy
-            # recovery path. No re-queue: the compaction notice already told
-            # the user. The context-usage probe is skipped — compaction just
-            # failed and the session was torn down.
+            # recovery path. The context-usage probe is skipped — compaction
+            # just failed and the session was torn down.
+            #
+            # Opened BEFORE the reset pops the session: from that pop until the
+            # replay acquires its successor, a Stop would find no session and
+            # go unrecorded -- the window the replay's pre-prompt check exists
+            # for -- and a newer message for this key would claim the successor
+            # first and run ahead of the replay; the open gap makes any other
+            # task's claim wait. Closed when the replay has settled (the
+            # ``finally`` around the nested call), or right below when no
+            # replay is attempted.
+            sessions.open_replay_gap(session_key)
+            _reset_ok = True
             try:
                 await sessions.reset(session_key)
             except Exception:
+                _reset_ok = False
                 logger.debug(
                     "Failed to reset session %s after compaction failure",
                     session_key,
                     exc_info=True,
                 )
+            # Whether the abandoned message is replayed depends on WHY
+            # compaction failed, which is the verdict the ACP layer records. A
+            # compaction that overflowed the window fails again identically, so
+            # replaying it only burns the budget — the case the unconditional
+            # give-up was written for. A throttled or 5xx'd summarization call
+            # has nothing wrong with it, and dropping the message for it ends
+            # the turn on a backend hiccup the next attempt would clear.
+            _attempt = _compaction_replay.attempt if _compaction_replay is not None else 0
+            if (
+                _reset_ok
+                # Compared against True rather than read for truthiness: the
+                # retry must require a real verdict, so a provider that never
+                # set the attribute (or exposes an auto-created stand-in for
+                # it) cannot be read as "transient" by accident.
+                and getattr(client, "last_compaction_transient", False) is True
+                # Verbatim replay is only safe before anything landed in the
+                # thread — text or a tool card. Once output or a tool call has
+                # landed, re-sending could repeat a side effect, so an emitted
+                # turn keeps the give-up behaviour.
+                and not accumulated
+                and _task_counter == 0
+                and _attempt < _COMPACTION_FAILED_RETRIES
+            ):
+                logger.info(
+                    "Transient compaction failure in %s (attempt %d/%d) — "
+                    "replaying the abandoned message",
+                    session_key,
+                    _attempt + 1,
+                    _COMPACTION_FAILED_RETRIES,
+                )
+                # The replay is a nested call of this function with every
+                # argument unchanged, which is what makes it Slack's own
+                # replay: it resolves the same session, keeps the same
+                # activation and pinning, runs while this task still owns the
+                # attachment temp files, and needs no queue drain from whoever
+                # dispatched the original -- the interaction paths dispatch
+                # ``handle_message`` without one.
+                #
+                # This attempt's permit died with the session the reset popped;
+                # the successor's belongs to the replay, whose own ``finally``
+                # releases it, so this frame must not release again.
+                _acquired = False
+                _replayed = True
+                # This attempt is over: stop its reaction ladder and stall
+                # watchdog now (idempotent, so the ``finally`` re-call is a
+                # no-op), and take down what it posted -- the Working block and
+                # a reasoning placeholder that a thinking-only attempt left
+                # above where the answer would have gone. The nested call posts
+                # its own.
+                status_ctrl.finalize(error=False)
+                for _ts in (_working_ts, thinking_ts):
+                    if _ts:
+                        try:
+                            await slack.delete_message(channel, _ts)
+                        except Exception:
+                            pass
+                _working_ts = None
+                thinking_ts = None
+                # Visible, not persisted: the abandoned attempt records nothing,
+                # so the conversation log carries this message exactly once,
+                # with the reply the replay produces.
+                try:
+                    await slack.post_message(channel, _COMPACTION_RETRY_NOTICE, reply_ts)
+                except Exception:
+                    logger.debug("Failed to post the compaction retry notice", exc_info=True)
+                try:
+                    await handle_message(
+                        slack,
+                        sessions,
+                        channel,
+                        _user_text,
+                        thread_ts,
+                        msg_ts,
+                        user_id,
+                        team_id=team_id,
+                        approval_mode=approval_mode,
+                        context_builder=context_builder,
+                        cron_service=cron_service,
+                        conversation_log=conversation_log,
+                        consolidator=consolidator,
+                        subagent_manager=subagent_manager,
+                        task_runner=task_runner,
+                        channel_agent=channel_agent,
+                        user_display_name=user_display_name,
+                        action_context=action_context,
+                        target_slot_name=target_slot_name,
+                        route_pinned=route_pinned,
+                        asker_key=asker_key,
+                        from_trusted_bot=from_trusted_bot,
+                        channel_activation=channel_activation,
+                        had_voice_input=had_voice_input,
+                        _compaction_replay=_CompactionReplay(
+                            attempt=_attempt + 1, stop_gen_at_entry=_stop_gen_at_entry
+                        ),
+                    )
+                finally:
+                    # The replay has settled and released its permit (or never
+                    # got there); a waiter admitted now finds an idle session.
+                    sessions.close_replay_gap(session_key)
+            else:
+                sessions.close_replay_gap(session_key)
         else:
             # Check context usage — fires background compaction at configured threshold, never blocks
             sessions.check_context_usage(session_key, client)
@@ -4365,8 +4564,23 @@ async def handle_message(
     finally:
         if _acquired:
             sessions.release(session_key)
+        # A replay gap this attempt opened must not outlive it: a cancellation
+        # landing in the reset (``!stop`` cancels the handler task) skips every
+        # close inside the try, and a gap left open makes every later claim on
+        # this key wait forever. Idempotent, and ordered after the release so a
+        # waiter admitted now finds an idle session. Probed with ``getattr``
+        # because this line runs on EVERY turn, including the many focused
+        # session-manager doubles across the suite that predate the method.
+        _close_gap = getattr(sessions, "close_replay_gap", None)
+        if callable(_close_gap):
+            _close_gap(session_key)
         status_ctrl.finalize(error=_had_error)
         await asyncio.sleep(0)  # let finalize fire
+
+    if _replayed:
+        # The nested call posted the reply, persisted the turn and cleared the
+        # thread status; this abandoned attempt has nothing of its own to show.
+        return
 
     # ── Cancelled check: suppress response if message was deleted mid-flight ──
     if sessions.is_cancelled(session_key, msg_ts):

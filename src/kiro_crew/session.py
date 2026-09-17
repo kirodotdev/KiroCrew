@@ -924,6 +924,11 @@ class _Session:
     # counter above 1, which would let a second turn acquire concurrently
     # with one still in flight.
     semaphore: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
+    # The task that acquired the turn permit above, recorded at every acquire
+    # site and read by ``reset``: a session popped while its permit is held
+    # remembers WHO held it, so that task's later key-only ``release`` is
+    # absorbed instead of unlocking whatever successor now occupies the key.
+    turn_owner: Any = None
     approval_policy: str = ""  # "" (interactive) | "auto" (auto-approve all tools)
     agent: str = ""  # kiro agent name used for this session
     capability_member: str = ""
@@ -2583,6 +2588,14 @@ class SessionManager:
         """Release the key-based session lease."""
         self._allocation_boundary().release(key, cleanup=cleanup)
 
+    def absorb_orphaned_release(self, key: str) -> bool:
+        """Whether the calling task's release belongs to a session already reset."""
+        return self._lifecycle_boundary().absorb_orphaned_release(key)
+
+    def adopt_turn(self, key: str) -> None:
+        """The calling task now holds *key*'s live permit; forget any orphan record."""
+        self._lifecycle_boundary().adopt_turn(key)
+
     async def _safe_cleanup(self, provider: LLMProvider, session_id: str) -> None:
         """Best-effort cleanup of provider session files."""
         await self._allocation_boundary()._safe_cleanup(provider, session_id)
@@ -2922,8 +2935,24 @@ class SessionManager:
         )
 
     def stop_generation(self, key: str) -> int:
-        """Monotonic count of :meth:`stop_turn` requests recorded for *key*."""
+        """Monotonic count of user Stop requests recorded for *key*."""
         return self._lifecycle_boundary().stop_generation(key)
+
+    def note_stop(self, key: str) -> bool:
+        """Record a user Stop for *key* without cancelling anything."""
+        return self._lifecycle_boundary().note_stop(key)
+
+    def open_replay_gap(self, key: str) -> None:
+        """Keep Stops recordable for *key* across a reset-then-replay window."""
+        self._lifecycle_boundary().open_replay_gap(key)
+
+    def close_replay_gap(self, key: str) -> None:
+        """End the window :meth:`open_replay_gap` opened."""
+        self._lifecycle_boundary().close_replay_gap(key)
+
+    async def await_replay_gap(self, key: str) -> None:
+        """Wait out another task's open replay gap on *key* before claiming."""
+        await self._lifecycle_boundary().await_replay_gap(key)
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None:
         """Best-effort abort gateway work before hard session teardown."""

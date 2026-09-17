@@ -39,7 +39,7 @@ from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.commands import compact_unsupported_backend, note_user_stop
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -469,6 +469,10 @@ class WeixinDispatcher:
         the session while its turn is still unwinding.
         """
         session_key = self._session_key(user_id)
+        # Recorded before the busy check, so a Stop landing while the session is
+        # between an abandoned attempt and its replay still counts (see
+        # ``note_user_stop``).
+        note_user_stop(self.sessions, session_key)
         # Three states. A busy session whose cancel could not run must NOT be told
         # nothing was running -- that is the wedged turn /stop exists for, and the
         # is_busy check one line up already proved otherwise.

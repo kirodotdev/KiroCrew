@@ -35,7 +35,7 @@ from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.commands import compact_unsupported_backend, note_user_stop
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -677,6 +677,10 @@ class WeComDispatcher:
         """
         assert self.client is not None
         session_key = self._session_key(inbound.userid)
+        # Recorded before the busy check, so a Stop landing while the session is
+        # between an abandoned attempt and its replay still counts (see
+        # ``note_user_stop``).
+        note_user_stop(self.sessions, session_key)
         if not self.sessions.is_busy(session_key):
             await self.client.say(inbound, "ℹ️ 当前没有正在生成的回复。")
             return
