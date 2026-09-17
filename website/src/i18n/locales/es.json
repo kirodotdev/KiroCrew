@@ -4951,6 +4951,7 @@
       "cmd_search_sessions": "Buscar sesiones",
       "fallback_sessions": "Buscar «{{query}}» en las sesiones",
       "group_apps": "Aplicaciones",
+      "group_folders": "Carpetas",
       "group_commands": "Comandos",
       "group_settings": "Ajustes",
       "leave_scope": "Volver a todos los comandos",
@@ -4974,6 +4975,7 @@
       "retry": "Reintentar",
       "kind": {
         "app": "Aplicación",
+        "folder": "Carpeta",
         "command": "Comando",
         "setting": "Ajuste",
         "view": "Vista"
@@ -10365,6 +10367,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
+      "no_sessions_match_folders": "Ninguna sesión coincide — solo un nombre de carpeta",
       "add_column_after_this_one": "Añadir una columna después de esta",
       "agent_finished_your_turn": "El agente terminó — es tu turno",
       "all_sessions": "Todas las sesiones",

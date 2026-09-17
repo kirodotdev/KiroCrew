@@ -1144,6 +1144,7 @@
       "cmd_search_sessions": "Sitzungen durchsuchen",
       "fallback_sessions": "Sitzungen nach „{{query}}“ durchsuchen",
       "group_apps": "Apps",
+      "group_folders": "Ordner",
       "group_commands": "Befehle",
       "group_settings": "Einstellungen",
       "leave_scope": "Zurück zu allen Befehlen",
@@ -1167,6 +1168,7 @@
       "retry": "Erneut versuchen",
       "kind": {
         "app": "App",
+        "folder": "Ordner",
         "command": "Befehl",
         "setting": "Einstellung",
         "view": "Ansicht"
@@ -10221,6 +10223,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
+      "no_sessions_match_folders": "Keine Sitzungen passen — nur ein Ordnername",
       "add_column_after_this_one": "Spalte nach dieser hinzufügen",
       "agent_finished_your_turn": "Agent fertig — Sie sind dran",
       "all_sessions": "Alle Sitzungen",

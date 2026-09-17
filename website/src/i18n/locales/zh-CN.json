@@ -4793,6 +4793,7 @@
       "cmd_search_sessions": "搜索会话",
       "fallback_sessions": "在会话中搜索“{{query}}”",
       "group_apps": "应用",
+      "group_folders": "文件夹",
       "group_commands": "命令",
       "group_settings": "设置",
       "leave_scope": "返回全部命令",
@@ -4816,6 +4817,7 @@
       "retry": "重试",
       "kind": {
         "app": "应用",
+        "folder": "文件夹",
         "command": "命令",
         "setting": "设置",
         "view": "视图"
@@ -10077,6 +10079,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
+      "no_sessions_match_folders": "没有匹配的会话 — 只有文件夹名称匹配",
       "add_column_after_this_one": "在此列之后添加列",
       "agent_finished_your_turn": "代理已完成 — 轮到你了",
       "all_sessions": "全部会话",

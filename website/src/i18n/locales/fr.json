@@ -1177,6 +1177,7 @@
       "cmd_search_sessions": "Rechercher des sessions",
       "fallback_sessions": "Rechercher « {{query}} » dans les sessions",
       "group_apps": "Applications",
+      "group_folders": "Dossiers",
       "group_commands": "Commandes",
       "group_settings": "Paramètres",
       "leave_scope": "Retour à toutes les commandes",
@@ -1200,6 +1201,7 @@
       "retry": "Reessayer",
       "kind": {
         "app": "Application",
+        "folder": "Dossier",
         "command": "Commande",
         "setting": "Paramètre",
         "view": "Vue"
@@ -10365,6 +10367,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
+      "no_sessions_match_folders": "Aucune session ne correspond — seul un nom de dossier",
       "add_column_after_this_one": "Ajouter une colonne après celle-ci",
       "agent_finished_your_turn": "L'agent a terminé — à vous",
       "all_sessions": "Toutes les sessions",

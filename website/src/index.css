@@ -2354,8 +2354,8 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    (not an animation), so the global reduced-motion animation kill-switch
    above leaves the confirmation visible. JS removes the classes after the
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
-.session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
-.session-row.session-reveal-flash-fade{outline-color:transparent}
+.session-row.session-reveal-flash,.folder-row.session-reveal-flash,.folder-col.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
+.session-row.session-reveal-flash-fade,.folder-row.session-reveal-flash-fade,.folder-col.session-reveal-flash-fade{outline-color:transparent}
 /* Stalled goal loop (ChatSidebar `goalLoopStalled`): the loop is armed but its
    last turn died and nothing is executing — the whole card flashes danger-red
    until the user resumes. Two-class specificity outranks the Tailwind

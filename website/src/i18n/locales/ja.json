@@ -1111,6 +1111,7 @@
       "cmd_search_sessions": "セッションを検索",
       "fallback_sessions": "セッションを「{{query}}」で検索",
       "group_apps": "アプリ",
+      "group_folders": "フォルダー",
       "group_commands": "コマンド",
       "group_settings": "設定",
       "leave_scope": "すべてのコマンドに戻る",
@@ -1134,6 +1135,7 @@
       "retry": "再試行",
       "kind": {
         "app": "アプリ",
+        "folder": "フォルダー",
         "command": "コマンド",
         "setting": "設定",
         "view": "ビュー"
@@ -10077,6 +10079,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
+      "no_sessions_match_folders": "一致するセッションはありません — フォルダー名のみ一致",
       "add_column_after_this_one": "この列の後に列を追加",
       "agent_finished_your_turn": "エージェントが完了しました — あなたの番です",
       "all_sessions": "すべてのセッション",

@@ -124,11 +124,32 @@ function renderSidebar(opts: {
   historyHasMore?: boolean
   /** Pre-set chat.revealRequest, simulating a reveal requested while the
    *  sidebar was unmounted (the #912 D1 regression case). */
-  revealRequest?: { key: string; nonce: number }
+  revealRequest?: { kind: 'session' | 'folder'; target: string; nonce: number }
+  /** Serve folders from a stub that APPLIES each PATCH, instead of one that
+   *  keeps replaying the seeded fixture. Needed only when a test observes the
+   *  RESULT of a folder write rather than just the call that made it — see the
+   *  note at the stub below. */
+  persistFolderWrites?: boolean
 } = {}) {
   const slots = opts.slots ?? []
   const folders = opts.folders ?? []
   mocks.chatFolders.mockResolvedValue(folders)
+  // The default stub REPLAYS the seeded fixture on every read, and the folder
+  // mutation ends with `onSettled: invalidateQueries(['chat-folders'])` — so a
+  // successful PATCH is followed by a refetch that puts the pre-PATCH value
+  // straight back, silently undoing the optimistic write. Tests that only assert
+  // the CALL never notice; a test that waits for the expansion to render waits
+  // forever. When asked, serve a stub that applies the body instead, which is
+  // what the real endpoint does.
+  if (opts.persistFolderWrites) {
+    const live = folders.map(f => ({ ...f }))
+    mocks.chatFolders.mockImplementation(async () => live.map(f => ({ ...f })))
+    mocks.updateChatFolder.mockImplementation(async (id: string, body: Partial<ChatFolder>) => {
+      const hit = live.find(f => f.id === id)
+      if (hit) Object.assign(hit, body)
+      return { ok: true }
+    })
+  }
   // Redux Toolkit REPLACES a slice's state with `preloadedState` -- it does not
   // merge with the slice's initialState. A hand-rolled partial therefore drops
   // every key it forgets, and reducers that legitimately assume the real shape
@@ -153,6 +174,13 @@ function renderSidebar(opts: {
       revealNonce: opts.revealRequest?.nonce ?? 0,
     } as unknown as RootState['chat'],
   })
+  // `freezeQueries` opts ONE test out of refetch-on-mount. It is not tidiness:
+  // `onMutate` awaits `cancelQueries`, which reverts an in-flight fetch to its
+  // pre-fetch data, so an optimistic write racing the mount fetch can be undone
+  // — which is how a test that expands a collapsed ancestor ended up asserting
+  // against a folder that silently stayed collapsed for its whole run. Left OFF
+  // by default because the board-lane tests here depend on their queries
+  // refetching.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], folders)
   qc.setQueryData(['tag-columns'], [])
@@ -723,20 +751,55 @@ describe('ChatSidebar — reveal request (store-driven, issue #912)', () => {
     const { store } = renderSidebar({
       slots: [{ key: 'k-deep', title: 'Deep one', running: false, folder_id: 'f-child' }],
       folders,
-      revealRequest: { key: 'k-deep', nonce: 1 },
+      revealRequest: { kind: 'session', target: 'k-deep', nonce: 1 },
+      // The optimistic expansion has to SURVIVE for this test to mean anything:
+      // the row is mounted from the first paint (a collapsed FolderBody keeps its
+      // children) and only stops being inert once the expansion renders, which is
+      // the state the scroll waits for.
+      persistFolderWrites: true,
     })
     await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledWith('f-child', { collapsed: false }))
     expect(mocks.updateChatFolder).toHaveBeenCalledWith('f-parent', { collapsed: false })
-    // The row enters the DOM only after the optimistic expansion re-render —
-    // the bounded retry (not a one-shot timeout) must still find it (D3).
+    // The row is VISIBLE only after the optimistic expansion re-render — until
+    // then it sits inert inside the collapsed body — so the bounded retry (not a
+    // one-shot timeout) is what has to land the scroll (D3).
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+    expect(document.querySelector('[data-session-row="k-deep"]')?.closest('[inert]')).toBeNull()
     expect(store.getState().chat.revealRequest).toBeNull()
+  })
+
+  it('never scrolls a row while it is still inert inside a collapsed ancestor', async () => {
+    // The reveal's first attempt runs SYNCHRONOUSLY, before the expansion it just
+    // requested has rendered — and a collapsed FolderBody keeps its children
+    // mounted, marked inert. So on the common path the target is already
+    // queryable and unusable. Accepting it scrolled a height-0 collapsed row and
+    // stopped retrying, because the retry only fires when nothing was found.
+    //
+    // Asserted on the ELEMENT AT CALL TIME rather than after the fact: the folder
+    // does expand a moment later here, so a check that runs afterwards passes
+    // either way and pins nothing.
+    const inertAtCall: boolean[] = []
+    Element.prototype.scrollIntoView = vi.fn(function (this: Element) {
+      inertAtCall.push(!!this.closest('[inert]'))
+    })
+    const folders: ChatFolder[] = [
+      { id: 'f-parent', name: 'Parent', order: 0, collapsed: true },
+      { id: 'f-child', name: 'Child', order: 1, parent_id: 'f-parent', collapsed: true },
+    ]
+    renderSidebar({
+      slots: [{ key: 'k-deep', title: 'Deep one', running: false, folder_id: 'f-child' }],
+      folders,
+      revealRequest: { kind: 'session', target: 'k-deep', nonce: 1 },
+      persistFolderWrites: true,
+    })
+    await waitFor(() => expect(inertAtCall.length).toBeGreaterThan(0))
+    expect(inertAtCall).not.toContain(true)
   })
 
   it('flashes the revealed row so an in-place reveal is visible', async () => {
     renderSidebar({
       slots: [{ key: 'k-a', title: 'Alpha', running: false }],
-      revealRequest: { key: 'k-a', nonce: 1 },
+      revealRequest: { kind: 'session', target: 'k-a', nonce: 1 },
     })
     // The confirmation outline is the only signal when the row was already on
     // screen (D4) — scrollIntoView on a visible row is a visual no-op.

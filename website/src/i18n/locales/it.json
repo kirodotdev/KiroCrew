@@ -4951,6 +4951,7 @@
       "cmd_search_sessions": "Cerca sessioni",
       "fallback_sessions": "Cerca «{{query}}» nelle sessioni",
       "group_apps": "App",
+      "group_folders": "Cartelle",
       "group_commands": "Comandi",
       "group_settings": "Impostazioni",
       "leave_scope": "Torna a tutti i comandi",
@@ -4974,6 +4975,7 @@
       "retry": "Riprova",
       "kind": {
         "app": "App",
+        "folder": "Cartella",
         "command": "Comando",
         "setting": "Impostazione",
         "view": "Vista"
@@ -10365,6 +10367,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",
+      "no_sessions_match_folders": "Nessuna sessione corrisponde — solo il nome di una cartella",
       "add_column_after_this_one": "Aggiungi colonna dopo questa",
       "agent_finished_your_turn": "Agente ha finito — tocca a te",
       "all_sessions": "Tutte le sessioni",

@@ -1355,6 +1355,7 @@
       "cmd_search_sessions": "Search Sessions",
       "fallback_sessions": "Search sessions for “{{query}}”",
       "group_apps": "Apps",
+      "group_folders": "Folders",
       "group_commands": "Commands",
       "group_settings": "Settings",
       "leave_scope": "Back to all commands",
@@ -1384,6 +1385,7 @@
       "no_match_show_recent": "No sessions match “{{query}}” — show recent instead",
       "kind": {
         "app": "App",
+        "folder": "Folder",
         "command": "Command",
         "setting": "Setting",
         "view": "View"
@@ -4115,6 +4117,7 @@
     },
     "chatSidebar": {
       "adopt_failed": "Could not open this session here.",
+      "no_sessions_match_folders": "No sessions match — only a folder name did",
       "adopt_target_unknown": "This session is no longer open on {{name}}.",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",

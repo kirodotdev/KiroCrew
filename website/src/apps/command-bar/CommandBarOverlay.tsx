@@ -8,6 +8,7 @@ import {
   Clock,
   Command,
   Cog,
+  Folder,
   GitMerge,
   Loader2,
   MessageSquare,
@@ -24,9 +25,11 @@ import {
 import { api } from '../../api/client'
 import { commandFolderName, fileSessionInCommandFolder } from './sessionFolder'
 import type { ChatFolderRow } from './sessionFolder'
+import type { ChatFolder } from '../../types'
 import { appNavTargets } from '../../appNav'
 import { useAppDispatch, useAppSelector } from '../../store'
-import { createSlot, setPendingInput, switchSlot } from '../../store/chatSlice'
+import { createSlot, setPendingInput, switchSlot, requestFolderReveal } from '../../store/chatSlice'
+import { orderFoldersWithPaths, FOLDER_PATH_SEP, folderNameText } from '../../utils/folderTree'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
@@ -87,6 +90,8 @@ function groupLabel(group: RootGroup): string {
       return i18nT('apps.commandBar.group_commands')
     case 'apps':
       return i18nT('apps.commandBar.group_apps')
+    case 'folders':
+      return i18nT('apps.commandBar.group_folders')
     case 'settings':
       return i18nT('apps.commandBar.group_settings')
   }
@@ -107,6 +112,7 @@ function kindLabel(row: { kind: RootRowKind; group: RootGroup; appLabel?: string
   if (row.group === 'attention') return null
   if (row.kind === 'view') return i18nT('apps.commandBar.kind.view')
   if (row.group === 'apps') return i18nT('apps.commandBar.kind.app')
+  if (row.group === 'folders') return i18nT('apps.commandBar.kind.folder')
   if (row.group === 'settings') return i18nT('apps.commandBar.kind.setting')
   const kind = i18nT('apps.commandBar.kind.command')
   // Provenance ahead of the kind for a contributed row. Composed with the separator this
@@ -123,6 +129,8 @@ function groupIcon(group: RootGroup) {
       return <Terminal size={14} className="lucide-inline" />
     case 'apps':
       return <Package size={14} className="lucide-inline" />
+    case 'folders':
+      return <Folder size={14} className="lucide-inline" />
     case 'settings':
       return <Cog size={14} className="lucide-inline" />
   }
@@ -224,6 +232,14 @@ function actionLabel(slot: Slot): string {
       // the next step does not do.
       if (slot.row.kind === 'prompt') return i18nT('apps.commandBar.action_continue')
       if (slot.row.kind === 'navigate') return i18nT('apps.commandBar.action_open')
+      // A folder row is an `invoke` because landing on one is a reveal and not only
+      // a route change, but "Run" is the wrong promise for it: it is the strongest
+      // verb this footer has, reserved for the rows that approve or merge, and on a
+      // folder it invites a reader to double-check before pressing Enter. What the
+      // row does is open a folder, and `action_open` already says that in every
+      // catalog. Keyed on the GROUP rather than the kind because the verb describes
+      // what the row is, not how its handler is wired.
+      if (slot.row.group === 'folders') return i18nT('apps.commandBar.action_open')
       return i18nT('apps.commandBar.action_run')
     case 'result':
       return i18nT('apps.commandBar.action_open_session')
@@ -648,6 +664,51 @@ export default function CommandBarOverlay({
         icon: appIcon(target),
       })
     }
+    // The sidebar's own folders, so typing a folder's name lands on it. Read
+    // cache-only from the same `['chat-folders']` entry the filing code above
+    // reads — the query that owns it is `enabled: false` — so these rows cost the
+    // root nothing and simply do not appear on a cold cache, which is the same
+    // degradation `fileSessionInCommandFolder` already accepts.
+    //
+    // `orderFoldersWithPaths` rather than a local walk: it is the module the
+    // sidebar's own pickers use, so the launcher lists folders in the order the
+    // sidebar draws them and spells an ancestry path the way the server does.
+    // Re-deriving either here would be a second answer to a settled question.
+    for (const { folder, ancestors } of orderFoldersWithPaths(
+      Array.isArray(chatFolders) ? (chatFolders as ChatFolder[]) : [],
+    )) {
+      rows.push({
+        id: `folder:${folder.id}`,
+        title: folderNameText(folder),
+        // The ancestry path, so two folders that share a leaf name are still
+        // distinguishable. Absent for a top-level folder rather than rendered as
+        // an empty breadcrumb.
+        subtitle: ancestors.length ? ancestors.join(FOLDER_PATH_SEP) : undefined,
+        group: 'folders',
+        // `invoke`, not `navigate`: landing on a folder is a route change AND a
+        // store write (the reveal request the sidebar consumes), so it cannot be
+        // expressed as a route alone.
+        kind: 'invoke',
+        // A folder list is the user's own filing, so on an EMPTY query it is a tail
+        // to search, not what the launcher should open on. `idleDemote` makes an
+        // untouched folder lose to any row with one real use while the query is
+        // empty, and `FOLDERS_IDLE_LIMIT` bounds the block regardless -- the same
+        // treatment, for the same reason, as the settings tail.
+        idleDemote: true,
+        icon: <Folder size={14} className="lucide-inline" />,
+        run: async () => {
+          // Store write BEFORE the route change: the request is held in the store
+          // precisely because the sidebar may not be mounted yet, and its consuming
+          // effect runs on mount as well as on change, so an early request is
+          // replayed rather than dropped.
+          dispatch(requestFolderReveal(folder.id))
+          navigate('/chat')
+        },
+        // The path segments as keywords, so "kirocrew oss" reaches a folder whose
+        // own name is neither word. The name itself is already the title.
+        keywords: [...ancestors],
+      })
+    }
     for (const entry of SETTINGS_REGISTRY) {
       rows.push({
         id: `setting:${entry.id}`,
@@ -667,7 +728,7 @@ export default function CommandBarOverlay({
     // the tree without remounting it, which does not recompute a memo. Omitting it
     // would freeze these rows in whichever language the surface first resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, commandById, cycleTheme, dispatch, liveSlots, navigate, resolved, simplifiedToolNames, slotStatusDetail, unreadSlots])
+  }, [apps, chatFolders, commandById, cycleTheme, dispatch, liveSlots, navigate, resolved, simplifiedToolNames, slotStatusDetail, unreadSlots])
 
   // The root ranks from the LIVE query, not the debounced one. Ranking is pure and
   // local, so there is nothing to throttle, and debouncing it would let a fast Enter

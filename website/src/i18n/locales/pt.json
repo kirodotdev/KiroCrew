@@ -4951,6 +4951,7 @@
       "cmd_search_sessions": "Pesquisar sessões",
       "fallback_sessions": "Pesquisar “{{query}}” nas sessões",
       "group_apps": "Aplicativos",
+      "group_folders": "Pastas",
       "group_commands": "Comandos",
       "group_settings": "Configurações",
       "leave_scope": "Voltar para todos os comandos",
@@ -4974,6 +4975,7 @@
       "retry": "Tentar novamente",
       "kind": {
         "app": "Aplicativo",
+        "folder": "Pasta",
         "command": "Comando",
         "setting": "Configuração",
         "view": "Visualização"
@@ -10365,6 +10367,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",
+      "no_sessions_match_folders": "Nenhuma sessão corresponde — apenas o nome de uma pasta",
       "add_column_after_this_one": "Adicionar coluna depois desta",
       "agent_finished_your_turn": "O agente terminou — sua vez",
       "all_sessions": "Todas as sessões",

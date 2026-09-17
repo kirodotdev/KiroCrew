@@ -5030,6 +5030,7 @@
       "cmd_search_sessions": "Поиск сессий",
       "fallback_sessions": "Найти «{{query}}» в сессиях",
       "group_apps": "Приложения",
+      "group_folders": "Папки",
       "group_commands": "Команды",
       "group_settings": "Настройки",
       "leave_scope": "Назад ко всем командам",
@@ -5053,6 +5054,7 @@
       "retry": "Повторить",
       "kind": {
         "app": "Приложение",
+        "folder": "Папка",
         "command": "Команда",
         "setting": "Настройка",
         "view": "Вид"
@@ -10509,6 +10511,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",
+      "no_sessions_match_folders": "Нет подходящих сеансов — совпало только имя папки",
       "add_column_after_this_one": "Добавить столбец после этого",
       "agent_finished_your_turn": "Агент завершил — ваш ход",
       "all_sessions": "Все сессии",

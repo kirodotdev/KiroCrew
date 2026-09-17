@@ -4872,6 +4872,7 @@
       "cmd_search_sessions": "सेशन खोजें",
       "fallback_sessions": "सेशन में “{{query}}” खोजें",
       "group_apps": "ऐप",
+      "group_folders": "फ़ोल्डर",
       "group_commands": "कमांड",
       "group_settings": "सेटिंग्स",
       "leave_scope": "सभी कमांड पर वापस",
@@ -4895,6 +4896,7 @@
       "retry": "फिर कोशिश करें",
       "kind": {
         "app": "ऐप",
+        "folder": "फ़ोल्डर",
         "command": "कमांड",
         "setting": "सेटिंग",
         "view": "व्यू"
@@ -10221,6 +10223,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",
+      "no_sessions_match_folders": "कोई सेशन मेल नहीं खाता — केवल एक फ़ोल्डर का नाम मिला",
       "add_column_after_this_one": "इसके बाद कॉलम जोड़ें",
       "agent_finished_your_turn": "एजेंट पूरा हुआ — अब आपकी बारी",
       "all_sessions": "सभी सेशन",

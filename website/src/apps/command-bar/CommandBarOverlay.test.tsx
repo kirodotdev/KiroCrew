@@ -40,6 +40,7 @@ vi.mock('../../store/chatSlice', () => ({
   // `keepTargetOnMissing` decides whether a 404 unwinds to the previous slot.
   switchSlot: (arg: string | { key: string; keepTargetOnMissing?: boolean }) =>
     typeof arg === 'string' ? { type: 'switchSlot', key: arg } : { type: 'switchSlot', ...arg },
+  requestFolderReveal: (folderId: string) => ({ type: 'requestFolderReveal', folderId }),
 }))
 vi.mock('../../components/commandPalette/paletteActions', () => ({
   usePaletteActions: () => ({ navigate, enterInsertOrNewSession, newSessionWithToken }),

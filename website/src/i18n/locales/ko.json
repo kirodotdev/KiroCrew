@@ -1111,6 +1111,7 @@
       "cmd_search_sessions": "세션 검색",
       "fallback_sessions": "세션에서 {{query}} 검색",
       "group_apps": "앱",
+      "group_folders": "폴더",
       "group_commands": "명령",
       "group_settings": "설정",
       "leave_scope": "모든 명령으로 돌아가기",
@@ -1134,6 +1135,7 @@
       "retry": "다시 시도",
       "kind": {
         "app": "앱",
+        "folder": "폴더",
         "command": "명령",
         "setting": "설정",
         "view": "보기"
@@ -10077,6 +10079,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
+      "no_sessions_match_folders": "일치하는 세션이 없습니다 — 폴더 이름만 일치",
       "add_column_after_this_one": "이 열 뒤에 열 추가",
       "agent_finished_your_turn": "에이전트 작업 완료 — 이제 차례입니다",
       "all_sessions": "모든 세션",

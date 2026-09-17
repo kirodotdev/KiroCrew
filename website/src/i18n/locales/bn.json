@@ -4872,6 +4872,7 @@
       "cmd_search_sessions": "সেশন খুঁজুন",
       "fallback_sessions": "সেশনে “{{query}}” খুঁজুন",
       "group_apps": "অ্যাপ",
+      "group_folders": "ফোল্ডার",
       "group_commands": "কমান্ড",
       "group_settings": "সেটিংস",
       "leave_scope": "সব কমান্ডে ফিরে যান",
@@ -4895,6 +4896,7 @@
       "retry": "আবার চেষ্টা করুন",
       "kind": {
         "app": "অ্যাপ",
+        "folder": "ফোল্ডার",
         "command": "কমান্ড",
         "setting": "সেটিং",
         "view": "ভিউ"
@@ -10221,6 +10223,7 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
+      "no_sessions_match_folders": "কোনও সেশন মেলেনি — কেবল একটি ফোল্ডারের নাম মিলেছে",
       "add_column_after_this_one": "এটির পরে কলাম যোগ করুন",
       "agent_finished_your_turn": "এজেন্ট শেষ করেছে — এখন আপনার পালা",
       "all_sessions": "সব সেশন",

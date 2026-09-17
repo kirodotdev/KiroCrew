@@ -1026,17 +1026,26 @@ interface ChatState {
    *  treating that as a request would force-focus Files or the last requested
    *  view over the tab the user actually left the chat on. */
   activityTabRequest: number
-  /** Pending "reveal in sidebar" request from the session header menu, or
-   *  null. State, not a window event, on purpose: the sidebar is unmounted
-   *  while the drawer is collapsed (and under preview expand mode / on mobile), and
-   *  a one-shot CustomEvent dispatched before the listener mounts is silently
-   *  dropped — there is no replay. Held here, the request survives until the
-   *  sidebar consumes and clears it in an effect that also runs on mount
-   *  (issue #912). */
-  revealRequest: { key: string; nonce: number } | null
+  /** Pending "reveal in sidebar" request, or null. State, not a window event, on
+   *  purpose: the sidebar is unmounted while the drawer is collapsed (and under
+   *  preview expand mode / on mobile), and a one-shot CustomEvent dispatched before
+   *  the listener mounts is silently dropped — there is no replay. Held here, the
+   *  request survives until the sidebar consumes and clears it in an effect that
+   *  also runs on mount (issue #912).
+   *
+   *  ONE field carrying its `kind`, not one field per kind. The two targets are
+   *  addressed by different identities (a slot key vs a folder id), which argued for
+   *  two fields — but both identities are a single string, so `target` needs no
+   *  narrowing at its one read site, and the pair had a cost the single field does
+   *  not: two pending requests could exist at once, and since the sidebar's two
+   *  effects run in declaration order, an older request could execute last and
+   *  cancel a newer one's retry loop. With one field there is only ever one pending
+   *  reveal, so the ordering is a property of the state rather than something a
+   *  cross-field nonce comparison has to restore. */
+  revealRequest: { kind: 'session' | 'folder'; target: string; nonce: number } | null
   /** Never-reset counter feeding `revealRequest.nonce`, so revealing the same
-   *  session twice produces two distinct requests (a key-only request would
-   *  make the second reveal indistinguishable from the first). Monotonic
+   *  session (or folder) twice produces two distinct requests (a key-only request
+   *  would make the second reveal indistinguishable from the first). Monotonic
    *  across clears. */
   revealNonce: number
   /** Tool call to highlight & auto-expand inline. Set by openActivityToTool;
@@ -4743,8 +4752,17 @@ const chatSlice = createSlice({
     /** Ask the sidebar to reveal a session row (expand collapsed ancestor
      *  folders, scroll it into view, flash it). Consumed and cleared by
      *  ChatSidebar once it is mounted and ready — see `revealRequest`. */
-    requestSlotReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { key: action.payload, nonce: state.revealNonce } },
+    requestSlotReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { kind: 'session', target: action.payload, nonce: state.revealNonce } },
     clearSlotReveal(state) { state.revealRequest = null },
+    /** Ask the sidebar to reveal a FOLDER row: make it visible, expand it and every
+     *  collapsed ancestor, scroll it into view, flash it. Set by the command
+     *  palette's Folders provider and the launcher's Folders group ("search a
+     *  folder, land on it").
+     *
+     *  Writes the SAME field as `requestSlotReveal`, tagged `folder`, so the newer
+     *  request replaces the older one instead of sitting beside it. Cleared by
+     *  `clearSlotReveal`, which is the one consume path for both kinds. */
+    requestFolderReveal(state, action: PayloadAction<string>) { state.revealNonce += 1; state.revealRequest = { kind: 'folder', target: action.payload, nonce: state.revealNonce } },
     /** Drop the previous connection's ephemeral subagent view before the gateway
      *  replays its authoritative running/done snapshot. Without this reset, an
      *  empty replay leaves agents from a restarted gateway visible indefinitely.
@@ -6917,7 +6935,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,
