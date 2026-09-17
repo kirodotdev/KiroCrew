@@ -4422,6 +4422,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
   }, [activeSlot, slotRunning, activeSlotRemoteBound, messages, dispatch])
 
+  // ⌘↑ / Ctrl+Up: open the LAST user message in the existing
+  // Edit & resend editor. The chord itself is claimed by the composer
+  // (`ChatInput` / `LexicalComposerInput`), which only fires from an empty
+  // composer, so this handler's job is eligibility (the same gates the row's
+  // `canEdit` affordance uses) and finding the target row: the newest
+  // `role === 'user'` message — agent turns, tool cards and system/steering
+  // rows are skipped by the role filter alone. `editLast` carries a rising
+  // sequence number plus the target's identity (index AND ts) so only the
+  // matching `UserMessage` row reacts and a re-render never re-opens the
+  // editor over an in-progress draft. The row ACKNOWLEDGES consumption via
+  // `onEditConsumed` (which nulls this state): a persisted request must never
+  // survive a row remount, or the rising-edge mount would replay the editor
+  // after Escape + session-switch and invite an accidental resend.
+  const [editLast, setEditLast] = useState<{ seq: number; ts: string; index: number } | null>(null)
+  const handleEditConsumed = useCallback(() => setEditLast(null), [])
+  // Same for a session switch: the request is slot-scoped intent, so leaving
+  // the slot discards any unconsumed request instead of letting a later,
+  // unrelated remount treat it as fresh.
+  useEffect(() => { setEditLast(null) }, [activeSlot])
+
   const searchCtxValue = useMemo(() => ({
     term: search.term,
     caseSensitive: search.caseSensitive,
@@ -5482,6 +5502,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setTimeout(() => setHighlightTs(null), 3000)
     return true
   }, [messages, navToDisplayIndex, setHighlightTs])
+  // ⌘↑ / Ctrl+Up target resolution, placed next to the virtualizer seam it
+  // depends on: the transcript is virtualized, so the newest user message can
+  // sit OUTSIDE the mounted window (a long agent reply just streamed past it)
+  // and no `UserMessage` row would exist to see the rising edge. Scroll the
+  // target into view FIRST and raise the request in the same pass — the row
+  // then receives the request at mount and acknowledges it on consumption.
+  const handleEditLastRequest = useCallback(() => {
+    if (!activeSlot || slotRunning || regenerating || activeSlotRemoteBound) return
+    const msgs = messagesRef.current
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role !== 'user') continue
+      const di = messageToDisplayIdxRef.current.get(i)
+      if (di === undefined) return
+      navToDisplayIndex(di, { behavior: 'auto', align: 'center' })
+      setEditLast(prev => ({ seq: (prev?.seq ?? 0) + 1, ts: msgs[i].ts || '', index: i }))
+      return
+    }
+  }, [activeSlot, slotRunning, regenerating, activeSlotRemoteBound, navToDisplayIndex])
   const handleJumpToPinnedMessage = useCallback((messageTs: string, mid: string | undefined, { origin }: { origin: PendingJumpOrigin }) => {
     if (jumpToLoadedPinnedMessage(messageTs, mid)) return
     if (activeSlot && (!cursorIsForActiveSlot || (slotHasMore && slotOldestIndex > 0))) {
@@ -5860,6 +5898,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               messageTs={m.ts || ''}
               onEditResend={handleEditResend}
               doubleClickToEdit={chatConfig.doubleClickToEdit}
+              editRequest={editLast && editLast.index === i && editLast.ts === (m.ts || '') ? editLast.seq : undefined}
+              onEditConsumed={handleEditConsumed}
               slotKey={activeSlot || undefined}
               slotTitle={activeSlotTitle}
               mode={mode}
@@ -6013,7 +6053,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, handlePlanFromHere, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -8083,6 +8123,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onOptimizeResult={handleOptimizeResult}
               memoryMode={currentSlot?.memory_mode ?? 'persistent'}
               sentMessages={sentMessages}
+              onEditLastRequest={handleEditLastRequest}
               sendOnEnter={isMobile ? 'ctrl-enter' : chatConfig.sendOnEnter}
               followUpOptions={followUpOptions}
               followUpPicked={followUpPicked}

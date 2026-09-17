@@ -88,6 +88,10 @@ interface LexicalComposerInputProps {
   onSelectionChange?: (selection: ComposerSelection) => void
   onUploadFiles?: (files: File[]) => void
   sentMessages?: string[]
+  /** ⌘↑ (macOS) / Ctrl+↑ elsewhere — edit the last user message.
+   *  Fired by the editor only from an EMPTY composer, so it cannot shadow
+   *  ordinary caret movement or the ↑/↓ history recall below. */
+  onEditLastRequest?: () => void
 }
 
 function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
@@ -300,11 +304,12 @@ function InteractionPlugin({
   onSend,
   onUploadFiles,
   sentMessages,
+  onEditLastRequest,
   disabled,
   readOnly,
   sendOnEnter,
   showFullPastes,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
   const [editor] = useLexicalComposerContext()
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
@@ -472,6 +477,17 @@ function InteractionPlugin({
       })
     }
     const navigateHistory = (event: KeyboardEvent, direction: 'up' | 'down') => {
+      // ⌘↑ / Ctrl+↑: edit the last user message. Claimed only from an
+      // empty composer — with content present the chord falls through so it
+      // can never shadow multi-line caret movement (the same gate the plain
+      // ↑ recall below enforces).
+      if (direction === 'up' && (event.metaKey || event.ctrlKey) && !event.altKey &&
+        !event.shiftKey && !event.isComposing) {
+        if (!onEditLastRequest || $getRoot().getTextContent() !== '') return false
+        event.preventDefault()
+        onEditLastRequest()
+        return true
+      }
       if (!sentMessages?.length || event.isComposing || event.metaKey || event.ctrlKey ||
         event.altKey || event.shiftKey) return false
       const selection = $canonicalSelection()
@@ -536,7 +552,7 @@ function InteractionPlugin({
       // timer cannot write to the latch after teardown (useImeGuard contract).
       latch.reset()
     }
-  }, [disabled, editor, onBlocksChange, onChange, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
+  }, [disabled, editor, onBlocksChange, onChange, onEditLastRequest, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
 
   return null
 }
@@ -561,6 +577,7 @@ export default function LexicalComposerInput({
   onSelectionChange,
   onUploadFiles,
   sentMessages,
+  onEditLastRequest,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -626,6 +643,7 @@ export default function LexicalComposerInput({
           onSend={onSend}
           onUploadFiles={onUploadFiles}
           sentMessages={sentMessages}
+          onEditLastRequest={onEditLastRequest}
           disabled={disabled}
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}

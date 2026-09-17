@@ -77,6 +77,67 @@ describe('UserMessage paste chips', () => {
     expect(screen.getByRole('textbox')).toHaveValue(`head ${BLOCK.content}`)
   })
 
+  // ⌘↑ / Ctrl+Up edit request (#11402): ChatPage raises a sequence number; the
+  // rising edge opens the same editor the hover affordance drives.
+  it('opens the editor on a rising editRequest edge (#11402)', () => {
+    const { rerender } = render(
+      <UserMessage content="editable text" renderContent={renderWithChip} canEdit onEditResend={() => {}} editRequest={0} />,
+    )
+    expect(screen.queryByRole('textbox')).toBeNull()
+    rerender(
+      <UserMessage content="editable text" renderContent={renderWithChip} canEdit onEditResend={() => {}} editRequest={1} />,
+    )
+    expect(screen.getByRole('textbox')).toHaveValue('editable text')
+  })
+
+  it('ignores the edit request without edit eligibility (canEdit false)', () => {
+    const { rerender } = render(
+      <UserMessage content="locked text" renderContent={renderWithChip} onEditResend={() => {}} editRequest={0} />,
+    )
+    rerender(
+      <UserMessage content="locked text" renderContent={renderWithChip} onEditResend={() => {}} editRequest={1} />,
+    )
+    expect(screen.queryByRole('textbox')).toBeNull()
+  })
+
+  it('does not re-open the editor when the same sequence re-renders', () => {
+    const { rerender } = render(
+      <UserMessage content="steady text" renderContent={renderWithChip} canEdit onEditResend={() => {}} editRequest={1} />,
+    )
+    expect(screen.getByRole('textbox')).toBeInTheDocument()
+    // Cancel (Escape path) — the editor closes; a re-render with the SAME seq
+    // must not re-open it over the user's dismissed draft.
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+    expect(screen.queryByRole('textbox')).toBeNull()
+    rerender(
+      <UserMessage content="steady text" renderContent={renderWithChip} canEdit onEditResend={() => {}} editRequest={1} />,
+    )
+    expect(screen.queryByRole('textbox')).toBeNull()
+  })
+
+  it('acknowledges a consumed request exactly once so the caller can drop it', () => {
+    const onEditConsumed = vi.fn()
+    const { rerender } = render(
+      <UserMessage content="ack text" renderContent={renderWithChip} canEdit onEditResend={() => {}} editRequest={1} onEditConsumed={onEditConsumed} />,
+    )
+    expect(onEditConsumed).toHaveBeenCalledTimes(1)
+    rerender(
+      <UserMessage content="ack text" renderContent={renderWithChip} canEdit onEditResend={() => {}} editRequest={1} onEditConsumed={onEditConsumed} />,
+    )
+    expect(onEditConsumed).toHaveBeenCalledTimes(1)
+  })
+
+  it('never acknowledges an ineligible request (nothing consumed, nothing to drop)', () => {
+    const onEditConsumed = vi.fn()
+    const { rerender } = render(
+      <UserMessage content="locked ack" renderContent={renderWithChip} onEditResend={() => {}} editRequest={1} onEditConsumed={onEditConsumed} />,
+    )
+    rerender(
+      <UserMessage content="locked ack" renderContent={renderWithChip} onEditResend={() => {}} editRequest={2} onEditConsumed={onEditConsumed} />,
+    )
+    expect(onEditConsumed).not.toHaveBeenCalled()
+  })
+
   it('rewrites a selection copy so the chip becomes its original content', () => {
     const { container } = render(
       <UserMessage content={`head ${TOKEN} tail`} meta={{ pastes: [BLOCK] }} renderContent={renderWithChip} />,

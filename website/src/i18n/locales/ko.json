@@ -8824,6 +8824,7 @@
       "cycle_reasoning_effort": "추론 강도 순환",
       "focus_pending_approval": "대기 중인 승인에 포커스",
       "focus_text_input": "텍스트 입력에 포커스",
+      "edit_last_message": "마지막 메시지 편집",
       "group_actions": "동작",
       "group_chat_navigation": "채팅 탐색",
       "group_panel_navigation": "패널 탐색",
