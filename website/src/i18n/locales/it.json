@@ -7242,8 +7242,6 @@
     "pastedChip": {
       "collapse_paste": "Comprimi il testo incollato",
       "expand_paste": "Espandi il testo incollato",
-      "hide_paste_preview": "Nascondi l'anteprima dell'incollato",
-      "show_paste_preview": "Mostra l'anteprima dell'incollato",
       "paste_lines_many": "[ Incolla #{{seq}} · {{count}} righe ]",
       "paste_lines_one": "[ Incolla #{{seq}} · {{count}} riga ]",
       "paste_lines_other": "[ Incolla #{{seq}} · {{count}} righe ]",
@@ -8661,6 +8659,26 @@
       "label": "le modifiche richiedono un riavvio",
       "tooltip": "Questa impostazione non può cambiare mentre {{productName}} è in esecuzione. Il valore salvato viene conservato e applicato al prossimo riavvio di {{productName}} (Impostazioni → Informazioni, oppure il terminale da cui lo hai avviato).",
       "schema_unavailable": "Impossibile verificare se questa impostazione richiede un riavvio."
+    },
+    "pasteBlockChip": {
+      "count_many": "{{count}} righe",
+      "count_one": "{{count}} riga",
+      "count_other": "{{count}} righe",
+      "label_many": "Testo incollato · {{count}} righe",
+      "label_one": "Testo incollato · {{count}} riga",
+      "label_other": "Testo incollato · {{count}} righe",
+      "remove": "Rimuovi il testo incollato",
+      "actions": "Clic per modificare · trascina per riordinare"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Annulla",
+      "editor_aria": "Modifica il testo incollato",
+      "save": "Salva",
+      "lines_many": "{{count}} righe",
+      "lines_one": "{{count}} riga",
+      "lines_other": "{{count}} righe",
+      "resize_aria": "Ridimensiona l’anteprima",
+      "unsaved_hint": "Modifiche non salvate: premi di nuovo Esc per scartarle"
     }
   },
   "hooks": {

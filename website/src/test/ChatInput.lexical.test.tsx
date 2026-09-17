@@ -38,7 +38,7 @@ describe('ChatInput Lexical migration seam', () => {
       />,
     )
     const chip = await screen.findByTestId('paste-token-1')
-    expect(chip).toHaveTextContent('Paste #1 · 3 lines')
+    expect(chip).toHaveTextContent(/3 lines/) // first-line snippet + count
     expect(chip).not.toHaveTextContent('[ Paste')
     const input = screen.getByRole('textbox')
     expect(input.tagName).toBe('DIV')

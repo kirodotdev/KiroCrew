@@ -7036,8 +7036,6 @@
     "pastedChip": {
       "collapse_paste": "붙여넣기 접기",
       "expand_paste": "붙여넣기 펼치기",
-      "hide_paste_preview": "붙여넣기 미리보기 숨기기",
-      "show_paste_preview": "붙여넣기 미리보기 표시",
       "paste_lines_other": "[ 붙여넣기 #{{seq}} · {{count}}줄 ]",
       "preview_more_lines_other": "… {{count}}줄 더"
     },
@@ -8429,6 +8427,20 @@
       "label": "변경 시 다시 시작 필요",
       "tooltip": "이 설정은 {{productName}}이(가) 실행 중인 동안에는 변경할 수 없습니다. 저장된 값은 유지되며 {{productName}}을(를) 다음에 다시 시작할 때 적용됩니다(설정 → 정보, 또는 실행한 터미널에서).",
       "schema_unavailable": "이 설정에 다시 시작이 필요한지 확인할 수 없습니다."
+    },
+    "pasteBlockChip": {
+      "count_other": "{{count}}줄",
+      "label_other": "붙여넣은 텍스트 · {{count}}줄",
+      "remove": "붙여넣은 텍스트 제거",
+      "actions": "클릭하여 편집 · 드래그하여 순서 변경"
+    },
+    "pastePreviewEditor": {
+      "cancel": "취소",
+      "editor_aria": "붙여넣은 텍스트 편집",
+      "save": "저장",
+      "lines_other": "{{count}}줄",
+      "resize_aria": "미리보기 크기 조절",
+      "unsaved_hint": "저장되지 않은 변경 사항이 있습니다 — 버리려는 Esc를 다시 누르세요"
     }
   },
   "hooks": {

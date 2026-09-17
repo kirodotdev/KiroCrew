@@ -7242,8 +7242,6 @@
     "pastedChip": {
       "collapse_paste": "Contraer el texto pegado",
       "expand_paste": "Expandir el texto pegado",
-      "hide_paste_preview": "Ocultar vista previa del pegado",
-      "show_paste_preview": "Mostrar vista previa del pegado",
       "paste_lines_many": "[ Pegado #{{seq}} · {{count}} líneas ]",
       "paste_lines_one": "[ Pegado #{{seq}} · {{count}} línea ]",
       "paste_lines_other": "[ Pegado #{{seq}} · {{count}} líneas ]",
@@ -8661,6 +8659,26 @@
       "label": "los cambios requieren reinicio",
       "tooltip": "Este ajuste no puede cambiar mientras {{productName}} se está ejecutando. El valor guardado se conserva y se aplica la próxima vez que {{productName}} se reinicie (Ajustes → Acerca de, o la terminal desde la que lo iniciaste).",
       "schema_unavailable": "No se pudo comprobar si este ajuste requiere reiniciar."
+    },
+    "pasteBlockChip": {
+      "count_many": "{{count}} líneas",
+      "count_one": "{{count}} línea",
+      "count_other": "{{count}} líneas",
+      "label_many": "Texto pegado · {{count}} líneas",
+      "label_one": "Texto pegado · {{count}} línea",
+      "label_other": "Texto pegado · {{count}} líneas",
+      "remove": "Quitar el texto pegado",
+      "actions": "Clic para editar · arrastra para reordenar"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Cancelar",
+      "editor_aria": "Editar el texto pegado",
+      "save": "Guardar",
+      "lines_many": "{{count}} líneas",
+      "lines_one": "{{count}} línea",
+      "lines_other": "{{count}} líneas",
+      "resize_aria": "Cambiar el tamaño de la vista previa",
+      "unsaved_hint": "Cambios sin guardar: pulsa Esc de nuevo para descartarlos"
     }
   },
   "hooks": {

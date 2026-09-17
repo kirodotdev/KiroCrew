@@ -7139,8 +7139,6 @@
     "pastedChip": {
       "collapse_paste": "পেস্ট সংকুচিত করো",
       "expand_paste": "পেস্ট প্রসারিত করো",
-      "hide_paste_preview": "পেস্টের প্রিভিউ লুকাও",
-      "show_paste_preview": "পেস্টের প্রিভিউ দেখাও",
       "paste_lines_one": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "paste_lines_other": "[ পেস্ট #{{seq}} · {{count}} লাইন ]",
       "preview_more_lines_one": "… আরও {{count}} লাইন",
@@ -8545,6 +8543,23 @@
       "label": "পরিবর্তনে পুনরায় চালু করা লাগে",
       "tooltip": "{{productName}} চলার সময় এই সেটিং পরিবর্তন করা যায় না। সংরক্ষিত মানটি রাখা হয় এবং {{productName}} পরের বার পুনরায় চালু হলে প্রয়োগ হবে (সেটিংস → সম্পর্কে, বা যে টার্মিনাল থেকে আপনি এটি চালু করেছেন)।",
       "schema_unavailable": "এই সেটিংয়ের জন্য পুনরায় চালু করা দরকার কি না তা পরীক্ষা করা যায়নি।"
+    },
+    "pasteBlockChip": {
+      "count_one": "{{count}} লাইন",
+      "count_other": "{{count}} লাইন",
+      "label_one": "পেস্ট করা টেক্সট · {{count}} লাইন",
+      "label_other": "পেস্ট করা টেক্সট · {{count}} লাইন",
+      "remove": "পেস্ট করা টেক্সট সরাও",
+      "actions": "সম্পাদনা করতে ক্লিক করো · পুনর্বিন্যাস করতে টানো"
+    },
+    "pastePreviewEditor": {
+      "cancel": "বাতিল",
+      "editor_aria": "পেস্ট করা টেক্সট সম্পাদনা করো",
+      "save": "সংরক্ষণ",
+      "lines_one": "{{count}} লাইন",
+      "lines_other": "{{count}} লাইন",
+      "resize_aria": "প্রিভিউর আকার পরিবর্তন করো",
+      "unsaved_hint": "পরিবর্তন সংরক্ষিত হয়নি — বাতিল করতে আবার Esc চাপো"
     }
   },
   "hooks": {

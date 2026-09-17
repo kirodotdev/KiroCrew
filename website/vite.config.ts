@@ -748,6 +748,10 @@ export default defineConfig({
         'src/**/*.test.{ts,tsx}',
         // Storybook fixtures: development-only, never in the served bundle.
         'src/**/*.stories.{ts,tsx}',
+        // The composer's real-browser harness page (driven by
+        // scripts/capture-composer-pills.mjs): development-only, not in the
+        // served bundle, and exercised by Playwright rather than vitest.
+        'src/composer/__harness__/**',
         'src/**/*.d.ts',
         'src/vite-env.d.ts',
         // Everything in website/ that is NOT src/, spelled out. Vitest matches

@@ -2471,8 +2471,6 @@
     "pastedChip": {
       "collapse_paste": "Collapse paste",
       "expand_paste": "Expand paste",
-      "hide_paste_preview": "Hide paste preview",
-      "show_paste_preview": "Show paste preview",
       "paste_lines_one": "[ Paste #{{seq}} · {{count}} line ]",
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
       "preview_more_lines_one": "… {{count}} more line",
@@ -3225,6 +3223,23 @@
       "label": "changes need a restart",
       "tooltip": "This setting cannot change while {{productName}} is running. The saved value is kept and applies the next time {{productName}} restarts (Settings → About, or the terminal where you launched it).",
       "schema_unavailable": "Couldn't check whether this setting needs a restart."
+    },
+    "pasteBlockChip": {
+      "count_one": "{{count}} line",
+      "count_other": "{{count}} lines",
+      "label_one": "Pasted text · {{count}} line",
+      "label_other": "Pasted text · {{count}} lines",
+      "remove": "Remove pasted text",
+      "actions": "Click to edit · drag to reorder"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Cancel",
+      "editor_aria": "Edit pasted text",
+      "lines_one": "{{count}} line",
+      "lines_other": "{{count}} lines",
+      "save": "Save",
+      "resize_aria": "Resize preview",
+      "unsaved_hint": "Unsaved changes — press Esc again to discard"
     }
   },
   "hooks": {

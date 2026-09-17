@@ -7242,8 +7242,6 @@
     "pastedChip": {
       "collapse_paste": "Réduire le contenu collé",
       "expand_paste": "Développer le contenu collé",
-      "hide_paste_preview": "Masquer l'aperçu du collage",
-      "show_paste_preview": "Afficher l'aperçu du collage",
       "paste_lines_many": "[ Collage n°{{seq}} · {{count}} lignes ]",
       "paste_lines_one": "[ Collage n°{{seq}} · {{count}} ligne ]",
       "paste_lines_other": "[ Collage n°{{seq}} · {{count}} lignes ]",
@@ -8661,6 +8659,26 @@
       "label": "modifications : redémarrage requis",
       "tooltip": "Ce réglage ne peut pas changer pendant que {{productName}} est en cours d'exécution. La valeur enregistrée est conservée et s'applique au prochain redémarrage de {{productName}} (Réglages → À propos, ou le terminal depuis lequel vous l'avez lancé).",
       "schema_unavailable": "Impossible de vérifier si ce réglage nécessite un redémarrage."
+    },
+    "pasteBlockChip": {
+      "count_many": "{{count}} lignes",
+      "count_one": "{{count}} ligne",
+      "count_other": "{{count}} lignes",
+      "label_many": "Texte collé · {{count}} lignes",
+      "label_one": "Texte collé · {{count}} ligne",
+      "label_other": "Texte collé · {{count}} lignes",
+      "remove": "Supprimer le texte collé",
+      "actions": "Cliquer pour modifier · glisser pour réorganiser"
+    },
+    "pastePreviewEditor": {
+      "cancel": "Annuler",
+      "editor_aria": "Modifier le texte collé",
+      "save": "Enregistrer",
+      "lines_many": "{{count}} lignes",
+      "lines_one": "{{count}} ligne",
+      "lines_other": "{{count}} lignes",
+      "resize_aria": "Redimensionner l’aperçu",
+      "unsaved_hint": "Modifications non enregistrées : appuyez de nouveau sur Échap pour les abandonner"
     }
   },
   "hooks": {

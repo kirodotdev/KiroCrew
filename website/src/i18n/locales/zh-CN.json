@@ -7036,8 +7036,6 @@
     "pastedChip": {
       "collapse_paste": "折叠粘贴内容",
       "expand_paste": "展开粘贴内容",
-      "hide_paste_preview": "隐藏粘贴预览",
-      "show_paste_preview": "显示粘贴预览",
       "paste_lines_other": "[ 粘贴 #{{seq}} · {{count}} 行 ]",
       "preview_more_lines_other": "… 还有 {{count}} 行"
     },
@@ -8429,6 +8427,20 @@
       "label": "修改后需重启",
       "tooltip": "{{productName}} 运行期间无法更改此设置。已保存的值会保留，并在 {{productName}} 下次重启后应用（设置 → 关于，或启动它的终端）。",
       "schema_unavailable": "无法检查此设置是否需要重启。"
+    },
+    "pasteBlockChip": {
+      "count_other": "{{count}} 行",
+      "label_other": "粘贴的文本 · {{count}} 行",
+      "remove": "移除粘贴的文本",
+      "actions": "点击编辑 · 拖动重新排序"
+    },
+    "pastePreviewEditor": {
+      "cancel": "取消",
+      "editor_aria": "编辑粘贴的文本",
+      "save": "保存",
+      "lines_other": "{{count}} 行",
+      "resize_aria": "调整预览大小",
+      "unsaved_hint": "有未保存的修改 — 再按一次 Esc 放弃"
     }
   },
   "hooks": {

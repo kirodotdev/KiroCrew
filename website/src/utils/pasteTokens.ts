@@ -122,6 +122,119 @@ export function findTokenRanges(
   return out
 }
 
+/**
+ * Canonical form of a composer value: every marker occurrence names its OWN block,
+ * and no two blocks share a seq.
+ *
+ * A marker resolves by seq alone, so a value that holds the same marker twice (a
+ * restored draft, a small paste that contained the marker text) maps both
+ * occurrences onto one block: `expandAll` writes that block into both, and once
+ * one of them has been edited in the composer the other's content is gone from
+ * the submitted prompt. The block LIST can carry the same seq twice as well — a
+ * draft persisted while two same-seq pills had already diverged holds
+ * `[original #1, edited #1]` — and `findTokenRanges` then resolves every marker
+ * through the LAST record, which would lose the first paste on canonicalisation.
+ *
+ * Rule, in text order: the k-th occurrence of a seq pairs with the k-th block
+ * record carrying that seq (a tree snapshot lists one record per pill in
+ * document order, so this reproduces exactly what the pills showed). The first
+ * pair keeps its seq; every later paired record gets a fresh seq (max so far + 1);
+ * an occurrence with no record left gets a COPY of the last record under a fresh
+ * seq; a same-seq record no occurrence claims is re-sequenced too rather than
+ * dropped, so nothing is lost and no seq stays ambiguous. Rewritten markers are
+ * spliced right-to-left, as in `remapCarriedBlocks`, for the same reason.
+ * Finally ids are made unique as well — the first holder keeps its id, every
+ * later record carrying it gets a fresh one — because the textarea composer
+ * removes a pill by id; a duplicated id alone (distinct seqs, e.g. a draft
+ * re-sequenced before this rule) is enough to trigger that repair.
+ *
+ * Returns the SAME `text` / `blocks` references when nothing had to change, so a
+ * caller can detect a rewrite by identity.
+ */
+export function splitDuplicateMarkers(
+  text: string,
+  blocks: PasteBlock[],
+): { text: string; blocks: PasteBlock[] } {
+  if (!text || !blocks.length) return { text, blocks }
+  // Same-seq records, in list order; and whether any id is carried twice.
+  const recordsBySeq = new Map<number, PasteBlock[]>()
+  const ids = new Set<string>()
+  let max = 0
+  let duplicateRecords = false
+  let duplicateIds = false
+  for (const b of blocks) {
+    if (b.seq > max) max = b.seq
+    const list = recordsBySeq.get(b.seq)
+    if (list) { list.push(b); duplicateRecords = true } else recordsBySeq.set(b.seq, [b])
+    if (ids.has(b.id)) duplicateIds = true
+    ids.add(b.id)
+  }
+  // Marker occurrences that name a block, in text order.
+  const occurrences: Array<{ start: number; end: number; seq: number }> = []
+  const seen = new Map<number, number>()
+  let repeatedOccurrence = false
+  PASTE_TOKEN_REGEX.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = PASTE_TOKEN_REGEX.exec(text)) !== null) {
+    const seq = Number(m[1])
+    if (!recordsBySeq.has(seq)) continue
+    occurrences.push({ start: m.index, end: m.index + m[0].length, seq })
+    const k = seen.get(seq) ?? 0
+    if (k > 0) repeatedOccurrence = true
+    seen.set(seq, k + 1)
+  }
+  if (!duplicateRecords && !repeatedOccurrence && !duplicateIds) return { text, blocks }
+
+  const canonicalOf = new Map<PasteBlock, PasteBlock>()
+  const copies: PasteBlock[] = []
+  const rewrites: Array<{ start: number; end: number; block: PasteBlock }> = []
+  const claimed = new Map<number, number>()
+  for (const o of occurrences) {
+    const k = claimed.get(o.seq) ?? 0
+    claimed.set(o.seq, k + 1)
+    if (k === 0) continue // first occurrence: keeps its seq, pairs with the first record
+    const records = recordsBySeq.get(o.seq)!
+    let block: PasteBlock
+    if (k < records.length) {
+      block = { ...records[k], seq: ++max }
+      canonicalOf.set(records[k], block)
+    } else {
+      block = { ...records[records.length - 1], id: makePasteId(), seq: ++max }
+      copies.push(block)
+    }
+    rewrites.push({ start: o.start, end: o.end, block })
+  }
+  // A same-seq record no occurrence claimed still gets its own seq.
+  for (const records of recordsBySeq.values()) {
+    for (let i = 1; i < records.length; i++) {
+      if (!canonicalOf.has(records[i])) canonicalOf.set(records[i], { ...records[i], seq: ++max })
+    }
+  }
+  let out = text
+  for (let i = rewrites.length - 1; i >= 0; i--) {
+    const { start, end, block } = rewrites[i]
+    out = out.slice(0, start) + formatToken(block) + out.slice(end)
+  }
+  // The textarea composer removes a pill by id, so two records under one id
+  // would both vanish on one ✕. Ids are carried twice by twins minted from one
+  // block, and by a draft re-sequenced before this rule existed (distinct seqs,
+  // one id). Assemble the output in original order and let the first holder of
+  // an id keep it; every later record carrying it — kept, re-sequenced or
+  // copied — gets a fresh id. (The id is not part of the marker text, so no
+  // rewrite depends on it.)
+  const claimedIds = new Set<string>()
+  const withUniqueId = (b: PasteBlock): PasteBlock => {
+    let id = b.id
+    while (claimedIds.has(id)) id = makePasteId()
+    claimedIds.add(id)
+    return id === b.id ? b : { ...b, id }
+  }
+  return {
+    text: out,
+    blocks: [...blocks.map(b => withUniqueId(canonicalOf.get(b) ?? b)), ...copies.map(withUniqueId)],
+  }
+}
+
 export function tokenRangeAt(
   text: string,
   blocks: PasteBlock[],

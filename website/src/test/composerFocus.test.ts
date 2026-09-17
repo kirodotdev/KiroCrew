@@ -330,3 +330,48 @@ describe('releaseComposerForKeyboardSwitch / consumeComposerRelease', () => {
     }
   })
 })
+
+describe('the Lexical composer root (a contenteditable <div> carrying the hook)', () => {
+  // Opus finding on 51d533776: every product surface now mounts the Lexical
+  // composer by default, whose editable root is a `<div data-composer-input
+  // contenteditable>`. The lookups selected `textarea[data-composer-input]`
+  // and the release guarded on `HTMLTextAreaElement`, so on the default
+  // composer Alt+Enter, `/`, quote-to-compose, widget prefill, post-create
+  // focus and search-close all silently no-op'd, and the macOS keyboard-switch
+  // chain died on the first jump.
+  let lexicalRoot: HTMLDivElement
+  beforeEach(() => {
+    composer.remove() // the textarea from the outer beforeEach; this suite mounts the other shape
+    lexicalRoot = document.createElement('div')
+    lexicalRoot.setAttribute('contenteditable', 'true')
+    lexicalRoot.setAttribute('data-composer-input', '')
+    lexicalRoot.setAttribute('aria-label', '消息输入')
+    lexicalRoot.tabIndex = 0
+    document.body.appendChild(lexicalRoot)
+  })
+  afterEach(() => { lexicalRoot.remove(); consumeComposerRelease() })
+
+  it('queryComposer resolves it', () => {
+    expect(queryComposer()).toBe(lexicalRoot)
+  })
+
+  it('focusComposer lands on it', async () => {
+    focusComposer()
+    await flushFrame()
+    expect(document.activeElement).toBe(lexicalRoot)
+  })
+
+  it('revealComposer focuses it on desktop', async () => {
+    revealComposer()
+    await flushFrame()
+    expect(document.activeElement).toBe(lexicalRoot)
+  })
+
+  it('releaseComposerForKeyboardSwitch blurs it', () => {
+    lexicalRoot.focus()
+    expect(document.activeElement).toBe(lexicalRoot)
+    releaseComposerForKeyboardSwitch()
+    expect(document.activeElement).not.toBe(lexicalRoot)
+    expect(consumeComposerRelease()).toBe(true)
+  })
+})

@@ -21,6 +21,7 @@ import {
   __resetNavSeamForTests,
 } from '../utils/errorReport'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
+import { composerValue, setComposerValue, pasteIntoComposer, getComposer } from './helpers'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -115,7 +116,8 @@ async function renderPage(store: ReturnType<typeof makeStore>, mode?: string) {
 
 async function renderAndWaitForInput(store: ReturnType<typeof makeStore>, mode?: string) {
   const result = await renderPage(store, mode)
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await waitFor(() => expect(document.querySelector('[data-composer-input]')).not.toBeNull())
+  await act(async () => {})
   return result
 }
 
@@ -146,7 +148,7 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
     expect(api.createChatSlot).toHaveBeenCalledTimes(1)
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
+      expect(composerValue()).toBe(prompt)
     })
     // The seed raises the prefill hint: it is what lifts the composer to the
     // prefill height cap and says the box was pre-filled. Without it a 13-line
@@ -160,7 +162,7 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     const prompt = 'Diagnose the failed PR action'
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'question in progress' } })
+    await setComposerValue('question in progress')
 
     act(() => { sendErrorToChat(prompt) })
 
@@ -168,7 +170,7 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
     expect(api.createChatSlot).toHaveBeenCalledTimes(1)
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
+      expect(composerValue()).toBe(prompt)
     })
     // Same hint on the in-chat path (an error surface inside chat hands off
     // with no route change).
@@ -251,7 +253,7 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(2), { timeout: 5000 })
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('error-two'), { timeout: 5000 })
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('second diagnostic')
+      expect(composerValue()).toBe('second diagnostic')
     }, { timeout: 5000 })
     await waitFor(() => {
       const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
@@ -277,18 +279,16 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
 
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slow-error-slot'))
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('original diagnostic')
+      expect(composerValue()).toBe('original diagnostic')
     })
-    fireEvent.change(screen.getByLabelText('Message input'), {
-      target: { value: 'original diagnostic with user edits' },
-    })
+    await setComposerValue('original diagnostic with user edits')
 
     await act(async () => {
       resolveDetail({ messages: [], running: false, has_more: false, total: 0 })
       await pendingDetail
     })
 
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+    expect(composerValue())
       .toBe('original diagnostic with user edits')
   })
 
@@ -407,7 +407,7 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
     expect(api.createChatSlot).toHaveBeenCalledTimes(1)
     await waitFor(() => {
-      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
+      expect(composerValue()).toBe(prompt)
     })
   })
 })
@@ -472,7 +472,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)
 
-    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('mine, still here'))
+    await waitFor(() => expect(composerValue()).toBe('mine, still here'))
     expect(JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY)!).slotKey).toBe('slot-b')
   })
 
@@ -482,7 +482,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
 
-    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('mine, still here'))
+    await waitFor(() => expect(composerValue()).toBe('mine, still here'))
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
   })
 
@@ -507,7 +507,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     writePrefill('slot-a', 'seeded report')
     await renderAndWaitForInput(store)
-    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('seeded report'))
+    await waitFor(() => expect(composerValue()).toBe('seeded report'))
     expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
 
     vi.useFakeTimers()
@@ -516,7 +516,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       // Untouched for 30s: still up.
       expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
 
-      fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'seeded report\nplus context' } })
+      await setComposerValue('seeded report\nplus context')
       act(() => { vi.advanceTimersByTime(9_000) })
       expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
       act(() => { vi.advanceTimersByTime(1_500) })
@@ -542,7 +542,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'draft for A' } })
+    await setComposerValue('draft for A')
 
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
 
@@ -550,14 +550,14 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     expect(saved['slot-a']).toBe('draft for A')
 
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('draft for A')
+    expect(composerValue()).toBe('draft for A')
   })
 
   it('persists draft to localStorage on every keystroke', async () => {
     const store = makeStore('slot-x', [{ key: 'slot-x' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'live' } })
+    await setComposerValue('live')
 
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
@@ -569,12 +569,12 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-x', [{ key: 'slot-x' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'temp' } })
+    await setComposerValue('temp')
     await waitFor(() => {
       expect(JSON.parse(localStorage.getItem('mc-chat-drafts')!)['slot-x']).toBe('temp')
     })
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: '' } })
+    await setComposerValue('')
     await waitFor(() => {
       expect(JSON.parse(localStorage.getItem('mc-chat-drafts')!)['slot-x']).toBeUndefined()
     })
@@ -584,13 +584,13 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('s1', [{ key: 's1' }, { key: 's2' }, { key: 's3' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'one' } })
+    await setComposerValue('one')
 
     act(() => { store.dispatch(setActiveSlot('s2')) })
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'two' } })
+    await setComposerValue('two')
 
     act(() => { store.dispatch(setActiveSlot('s3')) })
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'three' } })
+    await setComposerValue('three')
 
     const saved = await waitFor(() => {
       const s = JSON.parse(localStorage.getItem('mc-chat-drafts')!)
@@ -602,7 +602,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     expect(saved['s3']).toBe('three')
 
     act(() => { store.dispatch(setActiveSlot('s1')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('one')
+    expect(composerValue()).toBe('one')
   })
 
   it('does not overwrite target draft with source input on slot switch (race condition)', async () => {
@@ -612,11 +612,11 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'A text' } })
+    await setComposerValue('A text')
 
     // Switch to slot-b — should restore "B draft", NOT "A text"
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('B draft')
+    expect(composerValue()).toBe('B draft')
 
     // Verify slot-a draft was saved correctly
     const saved = JSON.parse(localStorage.getItem('mc-chat-drafts')!)
@@ -629,7 +629,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'fresh text' } })
+    await setComposerValue('fresh text')
 
     // Simulate stale localStorage (e.g. another tab wrote an older version)
     localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-a': 'stale' }))
@@ -639,29 +639,29 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
 
     // Switch back to slot-a — should have 'fresh text', not 'stale'
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('fresh text')
+    expect(composerValue()).toBe('fresh text')
   })
 
   it('draft survives round-trip through three slots', async () => {
     const store = makeStore('a', [{ key: 'a' }, { key: 'b' }, { key: 'c' }])
     await renderAndWaitForInput(store)
 
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'alpha' } })
+    await setComposerValue('alpha')
 
     act(() => { store.dispatch(setActiveSlot('b')) })
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'beta' } })
+    await setComposerValue('beta')
 
     act(() => { store.dispatch(setActiveSlot('c')) })
     // Don't type anything in c
 
     act(() => { store.dispatch(setActiveSlot('a')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('alpha')
+    expect(composerValue()).toBe('alpha')
 
     act(() => { store.dispatch(setActiveSlot('b')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('beta')
+    expect(composerValue()).toBe('beta')
 
     act(() => { store.dispatch(setActiveSlot('c')) })
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('')
+    expect(composerValue()).toBe('')
   })
 
   it('pre-seeded per-slot file drafts survive slot switches without cross-leak', async () => {
@@ -737,24 +737,20 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const input = getComposer()
     const pasted = 'line1\nline2\nline3\nline4\nline5'  // >= PASTE_THRESHOLD_LINES
 
     // Fire a text paste — ChatInput collapses it into a token + PasteBlock.
-    await act(async () => {
-      fireEvent.paste(input, {
-        clipboardData: { items: [], getData: (t: string) => (t === 'text' ? pasted : '') },
-      })
-    })
-    // The textarea now holds the token, not the raw content.
-    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1 · 5 lines \]/))
+    await pasteIntoComposer(pasted, input)
+    // The composer value now holds the token, not the raw content.
+    await waitFor(() => expect(composerValue(input)).toMatch(/\[ Paste #1 · 5 lines \]/))
 
     // Switch away and back WITHOUT sending.
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
 
     // Token text is restored AND still backed by its block.
-    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toMatch(/\[ Paste #1 · 5 lines \]/))
+    await waitFor(() => expect(composerValue()).toMatch(/\[ Paste #1 · 5 lines \]/))
 
     // Send — the LLM must receive the EXPANDED content, never the literal token.
     await act(async () => { fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' }) })
@@ -774,14 +770,10 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const input = getComposer()
     const pasted = 'alpha\nbeta\ngamma\ndelta'
-    await act(async () => {
-      fireEvent.paste(input, {
-        clipboardData: { items: [], getData: (t: string) => (t === 'text' ? pasted : '') },
-      })
-    })
-    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1 · 4 lines \]/))
+    await pasteIntoComposer(pasted, input)
+    await waitFor(() => expect(composerValue(input)).toMatch(/\[ Paste #1 · 4 lines \]/))
 
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
 
@@ -813,7 +805,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
 
     // User gives up waiting, switches to slot-b, and types there.
     await act(async () => { await store.dispatch(switchSlot('slot-b')) })
-    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'text meant for slot-b' } })
+    await setComposerValue('text meant for slot-b')
 
     // The slow create finally resolves.
     await act(async () => {
@@ -823,7 +815,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
 
     // The view must still be on slot-b with the typed text intact...
     expect(store.getState().chat.activeSlot).toBe('slot-b')
-    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('text meant for slot-b')
+    expect(composerValue()).toBe('text meant for slot-b')
 
     // ...and once the debounced draft save flushes, the text must be keyed to
     // slot-b, never leaked into the new chat's draft.
@@ -843,8 +835,8 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await act(async () => { fireEvent.change(input, { target: { value: 'precious prompt' } }) })
+    const input = getComposer()
+    await setComposerValue('precious prompt')
 
     // Send triggers connection error (sendChat rejects)
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
@@ -870,8 +862,8 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     }))
     await renderAndWaitForInput(store)
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await act(async () => { fireEvent.change(input, { target: { value: 'compare these' } }) })
+    const input = getComposer()
+    await setComposerValue('compare these')
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
 
     await waitFor(() => {
@@ -903,8 +895,8 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     }))
     await renderAndWaitForInput(store)
 
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await act(async () => { fireEvent.change(input, { target: { value: 'do not lose me' } }) })
+    const input = getComposer()
+    await setComposerValue('do not lose me')
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
 
     await waitFor(() => {
@@ -927,12 +919,12 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
 
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
-    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const input = getComposer()
 
-    await act(async () => { fireEvent.change(input, { target: { value: 'first message' } }) })
+    await setComposerValue('first message')
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
     // Composer cleared on send; the user types something new while it is pending.
-    await act(async () => { fireEvent.change(input, { target: { value: 'second thought' } }) })
+    await setComposerValue('second thought')
     await act(async () => { rejectSend(new Error('Network error')) })
 
     await waitFor(() => {

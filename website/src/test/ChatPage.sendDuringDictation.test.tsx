@@ -112,6 +112,7 @@ import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
 import { savePttConfig } from '../lib/pushToTalk'
 import { DRAFTS_KEY } from '../utils/chatDrafts'
+import { composerValue, setComposerValue, setComposerSelection, composerSelection, composerRoot, awaitComposer } from './helpers'
 
 function makeStore(activeSlot: string, slots: { key: string; mode?: string }[], running = false) {
   return configureStore({
@@ -156,7 +157,10 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>) {
       </QueryClientProvider>,
     )
   })
-  await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
+  await awaitComposer()
+  // Flush once so the composer's imperative handle (`__composer`) is attached
+  // before any composer driver (composerValue/setComposerValue/…) runs.
+  await act(async () => {})
 }
 
 beforeEach(() => {
@@ -193,7 +197,7 @@ describe('ChatPage — sending while dictating', () => {
     // the already-sent text reappears in the composer.
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     // The mock must actually have handed us ChatPage's onPartial, or every
     // assertion below passes vacuously.
@@ -206,19 +210,19 @@ describe('ChatPage — sending while dictating', () => {
     expect(voice.recording).toBe(true)
 
     // 1. user types a prefix, then dictates a word: frozen prefix = 'note: '
-    await act(async () => { fireEvent.change(ta, { target: { value: 'note: ' } }) })
+    await setComposerValue('note: ', ta)
     await act(async () => { voice.onPartial?.('first') })
-    expect(ta.value).toBe('note: first')
+    expect(composerValue(ta)).toBe('note: first')
 
     // 2. Enter sends (the affordance the panel advertises)
     await act(async () => { fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' }) })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
-    expect(ta.value).toBe('')
+    expect(composerValue(ta)).toBe('')
 
     // 3. a partial still in flight arrives. It must be DROPPED. Without the fix
     //    it rebuilds 'note: ' + text and the sent prefix reappears.
     await act(async () => { voice.onPartial?.('late') })
-    expect(ta.value).toBe('')
+    expect(composerValue(ta)).toBe('')
   })
 
   it('an empty steer mid-turn does NOT end a live streaming capture (GPT F1, round 13)', async () => {
@@ -228,7 +232,7 @@ describe('ChatPage — sending while dictating', () => {
     // the first partial landed lost the utterance in flight and sent nothing.
     const store = makeStore('chat-main', [{ key: 'chat-main' }], true)
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
     expect(voice.recording).toBe(true)
     vi.mocked(voice.stop).mockClear(); vi.mocked(voice.toggle).mockClear()
@@ -242,7 +246,7 @@ describe('ChatPage — sending while dictating', () => {
     expect(voice.recording).toBe(true)
     // The partial that was in flight still lands.
     await act(async () => { voice.onPartial?.('still here') })
-    expect(ta.value).toBe('still here')
+    expect(composerValue(ta)).toBe('still here')
   })
 
   it('does NOT disarm batch capture — the transcript arrives after stop', async () => {
@@ -255,27 +259,27 @@ describe('ChatPage — sending while dictating', () => {
     setStt(false)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     expect(typeof voice.onText).toBe('function')
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
     expect(voice.recording).toBe(true)
 
-    await act(async () => { fireEvent.change(ta, { target: { value: 'typed' } }) })
+    await setComposerValue('typed', ta)
     await act(async () => { fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' }) })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
-    expect(ta.value).toBe('')
+    expect(composerValue(ta)).toBe('')
 
     // Capture was NOT disarmed, so the transcript still lands.
     await act(async () => { deliverText('dictated words') })
-    expect(ta.value).toBe('dictated words')
+    expect(composerValue(ta)).toBe('dictated words')
   })
 
   it('does not touch voice capture when not recording', async () => {
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await act(async () => { fireEvent.change(ta, { target: { value: 'typed only' } }) })
+    const ta = composerRoot()
+    await setComposerValue('typed only', ta)
     await act(async () => { fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' }) })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
     expect(voice.toggle).not.toHaveBeenCalled()
@@ -289,15 +293,15 @@ describe('ChatPage — sending while dictating', () => {
     setStt(false)
     const store = makeStore('chat-main', [{ key: 'chat-main' }, { key: 'chat-other' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    await act(async () => { fireEvent.change(ta, { target: { value: 'typing in main' } }) })
+    const ta = composerRoot()
+    await setComposerValue('typing in main', ta)
     expect(typeof voice.onText).toBe('function')
 
     // A batch transcript whose capture session was `chat-other` lands while
     // `chat-main` is on screen.
     await act(async () => { voice.onText?.('note for the other room', 'chat-other', 'batch') })
 
-    expect(ta.value).toBe('typing in main')
+    expect(composerValue(ta)).toBe('typing in main')
     const saved = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}') as Record<string, string>
     expect(saved['chat-other']).toBe('note for the other room')
     expect(saved['chat-main']).not.toBe('note for the other room')
@@ -310,16 +314,16 @@ describe('ChatPage — sending while dictating', () => {
     setStt(false)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     expect(typeof voice.onText).toBe('function')
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
     // Type a sentence, then place the caret right after "Hello" (offset 5).
-    await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
-    await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
+    await setComposerValue('Hello world', ta)
+    await setComposerSelection(5, 5, ta)
 
     await act(async () => { deliverText('there') })
-    expect(ta.value).toBe('Hello there world')
+    expect(composerValue(ta)).toBe('Hello there world')
   })
 
   it('adds a joining space when dictating right before existing text', async () => {
@@ -328,12 +332,12 @@ describe('ChatPage — sending while dictating', () => {
     setStt(false)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
-    await act(async () => { fireEvent.change(ta, { target: { value: 'world' } }) })
-    await act(async () => { ta.setSelectionRange(0, 0); fireEvent.select(ta) })
+    await setComposerValue('world', ta)
+    await setComposerSelection(0, 0, ta)
     await act(async () => { deliverText('hello') })
-    expect(ta.value).toBe('hello world')
+    expect(composerValue(ta)).toBe('hello world')
   })
 
   it('leaves the draft untouched on an empty transcript (no selection deletion)', async () => {
@@ -342,12 +346,12 @@ describe('ChatPage — sending while dictating', () => {
     setStt(false)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
-    await act(async () => { fireEvent.change(ta, { target: { value: 'keep me' } }) })
-    await act(async () => { ta.setSelectionRange(0, 7); fireEvent.select(ta) })
+    await setComposerValue('keep me', ta)
+    await setComposerSelection(0, 7, ta)
     await act(async () => { deliverText('') })
-    expect(ta.value).toBe('keep me')
+    expect(composerValue(ta)).toBe('keep me')
   })
 
   it('keeps the utterance when a streaming stop beats the first partial', async () => {
@@ -360,7 +364,7 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     expect(typeof voice.onText).toBe('function')
 
     const mic = screen.getByRole('button', { name: /voice input/i })
@@ -371,14 +375,14 @@ describe('ChatPage — sending while dictating', () => {
     // notify React, so without a render in between the second click would read
     // a stale `false` and START again instead of stopping. Do not "simplify"
     // this away.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'note: ' } }) })
+    await setComposerValue('note: ', ta)
     // Deliberately NO onPartial: the handshake never produced one.
     await act(async () => { fireEvent.click(mic) })
     expect(voice.recording).toBe(false)
 
     // The final drains in after the stop and must still reach the composer.
     await act(async () => { deliverText('hello there') })
-    expect(ta.value).toBe('note: hello there')
+    expect(composerValue(ta)).toBe('note: hello there')
   })
 
   it('rolls the composer back when a push-to-talk press is discarded', async () => {
@@ -406,7 +410,7 @@ describe('ChatPage — sending while dictating', () => {
     savePttConfig({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     vi.useFakeTimers()
 
@@ -419,7 +423,7 @@ describe('ChatPage — sending while dictating', () => {
     // A fast partial lands while the press is still arming.
     voice.partial = 'hello'
     await act(async () => { voice.onPartial?.('hello') })
-    expect(ta.value).toBe('hello')
+    expect(composerValue(ta)).toBe('hello')
 
     // Released under the threshold: in hold-only mode a tap means nothing, so the
     // press is discarded — and the composer must not keep the dictated text.
@@ -429,7 +433,7 @@ describe('ChatPage — sending while dictating', () => {
       document.dispatchEvent(new KeyboardEvent('keyup', { code: 'AltRight', bubbles: true }))
     })
     expect(voice.cancel).toHaveBeenCalled()
-    expect(ta.value).toBe('')
+    expect(composerValue(ta)).toBe('')
     voice.partial = ''
     vi.useRealTimers()
   })
@@ -447,11 +451,11 @@ describe('ChatPage — sending while dictating', () => {
     savePttConfig({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     // Draft with the caret parked in the middle, after "Hello".
-    await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
-    await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
+    await setComposerValue('Hello world', ta)
+    await setComposerSelection(5, 5, ta)
 
     // React updates must not consume the hold threshold on a busy test worker.
     vi.useFakeTimers()
@@ -463,7 +467,7 @@ describe('ChatPage — sending while dictating', () => {
     // A fast partial splices in at the caret before the press resolves.
     voice.partial = 'there'
     await act(async () => { voice.onPartial?.('there') })
-    expect(ta.value).toBe('Hello there world')
+    expect(composerValue(ta)).toBe('Hello there world')
 
     // Sub-threshold release in hold-only mode: discarded, and the draft must be
     // exactly what the user had typed.
@@ -472,7 +476,7 @@ describe('ChatPage — sending while dictating', () => {
       document.dispatchEvent(new KeyboardEvent('keyup', { code: 'AltRight', bubbles: true }))
     })
     expect(voice.cancel).toHaveBeenCalled()
-    expect(ta.value).toBe('Hello world')
+    expect(composerValue(ta)).toBe('Hello world')
     voice.partial = ''
   })
 
@@ -484,18 +488,18 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('hello') })
-    expect(ta.value).toBe('hello')
+    expect(composerValue(ta)).toBe('hello')
     await act(async () => { fireEvent.click(mic) })
 
     // The user edits while the socket drains, then the final arrives.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'edited by hand' } }) })
+    await setComposerValue('edited by hand', ta)
     await act(async () => { deliverText('hello there') })
-    expect(ta.value).toBe('edited by hand')
+    expect(composerValue(ta)).toBe('edited by hand')
   })
 
   it('lets a drain-time correction replace the hypothesis after a manual stop', async () => {
@@ -508,24 +512,24 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('remind me to') })
-    expect(ta.value).toBe('remind me to')
+    expect(composerValue(ta)).toBe('remind me to')
 
     await act(async () => { fireEvent.click(mic) })
     expect(voice.recording).toBe(false)
 
     // Drain: Transcribe finalises the segment, adding the tail the release cut off.
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
-    expect(ta.value).toBe('remind me to call Ana')
+    expect(composerValue(ta)).toBe('remind me to call Ana')
 
     // The close-time route still APPENDS, so it must stay suppressed — otherwise
     // the composer would read "remind me to call Ana remind me to call Ana".
     await act(async () => { deliverText('remind me to call Ana') })
-    expect(ta.value).toBe('remind me to call Ana')
+    expect(composerValue(ta)).toBe('remind me to call Ana')
   })
 
   it('keeps text typed after the release when a drain correction lands', async () => {
@@ -536,27 +540,27 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('remind me to') })
-    expect(ta.value).toBe('remind me to')
+    expect(composerValue(ta)).toBe('remind me to')
     await act(async () => { fireEvent.click(mic) })
 
     // Typing immediately after the release.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'remind me to — urgent' } }) })
+    await setComposerValue('remind me to — urgent', ta)
     // The drain then finalises the segment.
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
 
-    expect(ta.value).toBe('remind me to call Ana — urgent')
+    expect(composerValue(ta)).toBe('remind me to call Ana — urgent')
   })
 
   it('protects typed text and disables auto-send when cold capture stops itself', async () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
 
     // The readiness buffer stops capture without a second click or key release.
@@ -565,11 +569,11 @@ describe('ChatPage — sending while dictating', () => {
       voice.onCaptureStop?.()
       voice.onPartial?.('请处理')
     })
-    await act(async () => { fireEvent.change(ta, { target: { value: '请处理，明天再做' } }) })
+    await setComposerValue('请处理，明天再做', ta)
     await act(async () => {
       voice.onPartial?.('请处理这个任务')
     })
-    expect(ta.value).toBe('请处理这个任务，明天再做')
+    expect(composerValue(ta)).toBe('请处理这个任务，明天再做')
     await act(async () => { voice.onEndpoint?.() })
     expect(api.sendChat).not.toHaveBeenCalled()
 
@@ -577,7 +581,7 @@ describe('ChatPage — sending while dictating', () => {
       voice.onPartial?.('请处理这个任务。谢谢。')
       deliverText('请处理这个任务。谢谢。')
     })
-    expect(ta.value).toBe('请处理这个任务。谢谢。，明天再做')
+    expect(composerValue(ta)).toBe('请处理这个任务。谢谢。，明天再做')
   })
 
   it('leaves the composer alone when the dictated region was edited', async () => {
@@ -587,7 +591,7 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
@@ -595,10 +599,10 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.click(mic) })
 
     // The user replaces the dictation entirely.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'never mind' } }) })
+    await setComposerValue('never mind', ta)
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
 
-    expect(ta.value).toBe('never mind')
+    expect(composerValue(ta)).toBe('never mind')
   })
 
   it('keeps a mid-draft correction and everything after it', async () => {
@@ -610,26 +614,23 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     // Draft with the caret parked before "world".
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'hello world', selectionStart: 6, selectionEnd: 6 } })
-    })
+    await setComposerValue('hello world', ta)
+    await setComposerSelection(6, 6, ta)
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('remind me') })
-    expect(ta.value).toBe('hello remind me world')
+    expect(composerValue(ta)).toBe('hello remind me world')
     await act(async () => { fireEvent.click(mic) })
 
     // Typing lands where the caret was restored — right after the dictation.
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'hello remind me NOW world' } })
-    })
+    await setComposerValue('hello remind me NOW world', ta)
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
 
-    expect(ta.value).toBe('hello remind me to call Ana NOW world')
+    expect(composerValue(ta)).toBe('hello remind me to call Ana NOW world')
   })
 
   it('carries the user caret across a drain correction', async () => {
@@ -641,31 +642,29 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     // Draft with the caret before 'later', so dictation lands mid-draft.
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'call later', selectionStart: 5, selectionEnd: 5 } })
-    })
+    await setComposerValue('call later', ta)
+    await setComposerSelection(5, 5, ta)
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('remind') })
-    expect(ta.value).toBe('call remind later')
+    expect(composerValue(ta)).toBe('call remind later')
     await act(async () => { fireEvent.click(mic) })
 
     // Type ' NOW' right after the dictation; their caret sits at offset 15.
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'call remind NOW later', selectionStart: 15, selectionEnd: 15 } })
-    })
+    await setComposerValue('call remind NOW later', ta)
+    await setComposerSelection(15, 15, ta)
     // The correction grows the region from 'call remind' (11) to
     // 'call remind me to call Ana' (26) — a shift of 15.
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
-    expect(ta.value).toBe('call remind me to call Ana NOW later')
+    expect(composerValue(ta)).toBe('call remind me to call Ana NOW later')
 
     await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
     // 15 + 15 = 30, right after ' NOW'. A caret left unarmed would have been
     // reset to the end of the value (36), past the ' later' tail.
-    expect(ta.selectionStart).toBe('call remind me to call Ana NOW'.length)
+    expect(composerSelection(ta).start).toBe('call remind me to call Ana NOW'.length)
   })
 
   it('does not reclaim the caret on a later correction in the same drain', async () => {
@@ -678,27 +677,27 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('remind me') })
     await act(async () => { fireEvent.click(mic) })
 
-    await act(async () => { fireEvent.change(ta, { target: { value: 'remind me NOW' } }) })
+    await setComposerValue('remind me NOW', ta)
     // First drain correction: carries the suffix, must not steer the caret.
     await act(async () => { voice.onPartial?.('remind me to call') })
-    expect(ta.value).toBe('remind me to call NOW')
+    expect(composerValue(ta)).toBe('remind me to call NOW')
     // Second correction, user has not touched anything since.
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
-    expect(ta.value).toBe('remind me to call Ana NOW')
+    expect(composerValue(ta)).toBe('remind me to call Ana NOW')
 
     // Let the caret-restore frame run. Nothing should have armed it, so the
     // caret is wherever the value commit left it — NOT at the end of the
     // dictated region ('remind me to call Ana' = offset 21), which sits in
     // front of the typed ' NOW'.
     await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
-    expect(ta.selectionStart).not.toBe('remind me to call Ana'.length)
+    expect(composerSelection(ta).start).not.toBe('remind me to call Ana'.length)
   })
 
   it('inserts a cold-stream transcript where the user was speaking', async () => {
@@ -709,25 +708,24 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     // A real value change (not a repeat of the same string) is what fires
     // onChange -> records the caret AND re-renders the button so the next click
     // reads the flipped `recording`. Caret parked before 'later'.
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'call later', selectionStart: 5, selectionEnd: 5 } })
-    })
+    await setComposerValue('call later', ta)
+    await setComposerSelection(5, 5, ta)
     await act(async () => { fireEvent.click(mic) })
 
     // Typing lands at the end (a fresh change resets the caret there), so the
     // release-time caret and the live caret genuinely disagree.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'call later today' } }) })
+    await setComposerValue('call later today', ta)
     await act(async () => { voice.onPartial?.('Ana') })
 
     // Dictation goes where they were speaking (offset 5), not after 'today'.
-    expect(ta.value).toBe('call Ana later today')
+    expect(composerValue(ta)).toBe('call Ana later today')
   })
 
   it('rebases a frozen caret when the user edits before it', async () => {
@@ -737,23 +735,22 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     // Caret before 'later'; no partial fires, so this is the cold-stream path.
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'call later', selectionStart: 5, selectionEnd: 5 } })
-    })
+    await setComposerValue('call later', ta)
+    await setComposerSelection(5, 5, ta)
     await act(async () => { fireEvent.click(mic) })
 
     // Prepend 'Hi, ' — everything after it shifts right by 4.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'Hi, call later' } }) })
+    await setComposerValue('Hi, call later', ta)
     await act(async () => { voice.onPartial?.('remind') })
 
     // Offset rebased 5 -> 9, so the transcript lands before 'later' as intended.
     // Trusting the stale 5 would have produced 'Hi, c remind all later'.
-    expect(ta.value).toBe('Hi, call remind later')
+    expect(composerValue(ta)).toBe('Hi, call remind later')
   })
 
   it('does not delete a typed replacement for a selection frozen at release', async () => {
@@ -763,24 +760,23 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     // 'Bob' selected (offsets 5..8) at the moment of release.
-    await act(async () => {
-      fireEvent.change(ta, { target: { value: 'call Bob later', selectionStart: 5, selectionEnd: 8 } })
-    })
+    await setComposerValue('call Bob later', ta)
+    await setComposerSelection(5, 8, ta)
     await act(async () => { fireEvent.click(mic) })
 
     // The user types over the selection, replacing 'Bob' with 'Ana'.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'call Ana later' } }) })
+    await setComposerValue('call Ana later', ta)
     await act(async () => { voice.onPartial?.('remind') })
 
     // 'Ana' must survive: the transcript is inserted at the selection start
     // rather than overwriting the range that no longer exists.
-    expect(ta.value).toContain('Ana')
-    expect(ta.value).toBe('call remind Ana later')
+    expect(composerValue(ta)).toContain('Ana')
+    expect(composerValue(ta)).toBe('call remind Ana later')
   })
 
   it('keeps post-release typing through a cold-stream drain', async () => {
@@ -791,7 +787,7 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
@@ -799,17 +795,17 @@ describe('ChatPage — sending while dictating', () => {
     // reads the flipped `recording` — an unchanged value does not, and the click
     // would re-run start (resetting every flag) instead of stop. No onPartial
     // fires, so frozenInputRef is still null at stop: the cold-stream path.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'draft' } }) })
+    await setComposerValue('draft', ta)
     await act(async () => { fireEvent.click(mic) })
 
     // The drain's first partial lands after the release and seeds the anchor.
     await act(async () => { voice.onPartial?.('remind me') })
-    expect(ta.value).toBe('draft remind me')
+    expect(composerValue(ta)).toBe('draft remind me')
     // The user types, then a later correction arrives.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'draft remind me NOW' } }) })
+    await setComposerValue('draft remind me NOW', ta)
     await act(async () => { voice.onPartial?.('remind me to call Ana') })
 
-    expect(ta.value).toBe('draft remind me to call Ana NOW')
+    expect(composerValue(ta)).toBe('draft remind me to call Ana NOW')
 
     // The socket then closes and delivers its final. On the streaming path
     // applyVoiceText re-splices from frozenInputRef and OVERWRITES — it does not
@@ -817,29 +813,29 @@ describe('ChatPage — sending while dictating', () => {
     // drain already put the stabilised text in the composer, so the final has
     // nothing to add and must be suppressed.
     await act(async () => { deliverText('remind me to call Ana') })
-    expect(ta.value).toBe('draft remind me to call Ana NOW')
+    expect(composerValue(ta)).toBe('draft remind me to call Ana NOW')
   })
 
   it('keeps typing added after a fatal stream frame while socket close is deferred', async () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('remind me') })
-    expect(ta.value).toBe('remind me')
+    expect(composerValue(ta)).toBe('remind me')
 
     // The hook emits this synchronously with the fatal frame, before the native
     // decoder's socket close can deliver its fallback final.
     await act(async () => { voice.onCaptureStop?.() })
     await act(async () => {
-      fireEvent.change(ta, { target: { value: 'remind me NOW' } })
+      await setComposerValue('remind me NOW', ta)
     })
     await act(async () => { deliverText('remind me') })
 
-    expect(ta.value).toBe('remind me NOW')
+    expect(composerValue(ta)).toBe('remind me NOW')
   })
 
   it('does not auto-send on an endpoint verdict after a cold-stream stop', async () => {
@@ -851,19 +847,19 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     // Typing while holding — this is also what re-renders the button so the
     // second click reads the mock's flipped `recording` (see the other tests).
     // No onPartial fires, so frozenInputRef stays null: the cold-stream case.
-    await act(async () => { fireEvent.change(ta, { target: { value: 'draft in progress' } }) })
+    await setComposerValue('draft in progress', ta)
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onEndpoint?.() })
 
     expect(vi.mocked(api.sendChat)).not.toHaveBeenCalled()
-    expect(ta.value).toBe('draft in progress')
+    expect(composerValue(ta)).toBe('draft in progress')
   })
 
   it('does not auto-send on a drain-time endpoint verdict after a manual stop', async () => {
@@ -873,13 +869,13 @@ describe('ChatPage — sending while dictating', () => {
     setStt(true)
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
-    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    const ta = composerRoot()
     expect(typeof voice.onEndpoint).toBe('function')
 
     const mic = screen.getByRole('button', { name: /voice input/i })
     await act(async () => { fireEvent.click(mic) })
     await act(async () => { voice.onPartial?.('send this later') })
-    expect(ta.value).toBe('send this later')
+    expect(composerValue(ta)).toBe('send this later')
     await act(async () => { fireEvent.click(mic) })
 
     await act(async () => { voice.onEndpoint?.() })
