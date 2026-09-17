@@ -625,6 +625,20 @@ def test_pre_casing_schema_forces_regeneration(
     assert rewrite_counter["n"] == before + 2
 
 
+def test_pre_cmd_safe_schema_forces_regeneration(
+    tmp_path: Path, rewrite_counter: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema 6 overlays can carry a spaced interpreter command that cmd.exe
+    quote-stripping destroys; an upgrade must rebuild them, not serve them."""
+    _mk_tree(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(rewriter, "_FINGERPRINT_SCHEMA", 6)
+        _rewrite(tmp_path)
+    before = rewrite_counter["n"]
+    _rewrite(tmp_path)
+    assert rewrite_counter["n"] == before + 2
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows executable casing")
 @pytest.mark.parametrize("transient_settings_fault", [False, True])
 @pytest.mark.parametrize("rename_command", [False, True])

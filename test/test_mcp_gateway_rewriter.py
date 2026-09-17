@@ -1019,3 +1019,243 @@ def test_placeholder_source_env_mirrors_the_forwarder_filters(monkeypatch) -> No
             if not (is_secret_env_key(k) or is_credential_env_key(k))
         }
     )
+
+
+# ── cmd.exe-safe launch argv (Windows cmd.exe quote-stripping) ──
+#
+# kiro-cli spawns MCP entries on Windows through ``cmd.exe /C``. A launch line
+# whose command is quoted (a ``Program Files`` interpreter) survives only
+# cmd's exactly-two-quotes special case; one more quoted element strips the
+# outer pair and the interpreter becomes ``C:\Program``. Every stub flag
+# already rides inside the base64url envelope, so the wrapped entry's
+# ``command`` is the one element that must be normalised to a metacharacter-
+# free spelling (the 8.3 short form). These tests construct the hazardous
+# input directly, so they assert the invariant on every platform.
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cmd_safe_state():
+    """Reset the per-element residual-hazard warning latch between tests."""
+    rewriter._reset_cmd_unsafe_warnings()
+    yield
+    rewriter._reset_cmd_unsafe_warnings()
+
+
+def _program_files_interpreter(tmp_path: Path) -> str:
+    """A real executable whose path sits under a directory with a space."""
+    exe_dir = tmp_path / "Program Files" / "Kiro Crew"
+    exe_dir.mkdir(parents=True)
+    exe = exe_dir / "python"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_wrapped_argv_is_cmd_safe_under_a_spaced_interpreter_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Every element of a wrapped entry's launch argv is free of cmd.exe
+    metacharacters when a short form exists for the interpreter path."""
+    exe = _program_files_interpreter(tmp_path)
+    short = exe.replace("Program Files", "PROGRA~1").replace("Kiro Crew", "KIROCR~1")
+    monkeypatch.setattr(sys, "executable", exe)
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: short)
+
+    spec = {"name": "agent-a", "mcpServers": {"svc": {"command": exe}}}
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"svc"}))
+    entry = new_spec["mcpServers"]["svc"]
+
+    assert wrapped == 1
+    for element in (entry["command"], *entry["args"]):
+        assert not rewriter._CMD_UNSAFE.intersection(element), element
+    assert entry["command"] == short
+
+
+def test_wrapped_command_kept_and_warned_when_no_short_form_exists(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """8.3 generation can be disabled per volume: the original path is kept
+    (same file, still launchable by non-cmd spawners) and the residual hazard
+    is logged ONCE with the remedy, so the failure is diagnosable instead of
+    silent and a fleet of wrapped servers does not bury the diagnosis."""
+    import logging
+
+    exe = _program_files_interpreter(tmp_path)
+    monkeypatch.setattr(sys, "executable", exe)
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: "")
+
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {"svc": {"command": exe}, "svc2": {"command": exe}},
+    }
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
+        new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"svc", "svc2"}))
+
+    assert wrapped == 2
+    for name in ("svc", "svc2"):
+        # original preserved, never a broken form
+        assert new_spec["mcpServers"][name]["command"] == exe
+    residual = [r.getMessage() for r in caplog.records if "metacharacter" in r.getMessage()]
+    # Once per distinct hazardous element, not once per wrapped server -- and
+    # the line names the remedy, not just the measurement.
+    assert len(residual) == 1, residual
+    assert "8.3" in residual[0]
+
+
+def test_short_form_still_unsafe_falls_back_to_the_original(monkeypatch) -> None:
+    """A short form that itself carries a metacharacter is not an improvement;
+    the original spelling is kept for the guard to report."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.short_path_name", lambda p: r"C:\PROGRA%1\py.exe"
+    )
+    original = r"C:\Program Files\py.exe"
+    assert rewriter._cmd_safe_command(original) == original
+
+
+def test_cmd_safe_command_reresolves_short_form_on_every_call(monkeypatch) -> None:
+    """A removed 8.3 alias cannot remain cached across broker rewrites."""
+    original = r"C:\Program Files\py.exe"
+    short_forms = iter((r"C:\PROGRA~1\py.exe", r"C:\PROGRA~2\py.exe"))
+    calls: list[str] = []
+
+    def _next_short_form(path: str) -> str:
+        calls.append(path)
+        return next(short_forms)
+
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", _next_short_form)
+
+    assert rewriter._cmd_safe_command(original) == r"C:\PROGRA~1\py.exe"
+    assert rewriter._cmd_safe_command(original) == r"C:\PROGRA~2\py.exe"
+    assert calls == [original, original]
+
+
+def test_parenthesised_path_is_normalised_too(monkeypatch) -> None:
+    """``(`` and ``)`` are cmd.exe grouping characters and become live the
+    moment quote-stripping unquotes the line -- ``C:\\Program Files (x86)\\``
+    is the everyday spelling of this hazard."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr(
+        "kiro_crew.platform_compat.short_path_name", lambda p: r"C:\PROGRA~2\py.exe"
+    )
+    assert rewriter._cmd_safe_command(r"C:\Program Files (x86)\py.exe") == r"C:\PROGRA~2\py.exe"
+    assert rewriter._cmd_safe_command(r"C:\Kiro(dev)\py.exe") == r"C:\PROGRA~2\py.exe"
+
+
+def test_delayed_expansion_path_is_normalised_too(monkeypatch) -> None:
+    """``!NAME!`` spans are expanded when cmd.exe delayed expansion is enabled."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: r"C:\TOOLS~1\py.exe")
+    assert rewriter._cmd_safe_command(r"C:\Tools!beta\py.exe") == r"C:\TOOLS~1\py.exe"
+
+
+def test_cmd_safe_command_is_inert_on_posix() -> None:
+    """POSIX spawns never route through cmd.exe: a spaced path is untouched."""
+    if rewriter.platform_compat.IS_WINDOWS:
+        pytest.skip("POSIX-only behaviour")
+    assert rewriter._cmd_safe_command("/opt/has space/python") == "/opt/has space/python"
+
+
+def test_already_safe_command_is_returned_unchanged(monkeypatch) -> None:
+    """A metacharacter-free path is never rewritten -- no API call, no churn in
+    the overlay bytes (the rewrite fingerprint depends on them)."""
+    monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+
+    def _boom(path: str) -> str:
+        raise AssertionError("short-path resolution must not run for safe paths")
+
+    monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", _boom)
+    assert rewriter._cmd_safe_command(r"C:\Python312\python.exe") == r"C:\Python312\python.exe"
+
+
+class _FakeKernel32:
+    """``GetShortPathNameW`` with the documented two-call size protocol:
+    call one (NULL buffer) answers the length INCLUDING the NUL, call two
+    fills the buffer and answers the length EXCLUDING it."""
+
+    def __init__(self, short: str | None, *, lie_on_second_call: bool = False):
+        self._short = short
+        self._lie = lie_on_second_call
+
+    def GetShortPathNameW(self, path, buf, buflen):  # noqa: N802 - Win32 name
+        if self._short is None:
+            return 0
+        if buf is None:
+            return len(self._short) + 1
+        if self._lie:
+            return buflen  # "buffer too small": answer >= the size passed in
+        buf.value = self._short
+        return len(self._short)
+
+
+def _fake_windll(kernel32: _FakeKernel32):
+    def factory(name: str, **kwargs):
+        assert name == "kernel32"
+        assert kwargs.get("use_last_error") is True
+        return kernel32
+
+    return factory
+
+
+def test_short_path_name_two_call_protocol(monkeypatch) -> None:
+    """The buffer protocol runs on CI everywhere: a regression here would
+    return '' on every Windows host and silently disable the launch fix."""
+    import ctypes
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        _fake_windll(_FakeKernel32(r"C:\PROGRA~1\py.exe")),
+        raising=False,
+    )
+    assert platform_compat.short_path_name(r"C:\Program Files\py.exe") == r"C:\PROGRA~1\py.exe"
+
+
+def test_short_path_name_returns_empty_on_api_failure(monkeypatch) -> None:
+    """A zero-length first answer (path missing, API error) is '' -- never a
+    fabricated path, never an exception."""
+    import ctypes
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(ctypes, "WinDLL", _fake_windll(_FakeKernel32(None)), raising=False)
+    assert platform_compat.short_path_name(r"C:\gone\py.exe") == ""
+
+
+def test_short_path_name_returns_empty_when_buffer_reported_too_small(
+    monkeypatch,
+) -> None:
+    """A second answer >= the allocated size means the result cannot be
+    trusted (the path changed between calls): '' rather than a torn value."""
+    import ctypes
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        _fake_windll(_FakeKernel32(r"C:\PROGRA~1\py.exe", lie_on_second_call=True)),
+        raising=False,
+    )
+    assert platform_compat.short_path_name(r"C:\Program Files\py.exe") == ""
+
+
+@pytest.mark.skipif(not rewriter.platform_compat.IS_WINDOWS, reason="Windows API")
+def test_cmd_safe_command_contract_on_real_windows(tmp_path: Path) -> None:
+    """On a real Windows kernel the result is either a metacharacter-free
+    spelling of the same file, or the original unchanged (a volume without
+    8.3 aliases may make GetShortPathNameW fail OR succeed with the long
+    spelling; both must degrade to the original, never a broken form)."""
+    spaced = tmp_path / "short name probe"
+    spaced.mkdir()
+    target = spaced / "probe.txt"
+    target.write_text("x")
+    got = rewriter._cmd_safe_command(str(target))
+    if got != str(target):
+        assert os.path.exists(got)
+        assert not rewriter._CMD_UNSAFE.intersection(got)

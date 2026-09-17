@@ -3069,6 +3069,47 @@ def created_after(child_token: str, parent_token: str) -> bool:
         return False
 
 
+def short_path_name(path: str) -> str:
+    """Return *path*'s Windows 8.3 short form via ``GetShortPathNameW``, or ``""``.
+
+    ``""`` covers every unavailable case alike: a non-Windows host, a path that
+    does not exist, a volume with 8.3 name generation disabled, or the API
+    erroring — this function never raises, and the failing error code goes to
+    DEBUG so an operator can tell those cases apart. The API can also succeed
+    by returning the input spelling unchanged (the volume keeps no separate
+    short alias); that is returned as-is, and whether the spelling is usable
+    is the caller's question.
+
+    Two-call size protocol: the first call (NULL buffer) answers the required
+    buffer length INCLUDING the terminating NUL; the second call writes the
+    string and answers its length EXCLUDING the NUL, so a second answer >= the
+    first means the buffer was too small (the path changed between calls) and
+    the result cannot be trusted.
+    """
+    try:
+        # getattr, not an attribute reference: ``ctypes.WinDLL`` is
+        # Windows-only in typeshed (see the mypy note above), and getattr is
+        # also the seam the cross-platform protocol test injects a fake
+        # kernel32 through.
+        kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+        needed = kernel32.GetShortPathNameW(path, None, 0)
+        if not needed:
+            get_last_error = getattr(ctypes, "get_last_error", None)
+            logger.debug(
+                "GetShortPathNameW(%r) failed: error %s",
+                path,
+                get_last_error() if callable(get_last_error) else "unknown",
+            )
+            return ""
+        buf = ctypes.create_unicode_buffer(needed)
+        written = kernel32.GetShortPathNameW(path, buf, needed)
+        if not written or written >= needed:
+            return ""
+        return buf.value
+    except Exception:
+        return ""
+
+
 def _windows_process_parent_map() -> dict[int, int]:
     """Return one Toolhelp PID -> PPID snapshot, raising if enumeration fails."""
 

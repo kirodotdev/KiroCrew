@@ -115,7 +115,11 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # gratuitously defeat the transient-keep gate (which compares stored vs current
 # inputs) on the first upgraded boot.
 # 6: target commands and recorded probes carry their on-disk Windows casing.
-_FINGERPRINT_SCHEMA = 6
+# 7: the wrapped entry's command is normalised to a cmd.exe-safe spelling on
+# Windows (8.3 short form when the interpreter path carries a metacharacter),
+# and kept overlays must fingerprint that derived spelling to avoid launching
+# through cmd.exe with a quote-stripped interpreter path.
+_FINGERPRINT_SCHEMA = 7
 
 
 @dataclass
@@ -224,6 +228,72 @@ def _target_command_casing(path: str | None) -> str:
     if len(matches) != 1:
         return path
     return path[: -len(name)] + matches[0]
+
+
+# cmd.exe metacharacters. kiro-cli launches MCP entries on Windows through
+# ``cmd.exe /C``, which re-parses the assembled line: a quoted element beyond
+# the first trips the outer quote-stripping rule ("starts with a quote and has
+# more than two quotes -> drop the first and last"), ``%NAME%`` spans are
+# expanded inside ANY token, quoted or not, with no escape available, and
+# delayed expansion likewise expands ``!NAME!`` spans. Parentheses become live
+# command-grouping characters the moment the stripped line leaves them unquoted
+# (``C:\Program Files (x86)\...``). An element
+# carrying one of these characters can therefore be destroyed before the
+# child ever runs. The stub's own flags already cross cmd.exe safely inside
+# the ``STUB_FLAGS_FLAG`` base64url envelope; this set exists for the
+# elements that must stay plain text on the launch line. 8.3 short names are
+# uppercase alphanumerics plus ``~`` and ``.``, so they can never carry ``!``
+# or any other member of this set; successful short-form resolution converges.
+_CMD_UNSAFE = frozenset(' "^%|&<>()!')
+
+# Launch-argv elements already warned about as residual cmd.exe hazards, so
+# the notice fires once per distinct element per process instead of once per
+# wrapped server: the hazardous element is the process-constant interpreter
+# path, and N agents x M servers of identical lines would bury the one-line
+# diagnosis the guard exists to deliver. Same latch pattern as
+# ``_collision_warned_keys`` above. Repeats drop to DEBUG.
+_cmd_unsafe_warn_lock = threading.Lock()
+_cmd_unsafe_warned_elements: set[str] = set()
+
+
+def _reset_cmd_unsafe_warnings() -> None:
+    """Clear the per-process residual-hazard warning latch (a test hook,
+    mirroring :func:`_reset_collision_warnings`)."""
+    with _cmd_unsafe_warn_lock:
+        _cmd_unsafe_warned_elements.clear()
+
+
+def _cmd_safe_command(path: str) -> str:
+    """Return *path* in a spelling free of cmd.exe metacharacters.
+
+    The wrapped entry's ``command`` is the one element of its launch line that
+    is not carried inside the base64url stub-flags envelope, so it alone still
+    crosses cmd.exe as plain text. Under a ``Program Files`` install the
+    interpreter path contains a space, kiro-cli quotes it, and the line then
+    survives only through cmd's exactly-two-quotes special case -- one more
+    quoted element anywhere on the line and the outer quotes are stripped,
+    turning the interpreter into ``C:\\Program``. A ``%`` in the path is worse:
+    cmd expands ``%NAME%`` spans even inside quotes. Resolving to the 8.3
+    short form (same file, no metacharacters) removes the hazard entirely.
+
+    POSIX paths and already-safe paths are returned unchanged, and a short
+    form that still carries a metacharacter is discarded in favour of the
+    original. When no usable short form exists (8.3 generation can be
+    disabled per volume) the original is returned and the caller's argv guard
+    logs the residual hazard.
+
+    The short form is re-resolved on every call, so a volume's 8.3
+    availability changing under a running process is picked up by the next
+    rewrite rather than pinned to a stale process-lifetime answer.
+    """
+    if not platform_compat.IS_WINDOWS or not path:
+        return path
+    if not _CMD_UNSAFE.intersection(path):
+        return path
+    short = platform_compat.short_path_name(path)
+    if short and not _CMD_UNSAFE.intersection(short):
+        return short
+    return path
 
 
 def _resolve_target_command(
@@ -609,7 +679,11 @@ def _build_stub_entry(
     )
     wrapped.update({
         _WRAPPER_MARKER: True,
-        "command": stub_argv[0],
+        # _cmd_safe_command: the interpreter path is the ONE launch-line
+        # element outside the stub-flags envelope, and under a
+        # ``Program Files`` install it carries the space that makes cmd.exe
+        # quote-stripping reachable (see the helper's docstring).
+        "command": _cmd_safe_command(stub_argv[0]),
         # The helper's optional ``-s`` precedes ``-m kiro_crew.mcp_gateway.stub``;
         # the stub's own flags follow as ONE encoded envelope.
         # Every value above is raw operator or
@@ -640,6 +714,31 @@ def _build_stub_entry(
         "env": {},
     })
     if platform_compat.IS_WINDOWS:
+        # Diagnosable, not silent: 8.3 short-name generation can be disabled
+        # per volume, in which case _cmd_safe_command had nothing safe to
+        # return and the hazard is still on the line. Name the element and the
+        # remedy so an operator reading the log can connect it to the
+        # "connection closed: initialize response" the session will show.
+        # Once per distinct element per process (the latch above): the
+        # hazardous element is the process-constant interpreter path, and a
+        # repeat per wrapped server would bury the diagnosis.
+        for element in (wrapped["command"], *wrapped["args"]):
+            residual = _CMD_UNSAFE.intersection(element)
+            if not residual:
+                continue
+            with _cmd_unsafe_warn_lock:
+                first = element not in _cmd_unsafe_warned_elements
+                _cmd_unsafe_warned_elements.add(element)
+            log = logger.warning if first else logger.debug
+            log(
+                "rewriter: server %r launch argv element %r carries cmd.exe "
+                "metacharacter(s) %s after normalisation; a CLI that spawns "
+                "MCP servers through cmd.exe may fail to launch this stub. "
+                "No usable 8.3 short form was available -- enable 8.3 name "
+                "generation on the volume, or install to a path free of "
+                "spaces and cmd.exe metacharacters.",
+                server_name, element, "".join(sorted(residual)),
+            )
         command_line = subprocess.list2cmdline([wrapped["command"], *wrapped["args"]])
         command_units = len(command_line.encode("utf-16-le")) // 2
         if command_units >= _WINDOWS_CMD_LINE_LIMIT:
@@ -1287,6 +1386,13 @@ def _rewrite_inputs_fingerprint(
       ``command``. ``python_isolation_flags`` records the effective option prefix
       derived by :func:`platform_compat.isolated_python_argv`, so either an
       interpreter move or a user-site policy change regenerates the overlays.
+    * ``python_cmd_safe`` — the cmd.exe-safe spelling of ``sys.executable``
+      actually written as the overlay ``command`` on Windows. A volume's 8.3
+      name generation being toggled (or the alias stripped with ``fsutil
+      8dot3name strip``) changes this without touching ``python`` or any
+      other input, and a kept overlay would launch an interpreter path that
+      does not resolve — so the derived spelling is fingerprinted alongside
+      its source.
     * ``path_env`` / ``pathext`` / ``path_augment`` — feed the
       ``shutil.which`` resolution of bare command names (``path_augment`` is
       :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH — the
@@ -1317,6 +1423,7 @@ def _rewrite_inputs_fingerprint(
         "package": __version__,
         "python": sys.executable,
         "python_isolation_flags": platform_compat.isolated_python_argv()[1:],
+        "python_cmd_safe": _cmd_safe_command(sys.executable),
         "path_env": os.environ.get("PATH", ""),
         "pathext": os.environ.get("PATHEXT", ""),
         "path_augment": mcp_search_path(""),
