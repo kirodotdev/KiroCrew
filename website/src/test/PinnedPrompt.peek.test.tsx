@@ -74,6 +74,46 @@ describe('PinnedPrompt peek', () => {
     expect(PINNED_RESTING_LINES).toBe(1)
   })
 
+  it('masks transcript text behind the card and fades the band into the reply', () => {
+    const { card } = renderCard()
+    const band = card.parentElement as HTMLElement
+    expect(band.className).toContain('bg-bg')
+    const fade = band.querySelector('.bg-gradient-to-b.from-bg.to-transparent')
+    expect(fade).not.toBeNull()
+    expect(fade?.className).toContain('top-full')
+  })
+
+  it('keeps the backdrop under the resting, peeked, and expanded card heights', () => {
+    const { card, box, rerender } = renderCard()
+    const band = card.parentElement as HTMLElement
+    expect(band.style.height).toBe('48px')
+
+    hoverAndRest(box)
+    expect(band.style.height).toBe('')
+    act(() => { pointer(box, 'pointerleave', 'mouse') })
+    expect(band.style.height).toBe('48px')
+
+    const expandedProps = {
+      text: 'expanded prompt',
+      fullText: 'expanded prompt\nwith more content',
+      images: [] as string[],
+      bodyBeyondPreview: true,
+      bannerH: 40,
+      expanded: true,
+      onToggleExpanded: () => {},
+      onJump: () => {},
+      onCollapsedHeight: () => {},
+    }
+    rerender(<PinnedPrompt {...expandedProps} pushUp={0} />)
+    expect(band.style.height).toBe('')
+
+    // Expansion remains overflow-visible while the next prompt pushes it. The
+    // opaque band must therefore keep the card's natural height during the push,
+    // or transcript text can leak around its lower lines.
+    rerender(<PinnedPrompt {...expandedProps} pushUp={12} />)
+    expect(band.style.height).toBe('')
+  })
+
   it('opens to the preview line count once a mouse has rested on it, and closes on leave', () => {
     const { box, p } = renderCard()
     hoverAndRest(box)

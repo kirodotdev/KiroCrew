@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react
 import { ChevronDown, ImageOff } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { EdgeFade } from '../../app-sdk/ChatScrollChrome'
 import { ROW_PAD_Y, PINNED_PREVIEW_LINES, PINNED_RESTING_LINES, pinnedImageUrl } from '../../utils/pinnedPrompt'
 
 interface PinnedPromptProps {
@@ -342,10 +343,16 @@ export default function PinnedPrompt({
   // the bubble is already unattainable for a prompt whose bubble is a full-size
   // image, and a clamped prompt has by definition already hit its max width.
   const showChevron = clamped || images.length > 0 || bodyBeyondPreview || expanded
+  // The opaque band owns every visible card shape. A peek yields as soon as a
+  // push starts, so only its resting state needs natural height. Expansion stays
+  // visible during push, so its band must keep following the full card or reply
+  // text leaks around the overflow-visible lower lines. Collapsed cards retain
+  // the existing continuous clip math below.
+  const bandOwnsCardHeight = expanded || (pushUp <= 0 && peek)
 
   return (
     <div
-      className="relative px-4 py-1 mx-auto w-full pointer-events-none flex items-start justify-end"
+      className="relative px-4 py-1 mx-auto w-full pointer-events-none flex items-start justify-end bg-bg"
       style={{
         maxWidth: 'var(--mc-content-width, 900px)',
         // Clip ONLY while collapsed AND being pushed. The clip is what reveals
@@ -364,15 +371,23 @@ export default function PinnedPrompt({
         // Height must be CONTINUOUS through pushUp === 0, or the clip box jumps
         // the moment the push starts. Carrying both paddings (ROW_PAD_Y * 2)
         // makes this formula equal the natural height at rest and shrink smoothly
-        // from there. pushUp travels ROW_PAD_Y + bannerH (see computePinPush), so
-        // it bottoms out at a ROW_PAD_Y-tall, empty, transparent strip with the
-        // card entirely clipped away — no fragment of it survives the no-banner
-        // stretch that a tall incoming prompt opens up.
-        height: bannerH > 0
-          ? Math.max(0, ROW_PAD_Y * 2 + bannerH - pushUp)
-          : undefined,
+        // from there. At rest, a peeked or expanded card owns its natural height
+        // so the opaque backdrop and its fade still end below the whole card.
+        // pushUp travels ROW_PAD_Y + bannerH (see computePinPush), so the fixed
+        // path bottoms out at a ROW_PAD_Y-tall, empty strip with the card entirely
+        // clipped away — no fragment survives the no-banner stretch.
+        height: bandOwnsCardHeight
+          ? undefined
+          : bannerH > 0
+            ? Math.max(0, ROW_PAD_Y * 2 + bannerH - pushUp)
+            : undefined,
       }}
     >
+      {/* The card is narrower than the transcript column. A solid band stops
+          reply text leaking around its sides, and the shared lower fade makes
+          content passing underneath read as scrolling chrome rather than a
+          line clipped in half at the card edge. */}
+      <EdgeFade side="top" anchor="below" />
       <div
         ref={cardRef}
         data-testid="pinned-prompt"
