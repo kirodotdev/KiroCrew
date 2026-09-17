@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import stat as _stat
+import sys
 import tarfile
 import tempfile
 import threading
@@ -937,16 +938,51 @@ def _restage_databases(
     scrollback of whoever ran the command.
     """
     for src in sorted(src_dir.rglob("*")):
-        if not src.is_file() or src.is_symlink() or src.suffix not in _DB_SUFFIXES:
+        if src.suffix not in _DB_SUFFIXES:
             continue
         dst = dst_dir / src.relative_to(src_dir)
+        # The DESTINATION is asked about first, before the source is stat-ed at all.
+        # Ordering, not style: an entry the tree walk declined has no byte copy here,
+        # so asking the destination first ends this iteration without touching a source
+        # the walk has ALREADY reported -- which is what keeps one refused file out of
+        # MANIFEST.json twice.
+        #
         # `lstat`, not `exists()`: the latter follows a link, so a link planted at the
         # destination name would answer for its target and be treated as a staged copy.
+        #
+        # ABSENT only. A destination the tree walk did not stage is nothing to replace,
+        # so it is skipped -- but any other failure to read it means this pass cannot
+        # tell whether a byte copy is sitting there, and skipping then leaves a product
+        # database in the bundle without its checkpointed rows. Restore's strict
+        # integrity check accepts such a copy, so the rows living only in the
+        # write-ahead log are silently gone and retention may prune the bundle that
+        # still had them. Same reasoning, and the same narrowness, as the source stat
+        # below.
         try:
             dst_st = dst.lstat()
-        except OSError:
+        except FileNotFoundError:
             continue
         if not _stat.S_ISREG(dst_st.st_mode):
+            continue
+        # `lstat` in a try, not `is_file()`: this walks the LIVE tree, and `is_file()`
+        # raised a refusal out of the loop and ended the whole snapshot. Vanished is
+        # tolerated; a REFUSAL is not, deliberately.
+        #
+        # A refusal can only be reached here by the narrow race where the tree walk read
+        # this file and it became unreadable afterwards -- a statically unreadable entry
+        # is skipped by that walk, so no byte copy exists and the destination check above
+        # already ended the iteration. In that race, skipping would leave the walk's byte
+        # copy of a PRODUCT database in the bundle without its checkpointed rows, and
+        # restore's strict integrity check passes such a copy: rows present only in the
+        # write-ahead log are then silently gone. A recorded note does not prevent that.
+        # Failing closed is both the safe direction and what this call did before the
+        # tolerance elsewhere in this change existed. Nothing is published on the way
+        # out, so no retention pass can prune a bundle that does restore.
+        try:
+            src_st = src.lstat()
+        except FileNotFoundError:
+            continue
+        if not _stat.S_ISREG(src_st.st_mode):
             continue
         # Spelled `relative_to(bundle_root).as_posix()` to match the restore side's own
         # key for the same set, so the two ends of the invariant read the same.
@@ -1341,6 +1377,8 @@ def _report_skip(reason: str, path: str) -> None:
         print(f"⚠️  Skipping symlink in source tree: {safe}")
     elif reason == pinned_fs.SKIP_VANISHED:
         print(f"⚠️  Skipping vanished entry during snapshot copy: {safe}")
+    elif reason == pinned_fs.SKIP_UNREADABLE_ENTRY:
+        print(f"⚠️  Skipping entry this process may not read: {safe}")
     else:
         print(f"⚠️  Skipping hardlinked or non-regular file during snapshot copy: {safe}")
 
@@ -1402,6 +1440,109 @@ def _staging_ignore(tree: str, root: Path) -> Callable[[str, list[str]], set[str
     return _ignore
 
 
+def _estimate_selected_bytes(mc: Path, selected: list[str]) -> tuple[int, int]:
+    """Bytes the *selected* components would stage, and how many entries refused.
+
+    Scoped to the SELECTION, not the data home. The whole-home walk this replaces
+    stat-ed every file under ``mc`` before staging, which had two consequences: the
+    number described an archive nobody asked for whenever ``--components`` narrowed
+    it, and a data home holding one entry this process may not stat -- a
+    platform-protected key at the root, which no component declares -- ended the
+    command with a traceback that ``--components`` could not route around, because
+    the walk ran first.
+
+    Overlapping trees (``memory`` names ``workspace/memory`` while ``workspace``
+    names the whole tree) are counted ONCE, by the same ancestor collapse the staging
+    pass makes: the estimate matches what staging writes, one refused entry in the
+    overlap is reported once rather than twice, and the shared subtree is walked once.
+
+    Deliberately does NOT apply ``_staging_ignore``'s exclusions. The estimate feeds
+    one warning about how long this may take, and reading the ignore rules per
+    directory to shave a sidecar off a size nobody acts on costs more than it buys;
+    over-estimating is the safe direction for a 'this may be slow' notice.
+
+    Symlinks are not followed and not counted, matching the staging walk, which skips
+    them. The second return value is the number of entries REFUSED for permission, for
+    a caller that wants to say so; every other error is raised, so a failing disk ends
+    the command here exactly as it would during staging rather than being folded into
+    a count that reads like a handful of protected paths.
+    """
+    total = 0
+    unreadable = 0
+    seen: set[str] = set()
+
+    def _count(path: Path) -> None:
+        nonlocal total, unreadable
+        key = str(path)
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            # A component names files most homes do not have. Absent is not a refusal
+            # and must not be reported as one.
+            return
+        except PermissionError:
+            unreadable += 1
+            return
+        if _stat.S_ISREG(st.st_mode):
+            total += st.st_size
+
+    def _on_walk_error(exc: OSError) -> None:
+        nonlocal unreadable
+        # A tree a component names but this home does not have is the normal case, and
+        # `os.walk` reports it here rather than raising -- counting it would report
+        # 'unreadable' on a fresh install where nothing was refused.
+        if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
+            return
+        # Only the permission class is absorbed, matching the staging walks. Anything
+        # else -- an EIO, a disconnected mount -- is raised out of the estimate rather
+        # than folded into a count, because a number cannot say 'the storage is
+        # failing' and the operator would read it as a handful of protected paths.
+        if not isinstance(exc, PermissionError):
+            raise exc
+        unreadable += 1
+
+    trees: list[str] = []
+    for comp in selected:
+        spec = COMPONENTS[comp]
+        for f in spec.files:
+            _count(mc / f)
+        trees.extend(spec.trees)
+    # A tree already covered by an ANCESTOR in the same selection is dropped, the same
+    # collapse the staging pass makes. `seen` already stops a file's bytes being added
+    # twice, but nothing deduped the REFUSALS: walking the overlap twice met one
+    # refused directory twice and reported it as two. It also stops the shared subtree
+    # being walked twice on a selection like `memory,workspace`.
+    covered = set(trees)
+    for tree in trees:
+        if any(
+            other != tree and PurePosixPath(tree).is_relative_to(PurePosixPath(other))
+            for other in covered
+        ):
+            continue
+        root = mc / tree
+        # A tree ROOT that is a link is not walked. Staging refuses one outright
+        # (`safe_tree_root`), but only later, so without this the estimate is the one
+        # pass that follows it -- reading a tree the components never declared and
+        # reporting its size as theirs.
+        if pinned_fs.is_reparse_point(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
+            # Deeper reparse points are pruned by hand. `os.walk` declines a SYMLINK
+            # directory on its own, but a Windows junction is not a symlink to it, so on
+            # that platform it descends -- into whatever the junction names, which the
+            # components never declared. Nothing but a size leaves this function, so the
+            # exposure is a number, not bytes or names; it is still a walk of a tree the
+            # operator did not select, and the staging pass refuses the same entry.
+            # Edited in place, which is the contract `os.walk` offers for pruning.
+            dirnames[:] = [d for d in dirnames if not pinned_fs.is_reparse_point(Path(dirpath) / d)]
+            for fn in filenames:
+                _count(Path(dirpath) / fn)
+    return total, unreadable
+
+
 def _copytree_safe(
     src: Path,
     dst: Path,
@@ -1409,6 +1550,7 @@ def _copytree_safe(
     allow_unpinned: bool = False,
     on_skip: pinned_fs.SkipReporter | None = None,
     must_create: bool = False,
+    skip_unreadable: bool = False,
     **kwargs,
 ) -> None:
     """Copy a tree for staging, with the source traversal pinned where possible.
@@ -1435,6 +1577,14 @@ def _copytree_safe(
     printing only, which is right for restore; the snapshot path passes a recorder so
     an incomplete archive says so in its own manifest instead of only in the console
     output of whoever ran it.
+
+    *skip_unreadable* says an entry this process may not read is one of those
+    recorded skips rather than the end of the operation -- a file, a directory that
+    refuses to be listed, and the tree's own root alike, on both traversals. Only SNAPSHOT creation sets
+    it: a data home can hold a platform-protected path, and refusing to produce any
+    backup because of one file the bundle was never going to need is worse than a
+    bundle whose manifest names the gap. Restore and merge leave it off, because
+    there the unreadable name is the archive's own content.
     """
     report = on_skip or _report_skip
     outer_ignore = kwargs.pop("ignore", None)
@@ -1450,6 +1600,7 @@ def _copytree_safe(
             ignore=outer_ignore,
             on_skip=report,
             must_create=must_create,
+            skip_unreadable=skip_unreadable,
         )
         return
 
@@ -1462,19 +1613,72 @@ def _copytree_safe(
     # though the pinned path refuses exactly that. Each file now goes through
     # copy_file_pinned (same fstat screens, minus the pinned ancestors) and the screen
     # rejects reparse points, which `islink` alone does not report on Windows.
+    def _refuses_listing(path: str) -> bool:
+        """Whether *path* is a directory this process may not list.
+
+        Asked by ATTEMPTING the listing rather than with ``os.access``, which answers
+        for the real uid and ignores the ACL that is the case worth catching here.
+        Anything that is not a permission refusal answers False, so a vanished entry
+        or a failing device still reaches the walk and is decided there.
+        """
+        try:
+            with os.scandir(path) as entries:
+                next(iter(entries), None)
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return False
+
     def _ignore_unsafe(directory, contents):
         skipped = set()
         for entry in contents:
             full = os.path.join(directory, entry)
+            # Classified by an explicit stat FIRST, before anything asks what kind of
+            # entry this is. `os.path.isdir` and `os.path.islink` both answer False for
+            # a path they cannot stat, so asking either one first reads a refusal as
+            # 'an ordinary file that is not a link' -- and for a DIRECTORY `copytree`
+            # then descends on the directory entry's own type, meets the refusal at its
+            # scandir, collects it, and raises `shutil.Error` only after staging
+            # everything else. So the whole snapshot is built and then thrown away, and
+            # the collected errors are strings, so nothing downstream can tell a
+            # permission refusal from a failing disk.
+            try:
+                st: os.stat_result | None = os.lstat(full)
+            except PermissionError:
+                if not skip_unreadable:
+                    raise
+                skipped.add(entry)
+                report(pinned_fs.SKIP_UNREADABLE_ENTRY, full)
+                continue
+            except OSError:
+                # Vanished, or a failure that is not this screen's to rule on. Left to
+                # the walk, which is where every other errno is decided.
+                st = None
             if os.path.islink(full) or pinned_fs.is_reparse_point(full):
                 skipped.add(entry)
                 report(pinned_fs.SKIP_SYMLINK, full)
+            elif (
+                skip_unreadable
+                and st is not None
+                and _stat.S_ISDIR(st.st_mode)
+                and _refuses_listing(full)
+            ):
+                # A directory that stats fine and refuses to be LISTED. Screened here
+                # for the same reason as above, and probed only for a directory: a
+                # file's refusal surfaces at its own copy.
+                skipped.add(entry)
+                report(pinned_fs.SKIP_UNREADABLE_ENTRY, full)
         if outer_ignore:
             skipped |= set(outer_ignore(directory, contents))
         return skipped
 
     def _copy_screened(source: str, target: str, **_kw) -> None:
-        pinned_fs.copy_file_pinned(source, target, on_skip=report)
+        # The flag is handed DOWN rather than the call being wrapped. A wrapper here
+        # cannot tell which end was refused, so a destination-side denial would be
+        # recorded as an unreadable source -- an omission blamed on the operator's file
+        # rather than on the failure to write it, in a bundle reporting success.
+        pinned_fs.copy_file_pinned(source, target, on_skip=report, skip_unreadable=skip_unreadable)
 
     # `dirs_exist_ok` has to follow `must_create`, not be hardcoded. Review found the gap:
     # `must_create` reached the pinned walk and stopped there, so on a platform that cannot
@@ -1482,6 +1686,15 @@ def _copytree_safe(
     # merged into and stale files survived a successful replace. That is the same mistake as
     # the earlier Windows import refusal in this PR: a guard added to the pinned path and not
     # carried to the by-name one. Every mutating path gets the gate or the gate is decorative.
+    # The tree's OWN directory, which `_ignore_unsafe` never sees: `copytree` lists the
+    # root before consulting it. Asked HERE rather than by wrapping the call, because a
+    # wrapper cannot tell the root's own refusal from a failure to CREATE the
+    # destination -- and reporting the latter as an unreadable source published a bundle
+    # missing the whole selected tree while reporting success. With the question asked
+    # first, every refusal `copytree` raises is a destination-side one and propagates.
+    if skip_unreadable and _refuses_listing(str(src)):
+        report(pinned_fs.SKIP_UNREADABLE_ENTRY, str(src))
+        return
     try:
         shutil.copytree(
             str(src),
@@ -1828,6 +2041,7 @@ def _build_snapshot(
     purpose: Purpose = Purpose.BACKUP,
     root_name: str | None = None,
     allow_unpinned: bool = False,
+    skipped_out: list[dict[str, str]] | None = None,
 ) -> Path:
     """Stage the data home into a temporary tree and publish it as one tarball.
 
@@ -1845,6 +2059,12 @@ def _build_snapshot(
     seam ask for a whole-home archive and should keep getting one: an omitted *selected*
     means every component, which is what ``snapshot`` without ``--components`` has always
     produced. Making them mandatory broke those callers with a TypeError instead.
+
+    *skipped_out*, when given, is extended with the same records this function writes to
+    ``MANIFEST.json``'s ``skipped``. An out-parameter rather than a second return value
+    on purpose: the return type is a ``Path`` that several tests use directly, so
+    widening it would be a seam move with fallout, and the caller needs only to know
+    WHETHER anything was omitted.
 
     *name* names the TARBALL and *root_name* the directory inside it, and they are two
     parameters rather than one because a selective bundle marks only the inner directory.
@@ -2034,7 +2254,33 @@ def _build_snapshot(
         for comp, tree in staged_trees:
             src_dir = mc / tree
             dst_dir = stage / tree
-            if not src_dir.is_dir():
+            # Classified by an explicit stat, because `Path.is_dir()` answers False for a
+            # path it cannot stat -- so a tree ROOT the process may not reach took the very
+            # same branch as a root that is simply absent, and an entire selected tree left
+            # the bundle with nothing in `skipped`. The manifest then still declared the
+            # component present, the retention guard below saw no omission, and `--keep`
+            # pruned the last complete archive: silent, unbounded loss. A refusal here is
+            # the same failure the per-entry screens already record -- only the loop's own
+            # root probe had been left behind. `safe_tree_root` above does not foreclose
+            # this: its `resolve(strict=False)` is best-effort and does not raise on a
+            # refusal, so it returns a path and the root reaches this line unclassified.
+            try:
+                root_st: os.stat_result | None = os.stat(src_dir)
+            except PermissionError:
+                _record_skip(pinned_fs.SKIP_UNREADABLE_ENTRY, str(src_dir))
+                continue
+            except FileNotFoundError:
+                # ONLY absent, which is ordinary on a fresh data home. Every other errno
+                # propagates: `EIO` on a failing disk, `ESTALE` on a dropped NFS handle,
+                # `ENOTCONN` on a disconnected mount, `ENOTDIR` on a data home whose
+                # ancestor is a file. Folding those in here omitted a whole selected tree
+                # with nothing in `skipped`, so the manifest still declared the component
+                # present and the guard below pruned the last complete archive -- the same
+                # silent loss this probe exists to stop, one errno class over. A backup
+                # target is exactly where those errnos happen, so this is the last branch
+                # that may hide them; the estimate already raises on the same class.
+                root_st = None
+            if root_st is None or not _stat.S_ISDIR(root_st.st_mode):
                 continue
             dst_dir.parent.mkdir(parents=True, exist_ok=True)
             with ExitStack() as admission:
@@ -2047,6 +2293,9 @@ def _build_snapshot(
                     allow_unpinned=allow_unpinned,
                     on_skip=_record_skip,
                     ignore=_staging_ignore(tree, src_dir),
+                    # `_record_skip` puts every one of these in MANIFEST.json, which
+                    # is what makes tolerating them honest rather than silent.
+                    skip_unreadable=True,
                 )
                 # Include WAL-resident rows through SQLite's backup API, without copying
                 # sidecars that belong to the live database rather than this snapshot.
@@ -2090,6 +2339,10 @@ def _build_snapshot(
             },
         }
         (stage / "MANIFEST.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        if skipped_out is not None:
+            # Taken from the same list the manifest just recorded, at the same point, so
+            # the bundle and the caller cannot disagree about what was omitted.
+            skipped_out.extend(skipped)
         if staging_mode == "unpinned":
             print(
                 "⚠️  Staged by path name (--allow-unpinned-staging): this platform "
@@ -2237,18 +2490,29 @@ def snapshot_main(
     # The TARBALL keeps the familiar name: `--list`, pruning and `--keep` all glob
     # `kirocrew-snapshot-*.tar.gz`, and a partial bundle still needs to be found and
     # rotated by them. Only the directory inside it carries the marker.
+    # Filled by the staging pass below, and read by the retention guard after it.
+    omissions: list[dict[str, str]] = []
     complete = set(selected) == set(COMPONENTS)
     name = f"kirocrew-snapshot-{ts}"
     root_name = name if complete else f"kirocrew-partial-{ts}"
 
-    # Pre-flight size estimate
+    # Pre-flight size estimate, over what this run will actually stage.
     if mc.is_dir():
-        total_bytes = sum(
-            f.stat().st_size for f in mc.rglob("*") if f.is_file() and not f.is_symlink()
-        )
+        total_bytes, unreadable = _estimate_selected_bytes(mc, selected)
         total_mb = total_bytes / (1024 * 1024)
         if total_mb > 500:
             print(f"⚠️  {mc} is {total_mb:.0f} MB — snapshot may be large and slow")
+        if unreadable:
+            # stderr, and a count rather than a list: on a stock macOS install this is
+            # a handful of platform-protected paths, and the operator's stdout carries
+            # the bundle path. Each one that the STAGING pass also meets is named
+            # individually and recorded in MANIFEST.json, so nothing is lost by
+            # summarising here.
+            print(
+                f"⚠️  skipped {unreadable} unreadable entr"
+                f"{'y' if unreadable == 1 else 'ies'} while estimating the size",
+                file=sys.stderr,
+            )
 
     # NO pre-staging WAL checkpoint, deliberately: it would be the ONLY write this command
     # makes to the live database, and it cannot be made safe. A checkpoint cannot run
@@ -2278,6 +2542,7 @@ def snapshot_main(
             purpose=purpose,
             root_name=root_name,
             allow_unpinned=allow_unpinned,
+            skipped_out=omissions,
         )
     except pinned_fs.PinnedPathRefusal as exc:
         # A refusal is a decision this command made on purpose. A traceback would
@@ -2340,9 +2605,42 @@ def snapshot_main(
     snaps = sorted(
         out.glob("kirocrew-snapshot-*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True
     )
-    for old in snaps[args.keep :]:
-        old.unlink()
-        print(f"🗑  Pruned: {_safe_name(old.name)}")
+    # A run that could not READ something it was asked to carry does not prune.
+    #
+    # Retention decides what to delete by mtime alone, so a bundle missing a file it was
+    # asked for counts as the newest backup exactly like a whole one: with `--keep 1`
+    # today's incomplete bundle deletes yesterday's complete one, reports success, and
+    # the operator's last restorable copy is gone. Nothing downstream can recover it.
+    #
+    # Skipping the prune is the conservative direction and the cheap one. It keeps more
+    # than `--keep` asked for, which costs disk; pruning would cost the backup. The next
+    # run that reads everything prunes normally and the surplus goes away on its own, so
+    # this cannot grow without bound while the refusal is transient. A refusal that is
+    # NOT transient -- a permanently protected file -- holds the surplus, and that is the
+    # right way round: it is also the case where the older complete bundle is the only
+    # complete one the operator will ever have.
+    # Asked as a CLASS, never by naming a reason code. A guard that names
+    # `unreadable_entry` lets `too_large`, `vanished` and `identity_changed` past it
+    # into the prune: a guard that enumerates codes is stale from the moment the next
+    # code is added, and it goes on answering the old way until someone remembers to
+    # come back here. `pinned_fs.omits_wanted_data` answers True for anything not
+    # explicitly screened-by-design, so a new reason is incomplete-by-default and the
+    # surplus bundle is the cost of forgetting.
+    # Named apart from the estimate's `unreadable` COUNT earlier in this function: two
+    # different things, and reusing the name shadowed an int with a list.
+    omitted = [s for s in omissions if pinned_fs.omits_wanted_data(s["reason"])]
+    if omitted:
+        reasons = ", ".join(sorted({str(s["reason"]) for s in omitted}))
+        print(
+            f"⚠️  Not pruning: this bundle omits {len(omitted)} entr"
+            f"{'y' if len(omitted) == 1 else 'ies'} it was asked to carry "
+            f"({reasons}; see MANIFEST.json). Older bundles are kept so a complete "
+            f"one is not replaced by an incomplete one."
+        )
+    else:
+        for old in snaps[args.keep :]:
+            old.unlink()
+            print(f"🗑  Pruned: {_safe_name(old.name)}")
 
     remaining = len(list(out.glob("kirocrew-snapshot-*.tar.gz")))
     print(f"📦 Snapshots in {out}: {remaining} (keep={args.keep})")

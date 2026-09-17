@@ -285,9 +285,30 @@ earlier attempts at this change. The flag is a permission for a platform that ca
 pin, **not** a switch that turns pinning off where it works.
 
 `MANIFEST.json` also carries `"skipped"`: any file omitted during staging (a hardlink
-alias, a symlink, an entry that vanished mid-walk) with its reason, so an incomplete
-archive says so in its own record instead of only in the console output of whoever ran
-the command.
+alias, a symlink, an entry that vanished mid-walk, or an entry present but refused for
+permission -- `unreadable_entry`) with its reason, so an incomplete archive says so in
+its own record instead of only in the console output of whoever ran the command.
+
+`unreadable_entry` is the one reason that is a TOLERANCE rather than a screen, and it is
+narrow in three ways. It belongs to snapshot creation only -- restore and merge still
+stop, because there the unreadable name is the archive's own content and skipping it
+would drop data the operator asked to have put back. It covers only the permission
+class, so a failing device still ends the command instead of producing a backup that
+quietly omits whatever the disk refused. And it covers only reads of the operator's
+own file: a refusal to WRITE the staged copy is never recorded as the source being
+unreadable. A data home can hold a platform-protected path that no retry will make
+readable, and refusing to produce any backup over one file is worse than a bundle whose
+manifest names the gap. Files a component DECLARES are not covered: those are
+product-owned state, and a bundle that silently shipped without `config.json` would be
+worse than a refusal, so that loop still fails hard.
+
+Retention reads those reasons as a **class**, not by name, through one predicate,
+`pinned_fs.omits_wanted_data()`. `symlink` and `not_regular` are screened on every run by
+design, so a bundle that screened one is complete; everything else means the archive
+lacks something it was asked to carry. `--keep` does not prune after a run in the second
+class, and prints which reasons applied. A reason code the split does not know counts as
+incomplete, because the alternative is pruning the operator's last complete backup on
+the strength of a code nobody has classified yet.
 
 SQLite databases are **out of scope** for the pinned staging described here: they keep the
 `sqlite3.backup()` path they already had, which reopens the live name. Capturing a live
