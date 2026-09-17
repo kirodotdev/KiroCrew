@@ -47,7 +47,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, PanelLeft, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -518,6 +518,40 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
   )
 }
 
+/** Glyph inside the nav-rail header's expand/collapse button — the same
+ *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
+ *  the rail is collapsed the logo is the button's ONLY visible content (the
+ *  bot name is unmounted), so a 404 on the avatar asset, a blocked request or
+ *  a hung fetch used to leave an invisible control that still toggled the
+ *  rail when clicked. A PanelLeft glyph therefore fills the box by default,
+ *  the swap to the logo happens only on the img's own `load` event, and
+ *  `error` reverts it. `loadedSrc` records WHICH src loaded so a branding or
+ *  theme swap falls back until the new asset proves itself. `boxClass` is the
+ *  theme-overridable size (`branding.logoClass`, else w-10 collapsed / w-7
+ *  expanded) and is applied to BOTH the fallback and the img so the swap never
+ *  moves the button's geometry; the hover tilt and `transition-all` classes
+ *  live on the img exactly as before. The img stays mounted (display:none)
+ *  while hidden so the browser still fetches it. A sibling rather than a
+ *  generalisation of MobileNavGlyph: that component's literal `w-6 h-6` box is
+ *  pinned by narrowFirstBaseline.test.ts, while this box is a runtime
+ *  expression. */
+export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string; boxClass: string; iconSize: number }) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const showLogo = !!avatar && loadedSrc === avatar
+  return (
+    <>
+      {!showLogo && (
+        <span data-testid="rail-header-fallback" className={`${boxClass} flex items-center justify-center shrink-0 transition-all duration-300 group-hover:rotate-[-8deg]`} aria-hidden="true">
+          <PanelLeft size={iconSize} />
+        </span>
+      )}
+      {!!avatar && (
+        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+      )}
+    </>
+  )
+}
+
 function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
   if (count <= 0) return null
   const ariaLabel = `${count} ${label}`
@@ -704,10 +738,14 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       // it when collapsed (icon-only, no text).
       role="button"
       tabIndex={0}
-      whileHover={collapsed ? undefined : { scale: 1.02 }}
+      // Hover is a HOVER: the row paints (`hover:bg-bg-hover` / `hover:text-text`
+      // below) and does not move. A scale on hover made every rail row grow a
+      // couple of pixels under the cursor, nudging its neighbours and re-reading
+      // as a layout change rather than as "you are pointing at this". Press still
+      // scales — that one is feedback for an action the user actually took.
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -837,7 +875,7 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   const titleText = showsCollapse ? i18nT('app.show_fewer_apps') : i18nT('app.show_more_apps', { count: hiddenCount })
   return (
     <button ref={rowRef}
-      className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none w-full"
+      className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover/60 bg-transparent border-none w-full"
       // Dismiss the hover label on activation, without the fade-out. Unlike a
       // NavItem (which stays put when clicked, so the pointer is still
       // legitimately over it), activating this toggle re-flows the Apps list and
@@ -4077,7 +4115,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg]`} />
+                <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span

@@ -95,11 +95,16 @@ class TestSpawnSubAgents:
             # The poll endpoint must never be hit with an empty id.
             assert mock_get.call_count == 0
 
-    def test_reports_timed_out_agents(self):
+    def test_wait_expiry_reports_still_running_never_failed(self):
+        """The blocking wait ending is a fact about the CALL, not the children:
+        they are reported still_running with their ids, states and how to poll,
+        never marked timed out or failed, and never cancelled."""
+        import json
+
         with patch("kiro_crew.mcp_core._post") as mock_post, \
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.time") as mock_time, \
-             patch("kiro_crew.mcp_core.sel"), \
+             patch("kiro_crew.mcp_core.sel") as mock_sel, \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": False, "agent": "slow"}
@@ -113,7 +118,50 @@ class TestSpawnSubAgents:
                 "agents": [{"prompt": "long task"}],
             })
 
-            assert '"timed_out"' in result
+            assert '"timed_out"' not in result
+            assert '"failed"' not in result
+            envelope = json.loads(result.split("\n\n")[-1])
+            assert envelope["status"] == "still_running"
+            assert envelope["task_ids"] == ["a1"]
+            assert envelope["states"] == {"a1": "running"}
+            assert envelope["query"] == "spawn_status/spawn_list"
+            assert envelope["waited_secs"] == 7200
+            # nothing was cancelled or marked collected for the live child
+            assert not any(
+                call.args and "cancel" in str(call.args[0]) for call in mock_post.call_args_list
+            )
+            assert not any(
+                call.args and call.args[0] == "/api/spawn/mark-collected"
+                for call in mock_post.call_args_list
+            )
+            outcome_call = mock_sel.return_value.log_tool_invocation.call_args_list[-1]
+            assert outcome_call.kwargs["outcome"] == "partial"
+            assert outcome_call.kwargs["metadata"]["still_running"] == 1
+
+    def test_wait_expiry_reports_queued_and_permission_states(self):
+        import json
+
+        with patch("kiro_crew.mcp_core._post") as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core.time") as mock_time, \
+             patch("kiro_crew.mcp_core.sel"), \
+             patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
+            mock_post.side_effect = [{"id": "q1"}, {"id": "p1"}]
+            by_id = {
+                "/api/spawn/q1": {"done": False, "queued": True},
+                "/api/spawn/p1": {"done": False, "awaiting_approval": True},
+            }
+            mock_get.side_effect = lambda path, *a, **k: by_id.get(path, {"done": False})
+            mock_time.monotonic.side_effect = [0, 0, 999999]
+            mock_time.sleep = lambda _: None
+
+            result = _call_tool(
+                "spawn_sub_agents", {"agents": [{"prompt": "a"}, {"prompt": "b"}]}
+            )
+
+            envelope = json.loads(result.split("\n\n")[-1])
+            assert envelope["status"] == "still_running"
+            assert envelope["states"] == {"q1": "queued", "p1": "waiting_permission"}
 
     def test_pings_session_keepalive_during_long_poll(self):
         """Finding 1: the poll loop must ping /api/session-keepalive so the
@@ -169,7 +217,8 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "t"}]})
 
-            assert '"timed_out"' in result
+            assert '"still_running"' in result
+            assert '"waited_secs": 120' in result
 
     def test_reports_errored_agents(self):
         with patch("kiro_crew.mcp_core._post") as mock_post, \

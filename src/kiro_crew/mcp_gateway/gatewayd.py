@@ -37,6 +37,7 @@ _ensure_ssl_certs()
 import argparse
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -45,8 +46,8 @@ import signal
 import sys
 import time
 import traceback
-from collections import OrderedDict
-from dataclasses import replace
+from collections import OrderedDict, deque
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterator, NoReturn, Optional
 
@@ -62,8 +63,22 @@ from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_caller import new_tenant_nonce
 from kiro_crew.mcp_gateway import credwatch, hazards, socketsec, tool_surface, transport
+from kiro_crew.mcp_gateway.admission import (
+    DEFAULT_CAPACITY,
+    DEFAULT_CEILING,
+    DEFAULT_FLOOR,
+    OUTCOME_FAILURE,
+    OUTCOME_NEUTRAL,
+    Admission,
+    OnQueued,
+    Permit,
+    SpawnGate,
+    SpawnGateClosed,
+    SpawnGateTimeout,
+)
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import (
+    _DEFAULT_INITIALIZE_TIMEOUT_SECS,
     INTERNAL_STUB_PREFIXES,
     Backend,
     BackendGone,
@@ -72,8 +87,16 @@ from kiro_crew.mcp_gateway.backend import (
 from kiro_crew.mcp_gateway.backend_tmp import sweep_all_backend_tmp
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 from kiro_crew.mcp_gateway.hashing import hash_effective_env, non_secret_env
+from kiro_crew.mcp_gateway.host_budget import (
+    HostBudget,
+    HostBudgetExhausted,
+    HostBudgetLimits,
+    HostCharge,
+    resolve_limits,
+)
 from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env, is_credential_env_key
 from kiro_crew.mcp_gateway.pool import (
+    _DEFAULT_READ_BUFFER_LIMIT,
     DRAIN_DEADLINE_SECS,
     READ_BUFFER_LIMIT_BYTES,
     BackendPool,
@@ -173,6 +196,24 @@ def _emit_lazy_load_metrics(elapsed_ms: float, *, warm: bool) -> None:
 # of MiB, so build it inside the function that needs it.
 _MAX_FRAME_BYTES = READ_BUFFER_LIMIT_BYTES  # see pool.READ_BUFFER_LIMIT_BYTES
 
+# Aggregate bounds on what ONE connection may park while
+# ``_await_answering_pings`` serves an acquire or respawn wait. ``pending`` is
+# drained only AFTER that wait returns, so across the default 600s
+# ``spawn_queue_wait_secs`` a peer that keeps writing non-ping frames grows
+# daemon RSS without limit and takes every co-pooled session down with it --
+# the same guard class as ``backend._STUB_INBOX_MAXSIZE`` in the opposite
+# direction. Both dimensions are load-bearing: a count bound alone admits
+# ``_MAX_PENDING_FRAMES`` x ``_MAX_FRAME_BYTES``, and a byte bound alone leaves
+# the per-object overhead of millions of tiny frames unaccounted. 4096 is the
+# stub inbox's own number, orders of magnitude above what a real stub parks
+# during a wait (one in-flight request, at most a control frame). The byte bound
+# follows ``_MAX_FRAME_BYTES`` upward so one frame the reader was willing to
+# return can never trip it alone, and is floored at the shipped read limit so
+# tuning ``mcp_gateway.read_buffer_limit_bytes`` DOWN (1 KiB is accepted) cannot
+# tighten the park along with it.
+_MAX_PENDING_FRAMES = 4096
+_MAX_PENDING_BYTES = max(_DEFAULT_READ_BUFFER_LIMIT, _MAX_FRAME_BYTES)
+
 # How long a connection handler waits for the first Register message
 # before giving up on an idle client. Keeps the event loop from
 # accumulating half-open connections that never send anything.
@@ -190,7 +231,74 @@ _REGISTER_TIMEOUT_SECS = 5.0
 #                    reachable, because the manager adopts anything answering
 #                    ``pong`` with no version handshake — so one that outlived a
 #                    package upgrade serves new stubs.
-REGISTERED_CAPABILITIES: tuple[str, ...] = ("ensure_backend", "bridge_ping", "poolable_ack")
+#   spawn_queue    — ``ensure_backend`` may carry ``wait_budget_secs``; the daemon
+#                    then QUEUES the spawn behind the global spawn gate and emits
+#                    ``{"type": "queued", ...}`` keepalives while it waits, and its
+#                    ``rejected`` frames carry a ``class``. A stub that did not
+#                    see this capability never receives ``queued`` (its
+#                    single-response pre-flight would read it as a rejection).
+REGISTERED_CAPABILITIES: tuple[str, ...] = (
+    "ensure_backend",
+    "bridge_ping",
+    "poolable_ack",
+    "spawn_queue",
+)
+
+# Rejection classes carried on ``rejected`` frames. The stub runs
+# ``fallback_exec`` ONLY for ``compat`` (a pooled target this daemon cannot run
+# or has no mapping for) and ``isolation`` (a private target this daemon cannot
+# serve): both are properties of the target, and the stub's own exec is the
+# topology the connection asked for. ``capacity`` covers everything that is a
+# property of the HOST or of this moment -- resident pool full, host budget
+# exhausted, spawn-gate wait budget spent, breaker OPEN, a fork refused for
+# memory or descriptors -- and never falls back, because a per-session exec is
+# one more process on the host that just refused one. It carries
+# ``retry_after_secs`` instead. "Never" is unconditional on what the stub
+# negotiated: a stub that cannot read ``class`` reads the untagged refusal as
+# terminal and exits, losing that ONE session's tools, which is the price of
+# never handing an at-capacity host an exec nothing can charge.
+REJECT_CLASS_CAPACITY = "capacity"
+REJECT_CLASS_COMPAT = "compat"
+REJECT_CLASS_ISOLATION = "isolation"
+
+# Hint on a ``capacity`` rejection: when the stub may try again.
+_CAPACITY_RETRY_AFTER_SECS = 30
+
+# Spawn-gate wait for a stub that did NOT negotiate ``spawn_queue`` (and for the
+# legacy lazy-spawn path). Such a stub gives up on its own after 25 s and falls
+# back to a per-session exec, so a longer daemon-side wait would only spawn a
+# backend nobody attaches to. The wait still happens INSIDE the gate, so old
+# stubs obey the global spawn bound; what they cannot get is the queue.
+_LEGACY_SPAWN_WAIT_SECS = 20.0
+
+# How much of a queue-aware stub's own budget the daemon leaves itself to answer
+# in. The stub starts its timer before it writes ``ensure_backend`` and the
+# daemon starts its own only after reading the frame, so an EQUAL budget expires
+# on the stub first -- and a stub whose budget expires runs ``fallback_exec``,
+# the unaccounted per-session exec a ``capacity`` refusal exists to withhold. The
+# refusal therefore has to be raised, written and read while the stub is still
+# waiting, which is what the margin buys. 5 s is the ``_LEGACY_SPAWN_WAIT_SECS``
+# figure against the same 25 s pre-flight, and the fractional cap keeps the
+# inequality strict for a stub that asks for less than the margin: half of a tiny
+# budget is still orders of magnitude above one local socket round trip.
+_QUEUE_REFUSAL_MARGIN_SECS = 5.0
+
+# ``errno`` values on a spawn failure that describe the HOST being out of
+# something a fallback exec would also need. Anything else on an OSError is
+# specific to this daemon's launch environment (a missing binary, a permission)
+# and stays fallback-eligible.
+_PRESSURE_ERRNOS = frozenset({errno.ENOMEM, errno.EAGAIN, errno.EMFILE, errno.ENFILE, errno.ENOSPC})
+#: Every acquire failure that means the HOST or the moment, never the target. Held
+#: equal to what ``_classify_rejection`` tests, the same way ``_PRESSURE_ERRNOS`` is
+#: held equal to the errnos it calls pressure: a sixth member added to one and not
+#: the other would reach ``capacity`` with nothing asserting it authorises no exec.
+_CAPACITY_FAILURES: tuple[type[BaseException], ...] = (
+    PoolAtCapacity,
+    HostBudgetExhausted,
+    SpawnGateTimeout,
+    SpawnGateClosed,
+    BackendUnavailable,
+)
 # Upper bound on a single control/handshake reply's ``drain()`` (pong, stats,
 # registered, rejected, ready, forward-error — everything sent via
 # ``_write_json_line``). ``_REGISTER_TIMEOUT_SECS`` only bounds the inbound
@@ -236,6 +344,15 @@ _HOT_KEYS_FLUSH_INTERVAL_SECS = 30.0
 # above the idle timeout so a healthy warm set is not needlessly re-checked too
 # often, while still recovering a lost backend well within a few minutes.
 _PREWARM_TOPUP_INTERVAL_SECS = 120.0
+
+# A prewarm's own wait at the spawn gate. Nobody is waiting for a warm backend,
+# and the gate is strict FIFO with no priority lane, so a prewarm that has queued
+# is ahead of every stub that arrives after it: bounding the wait is what caps how
+# long that can last. It is also what keeps a pass from parking under
+# ``_prewarm_lock``, which the credential-rotation re-warm needs to take. Kept
+# well under ``_PREWARM_TOPUP_INTERVAL_SECS`` so a pass that stood down is retried
+# by the sweeper rather than overlapping it.
+_PREWARM_SPAWN_WAIT_SECS = 10.0
 
 # Subdirectory under ``$XDG_RUNTIME_DIR`` (or ``/tmp`` fallback) where the
 # gateway puts its socket by default. Callers normally supply an explicit
@@ -299,6 +416,12 @@ async def run_gatewayd(
     prewarm_count: int = 0,
     credential_watch_paths: Optional[list[Path]] = None,
     owner_pid: int = 0,
+    spawn_concurrency: int = DEFAULT_CAPACITY,
+    spawn_concurrency_min: int = DEFAULT_FLOOR,
+    spawn_concurrency_max: int = DEFAULT_CEILING,
+    spawn_queue_wait_secs: float = 600.0,
+    initialize_timeout_secs: float = 10.0,
+    host_budget_limits: Optional[HostBudgetLimits] = None,
 ) -> None:
     """Run the gateway until ``stop_event`` is set.
 
@@ -340,6 +463,21 @@ async def run_gatewayd(
             caller-supplied (typically threaded through the seam-resolved
             ``--credential-watch-path`` argv flags); the daemon never
             hardcodes or interprets any credential path.
+        spawn_concurrency: Daemon-wide number of backend spawn+initialize
+            windows allowed in flight at once (the :class:`SpawnGate`
+            capacity); ``spawn_concurrency_min`` / ``_max`` clamp it and are
+            the bounds the adaptive controller moves it within. Every spawn
+            path -- pooled, private, respawn, prewarm -- takes a permit.
+        spawn_queue_wait_secs: Longest a stub that negotiated ``spawn_queue``
+            may be held in the gate's FIFO before a ``capacity`` rejection.
+            A stub's own ``wait_budget_secs`` can only shorten it.
+        initialize_timeout_secs: Bound on a backend's first ``initialize``
+            window, threaded onto every spawned :class:`Backend`. The gate
+            permit is held for the same window.
+        host_budget_limits: Ceilings for the host budget every backend --
+            pooled, private, fallback -- is charged against. ``None`` derives
+            them (``0`` = auto) from ``max_backends`` and this process's
+            descriptor limit.
 
     The function never raises on normal shutdown. Startup failures (e.g.
     socket directory not creatable, another daemon already bound to the
@@ -396,6 +534,29 @@ async def run_gatewayd(
     # spawns so the stub falls back to per-session exec instead of churning.
     breaker = CircuitBreaker()
     pool = BackendPool(max_backends=max_backends, breaker=breaker)
+    # One admission state for the daemon: the global spawn gate (bounds
+    # spawn+initialize windows in flight, FIFO past that) and the host budget
+    # (charges every process this daemon is answerable for). Built beside the
+    # pool because every spawn path -- pooled, private, respawn, prewarm --
+    # runs through ``_acquire_backend`` and takes both.
+    if host_budget_limits is None:
+        host_budget_limits = resolve_limits(
+            max_procs=0,
+            max_rss_mb=0,
+            max_fds=0,
+            available_mb=None,
+            max_backends=max_backends,
+        )
+    admission = Admission(
+        gate=SpawnGate(
+            spawn_concurrency,
+            floor=max(1, spawn_concurrency_min),
+            ceiling=max(max(1, spawn_concurrency_min), spawn_concurrency_max),
+        ),
+        budget=HostBudget(host_budget_limits),
+        initialize_timeout_secs=initialize_timeout_secs,
+        spawn_queue_wait_secs=spawn_queue_wait_secs,
+    )
     connections: set[asyncio.Task[None]] = set()
 
     # MCP Apps spool hygiene: reap records past their 24h TTL at every daemon
@@ -445,7 +606,14 @@ async def run_gatewayd(
         task = asyncio.current_task()
         try:
             await _handle_connection(
-                reader, writer, pool, resolver, socket_path, hot_keys, stop_event=stop_event
+                reader,
+                writer,
+                pool,
+                resolver,
+                socket_path,
+                hot_keys,
+                stop_event=stop_event,
+                admission=admission,
             )
         except asyncio.CancelledError:
             # Normal on shutdown — propagate for the gather() below.
@@ -651,6 +819,18 @@ async def run_gatewayd(
                 try:
                     if initial:
                         await asyncio.to_thread(hot_keys.load)
+                    # Prewarm yields to every stub: a live session waiting in the
+                    # gate's queue would only be delayed by warming a key nobody
+                    # has asked for. Checked here AND before each key below,
+                    # because a pass takes as long as its spawns and a stub that
+                    # arrives during one would otherwise queue behind the rest of
+                    # it. The top-up sweeper runs this pass again later.
+                    if admission.gate.queued > 0:
+                        logger.info(
+                            "prewarm: %d stub(s) queued at the spawn gate — skipping this pass",
+                            admission.gate.queued,
+                        )
+                        return
                     payloads = hot_keys.top_register_payloads(prewarm_count)
                     if not payloads:
                         logger.info("prewarm: no hot keys yet — nothing to warm")
@@ -666,7 +846,34 @@ async def run_gatewayd(
                         # sweep, capacity pressure) between a pre-check and the
                         # acquire, turning a "reuse" into a real spawn whose audit
                         # a pre-check would silently skip.
-                        backend, was_spawned = await _acquire_backend(pool, pool_key, resolver)
+                        #
+                        # ``prewarm=True``: the permit settles NEUTRAL the moment
+                        # the spawn returns. Nothing sends this backend an
+                        # ``initialize`` until a stub attaches, so waiting for
+                        # one would time out every unused warm backend and read
+                        # the daemon's own prewarming as congestion.
+                        #
+                        # Re-read per key, not once per pass: the queue can gain a
+                        # live stub while an earlier key is being spawned, and the
+                        # gate admits in strict arrival order, so a prewarm that
+                        # enqueues after that stub arrives is served BEFORE it.
+                        # ``prewarm_from_payloads`` logs the stand-down and moves
+                        # on, leaving the daemon to serve lazily.
+                        if admission.gate.queued > 0:
+                            raise _PrewarmStoodDown(
+                                f"{admission.gate.queued} stub(s) queued at the spawn gate"
+                            )
+                        # ...and bounded, because the gate has no priority lane: a
+                        # prewarm already queued cannot be overtaken, so the wait
+                        # is what caps how long a stub can sit behind it.
+                        backend, was_spawned = await _acquire_backend(
+                            pool,
+                            pool_key,
+                            resolver,
+                            admission=admission,
+                            prewarm=True,
+                            wait_deadline=time.monotonic() + _PREWARM_SPAWN_WAIT_SECS,
+                        )
                         if was_spawned:
                             _audit_prewarm_spawn(pool_key.human_readable())
                         return backend
@@ -745,6 +952,14 @@ async def run_gatewayd(
         await stop_event.wait()
     finally:
         logger.info("gatewayd shutting down (connections=%d)", len(connections))
+        # Admission closes FIRST: every queued spawn is failed with
+        # SpawnGateClosed (its stub gets a capacity rejection and can retry
+        # against the next daemon), every initialize watcher is cancelled
+        # (releasing its permit as neutral) and every host charge is dropped.
+        # Doing this before the accept loop stops means no waiter is admitted
+        # into a spawn that the pool teardown below would immediately reap.
+        with contextlib.suppress(Exception):
+            await admission.close()
         # Stop accepting first, but do NOT await wait_closed() yet: since
         # Python 3.12 it waits for every accepted connection to finish, so
         # awaiting it here would block for as long as any stub stayed
@@ -2287,11 +2502,13 @@ def _audit_pool_fallback(caller: str, pool_label: str, reason: str) -> None:
     direct, unpooled per-session exec.
 
     Telling a stub to run its backend outside the pool is an operational
-    degradation worth a security-audit trail: a sustained fallback storm (pool
-    chronically saturated, or a server repeatedly failing to spawn under the
-    jail/pool) is then visible in the HMAC-chained SEL, not just in the stub's
-    best-effort jsonl + the pool ``capacity_rejects`` counter. Wrapped
-    defensively -- an audit-log failure must never break connection handling.
+    degradation worth a security-audit trail: a sustained storm of them (a target
+    map that drifted, or a server the jail cannot launch for a reason an exec
+    would not share) is then visible in the HMAC-chained SEL, not just in the
+    stub's best-effort jsonl + the pool ``capacity_rejects`` counter. A saturated
+    pool is NOT among them: capacity carries no fallback, so pressure shows up as
+    a rejection rather than a fork. Wrapped defensively -- an audit-log failure
+    must never break connection handling.
     """
     try:
         SecurityEventLog().log_api_access(
@@ -2309,12 +2526,15 @@ def _audit_pool_fallback(caller: str, pool_label: str, reason: str) -> None:
 def _audit_pool_rejected(caller: str, pool_label: str, reason: str) -> None:
     """Emit a SEL audit event for a TERMINAL backend-acquire denial.
 
-    Refusing a stub a backend with no fallback (unknown target, breaker-open on
-    the legacy lazy path, or an unexpected gateway-internal error) is a
-    permission decision just like the fallback path, so for a complete
-    access-decision trail it is recorded in the HMAC-chained SEL alongside
-    :func:`_audit_pool_fallback`. Wrapped defensively -- an audit-log failure
-    must never break connection handling.
+    Refusing a stub a backend with no fallback is a permission decision just like
+    the fallback path, so for a complete access-decision trail it is recorded in
+    the HMAC-chained SEL alongside :func:`_audit_pool_fallback`. Its population is
+    every EXEC-less refusal: an unexpected gateway-internal error, breaker-open on
+    the legacy lazy path, and every ``capacity``-classed refusal at the pre-flight
+    (a full pool, an exhausted host budget, a spent or closed spawn gate, a
+    pressure errno) -- which is the larger half, because pressure is what a loaded
+    daemon refuses most. Wrapped defensively -- an audit-log failure must never
+    break connection handling.
     """
     try:
         SecurityEventLog().log_api_access(
@@ -2541,6 +2761,7 @@ async def _handle_connection(
     hot_keys: Optional[HotKeyStore] = None,
     *,
     stop_event: Optional[asyncio.Event] = None,
+    admission: Optional[Admission] = None,
 ) -> None:
     """Process one stub connection end-to-end.
 
@@ -2645,6 +2866,8 @@ async def _handle_connection(
         # off the event loop, or every concurrent gateway task stalls behind a
         # stats poll.
         snapshot["stub_fallbacks"] = await asyncio.to_thread(stub_fallback_counts)
+        if admission is not None:
+            snapshot["admission"] = admission.snapshot()
         await _write_json_line(writer, {"type": "stats", **snapshot})
         return
 
@@ -2668,6 +2891,17 @@ async def _handle_connection(
     # same uid-gated 0700 socket as Register/Claim.
     if register.get("type") == "abort":
         await _write_json_line(writer, await _apply_abort(register, pool))
+        return
+
+    # Spawn-capacity short-circuit (one-shot control connection from the main
+    # gateway's adaptive controller): move the daemon-wide spawn gate's live
+    # capacity. The gate clamps to its own [floor, ceiling] and never revokes
+    # an in-flight spawn, so the worst a value it can USE does is admit fewer;
+    # one it cannot use is answered ``spawn-capacity-rejected``, never raised —
+    # an exception escaping here drops this connection with no reply at all.
+    # Trust basis: same uid-gated 0700 socket as Register/Claim/Abort.
+    if register.get("type") == "set-spawn-capacity":
+        await _write_json_line(writer, _apply_set_spawn_capacity(register, admission))
         return
 
     # Stand-down short-circuit (one-shot control connection from a STARTING
@@ -3055,10 +3289,17 @@ async def _handle_connection(
     # backend dies). Persists across warm-pool rekey since the stub process
     # — and this coroutine — outlive a single chat.
     captured_init: Optional[dict[str, Any]] = None
+    # Frames read while a spawn wait was being served (see
+    # ``_await_answering_pings``): pings were answered on the spot, everything
+    # else is parked here and processed in arrival order before the socket is
+    # read again, so nothing kiro-cli sent during a respawn is dropped. Bounded
+    # by ``_MAX_PENDING_FRAMES`` / ``_MAX_PENDING_BYTES``, since only the loop
+    # below drains it and it cannot run while a wait is being served.
+    pending: deque[bytes] = deque()
     try:
         while True:
             try:
-                line = await reader.readuntil(b"\n")
+                line = pending.popleft() if pending else await reader.readuntil(b"\n")
             except asyncio.IncompleteReadError:
                 return
             except asyncio.LimitOverrunError:
@@ -3188,115 +3429,117 @@ async def _handle_connection(
             # downstream to the backend.
             if msg.get("type") == "ensure_backend":
                 if backend is None:
+                    # ``spawn_queue`` negotiation: a finite ``wait_budget_secs``
+                    # on the frame means the stub understands ``queued``
+                    # keepalives and will wait for them. Anything else is an
+                    # old stub, which keeps the single-response behaviour and
+                    # a short, silent gate wait.
+                    wait_budget = _negotiated_wait_budget(msg, admission)
+                    queue_aware = wait_budget is not None
+                    deadline: Optional[float] = None
+                    if admission is not None:
+                        deadline = time.monotonic() + (
+                            wait_budget if wait_budget is not None else _LEGACY_SPAWN_WAIT_SECS
+                        )
+
+                    async def _on_queued(position: Any) -> None:
+                        await _write_json_line(writer, position.frame())
+
                     _acquire_t0 = time.monotonic()
                     try:
-                        backend, _was_spawned = await _acquire_backend(
-                            pool,
-                            pool_key,
-                            resolver,
-                            exclusive_stub_uuid=exclusive_stub_uuid,
+                        backend, _was_spawned = await _await_answering_pings(
+                            reader,
+                            writer,
+                            pending,
+                            _acquire_backend(
+                                pool,
+                                pool_key,
+                                resolver,
+                                exclusive_stub_uuid=exclusive_stub_uuid,
+                                admission=admission,
+                                wait_deadline=deadline,
+                                on_queued=_on_queued if queue_aware else None,
+                            ),
+                            stub_uuid=stub_uuid,
                         )
                         # acquire-only duration, captured before the attach_stub
                         # + create_task overhead so the metric stays true to name.
                         _acquire_ms = (time.monotonic() - _acquire_t0) * 1000.0
-                    except _TargetUnknown as exc:
-                        # An unknown target here means THIS DAEMON'S env has no
-                        # mapping -- which, at the pre-flight, can only be map
-                        # drift: a stub exists at all only because the rewriter
-                        # wrapped that server, and the stub is holding the real
-                        # ``--target-command`` on its own argv. A genuinely
-                        # unrunnable target fails later, as BackendUnavailable.
-                        # So this is fallback-ELIGIBLE: no real MCP frame has
-                        # been forwarded yet, so the stub can exec the target
-                        # directly and lose nothing but pooling.
-                        #
-                        # Loud, and named: the pre-fix behaviour was a bare
-                        # ``rejected`` with no ``fallback`` key, which the stub
-                        # reads as terminal (stub.py) -- it died in 0.2s having
-                        # logged only to a stderr nobody captures, so a whole
-                        # server's tools vanished from the session with no
-                        # attributable record anywhere. See
-                        # docs/architecture/design-notes/mcp-stub-decoupling.md.
-                        logger.warning(
-                            "ensure_backend: no target mapping for %s -- this "
-                            "daemon's target env predates the current "
-                            "stub_servers set (target map is baked at spawn and "
-                            "an adopted daemon never re-applies it). Replying "
-                            "fallback-eligible so the stub degrades to a "
-                            "per-session exec; pooling and the strict session "
-                            "key are LOST for this connection. Daemon stems: %s",
-                            pool_key.human_readable(),
-                            ",".join(resolvable_target_stems()) or "(none)",
-                        )
-                        _audit_pool_fallback(
-                            caller.session_key if caller else "",
-                            pool_key.human_readable(),
-                            str(exc),
-                        )
-                        await _write_json_line(
-                            writer,
-                            {"type": "rejected", "reason": str(exc), "fallback": True},
-                        )
-                        return
-                    except (BackendUnavailable, PoolAtCapacity) as exc:
-                        logger.info(
-                            "ensure_backend rejected (fallback-eligible) for %s: %s",
-                            pool_key.human_readable(),
-                            exc,
-                        )
-                        _audit_pool_fallback(
-                            caller.session_key if caller else "",
-                            pool_key.human_readable(),
-                            str(exc),
-                        )
-                        await _write_json_line(
-                            writer,
-                            {"type": "rejected", "reason": str(exc), "fallback": True},
-                        )
-                        return
-                    except OSError as exc:
-                        # Spawn / fork failure (ENOMEM, EAGAIN, ENOENT, or a
-                        # jail/pool-specific env mismatch). It may be transient
-                        # or specific to the pooled spawn path, so a direct
-                        # per-session exec can still succeed -- tag it
-                        # fallback-eligible rather than dropping the server's
-                        # tools for the whole session.
-                        logger.warning(
-                            "ensure_backend spawn failed (fallback-eligible) for %s: %s",
-                            pool_key.human_readable(),
-                            exc,
-                        )
-                        _audit_pool_fallback(
-                            caller.session_key if caller else "",
-                            pool_key.human_readable(),
-                            f"spawn failed: {exc}",
-                        )
-                        await _write_json_line(
-                            writer,
-                            {
-                                "type": "rejected",
-                                "reason": f"backend spawn failed: {exc}",
-                                "fallback": True,
-                            },
-                        )
+                    except _PeerGone:
                         return
                     except Exception as exc:
-                        # Unexpected gateway-internal error (NOT an OS spawn
-                        # failure) -- terminal, not fallback-eligible: surface it
-                        # rather than masking a gateway bug behind an unpooled
-                        # exec on every session.
-                        logger.exception(
-                            "ensure_backend internal error for %s",
-                            pool_key.human_readable(),
+                        verdict = _classify_rejection(
+                            exc,
+                            exclusive=bool(exclusive_stub_uuid),
                         )
-                        _audit_pool_rejected(
-                            caller.session_key if caller else "",
-                            pool_key.human_readable(),
-                            f"internal error: {exc}",
-                        )
-                        await _write_json_line(
+                        if verdict is None:
+                            # Unexpected gateway-internal error (NOT an OS spawn
+                            # failure) -- terminal, not fallback-eligible: surface
+                            # it rather than masking a gateway bug behind an
+                            # unpooled exec on every session.
+                            logger.exception(
+                                "ensure_backend internal error for %s",
+                                pool_key.human_readable(),
+                            )
+                            _audit_pool_rejected(
+                                caller.session_key if caller else "",
+                                pool_key.human_readable(),
+                                f"internal error: {exc}",
+                            )
+                            await _write_json_line(
+                                writer,
+                                {"type": "rejected", "reason": f"internal error: {exc}"},
+                            )
+                            return
+                        if isinstance(exc, _TargetUnknown):
+                            # An unknown target here means THIS DAEMON'S env has
+                            # no mapping -- which, at the pre-flight, can only be
+                            # map drift: a stub exists at all only because the
+                            # rewriter wrapped that server, and the stub is
+                            # holding the real ``--target-command`` on its own
+                            # argv. A genuinely unrunnable target fails later,
+                            # as BackendUnavailable. So this is fallback-ELIGIBLE:
+                            # no real MCP frame has been forwarded yet, so the
+                            # stub can exec the target directly and lose nothing
+                            # but pooling. See
+                            # docs/architecture/design-notes/mcp-stub-decoupling.md.
+                            logger.warning(
+                                "ensure_backend: no target mapping for %s -- this "
+                                "daemon's target env predates the current "
+                                "stub_servers set (target map is baked at spawn and "
+                                "an adopted daemon never re-applies it). Replying "
+                                "fallback-eligible so the stub degrades to a "
+                                "per-session exec; pooling and the strict session "
+                                "key are LOST for this connection. Daemon stems: %s",
+                                pool_key.human_readable(),
+                                ",".join(resolvable_target_stems()) or "(none)",
+                            )
+                        elif verdict.fallback:
+                            logger.warning(
+                                "ensure_backend rejected (%s, fallback-eligible) for %s: %s",
+                                verdict.cls,
+                                pool_key.human_readable(),
+                                exc,
+                            )
+                        else:
+                            logger.info(
+                                "ensure_backend rejected (%s) for %s: %s",
+                                verdict.cls,
+                                pool_key.human_readable(),
+                                exc,
+                            )
+                        await _reply_rejected(
                             writer,
-                            {"type": "rejected", "reason": f"internal error: {exc}"},
+                            reader,
+                            verdict,
+                            reason=(
+                                f"backend spawn failed: {exc}"
+                                if isinstance(exc, OSError)
+                                else str(exc)
+                            ),
+                            caller=caller,
+                            pool_key=pool_key,
+                            admission=admission,
                         )
                         return
                     # Attach BEFORE replying ``ready`` so the stub can never
@@ -3323,15 +3566,29 @@ async def _handle_connection(
             if backend is None:
                 _lazy_t0 = time.monotonic()
                 try:
-                    backend, _lazy_was_spawned = await _acquire_backend(
-                        pool,
-                        pool_key,
-                        resolver,
-                        exclusive_stub_uuid=exclusive_stub_uuid,
+                    backend, _lazy_was_spawned = await _await_answering_pings(
+                        reader,
+                        writer,
+                        pending,
+                        _acquire_backend(
+                            pool,
+                            pool_key,
+                            resolver,
+                            exclusive_stub_uuid=exclusive_stub_uuid,
+                            admission=admission,
+                            wait_deadline=(
+                                None
+                                if admission is None
+                                else time.monotonic() + _LEGACY_SPAWN_WAIT_SECS
+                            ),
+                        ),
+                        stub_uuid=stub_uuid,
                     )
                     # acquire/spawn-only duration, captured before the attach +
                     # create_task overhead.
                     _lazy_elapsed_ms = (time.monotonic() - _lazy_t0) * 1000.0
+                except _PeerGone:
+                    return
                 except _TargetUnknown as exc:
                     # Same drift as the pre-flight site, but NOT fallback-tagged:
                     # only a pre-ensure_backend stub reaches this path and it has
@@ -3360,7 +3617,13 @@ async def _handle_connection(
                         },
                     )
                     return
-                except (BackendUnavailable, PoolAtCapacity) as exc:
+                except (
+                    BackendUnavailable,
+                    PoolAtCapacity,
+                    HostBudgetExhausted,
+                    SpawnGateTimeout,
+                    SpawnGateClosed,
+                ) as exc:
                     # Legacy lazy-spawn path: only pre-ensure_backend stubs
                     # reach here, and they have already forwarded a real frame,
                     # so a fallback exec would lose it — NOT tagged
@@ -3380,6 +3643,8 @@ async def _handle_connection(
                         {
                             "type": "rejected",
                             "reason": str(exc),
+                            "class": REJECT_CLASS_CAPACITY,
+                            "retry_after_secs": _CAPACITY_RETRY_AFTER_SECS,
                         },
                     )
                     return
@@ -3438,19 +3703,28 @@ async def _handle_connection(
                 # and fail ONLY this one in-flight request with a retryable
                 # error. The transport stays open, so the next call self-heals.
                 try:
-                    recovered = await _respawn_backend_for_stub(
-                        pool,
-                        pool_key,
-                        resolver,
-                        stub_uuid,
+                    recovered = await _await_answering_pings(
+                        reader,
                         writer,
-                        captured_init,
-                        backend,
-                        inbox,
-                        writer_task,
-                        caller=caller,
-                        conn=conn,
+                        pending,
+                        _respawn_backend_for_stub(
+                            pool,
+                            pool_key,
+                            resolver,
+                            stub_uuid,
+                            writer,
+                            captured_init,
+                            backend,
+                            inbox,
+                            writer_task,
+                            caller=caller,
+                            conn=conn,
+                            admission=admission,
+                        ),
+                        stub_uuid=stub_uuid,
                     )
+                except _PeerGone:
+                    return
                 except _ReplacementRefused as refusal:
                     # A replacement was available but validating it said no. The
                     # session gets the REASON, not "backend gone": that is the
@@ -3560,6 +3834,10 @@ async def _acquire_backend(
     resolver: TargetResolver,
     *,
     exclusive_stub_uuid: str = "",
+    admission: Optional[Admission] = None,
+    wait_deadline: Optional[float] = None,
+    on_queued: Optional[OnQueued] = None,
+    prewarm: bool = False,
 ) -> tuple[Backend, bool]:
     """Return ``(backend, was_spawned)`` for ``pool_key`` — spawning one via
     the resolver if absent.
@@ -3575,8 +3853,32 @@ async def _acquire_backend(
     when the connection ends. ``was_spawned`` is then always ``True``, because a
     private backend has nothing to reuse by construction.
 
+    ``admission`` (``None`` = ungated, the shape unit tests use) is the
+    daemon's :class:`Admission`. With it, a REAL spawn takes, in this order and
+    inside the per-key spawn lock after the breaker check: a spawn-gate permit
+    (FIFO, bounded by ``wait_deadline`` on the monotonic clock, ``on_queued``
+    called every keepalive tick while waiting), a host-budget charge, and -- for
+    a pooled backend -- a resident pool slot. Each is released in reverse on any
+    failure before the fork.
+
+    The GATE first, and only then the budget: the gate is the one step that
+    waits, and a waiter that already held a charge would be charging the host for
+    a process that does not exist for as long as it waited -- so a queue of ten
+    reaches the ceiling with nothing running, and the eleventh stub is refused
+    ``capacity`` on an idle host, which authorises no fallback. The budget answers
+    without waiting, so taking it after the permit means it is read against what
+    the host carries at the moment of the fork.
+
+    After the fork the charge follows the process
+    (released when it is reaped) and the permit follows the first
+    ``initialize`` (released by a detached watcher), except under ``prewarm``,
+    where the permit settles neutral at once: nothing will initialise a warm
+    backend until a stub attaches.
+
     Raises :class:`_TargetUnknown` when the resolver has no mapping for the
-    server (a clean rejection, not a crash).
+    server (a clean rejection, not a crash); :class:`HostBudgetExhausted`,
+    :class:`SpawnGateTimeout`, :class:`SpawnGateClosed` and
+    :class:`PoolAtCapacity` from the three admission steps.
     """
     target = resolver(pool_key)
     if target is None:
@@ -3587,12 +3889,75 @@ async def _acquire_backend(
     command, args, env, work_dir = target
 
     was_spawned = False
+    label = pool_key.human_readable()
+    charge_kind = "prewarm" if prewarm else ("exclusive" if exclusive_stub_uuid else "pooled")
 
     async def _spawn() -> Backend:
         # Runs only when the pool creates a new backend (guarded by the
         # per-key create lock), so this flag reports a real spawn 1:1.
         nonlocal was_spawned
         was_spawned = True
+        # --- admission: permit -> budget -> resident slot, nothing forked yet ---
+        # The permit is FIRST because the wait lives there: a charge taken before
+        # it would price a process that does not exist for the whole wait, and a
+        # queue deep enough exhausts the ceiling with an idle host. The two steps
+        # after it answer immediately, so they are read against the host as it is
+        # when the fork is about to happen. See this function's docstring.
+        charge: Optional[HostCharge] = None
+        permit: Optional[Permit] = None
+        slot: Any = None
+        if admission is not None:
+            permit = await admission.gate.acquire(
+                label=label, deadline=wait_deadline, on_queued=on_queued
+            )
+            try:
+                charge = admission.budget.reserve(label=label, kind=charge_kind)
+                if not exclusive_stub_uuid:
+                    slot = await pool.reserve_resident_slot(pool_key)
+            except BaseException:
+                if charge is not None:
+                    charge.release()
+                # Our own ceilings, not the host's verdict on a fork: neutral, the
+                # same outcome a resident-slot refusal has always recorded.
+                permit.settle(OUTCOME_NEUTRAL)
+                permit.release()
+                raise
+        try:
+            backend = await _spawn_admitted()
+        except BaseException as exc:
+            # Strictly the reverse of the acquisition above: the permit is
+            # released LAST because releasing it admits the next waiter, which
+            # reserves the budget the line before has just given back.
+            if slot is not None:
+                slot.release()
+            if charge is not None:
+                charge.release()
+            if permit is not None:
+                # A fork the OS refused is what congestion looks like from
+                # here; a cancellation or any other failure teaches nothing.
+                permit.settle(
+                    OUTCOME_FAILURE
+                    if isinstance(exc, OSError) and not isinstance(exc, asyncio.CancelledError)
+                    else OUTCOME_NEUTRAL
+                )
+                permit.release()
+            raise
+        if admission is not None and charge is not None and permit is not None:
+            admission.track_process(charge, backend.process.wait)
+            if prewarm:
+                permit.settle(OUTCOME_NEUTRAL)
+                permit.release()
+            else:
+                admission.gate.watch_initialize(
+                    permit,
+                    init_done=backend._init_done_event,
+                    init_state=lambda: backend._init_state,
+                    process_exited=backend.process.wait,
+                    timeout=backend.initialize_timeout_secs,
+                )
+        return backend
+
+    async def _spawn_admitted() -> Backend:
         spawn_env = dict(env)
         # Cold-spawn only (never per request), and entirely off the event loop:
         # the flag check reads config and the sidecar read touches the
@@ -3700,6 +4065,11 @@ async def _acquire_backend(
             # path hidden behind ``secret://`` cannot bypass the runtime check.
             declared_temp_keys=accepted_temp_keys,
             secret_env_keys=tuple(_secret_keys),
+            **(
+                {"initialize_timeout_secs": admission.initialize_timeout_secs}
+                if admission is not None
+                else {}
+            ),
         )
         # Security note: resolved secrets exist ONLY in the local spawn_env
         # dict passed to the child via Popen(env=...).  They are NEVER written
@@ -3823,6 +4193,62 @@ async def _respawn_backend_for_stub(
     old_writer_task: Optional[asyncio.Task[None]],
     caller: Optional[CallerContext] = None,
     conn: Optional[_StubConn] = None,
+    admission: Optional[Admission] = None,
+) -> Optional[tuple[Backend, "asyncio.Queue[bytes]", asyncio.Task[None]]]:
+    """Rebuild a fresh backend for ``stub_uuid`` after its shared backend died
+    (see :func:`_respawn_backend_for_stub_unrecorded` for the mechanics).
+
+    This wrapper is the recovery ladder's L2 rung: a completed respawn is one
+    ``record_restart(L2_backend)`` plus an ``observe_success`` for the server,
+    and a give-up is one ``observe_failure`` -- the second give-up for the same
+    server inside the layer's cooldown escalates to L3 (the ACP runtime), which
+    is what the stub's terminal error then represents. The breaker's own
+    ``OPEN`` cooldown stays the wait between rungs; the ladder counts, it does
+    not sleep here.
+    """
+    from kiro_crew.recovery.ladder import L2_BACKEND, default_ladder
+
+    result = await _respawn_backend_for_stub_unrecorded(
+        pool,
+        pool_key,
+        resolver,
+        stub_uuid,
+        writer,
+        captured_init,
+        old_backend,
+        old_inbox,
+        old_writer_task,
+        caller=caller,
+        conn=conn,
+        admission=admission,
+    )
+    unit = pool_key.server_name
+    try:
+        if result is None:
+            default_ladder().observe_failure(
+                L2_BACKEND, unit, reason=f"respawn give-up for stub {stub_uuid[:8]}"
+            )
+        else:
+            default_ladder().record_restart(L2_BACKEND)
+            default_ladder().observe_success(L2_BACKEND, unit)
+    except Exception:  # pragma: no cover - the ladder must never break a respawn
+        logger.debug("recovery ladder L2 bookkeeping failed", exc_info=True)
+    return result
+
+
+async def _respawn_backend_for_stub_unrecorded(
+    pool: BackendPool,
+    pool_key: PoolKey,
+    resolver: TargetResolver,
+    stub_uuid: str,
+    writer: asyncio.StreamWriter,
+    captured_init: Optional[dict[str, Any]],
+    old_backend: Backend,
+    old_inbox: Optional["asyncio.Queue[bytes]"],
+    old_writer_task: Optional[asyncio.Task[None]],
+    caller: Optional[CallerContext] = None,
+    conn: Optional[_StubConn] = None,
+    admission: Optional[Admission] = None,
 ) -> Optional[tuple[Backend, "asyncio.Queue[bytes]", asyncio.Task[None]]]:
     """Rebuild a fresh backend for ``stub_uuid`` after its shared backend
     died and re-bind this stub to it transparently.
@@ -3833,6 +4259,10 @@ async def _respawn_backend_for_stub(
     handshake failed) — the caller then falls back to the terminal error so
     the stub can do a clean per-session exec instead of the gateway churning
     spawns against a broken backend.
+
+    The replacement is admitted like any other spawn (``admission``): it waits
+    in the spawn gate up to the daemon's queue budget, during which the caller
+    keeps answering the stub's bridge pings.
 
     Never re-forwards the in-flight request itself: a ``tools/call`` may have
     executed on the old backend before it died, so replaying it could
@@ -3930,8 +4360,20 @@ async def _respawn_backend_for_stub(
             # shared bucket: the replacement inherits the original binding,
             # unless the ledger has since argued against sharing it at all.
             exclusive_stub_uuid=respawn_exclusive_uuid,
+            admission=admission,
+            wait_deadline=(
+                None if admission is None else time.monotonic() + admission.spawn_queue_wait_secs
+            ),
         )
-    except (_TargetUnknown, BackendUnavailable, PoolAtCapacity, OSError) as exc:
+    except (
+        _TargetUnknown,
+        BackendUnavailable,
+        PoolAtCapacity,
+        HostBudgetExhausted,
+        SpawnGateTimeout,
+        SpawnGateClosed,
+        OSError,
+    ) as exc:
         logger.info(
             "respawn give-up (acquire rejected) stub=%s pool=%s: %s",
             stub_uuid,
@@ -3953,7 +4395,9 @@ async def _respawn_backend_for_stub(
     # leaking a pool slot for every key that ever mid-call respawned.
     try:
         try:
-            await new_backend.prime_initialize(captured_init)
+            # The backend's own bound, so the replay expires together with the
+            # first-handshake deadline the daemon configured this backend with.
+            await new_backend.prime_initialize(captured_init, timeout=_init_timeout_of(new_backend))
         except BackendGone as exc:
             logger.info(
                 "respawn give-up (prime failed) stub=%s pool=%s: %s",
@@ -4227,6 +4671,362 @@ def _jsonrpc_error(msg: dict[str, Any], reason: str) -> dict[str, Any]:
 class _TargetUnknown(RuntimeError):
     """Resolver returned no mapping — treated as a clean Register rejection
     rather than an internal error."""
+
+
+class _PeerGone(RuntimeError):
+    """The stub's connection ended while the daemon was still acquiring a
+    backend for it. Nothing to reply to; the handler simply returns."""
+
+
+class _PrewarmStoodDown(RuntimeError):
+    """A live stub is queued at the spawn gate, so this key is not warmed.
+
+    Raised per key rather than checked once per pass, and carried as an
+    exception because that is the one signal ``prewarm_from_payloads`` already
+    treats as "log it and keep going" — a warm backend nobody asked for is never
+    worth a place in front of a session that did."""
+
+
+def _init_timeout_of(backend: Any) -> float:
+    """The initialize bound this backend was spawned with.
+
+    Read through ``getattr`` because respawn tests hand in doubles that predate
+    the field; the module default is what such a backend would have armed.
+    """
+    value = getattr(backend, "initialize_timeout_secs", None)
+    if isinstance(value, (int, float)) and value > 0:
+        return float(value)
+    return _DEFAULT_INITIALIZE_TIMEOUT_SECS
+
+
+def _negotiated_wait_budget(msg: dict[str, Any], admission: Optional[Admission]) -> Optional[float]:
+    """The FIFO wait a queue-aware stub asked for, or ``None`` for an old stub.
+
+    A stub that advertises nothing sends a bare ``ensure_backend``; one that
+    negotiated ``spawn_queue`` sends a finite, positive ``wait_budget_secs``.
+    Anything else -- absent, non-numeric, non-finite, zero or negative -- is
+    treated as an old stub, because the protocol contract is that only a stub
+    that will consume ``queued`` frames ever asks for them. The daemon's own
+    ``spawn_queue_wait_secs`` caps the answer; a stub can only shorten it.
+
+    The result is always STRICTLY shorter than what the stub asked for, by
+    ``_QUEUE_REFUSAL_MARGIN_SECS`` where there is room for it: the daemon has to
+    give up first, or the stub gives up first and execs its own backend on a host
+    the daemon was about to refuse one for. Equal budgets are not a tie -- the
+    stub's clock starts earlier -- so the shipped defaults (600 s on both sides)
+    are the case the margin is for, not an exotic one.
+    """
+    if admission is None:
+        return None
+    raw = msg.get("wait_budget_secs")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    budget = float(raw)
+    if budget != budget or budget <= 0 or budget == float("inf"):
+        return None
+    capped = min(budget, admission.spawn_queue_wait_secs)
+    return capped - min(_QUEUE_REFUSAL_MARGIN_SECS, capped / 2.0)
+
+
+def _apply_set_spawn_capacity(
+    frame: dict[str, Any], admission: Optional[Admission]
+) -> dict[str, Any]:
+    """Move the spawn gate's live capacity for the adaptive controller.
+
+    Replies ``{"type": "spawn-capacity", "capacity": <clamped>, ...}`` with the
+    gate's snapshot, or ``spawn-capacity-rejected`` when the frame carries no
+    usable integer or this daemon has no admission state. The gate clamps to
+    ``[floor, ceiling]``; the reply reports what actually took effect so the
+    controller's applied value never drifts from the daemon's.
+
+    Every unusable value earns the typed refusal, ``inf`` and ``-inf`` included:
+    ``int()`` raises ``OverflowError`` on those, and an exception here escapes to
+    the connection handler, which drops the control connection with no reply of
+    either kind -- so the controller learns nothing rather than being told no.
+    ``1e400`` is a value ``json.loads`` produces from a well-formed frame, not a
+    hostile one.
+    """
+    if admission is None:
+        return {"type": "spawn-capacity-rejected", "reason": "no admission on this daemon"}
+    raw = frame.get("capacity")
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, (int, float))
+        or raw != raw
+        or abs(raw) == float("inf")
+    ):
+        return {"type": "spawn-capacity-rejected", "reason": "missing or invalid capacity"}
+    applied = admission.gate.set_capacity(int(raw))
+    return {"type": "spawn-capacity", "capacity": applied, **admission.gate.snapshot()}
+
+
+@dataclass(frozen=True)
+class _Rejection:
+    """How an acquire failure is reported to the stub.
+
+    ``fallback`` authorises the stub to exec the backend itself, so it rides
+    the TARGET-shaped classes (``compat``/``isolation``) only, whatever the
+    stub negotiated. A ``capacity`` refusal never carries it, because that exec
+    is one more process on a host the daemon just refused one for and the
+    daemon cannot account for it: a stub that never negotiated ``spawn_queue``
+    closes its socket BEFORE exec'ing, so the charge :func:`_reply_rejected`
+    takes is released at that EOF -- before the process it pays for exists --
+    and N simultaneous refusals leave N backends the budget never sees.
+    :func:`_capacity_rejection` is the only constructor for the class for that
+    reason.
+
+    The compatibility cost falls on the pre-``spawn_queue`` stub alone, which
+    cannot read ``class`` and therefore reads an untagged rejection as
+    terminal: it exits, and that ONE session loses that server's tools until
+    the retry. Bounded, and recorded as a ``terminal:`` line in
+    ``stub_fallback.jsonl`` for the operator; a stub that did negotiate
+    ``spawn_queue`` answers kiro-cli the typed ``-32001`` instead and keeps its
+    transport. Deliberately preferred over an exec nothing bounds -- see
+    ``docs/architecture/mcp.md``.
+    """
+
+    cls: str
+    fallback: bool
+    retry_after_secs: Optional[int] = None
+
+    def frame(self, reason: str) -> dict[str, Any]:
+        frame: dict[str, Any] = {"type": "rejected", "reason": reason, "class": self.cls}
+        if self.fallback:
+            frame["fallback"] = True
+        if self.retry_after_secs is not None:
+            frame["retry_after_secs"] = self.retry_after_secs
+        return frame
+
+
+def _capacity_rejection(retry_after_secs: int = _CAPACITY_RETRY_AFTER_SECS) -> _Rejection:
+    """A refusal about the HOST or the moment: classed ``capacity``, no fallback.
+
+    The only ``_Rejection`` of this class, so the one field that must never be
+    ``True`` beside it has exactly one place it is written. Not the only place a
+    ``class: capacity`` FRAME is written -- the lazy-spawn arm composes one
+    directly, with no ``fallback`` key at all -- so an audit of "where can a
+    capacity frame gain a tag?" has two sites to read, not one. Why that is a
+    security property and what it costs a pre-upgrade stub: :class:`_Rejection`.
+    """
+    return _Rejection(REJECT_CLASS_CAPACITY, fallback=False, retry_after_secs=retry_after_secs)
+
+
+def _classify_rejection(exc: BaseException, *, exclusive: bool) -> Optional[_Rejection]:
+    """Map an acquire failure to its rejection class, or ``None`` for an
+    internal error the stub must be told is terminal.
+
+    See ``REJECT_CLASS_*`` for what each class means. The target-shaped
+    failures (no mapping, a launch the daemon cannot perform for reasons that
+    are not host pressure) are fallback-eligible; everything about the host or
+    the moment is ``capacity``, and no ``capacity`` answer authorises an exec on
+    any wire shape. What the stub negotiated is therefore not an input here --
+    it selects the ``queued`` keepalives and the wait budget, never whether a
+    refusal may fork.
+    """
+    if isinstance(exc, _TargetUnknown):
+        return _Rejection(REJECT_CLASS_COMPAT, fallback=True)
+    if isinstance(exc, _CAPACITY_FAILURES):
+        return _capacity_rejection(
+            5
+            if isinstance(exc, SpawnGateClosed)
+            else (60 if isinstance(exc, BackendUnavailable) else _CAPACITY_RETRY_AFTER_SECS)
+        )
+    if isinstance(exc, OSError):
+        # An errno in ``_PRESSURE_ERRNOS`` says the HOST is out of what an exec
+        # would need too, so it is capacity; any other errno is this daemon's
+        # own launch environment, which the stub's exec may well not share.
+        if exc.errno in _PRESSURE_ERRNOS:
+            return _capacity_rejection()
+        return _Rejection(
+            REJECT_CLASS_ISOLATION if exclusive else REJECT_CLASS_COMPAT, fallback=True
+        )
+    return None
+
+
+async def _reply_rejected(
+    writer: asyncio.StreamWriter,
+    reader: asyncio.StreamReader,
+    verdict: _Rejection,
+    *,
+    reason: str,
+    caller: Optional[CallerContext],
+    pool_key: PoolKey,
+    admission: Optional[Admission],
+) -> None:
+    """Send a ``rejected`` frame and, for a fallback, charge the exec it causes.
+
+    A fallback-eligible rejection turns into one more MCP process on this host
+    -- the stub's per-session exec -- that the daemon never spawned and would
+    otherwise never count. It is charged to the host budget HERE, before the
+    frame goes out, and the charge is held until the connection reaches EOF,
+    which a stub that negotiated ``spawn_queue`` makes meaningful by keeping its
+    socket inheritable across the exec: that EOF is then the exec'd backend
+    exiting. A stub that did not negotiate it closes before it execs, so the
+    charge would cover nothing -- which is exactly why the classes it CANNOT
+    read (:func:`_capacity_rejection`) authorise no exec at all, leaving only
+    ``compat``/``isolation`` here, where an exec is the topology the connection
+    asked for and refusing it would strand the session with no server. When the
+    budget cannot take the charge the answer is a ``capacity`` rejection
+    instead, because the fallback would be the very process the budget is
+    refusing.
+    """
+    session_key = caller.session_key if caller else ""
+    label = pool_key.human_readable()
+    charge: Optional[HostCharge] = None
+    if verdict.fallback and admission is not None:
+        try:
+            charge = admission.budget.reserve(label=label, kind="fallback")
+        except HostBudgetExhausted as budget_exc:
+            logger.info(
+                "fallback for %s refused: %s -- answering capacity instead",
+                label,
+                budget_exc,
+            )
+            verdict = _capacity_rejection()
+            reason = f"{reason}; {budget_exc}"
+    if verdict.fallback:
+        _audit_pool_fallback(session_key, label, reason)
+    else:
+        _audit_pool_rejected(session_key, label, f"{verdict.cls}: {reason}")
+    await _write_json_line(writer, verdict.frame(reason))
+    if charge is None:
+        return
+    try:
+        # Hold the charge for as long as the peer holds the socket. Frames a
+        # stub might still send (none are expected) are read and dropped.
+        while True:
+            try:
+                line = await reader.readuntil(b"\n")
+            except (
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+                ConnectionError,
+                OSError,
+            ):
+                return
+            if not line:
+                return
+    finally:
+        charge.release()
+
+
+async def _await_answering_pings(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    pending: "deque[bytes]",
+    coro: Any,
+    *,
+    stub_uuid: str,
+) -> Any:
+    """Run ``coro`` (an acquire or respawn) without deafening the connection.
+
+    A backend acquire can now wait minutes in the spawn gate, and the stub's
+    bridge liveness monitor pings every 10 s while it has a call outstanding
+    (a respawn always does). The connection handler is a sequential reader, so
+    awaiting the acquire inline would leave those pings unread and the stub
+    would declare a perfectly healthy daemon dead after three of them. This
+    runs the acquire as a task and keeps reading: a ping gets its pong at once,
+    every other complete frame is parked in ``pending`` for the main loop to
+    process in order once the acquire returns.
+
+    Peer EOF or a transport error while the acquire is still running cancels
+    it (its admission is released by the spawn path) and raises
+    :class:`_PeerGone`. If the acquire had already completed, its result is
+    returned instead so the caller attaches and runs its normal teardown --
+    a completed pooled acquire holds a hand-out reservation that only the
+    attach path releases.
+
+    Parking is bounded in both dimensions (``_MAX_PENDING_FRAMES`` /
+    ``_MAX_PENDING_BYTES``): past either, the same close path an EOF takes drops
+    this one connection rather than letting a backlog nothing drains grow for
+    the whole wait. The overflowing frame is parked BEFORE the bound is read, so
+    no frame is ever dropped while the peer is told nothing.
+    """
+    work: asyncio.Task[Any] = asyncio.ensure_future(coro)
+    # Fast path: a pool reuse or an immediate rejection completes on the first
+    # turn of the loop. Nothing is read from the socket then, so a frame the
+    # stub sends right after (its next control frame, kiro-cli's first request)
+    # is left for the main loop exactly as before.
+    await asyncio.wait({work}, timeout=0)
+    if work.done():
+        return work.result()
+    # Seeded, not zeroed: a ``BackendGone`` on the forward of a frame the main
+    # loop popped re-enters here with the rest of a previous invocation's park
+    # still in ``pending``. That residue is itself bound-limited, so the sum is
+    # O(n) once over an n the bound already governs.
+    parked_bytes = sum(map(len, pending))
+    read_task: Optional[asyncio.Task[bytes]] = None
+    try:
+        while True:
+            if read_task is None:
+                read_task = asyncio.create_task(reader.readuntil(b"\n"))
+            done, _ = await asyncio.wait({work, read_task}, return_when=asyncio.FIRST_COMPLETED)
+            if read_task in done:
+                try:
+                    line = read_task.result()
+                except (
+                    asyncio.IncompleteReadError,
+                    asyncio.LimitOverrunError,
+                    ConnectionError,
+                    OSError,
+                ):
+                    read_task = None
+                    if work.done() and not work.cancelled() and work.exception() is None:
+                        return work.result()
+                    work.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await work
+                    raise _PeerGone("stub disconnected while its backend was being acquired")
+                read_task = None
+                if _is_ping_frame(line):
+                    try:
+                        await _write_json_line(writer, {"type": "pong"})
+                    except (OSError, ConnectionError):
+                        pass
+                else:
+                    pending.append(line)
+                    parked_bytes += len(line)
+                    # ``and not work.done()`` keeps the reservation invariant the
+                    # docstring states: on the one turn where both tasks finish,
+                    # a completed pooled acquire must reach its attach path, and
+                    # the return below stops the park growing anyway.
+                    if (
+                        len(pending) > _MAX_PENDING_FRAMES or parked_bytes > _MAX_PENDING_BYTES
+                    ) and not work.done():
+                        logger.warning(
+                            "stub %s parked %d frames / %d bytes during a spawn wait "
+                            "(bounds %d / %d); dropping conn",
+                            stub_uuid,
+                            len(pending),
+                            parked_bytes,
+                            _MAX_PENDING_FRAMES,
+                            _MAX_PENDING_BYTES,
+                        )
+                        raise _PeerGone("stub flooded frames while its backend was being acquired")
+            if work.done():
+                return work.result()
+    finally:
+        if read_task is not None and not read_task.done():
+            # Cancelling ``readuntil`` leaves any partial line in the reader's
+            # buffer, so the main loop's next read picks it up whole.
+            read_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await read_task
+        if not work.done():
+            work.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await work
+
+
+def _is_ping_frame(line: bytes) -> bool:
+    # Cheap pre-check before a JSON parse: a ping is a tiny control frame.
+    if len(line) > 256 or b"ping" not in line:
+        return False
+    try:
+        msg = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(msg, dict) and msg.get("type") == "ping"
 
 
 async def _read_first_frame(reader: asyncio.StreamReader) -> Optional[dict[str, Any]]:
@@ -4575,6 +5375,76 @@ def _build_argparser() -> argparse.ArgumentParser:
         "a later gateway that may run different code. 0 (default) disables it.",
     )
     p.add_argument(
+        "--spawn-concurrency",
+        dest="spawn_concurrency",
+        type=int,
+        default=DEFAULT_CAPACITY,
+        help="Daemon-wide number of backend spawn+initialize windows in flight at "
+        "once; further spawns wait FIFO. Clamped to [--spawn-concurrency-min, "
+        "--spawn-concurrency-max].",
+    )
+    p.add_argument(
+        "--spawn-concurrency-min",
+        dest="spawn_concurrency_min",
+        type=int,
+        default=DEFAULT_FLOOR,
+        help="Floor the adaptive controller may lower the spawn concurrency to.",
+    )
+    p.add_argument(
+        "--spawn-concurrency-max",
+        dest="spawn_concurrency_max",
+        type=int,
+        default=DEFAULT_CEILING,
+        help="Ceiling the adaptive controller may raise the spawn concurrency to.",
+    )
+    p.add_argument(
+        "--spawn-queue-wait-secs",
+        dest="spawn_queue_wait_secs",
+        type=float,
+        default=600.0,
+        help="Longest a queue-aware stub is held in the spawn gate before a " "capacity rejection.",
+    )
+    p.add_argument(
+        "--initialize-timeout-secs",
+        dest="initialize_timeout_secs",
+        type=float,
+        default=10.0,
+        help="Bound on a backend's first MCP initialize; also the spawn-gate "
+        "permit window after ready.",
+    )
+    p.add_argument(
+        "--host-budget-max-procs",
+        dest="host_budget_max_procs",
+        type=int,
+        default=0,
+        help="Ceiling on backend processes this daemon is answerable for (pooled, "
+        "private and fallback alike). 0 derives it from --host-available-mb and "
+        "--max-backends.",
+    )
+    p.add_argument(
+        "--host-budget-max-rss-mb",
+        dest="host_budget_max_rss_mb",
+        type=int,
+        default=0,
+        help="Ceiling on the summed per-backend RSS estimate. 0 = unbounded.",
+    )
+    p.add_argument(
+        "--host-budget-max-fds",
+        dest="host_budget_max_fds",
+        type=int,
+        default=0,
+        help="Ceiling on the daemon's own descriptors held for backends (3 per "
+        "process). 0 derives it from the process's RLIMIT_NOFILE soft limit.",
+    )
+    p.add_argument(
+        "--host-available-mb",
+        dest="host_available_mb",
+        type=float,
+        default=-1.0,
+        help="Available host memory (MiB) sampled by the supervising gateway, used "
+        "only to derive an automatic process ceiling. Negative = unknown.",
+    )
+    p.add_argument(
         "--log-level",
         dest="log_level",
         default=os.environ.get("MC_GATEWAYD_LOG", "INFO"),
@@ -4654,6 +5524,20 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             prewarm_count=args.prewarm_count,
             credential_watch_paths=[Path(p) for p in args.credential_watch_paths],
             owner_pid=max(0, int(args.owner_pid or 0)),
+            spawn_concurrency=args.spawn_concurrency,
+            spawn_concurrency_min=args.spawn_concurrency_min,
+            spawn_concurrency_max=args.spawn_concurrency_max,
+            spawn_queue_wait_secs=max(1.0, float(args.spawn_queue_wait_secs)),
+            initialize_timeout_secs=max(1.0, float(args.initialize_timeout_secs)),
+            host_budget_limits=resolve_limits(
+                max_procs=max(0, int(args.host_budget_max_procs)),
+                max_rss_mb=max(0, int(args.host_budget_max_rss_mb)),
+                max_fds=max(0, int(args.host_budget_max_fds)),
+                available_mb=(
+                    float(args.host_available_mb) if args.host_available_mb >= 0 else None
+                ),
+                max_backends=args.max_backends,
+            ),
         )
     except Exception:
         logger.exception("gatewayd exited with unhandled exception")

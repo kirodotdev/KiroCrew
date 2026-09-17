@@ -178,6 +178,7 @@ def test_the_contract_declares_every_seam_this_suite_covers():
         "apply_spawn_env",
         "internal_sandbox",
         "pod_home_remap",
+        "reads_markdown_agent_specs",
         "verifies_agent_activation",
         "protocol_version",
         "client_capabilities",
@@ -735,6 +736,22 @@ def test_the_runtime_resolves_the_kiro_harness_without_spawning():
     assert harness.teardown.method == METHOD_SESSION_TERMINATE
     assert harness.protocol_version == "2025-08-22"
     assert harness.verifies_agent_activation is True
+    assert harness.reads_markdown_agent_specs is False
+
+
+@pytest.mark.parametrize("backend", ALL_BACKENDS)
+def test_reads_markdown_agent_specs_is_a_membership_answer(backend):
+    """The markdown-form seam is the membership set, not an identity test.
+
+    The runtime refuses a markdown-only agent before the spawn for every host that
+    answers False, so a host that reads the form joins
+    ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS`` and the Kiro path gains no branch.
+    """
+    from kiro_crew.acp.types import ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+
+    assert harness_for(backend).reads_markdown_agent_specs is (
+        backend in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
+    )
 
 
 def test_a_projection_only_bare_runtime_still_resolves_its_host():

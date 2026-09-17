@@ -38,6 +38,16 @@ one is invalid on its own terms, so the retry ladder must be skipped rather than
 walked. `AcpRequestTimeout` subclasses its base so existing
 `except AcpRuntimeError` handlers keep catching it.
 
+**A retry DROPPED after its backoff hands back everything it counted before it.**
+A spent one-shot silently disarms the next real recovery; a counted attempt
+shortens the next ladder and inflates its backoff seed, both for a retry that
+never reached the provider. A no-requeue exit ENDS the turn, so it owes the same
+per-turn budget refresh the landed and terminal arms do -- the whole ladder, not a
+decrement, because an arm that already spent attempts 1..2 would otherwise stay
+permanently short. The pending "retrying..." card is corrected by APPENDING a
+give-up row rather than retracted, so the affordance to continue comes back
+instead of the row simply disappearing.
+
 ## Boundaries
 
 | Boundary | Strategy |

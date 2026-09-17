@@ -2873,7 +2873,7 @@ class TestFinishQueueCycle:
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
@@ -2898,7 +2898,7 @@ class TestFinishQueueCycle:
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
             patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
@@ -2922,7 +2922,7 @@ class TestFinishQueueCycle:
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
         flush.assert_not_called()
         if slot.task is not None:
@@ -2935,7 +2935,7 @@ class TestFinishQueueCycle:
         state2.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
-            chat_runner._finish_queue_cycle(state2, slot2)
+            await chat_runner._finish_queue_cycle(state2, slot2)
             await asyncio.sleep(0)
         flush2.assert_called_once()
         if slot2.task is not None:
@@ -2957,7 +2957,7 @@ class TestFinishQueueCycle:
         assert state._slots.get(slot.key) is None
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._deferred_notes == [], "the held note was discarded on close"
@@ -2978,7 +2978,7 @@ class TestFinishQueueCycle:
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
             patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         flush.assert_called_once()
@@ -2988,7 +2988,7 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
 
         with patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot.messages[-1]["role"] == "done"

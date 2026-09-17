@@ -214,6 +214,30 @@ outside any combinator
 The run-global slot is held only across the model call, so no thunk holds a slot
 while waiting for another to release one.
 
+A third bound sits beneath both when the service has a task admission attached
+(`WorkflowService(task_admission=...)` / `attach_task_admission`): every
+`ctx.agent()` call is a `workflow_agent` row admitted through the shared runner
+lane (`taskq.adapters.runner`, § Agent execution adapters below). The lane's
+bound is the LIVE effective cap the adaptive controller moves through
+`SubagentManager.set_effective_cap`; the lane reads it as its ceiling, and a
+RAISE reaches its parked waiters as a `RunnerLane.pump()` from the manager
+(`agent.adaptive_concurrency_mode=fixed` pins the bound instead). So a pressure
+decision lowers workflow fan-out together with the subagent queue, and live
+workers never exceed `min(max_workers, lane.effective)`.
+
+Two facts about that occupancy, and they pull in opposite directions. The lane's
+count is its OWN against the subagent gate's: the shared ceiling bounds runner
+entries and queued sub-agents separately, not their total. But it is SHARED
+between the two runner consumers — the gateway attaches one `RunnerAdmission` to
+this service and to the TaskRunner, and one admission owns one lane, so a
+`ctx.agent()` call and a TaskRunner step compete for the same slots (the `lane=`
+argument is the row's label, not a second gate). Since an admitted call holds its
+slot for the whole model turn, a call whose row DESCENDS from a row already
+holding a slot would wait on a release only its own ancestor can make; the lane
+refuses that wait (`RunnerLaneSelfBlocked`, reported as a failed call) instead of
+parking on it for ever, and refuses nothing else —
+[taskq.md](taskq.md) § A descendant is never parked behind its own ancestor.
+
 ### Progress
 
 ```python
@@ -956,6 +980,28 @@ state, like `state.subagents` / `state.sessions`. It owns one `RunRegistry` (wit
 `WorkflowRunStore` unless `persist=False`) and builds a fresh `WorkflowRunner` per
 run.
 
+After the dashboard (or the headless API server) is up, the gateway's
+`_wire_runner_admission` builds ONE `RunnerAdmission`
+(`taskq.adapters.runner.runner_admission_for` over the subagent manager's
+store and effective cap) and attaches it to both the TaskRunner and this
+service; the manager's `DependencyCoordinator` gets the admission's `on_wake`
+(and its `on_fail`, as a wake) through `coordinator.subscribe(...)`, so a 429
+seen by a workflow agent call and one seen by a sub-agent share one retry
+schedule.
+
+That first pass can run before the coordinator exists: a manager built on the
+loop opens its store on a worker, and there is no coordinator until there are
+rows. It is deliberately not deferred — both consumers need the admission (and
+its typed refusal) as soon as the socket is bound. So `run()` awaits a second,
+idempotent pass, `_runner_admission_store_ready`, right after
+`wait_taskq_ready()`: it binds the coordinator, subscribes, re-reads the waiting
+rows and runs the adoption sweep the store-less pass skipped
+([taskq.md](taskq.md) § Runner adapters). Binding it is not optional — the
+reaper pump calls the admission's own `tick()` only while there is NO store, so
+a wait parked in that window would otherwise have no wake path at all. The
+fallback `tick()` is the steady state only for a durable queue that is genuinely
+off. Shutdown detaches it (`attach_task_admission(None)`).
+
 Entry points: `author`, `start`, `start_from_intent`, `status`, `result`,
 `list_runs`, `cancel`, `rerun_subtree`, `list_definitions`, `get_definition`,
 `save_definition`, `update_definition`, and `start_definition`, plus the trusted
@@ -1100,6 +1146,42 @@ Pool init failure is caught and falls back to `build_agent_fn`, so pooling can
 never break a run start. The runner's `on_complete` hook fires on every exit path
 (success, failure, cancellation) to shut the pool down, so warm sessions are always
 released.
+
+- **`agent_pool.admitted_agent_fn`** (the task-queue wrapper, applied by
+  `WorkflowService._runner` to WHICHEVER of the two adapters above it chose,
+  when a `RunnerAdmission` is attached). Each `ctx.agent()` call becomes the row
+  `workflow:{run_id}:agent{n}` (`kind=workflow_agent`, `params={run_id, call,
+  agent, session, lane}`, `provider=<model override>`, class `unknown`):
+  written before the call runs (write-before-ack), admitted through the lane
+  (memory-pressure defer, effective-cap slot, lease + generation), marked
+  `running`, and settled `done` / `failed` / `cancelled` from the outcome. That
+  mark is a FENCE: `admit` committed `starting` one statement earlier, so a
+  refusal is a newer owner or a store outage, and the call does not run under a
+  row that reaches no WAITING state (the dependency park below could not
+  persist) — the row is failed and the wrapper raises `RunnerAdmissionRefused`
+  (`taskq.md` § Every store write whose result is DISCARDED). The
+  wrapper is a coroutine on the gateway's loop, so every one of those writes is
+  off-loop: `accept_async`, `admit` (which routes its own store touches through
+  `_db`), `running_async`, `done_async` / `fail_async`. The `except
+  CancelledError` arm keeps the SYNCHRONOUS `cancel` -- an `await` there can be
+  interrupted before the write is submitted, and a dropped terminal write leaves
+  the row active for the next boot's reconciler. That arm only covers a cancel
+  landing on the CALL; a run cancel or the wall-clock ceiling arriving while the
+  call is still waiting for a lane slot, or while it is parked in
+  `waiting_dependency`, is settled `cancelled` by the admission itself
+  (`taskq.md` § Runner adapters), so a cancelled run leaves no `workflow_agent`
+  row behind and none is left `queued` for a dispatcher this kind does not have.
+  A
+  dependency error the adapters recognise parks the row in `waiting_dependency`
+  with its slot released and re-runs the call on the wake, at most
+  `DEFAULT_MAX_ATTEMPTS` times; terminal signals fail it. The lane for a run is
+  its launching `session_key`, or `system` when the run has none or was
+  launched by a cron / hook (`lane_for`). Pinned by the taskq tests in
+  `test_workflows_agent_pool.py` (cap beneath `max_workers`, a mid-run cap
+  change, `fixed` mode, rows per call, failure and rate-limit settlement, a
+  cancel while queued for a slot, a cancel while parked on a dependency, a call
+  whose row descends from the slot holder, and the attach sweep over a row that
+  was accepted and never claimed).
 
 The gateway pins workflow agent concurrency at **4** on purpose, rather than
 sizing it from `resolve_max_subagents()`: because the pool keeps a separate
@@ -1505,3 +1587,28 @@ Saved task-plan execution passes the effective protected caller session to
 TaskRunner, including calls that supply only `author`. TaskRunner's existing
 runtime, worker and reviewer binding path then retains that private store;
 `author` cannot be silently discarded into a Global V1 execution.
+
+### What one in-process run costs, and the budget that awaits it
+
+`finished()` in `test/test_workflows_private_execution.py` is the ONE wall budget
+over a whole run in the in-process suite, shared by every module that imports it
+(`test_workflows_run_identity.py`, `test_workflows_private_paths.py`), and its
+size — `WORKFLOW_RUN_BUDGET_SECS` — comes from CI measurements, never from a
+local run: a local run is not evidence about the runner that reds. One private
+run of that module's `SCRIPT` (five `ctx.agent()` calls, the last two a named
+`session=` chain) spends its wall in filesystem thread hops rather than in the
+model — about 600 `asyncio.to_thread` round trips per run, because
+`WorkflowScope.validate()` is four hops, `prepare()` is that plus two more, and
+`prepare` runs TWICE per call by construction (the adapter's own, before
+`get_or_create`, so the worker session inherits the store before its provider
+exists, plus the one inside `WorkflowScope.prompt`), with `build_message` on the
+embed pool on top. That class of work is what a 4-vCPU windows-latest runner
+under `-n auto` is slowest at: measured ~6x its Linux cost, and 1.42x spread
+across identical params inside a single job. A budget a HEALTHY run can exceed
+there reports a cost as a hang, so the failure text names the pending call set
+and the instant that set last changed. The CHANGE INSTANT is what separates the
+two unconditionally: a capacity park shows a pending set that never moves, a slow
+run one that moved inside the budget. Frame names cannot be relied on for it —
+they differ for a lane park (`admit` → `acquire`) but CAN be identical for the
+park that matters most here, a wedged store-writer hop, which shows the same
+`to_thread` frame a merely slow run does.

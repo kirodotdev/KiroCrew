@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from kiro_crew.monitoring import models
+
+# A skip that made no API call is not evidence about the target, and this module
+# is the third place that has to know it: the two counters refuse to charge it
+# and the retirement PREDICTION here has to refuse to spend it.
+from kiro_crew.monitoring.github_provider_errors import is_unattempted_probe
 from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
     MONITOR_STOP_AGENT_TURN_BUDGET,
@@ -259,6 +264,19 @@ def _provider_error_decision(
     error = observation.provider_error
     if error not in _RETRYABLE_PROVIDER_ERRORS:
         return MonitorDecision.STOP_BLOCKED
+    if is_unattempted_probe(observation):
+        # The third outcome again, one layer up. Both counting sites already
+        # refuse to charge a shared-cooldown skip (``shadow.apply_monitor_probe``
+        # and the production site in ``autonudge``), and the ``+ 1`` below is the
+        # SAME budget spoken about in the future tense -- so a skip reaching it
+        # retires the watch on an error nobody will ever count. A watch two real
+        # errors into a budget of three is then retired by an unrelated scope's
+        # cooldown, having made no API call of its own.
+        #
+        # The already-spent half stays above in ``monitor_budget_reason``: a
+        # budget the watch really has exhausted still stops it, and only the
+        # prediction is corrected here.
+        return MonitorDecision.RETRY_PROVIDER
     if state.consecutive_provider_errors + 1 >= budgets.max_provider_errors:
         return MonitorDecision.STOP_BLOCKED
     return MonitorDecision.RETRY_PROVIDER

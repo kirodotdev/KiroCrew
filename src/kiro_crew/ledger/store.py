@@ -51,12 +51,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import time
 import weakref
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -67,8 +69,10 @@ from kiro_crew.jsonl_util import (
     bounded_raw_records,
     strict_raw_records,
 )
+from kiro_crew.ledger.entry_types import validate_data
 from kiro_crew.ledger.errors import (
     CODE_ALREADY_EXISTS,
+    CODE_ALREADY_OWNED,
     CODE_BAD_DATA,
     CODE_BAD_HEADER,
     CODE_BAD_ROOT,
@@ -101,7 +105,7 @@ from kiro_crew.ledger.schema import (
     serialize,
 )
 from kiro_crew.platform_compat import file_lock, restrict_dir_to_owner
-from kiro_crew.session_ledger import _store_name, resolved_within
+from kiro_crew.session_ledger import _store_name, is_link, resolved_within, unlink_lock_in_hold
 
 logger = logging.getLogger(__name__)
 
@@ -330,6 +334,565 @@ def segment_first_seqs(kind: str, unit_id: str) -> list[int]:
 
 def _lock_path(kind: str, unit_id: str) -> Path:
     return ledger_dir(kind, unit_id) / _LOCK_FILE
+
+
+# --------------------------------------------------------------------------- #
+# Removal
+# --------------------------------------------------------------------------- #
+
+#: :func:`remove_unit` outcomes. Stable strings, like ``resolve``'s, because a
+#: caller has to tell them apart to report honestly: only ``removed`` may be
+#: counted as a removal, and only ``failed`` is a problem.
+REMOVE_REMOVED = "removed"
+#: A writer owns the unit -- another process, or another handle in this one. The
+#: unit is LIVE, so it is skipped; a later pass gets it once its writer is gone.
+REMOVE_OWNED = "owned"
+#: There was nothing to remove: no directory, or one that no id addresses.
+REMOVE_ABSENT = "absent"
+#: Something in the unit survived. Reported, never counted as removed, and the
+#: unit is left identifiable so the next pass can aim at it again.
+REMOVE_FAILED = "failed"
+
+
+def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> str:
+    """Remove one unit's ledger entirely. Returns one of the ``REMOVE_*`` statuses.
+
+    The ONE spelling of deletion in this package, called by the retention sweep
+    and by the permanent-delete funnel alike, for the reason the work ledger's
+    ``purge_matching`` docstring gives: two callers deleting the same tree two
+    ways is two chances to get the order wrong, and the order is the whole
+    correctness argument.
+
+    **Ownership first.** Removal goes THROUGH the lease, taken non-blocking and
+    ``sole`` so it is shared with nothing: ownership is what stands between this
+    and unlinking the segments a live writer is appending to. ``sole`` is not a
+    detail -- the lease is refcounted per process, so a plain claim against a
+    unit this process is already writing would SUCCEED by joining that count and
+    prove nothing (see :func:`lease.acquire`). Either kind of contention answers
+    ``owned``: this pass does nothing, and nothing is written either, so a unit
+    whose writer outlives the sweep is simply collected by a later one.
+
+    **Then the caller re-decides, INSIDE the hold.** *guard* is REQUIRED and is
+    called as ``guard(directory)`` once ownership is held; the unit is removed
+    only if it answers true. The lease alone is not enough, and the gap is the
+    same one ``purge_matching`` documents: a selection made outside it is a
+    SNAPSHOT, and ownership deliberately ends BETWEEN turns, so a session can be
+    revived, append, finish its turn and release the lease in the window between
+    the decision and the delete -- after which the removal would take a live
+    conversation's log while contending with nobody. Re-reading under the hold is
+    what makes the decision current, which is why the guard is a callback rather
+    than a filter the caller applies first, and why there is no default that
+    skips the re-decision. A caller whose precondition is not a property of the
+    file passes ``lambda _dir: True`` and says at the call site what does decide.
+
+    **Then order, with IDENTITY LAST.** Segments carry the header, so they are the
+    history and they go first; the per-append lock file next; then any other
+    entry, none of them followed if it is a link. The ``.lease`` file is removed
+    LAST and only by its holder, which is what keeps ``lease``'s inode check a
+    fact about this code: while it exists, the lease path names the file whose
+    lock proves ownership, and a lease unlinked before the segments would let a
+    second remover take a lock on a fresh inode and unlink the same files
+    concurrently. Windows refuses an in-hold unlink and gets it after release
+    instead, which is safe there precisely because it fails while any handle is
+    open -- the same asymmetry :func:`session_ledger.unlink_lock_in_hold`
+    documents, so that function is reused rather than copied.
+
+    **Nothing is written to a ledger that is about to go.** No "pruned" entry, no
+    tombstone: removal is not rotation and not a format change, and a reader
+    holding a citation into the unit already has its answer from
+    ``Ref.resolve``, which reports ``gone`` for a pointer into a unit that has no
+    ledger at all.
+
+    Failures are COUNTED, not ignored, and reported for what they are. A unit
+    that could not be fully removed answers ``failed`` rather than being reported
+    as collected, and stays addressable so the next pass can aim at it again --
+    but ``failed`` does not promise its history survived. Segments go first, so
+    the ordinary partial removal is history already gone with something else left
+    standing; the log line says which of the two happened rather than claiming
+    the segments were kept.
+    """
+    require_kind(kind)
+    # The name as WRITTEN, checked before the resolution below follows it.
+    # ``ledger_dir`` returns the RESOLVED path, so a unit directory that is a link
+    # to another unit resolves inside the root, passes containment, and hands this
+    # function the TARGET -- which is not a link, so checking the resolved path
+    # would prove nothing and the removal would delete the other unit's history
+    # while reporting this one's id. Refused rather than followed, the same stance
+    # ``session_ledger.purge_matching`` takes on a linked store. The CHECKED root,
+    # so this and the ``ledger_dir`` below read the same directory: a linked kind
+    # root would otherwise be refused only on the second read, after this one had
+    # already followed it.
+    named = _checked_ledger_root(kind) / _store_name(unit_id)
+    if is_link(named):
+        logger.warning(
+            "ledger retention: %s ledger %r is a link; refusing to remove what it names",
+            kind,
+            unit_id,
+        )
+        return REMOVE_ABSENT
+    directory = ledger_dir(kind, unit_id)
+    if not directory.is_dir():
+        return REMOVE_ABSENT
+    lease_path = directory / LEASE_FILE
+    try:
+        lease_key = acquire_lease(lease_path, kind=kind, unit_id=unit_id, sole=True)
+    except LedgerError as exc:
+        if exc.code == CODE_ALREADY_OWNED:
+            return REMOVE_OWNED
+        raise
+    except OSError:
+        # Failing to open the lease file is not evidence that someone owns the
+        # unit, and it is not a removal either.
+        logger.warning("ledger retention: cannot lease %s ledger %r", kind, unit_id, exc_info=True)
+        return REMOVE_FAILED
+    lease_gone = False
+    try:
+        if not guard(directory):
+            # The unit came back to life, or the caller's reason stopped holding,
+            # between the decision and this hold. Not a failure: nothing was
+            # removed and nothing was written.
+            return REMOVE_OWNED
+        failures, history_gone = _remove_unit_contents(directory)
+        if failures:
+            # Say WHICH of the two failures this is. Segments go first, so a
+            # failure after some of them went is a PARTIAL removal -- that
+            # history is already gone and reporting it as kept would send a
+            # reader looking for a record this pass destroyed.
+            if history_gone:
+                logger.warning(
+                    "ledger retention: %s ledger %r only PARTLY removed; %d history file(s) "
+                    "already gone and %d entr(ies) would not go",
+                    kind,
+                    unit_id,
+                    history_gone,
+                    failures,
+                )
+            else:
+                logger.warning(
+                    "ledger retention: %s ledger %r not removed; its history is intact",
+                    kind,
+                    unit_id,
+                )
+            return REMOVE_FAILED
+        lease_gone = unlink_lock_in_hold(lease_path)
+    finally:
+        release_lease(lease_key)
+    if not lease_gone:
+        # Windows: the OS refused the in-hold unlink, and the late one is safe
+        # there because it fails while any handle is open.
+        try:
+            lease_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("ledger retention: lease file still held; leaving it")
+            return REMOVE_FAILED
+    try:
+        directory.rmdir()
+    except OSError:
+        # Every file this owns is gone. A directory that will not go is residue,
+        # not retained history, so the removal still counts -- but say so.
+        logger.debug("ledger retention: %s ledger %r directory not removed", kind, unit_id)
+    return REMOVE_REMOVED
+
+
+def unit_header_slot(kind: str, unit_id: str) -> "str | None":
+    """The slot recorded in *unit_id*'s HEADER, or None when it cannot be proved.
+
+    An independent second answer to "whose ledger is this", for a caller that
+    reached the unit id through a channel it does not fully trust. The header is
+    written once by the emitter at creation and never rewritten, and it is inside
+    the fenced ledger tree, so it does not move when a mapping does.
+
+    None for every reason a caller must not proceed on: no directory, no segment,
+    an unreadable or unparseable header, a header whose own id does not fold back
+    to this directory (the same refusal the sweep makes, since a directory
+    carrying another unit's id would answer for that other unit), or a header with
+    no slot at all. None is "cannot prove", never "no slot", so a caller that
+    requires a match refuses rather than guessing.
+
+    Read-only: it takes no lease and writes nothing. A concurrent append cannot
+    change a header, and the caller's own decision is re-made under the lease by
+    ``remove_unit``'s guard.
+    """
+    require_kind(kind)
+    try:
+        named = _checked_ledger_root(kind) / _store_name(unit_id)
+        if is_link(named):
+            return None
+        directory = ledger_dir(kind, unit_id)
+        segments = [
+            (first, child)
+            for child in directory.iterdir()
+            if (first := _segment_first_seq(child)) is not None
+        ]
+    except (LedgerError, OSError):
+        return None
+    if not segments:
+        return None
+    segments.sort(key=lambda pair: pair[0])
+    try:
+        raw_header = _read_header_line(segments[0][1])
+        if raw_header is None:
+            return None
+        parsed = _parses_to_object(raw_header)
+    except (OSError, ValueError):
+        return None
+    if not parsed:
+        return None
+    own_id = parsed.get("id")
+    if not isinstance(own_id, str) or not own_id or _store_name(own_id) != directory.name:
+        return None
+    slot = parsed.get("slot")
+    return slot if isinstance(slot, str) and slot else None
+
+
+def _remove_unit_contents(directory: Path) -> "tuple[int, int]":
+    """Delete everything in *directory* except the lease. ``(failures, history_gone)``.
+
+    Ordered, and every failure counted: ``rmtree(ignore_errors=True)`` reports
+    success over a subtree it left standing, and on Windows a sharing violation
+    on one held file is exactly that case. Segments go first because they are the
+    history; the lease stays for the caller to remove last, under its own hold.
+    Call while holding the lease.
+
+    Both numbers are returned because a failure alone does not say what the unit
+    still holds, and the caller has to be able to say. Segments going first means
+    a late failure is the ordinary shape of a partial removal: the history is
+    already gone and something else would not go, which is not the same event as
+    a removal that got nowhere.
+    """
+    failures = 0
+    history_gone = 0
+    try:
+        children = list(directory.iterdir())
+    except OSError:
+        # Nothing was reached, so nothing of the history is gone either.
+        return (1, 0)
+    ordered = sorted(
+        (child for child in children if child.name != LEASE_FILE),
+        key=lambda child: 0 if _is_segment_name(child.name) else 1,
+    )
+    for child in ordered:
+        was_history = _is_segment_name(child.name)
+        # A linked entry is unlinked as a NAME, never followed: ``is_dir`` is true
+        # through a link to a directory, and walking it would delete the target.
+        if child.is_dir() and not is_link(child):
+            # ``ignore_errors`` rather than a callback: ``onerror`` is deprecated
+            # since 3.12 and slated for removal, and ``onexc`` does not exist on
+            # every version this runs on. Neither is needed, because the
+            # correctness here does not come from the callback -- it comes from the
+            # existence check below. That is the same reason this cannot simply
+            # trust ``rmtree``: it reports success over a subtree it left standing,
+            # which on Windows is exactly what a sharing violation produces.
+            shutil.rmtree(child, ignore_errors=True)
+            if child.exists():
+                failures += 1
+            continue
+        try:
+            child.unlink()
+        except OSError:
+            failures += 1
+        else:
+            if was_history:
+                history_gone += 1
+    return (failures, history_gone)
+
+
+def _is_segment_name(name: str) -> bool:
+    """Whether *name* is segment-SHAPED, for ordering a removal.
+
+    Deliberately broader than :func:`_segment_first_seq`, which answers the
+    different question of whether a file is a canonical segment a reader may
+    trust: that one rejects ``ledger.1.jsonl`` and ``ledger.0.jsonl``, because no
+    real segment starts below seq 2. Removal must not inherit that rule. It
+    deletes every file in the unit's directory whatever its name, and this
+    predicate only decides what goes FIRST, so a stray numbered file is better
+    grouped with the segments than left to the tail of the pass -- it is history
+    by shape, and the ordering exists so the identity files outlive the history.
+    """
+    if name == LEDGER_FILE:
+        return True
+    if not (name.startswith(f"{_SEGMENT_STEM}.") and name.endswith(_SEGMENT_SUFFIX)):
+        return False
+    return name[len(_SEGMENT_STEM) + 1 : -len(_SEGMENT_SUFFIX)].isdigit()
+
+
+# --------------------------------------------------------------------------- #
+# Retention
+# --------------------------------------------------------------------------- #
+
+#: The teardown marker. A unit whose newest lifecycle entry is not this one is
+#: OPEN, whatever its age.
+_TYPE_SESSION_CLOSED = "session/closed"
+#: The revival marker. It is written on create AND on a re-attach to an existing
+#: conversation, so one appearing after a close means the session came back.
+_TYPE_SESSION_OPENED = "session/opened"
+#: The two entries that move a session between open and closed. Everything else --
+#: a turn, a tool, an in-flight closer landing after a teardown -- says nothing
+#: about which state the unit is in.
+_LIFECYCLE_TYPES = frozenset({_TYPE_SESSION_OPENED, _TYPE_SESSION_CLOSED})
+
+#: The ONE close reason that is positive proof the session's ACP id can never be
+#: resumed: ``destroy`` deletes that id's mapping outright
+#: (``_session_map.delete``), unconditionally, inside the registry lock and before
+#: this entry is written. An id absent from the map cannot be resumed by anything.
+#:
+#: ``reset`` is deliberately NOT here, and the reason is worth stating because the
+#: opposite reading is intuitive: a reset does cold-start its successor on a new
+#: id, but its own ``clear_sid`` is guarded by ``if clear_conversation and session
+#: is not None``, so a reset that keeps the conversation emits
+#: ``session/closed {reset}`` while LEAVING the old id mapped -- still resumable,
+#: and its log still needed. ``discarded`` clears the sid unconditionally and would
+#: qualify on that test, but no path writes that reason into a ledger today, so
+#: admitting it would be a rule about a file nothing produces. Every other reason --
+#: a shutdown, a crash, an eviction, or a spelling this build does not know -- ends
+#: the gateway's SERVICE of the session without ending the id's life.
+#:
+#: This reason is the whole authorization for deleting a unit, and it is read from
+#: the ledger rather than from anything outside it. The obvious alternative -- ask
+#: which sessions are still mapped in ``session_map.json`` and keep those -- was
+#: implemented and then removed, because that file is agent-WRITABLE while this tree
+#: is bind-masked, and a VALID EMPTY map is not a failed read: it reads as "nothing
+#: is revivable" and hands a trusted sweep a positive answer that authorizes
+#: deleting a fenced unit the writer of that file cannot touch directly. Absence of
+#: protection must never be authorization.
+_TERMINAL_CLOSE_REASONS = frozenset({"destroyed"})
+
+
+def _is_terminal_close(entry: "Entry") -> bool:
+    """Whether *entry*'s reason proves this session's id can never be resumed."""
+    data = entry.data
+    reason = data.get("reason") if isinstance(data, dict) else None
+    return isinstance(reason, str) and reason in _TERMINAL_CLOSE_REASONS
+
+
+def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[int, int]":
+    """Remove CLOSED session ledgers older than *retention_days*. ``(removed, failed)``.
+
+    The same switch and the same sweep that already expire transcript archives:
+    ``history._cleanup_old_archives`` calls this with the retention it resolved
+    from ``session.archive_retention_days``, inside the hourly throttle it
+    already has. A negative value disables both halves, so a user who turned
+    archive expiry off has turned this off too and there is no second setting to
+    find. Bodies live in these files now, which is why one switch has to govern
+    both: expiring the transcript while its ledger grew forever is the gap this
+    closes.
+
+    A missing root, or one holding no unit directories, costs a directory listing
+    and answers ``(0, 0)``. That is also what makes this de facto gated by
+    ``KIROCREW_SESSION_LEDGER`` without reading it: only the emitter creates
+    session units, and the emitter is inert without the flag. Reading the flag
+    HERE would be worse than not reading it -- turning it off would strand every
+    ledger already written, permanently, since nothing else collects them.
+
+    Crew ledgers are out of scope and are never scanned: this walks
+    ``ledgers/sessions`` alone. They have no writer yet, and no ``session/closed``
+    to age from, so a rule invented for them now would be a guess applied to
+    files nothing produces.
+
+    A unit is collectable only when its own ledger PROVES the session is finished:
+    the newest lifecycle entry is a ``session/closed`` whose reason is one of
+    :data:`_TERMINAL_CLOSE_REASONS`, meaning the gateway cleared that ACP id's
+    mapping during the teardown so it can never be resumed. Nothing outside the
+    ledger tree takes part in that decision -- see that constant for why the
+    session map was tried for it and removed.
+    """
+    if retention_days < 0:
+        return (0, 0)
+    try:
+        # The CHECKED root, the same one ``ledger_dir`` resolves under. A linked or
+        # out-of-home kind directory is refused here rather than one unit at a
+        # time: the removal itself is already refused downstream, but only after
+        # this walk had read a header and a tail from every file under whatever the
+        # link named. One refusal reads nothing.
+        children = list(_checked_ledger_root(KIND_SESSION).iterdir())
+    except LedgerError:
+        # A root that EXISTS and is wrong. Not a unit failure -- there is no
+        # legitimate unit here to have failed -- so it is reported and the pass
+        # ends rather than being counted as work.
+        logger.warning("ledger retention: refusing to sweep the session ledger root", exc_info=True)
+        return (0, 0)
+    except OSError:
+        # Includes the ordinary case of a root that was never created.
+        return (0, 0)
+    cutoff_ms = int(((time.time() if now is None else now) - retention_days * 86400) * 1000)
+    removed = 0
+    failed = 0
+    for child in children:
+        try:
+            if is_link(child) or not child.is_dir():
+                continue
+            unit_id = _expired_unit_id(child, cutoff_ms)
+            if unit_id is None:
+                continue
+            # Re-read the SAME decision inside the removal's own lease hold. The
+            # scan above is a snapshot, and ownership ends between turns by
+            # design, so a session can be revived, append its ``session/opened``,
+            # finish its turn and release the lease in the window between the two
+            # -- after which an unguarded removal would take a live conversation's
+            # log while contending with nobody.
+            status = remove_unit(
+                KIND_SESSION, unit_id, guard=partial(_still_expired, cutoff_ms, unit_id)
+            )
+        except (LedgerError, OSError):
+            # One unreadable unit must not stop the pass over the others, and it
+            # is not a removal: the unit keeps its history and the next pass sees
+            # it again.
+            logger.debug("ledger retention: skipped %s", child.name, exc_info=True)
+            failed += 1
+            continue
+        if status == REMOVE_REMOVED:
+            removed += 1
+        elif status == REMOVE_FAILED:
+            failed += 1
+    if removed or failed:
+        logger.info(
+            "ledger retention: removed %d expired session ledger(s) (>%dd), %d could not be removed",
+            removed,
+            retention_days,
+            failed,
+        )
+    return (removed, failed)
+
+
+def _still_expired(cutoff_ms: int, expected: str, directory: Path) -> bool:
+    """The sweep's re-decision, re-derived from the unit as it stands NOW.
+
+    Bound to its first two arguments and handed to :func:`remove_unit` as the
+    ``guard`` it calls under the lease. Re-deriving the ID as well as the age is
+    deliberate: it refuses a directory that changed identity in the same window,
+    so the removal can only proceed against the unit the scan actually chose.
+    """
+    return _expired_unit_id(directory, cutoff_ms) == expected
+
+
+def _expired_unit_id(directory: Path, cutoff_ms: int) -> "str | None":
+    """The raw id of the unit in *directory* when it is closed and expired.
+
+    ``None`` means leave it alone, and every path to ``None`` is deliberate:
+
+    * **No segment, or a header this directory does not answer to.** The id is
+      read from the OLDEST surviving segment, which is where ``Ledger.open``
+      resolves it, and it is accepted only if it folds BACK to this directory's
+      own name. A directory no id addresses is not removed, because the removal
+      would be aimed by id and would resolve somewhere else.
+    * **A torn tail.** Unterminated trailing bytes are what
+      ``open(repair=True)`` truncates, and the sweep cannot tell a dead writer's
+      crash artifact from an append that has not yet reached its fsync -- the
+      bytes are identical. Deleting the unit would destroy the history the repair
+      exists to recover, so the repair gets it and retention does not.
+    * **The newest lifecycle entry is not a ``session/closed``.** An OPEN session
+      is never touched, whatever its age, and this is the check that decides it.
+      The pair ``session/opened`` / ``session/closed`` is what moves a unit
+      between the two states, so the newest of the PAIR is the answer -- not the
+      newest close on its own. A resumed session appends to the ledger it already
+      had, so ``... closed ... opened ...`` is a legitimate file whose session is
+      running right now. The read is bounded, so the deciding entry could in
+      principle sit further back than the window -- but only entries written after
+      it can push it out, and once a unit is closed the emitter writes nothing but
+      a handful of in-flight closers unless the session was revived, which appends
+      its own ``session/opened``. So a lifecycle entry outside the window means a
+      live session, which is exactly the unit that must be kept: the bound fails
+      closed rather than needing a full scan of every ledger on every pass.
+    * **A segment that vanished mid-read.** Another remover -- the delete funnel,
+      or a second pass -- got there first, which is the outcome this sweep wanted.
+      It reads as "nothing to do" rather than as a failure, because the caller's
+      failure tally is what an operator reads as "these units still hold
+      history", and counting a race that already collected one would make that
+      number a lie.
+
+    The age comes from the LAST ``session/closed`` entry's own ``time``, falling
+    back to the newest segment's mtime only when that field is unusable. The
+    entry wins because it is the writer's own record of when the session ended
+    and nothing rewrites it, while mtime is metadata a copy, a restore or a
+    backup tool resets -- a restored tree would read as freshly closed and never
+    expire. The fallback is kept rather than skipping the unit because a damaged
+    ``time`` still proves the session ended, and mtime is then the best available
+    bound on when writing stopped; it can only be at or after the real close, so
+    it errs toward keeping the file.
+    """
+    try:
+        segments = [
+            (first, child)
+            for child in directory.iterdir()
+            if (first := _segment_first_seq(child)) is not None
+        ]
+    except OSError:
+        return None
+    if not segments:
+        return None
+    segments.sort(key=lambda pair: pair[0])
+    oldest = segments[0][1]
+    newest = segments[-1][1]
+    try:
+        raw_header = _read_header_line(oldest)
+        if raw_header is None:
+            return None
+        parsed = _parses_to_object(raw_header)
+        unit_id = parsed.get("id") if parsed else None
+        if not isinstance(unit_id, str) or not unit_id:
+            return None
+        if _store_name(unit_id) != directory.name:
+            return None
+        tail = _scan_tail(newest)
+    except FileNotFoundError:
+        # A segment listed a moment ago is gone: another remover -- the delete
+        # funnel, or a second pass -- got there first. That is the outcome this
+        # sweep wanted, so it reads as "nothing to do" and is deliberately NOT
+        # counted as a failure; the caller's ``failed`` tally is what an operator
+        # reads as "these units still hold history", and a race that already
+        # collected one would make that number a lie.
+        return None
+    except (OSError, ValueError):
+        return None
+    if tail.empty or tail.torn_offset is not None:
+        return None
+    closed = _last_lifecycle_entry(tail)
+    if closed is None or closed.type != _TYPE_SESSION_CLOSED:
+        return None
+    if not _is_terminal_close(closed):
+        return None
+    closed_ms = closed.time
+    if not isinstance(closed_ms, int) or closed_ms <= 0:
+        try:
+            closed_ms = int(newest.stat().st_mtime * 1000)
+        except OSError:
+            return None
+    return unit_id if closed_ms < cutoff_ms else None
+
+
+def _last_lifecycle_entry(tail: _Tail) -> "Entry | None":
+    """The newest ``session/opened`` or ``session/closed`` in *tail*'s window.
+
+    Whether a unit is closed is decided by the newest of the PAIR, not by the
+    newest close on its own. A resumed session appends to the ledger it already
+    had, so a file legitimately reads ``... closed ... opened ...`` -- one close
+    followed by the revival that outlived it -- and a scan that stopped at the
+    close would call a session that is running right now expired and delete a
+    live conversation's log.
+
+    Searched from the END, so a file with many turns costs one comparison per
+    trailing entry rather than a parse of the whole window. Entries that are
+    neither -- a turn, a tool, an in-flight closer landing after a teardown -- are
+    skipped: they say nothing about which state the unit is in, and the emitter
+    writes them after a close by design.
+
+    Reuses the window the tail scan already read, so this costs no second read.
+    """
+    lines = tail.window.split(b"\n")
+    if not tail.at_start:
+        # The window may begin mid-line; that first fragment is not a record.
+        lines = lines[1:]
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parsed = _parses_to_object(stripped)
+        if parsed is None:
+            continue
+        entry = Entry.from_dict(parsed)
+        if entry is not None and entry.type in _LIFECYCLE_TYPES:
+            return entry
+    return None
 
 
 @contextmanager
@@ -621,6 +1184,36 @@ class Resolution:
     @property
     def ok(self) -> bool:
         return self.status == STATUS_OK
+
+
+def _as_ref(ref: Ref | dict[str, Any]) -> Ref:
+    """*ref* as a :class:`Ref`, accepting either spelling a caller may hand in.
+
+    Every entry point that takes a ref accepts both a built ``Ref`` and its wire
+    form, and coerces here, so the two spellings cannot disagree about what a
+    valid ref is: ``Ref.from_dict`` runs the same ``__post_init__`` checks a
+    direct constructor call goes through.
+    """
+    return ref if isinstance(ref, Ref) else Ref.from_dict(ref)
+
+
+def _covers_span(found: tuple[Entry, ...], from_seq: int, last_seq: int) -> bool:
+    """Whether *found* covers ``from_seq..last_seq`` whole, each seq exactly once.
+
+    *found* MUST already be drawn from that span -- the caller's walk bounds it --
+    so seq being contiguous inside a file makes the two counts settle it, and this
+    does not re-check membership.
+
+    The test is COVERAGE of the span, and a duplicate is damage in its own right.
+    Seq is unique under the append lock, so two lines claiming one seq cannot both
+    be the writer's -- and a tally of LINES would let that duplicate fill the place
+    of a line that is gone, reading a span with a hole in it as intact. Counting
+    distinct seqs catches that substitution; requiring the two counts to agree
+    catches the duplicate even when nothing is missing, which is a file a reader
+    must not be told is intact.
+    """
+    covered = {entry.seq for entry in found}
+    return len(covered) >= max(0, last_seq - from_seq + 1) and len(covered) == len(found)
 
 
 # --------------------------------------------------------------------------- #
@@ -935,7 +1528,8 @@ class Ledger:
         """
         require_data(data)
         check_ownership(self._kind, type, src)
-        pointer = None if ref is None else (ref if isinstance(ref, Ref) else Ref.from_dict(ref))
+        validate_data(self._kind, type, data)
+        pointer = None if ref is None else _as_ref(ref)
         if thread is not None and (
             not isinstance(thread, int) or isinstance(thread, bool) or thread < 1
         ):
@@ -1029,6 +1623,7 @@ class Ledger:
             # and this is where that promise is kept.
             require_data(item.get("data"))
             check_ownership(self._kind, str(item.get("type") or ""), src)
+            validate_data(self._kind, str(item.get("type") or ""), item.get("data"))
         self._claim()
         with _open_lock(_lock_path(self._kind, self._id)):
             tail = _scan_tail(self._path)
@@ -1063,6 +1658,7 @@ class Ledger:
                     )
                 require_data(citing.get("data"))
                 check_ownership(self._kind, str(citing.get("type") or ""), src)
+                validate_data(self._kind, str(citing.get("type") or ""), citing.get("data"))
                 # LAST, so a torn tail can only cost the citing entry -- the orphan
                 # shape the repair drops -- never a chunk it already named.
                 members = [*items, citing]
@@ -1078,11 +1674,7 @@ class Ledger:
                         src=src,
                         data=item["data"],
                         thread=None,
-                        ref=(
-                            None
-                            if pointer is None
-                            else (pointer if isinstance(pointer, Ref) else Ref.from_dict(pointer))
-                        ),
+                        ref=None if pointer is None else _as_ref(pointer),
                         ignorable=bool(item.get("ignorable")),
                     )
                 )
@@ -1289,7 +1881,7 @@ class Ledger:
         routes that mount this -- and it belongs there, where the caller identity
         it must be derived from actually exists.
         """
-        pointer = ref if isinstance(ref, Ref) else Ref.from_dict(ref)
+        pointer = _as_ref(ref)
         if pointer.unit == self._kind and pointer.id == self._id:
             target: Ledger | None = self
         else:
@@ -1326,39 +1918,30 @@ class Ledger:
         firsts = segment_first_seqs(target.kind, target.id)
         oldest = firsts[0] if firsts else 1
         if pointer.from_seq < oldest:
-            surviving_from = max(pointer.from_seq, oldest)
-            surviving_expected = max(0, last - surviving_from + 1)
-            surviving = {entry.seq for entry in found}
-            if len(surviving) < surviving_expected or len(surviving) != len(found):
+            # Only the surviving part of the span is expected, so coverage is
+            # measured from the oldest survivor rather than from the citation's
+            # own start. A hole INSIDE that surviving range is damage, not
+            # retention, and gets `corrupt` on a span that also reaches below it.
+            if not _covers_span(found, oldest, last):
                 return Resolution(status=STATUS_CORRUPT, entries=found)
             return Resolution(status=STATUS_PRUNED, entries=found)
-        # Seq is contiguous inside a file, so the count is the test -- and the count
-        # comes from what the CITATION claims existed, never from what is on disk
-        # now. `ok` means every cited seq was read back; anything short of that is
-        # the citation failing, whatever shortened the file.
+        # Seq is contiguous inside a file, so coverage is the test -- and the span
+        # it is measured against comes from what the CITATION claims existed, never
+        # from what is on disk now. `ok` means every cited seq was read back;
+        # anything short of that is the citation failing, whatever shortened the
+        # file.
         #
-        # Clamping to the file's own tail is what made this wrong. A clean
-        # end-truncation -- whole lines removed, no torn bytes, nothing for the read
-        # to raise on -- lowers both the walked entries and a reopened handle's
-        # `last_seq` together, so the expected count shrinks to exactly what
-        # survived and the verdict came back `ok` with the cited lines missing. That
-        # is the worst available answer: a caller resolving a citation is asking
-        # whether it can still be read, and `ok` with fewer entries tells it yes
-        # while handing it a hole.
-        #
-        # A file that GREW is why the clamp existed, and dropping it is safe: this
-        # walk stops at `last`, so extra entries past the citation are never in
-        # `found` and cannot inflate the count.
-        # The test is COVERAGE of the cited seqs, and a duplicate is damage in its
-        # own right. Seq is unique under the append lock, so two lines claiming one
-        # seq cannot both be the writer's -- and a tally of LINES would let that
-        # duplicate fill the place of a line that is gone, answering `ok` for a span
-        # with a hole in it. Counting distinct seqs catches that substitution;
-        # comparing the two counts catches the duplicate even when nothing is
-        # missing, which is a file a reader must not be told is intact.
-        covered = {entry.seq for entry in found}
-        expected = max(0, last - pointer.from_seq + 1)
-        if len(covered) < expected or len(covered) != len(found):
+        # Measuring against the file's own tail instead is wrong in the one
+        # direction that matters. A clean end-truncation -- whole lines removed, no
+        # torn bytes, nothing for the read to raise on -- lowers the walked entries
+        # and a reopened handle's `last_seq` together, so a tail-derived span
+        # shrinks to exactly what survived and the verdict reads `ok` with the
+        # cited lines missing. That is the worst available answer: a caller
+        # resolving a citation is asking whether it can still be read, and `ok`
+        # with fewer entries tells it yes while handing it a hole. A file that GREW
+        # needs no tail-derived span either, because this walk stops at `last`, so
+        # entries past the citation are never in `found` and cannot inflate the count.
+        if not _covers_span(found, pointer.from_seq, last):
             # `corrupt` rather than a new status. The distinction a caller acts on is
             # "resolvable or not", and retention -- the one shortening that is normal
             # -- already has its own answer in the `pruned` branch above.

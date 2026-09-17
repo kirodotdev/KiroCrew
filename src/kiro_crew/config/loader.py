@@ -37,6 +37,7 @@ from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility fac
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import __version__, model_registry, pinned_fs, platform_compat, windows_acl
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
+from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 
 # Leaf module (stdlib + platform_compat only) — no import cycle with config.
 from kiro_crew.atomic_write import atomic_write, on_event_loop
@@ -806,10 +807,12 @@ def _apply_document_migrations(
     #   the one failure that can override a value the operator restored. A failing
     #   record therefore propagates and aborts the whole migration write;
     # * every key it records is reported back through *recorded_adoptions*, because
-    #   writing the ledger first creates the mirror hazard: if the config write then
+    #   writing the ledger first leaves a known residual: if the config write then
     #   fails, the key is marked adopted while the stale value is still stored, and
-    #   the one-shot filter would never revisit it. The caller rolls those entries
-    #   back when the write does not land, which restores the pre-load state exactly;
+    #   the one-shot filter never revisits it. Nothing rolls the ledger back -- see
+    #   ``record_adoptions`` for why that residual is the one chosen -- so the caller
+    #   uses the list only to decide which keys the IN-MEMORY half may apply: those
+    #   whose removal it saw land, and no others;
     # * ``drop_drifted_keys`` REMOVES the key rather than writing the new number, so
     #   the field resolves through ``data.get(key, DEFAULT)`` until the next full
     #   rewrite of the document re-materializes it.
@@ -946,10 +949,11 @@ def _persist_config_migration(
     # ``applied`` means the delta was computed and the backup taken; ``wrote`` means
     # the ATOMIC WRITE returned. They are separate because the write happens AFTER
     # ``_mutate`` returns -- ``update_config_locked`` performs it -- so a flag set
-    # inside the callback would report a write that had not happened yet, and a
-    # failing write would then skip the ledger rollback below and strand the key as
-    # adopted-but-stale. Neither call site guards ``write_config_atomically``, so a
-    # failed write propagates and ``wrote`` correctly stays False.
+    # inside the callback would report a write that had not happened yet, and the
+    # ``finally`` below would then confirm an adoption whose removal never reached
+    # disk, letting the in-memory half run ahead of the stored document. Neither
+    # call site guards ``write_config_atomically``, so a failed write propagates and
+    # ``wrote`` correctly stays False.
     applied = False
 
     def _mutate(current: dict) -> dict | None:
@@ -2484,6 +2488,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         role_models=coerce_role_models(agent_data.get("role_models")),
         role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
         fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
+        refusal_fallback_model=_sections.coerce_refusal_fallback_model(
+            agent_data.get("refusal_fallback_model", "")
+        ),
         reasoning_effort=agent_data.get("reasoning_effort", ""),
         provider=agent_data.get("provider", "acp"),
         mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
@@ -2586,6 +2593,68 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         resource_pressure_gb=_safe_float(agent_data.get("resource_pressure_gb", 4.0), 4.0),
         resource_critical_gb=_safe_float(agent_data.get("resource_critical_gb", 2.0), 2.0),
         admission_gate=_safe_bool(agent_data.get("admission_gate"), True),
+        # Durable task queue keys, adjacent to admission_gate because a
+        # gated spawn is what the queue defers instead of refusing.
+        task_queue_enabled=_safe_bool(agent_data.get("task_queue_enabled"), True),
+        task_dispatch_window=_safe_int(agent_data.get("task_dispatch_window", 64), 64, 1, 4096),
+        task_store_journal_mode=(
+            str(agent_data.get("task_store_journal_mode") or "auto").lower()
+            if str(agent_data.get("task_store_journal_mode") or "auto").lower()
+            in ("auto", "wal", "delete")
+            else "auto"
+        ),
+        admit_wait_secs=_safe_int(agent_data.get("admit_wait_secs", 30), 30, 1, 3600),
+        start_collect_timeout_secs=_safe_int(
+            agent_data.get("start_collect_timeout_secs", 300), 300, 10, 3600
+        ),
+        # Fairness lanes (taskq/lanes.py): weights shape the share of
+        # picks; the reserve keeps children startable under full parents.
+        lane_weights=(
+            {
+                lane: _safe_int(weight, 1, 1, 64)
+                for lane, weight in _lane_weights.items()
+                if isinstance(lane, str) and lane
+            }
+            if isinstance(_lane_weights := agent_data.get("lane_weights"), dict)
+            else {}
+        ),
+        child_reserve=_safe_int(agent_data.get("child_reserve", 1), 1, 0, 8),
+        # Shared recovery ladder schedule (recovery/policy.py bounds).
+        recovery_backoff_base_secs=_safe_float(
+            agent_data.get("recovery_backoff_base_secs", 2.0), 2.0, 0.1, 60.0
+        ),
+        recovery_backoff_max_secs=_safe_float(
+            agent_data.get("recovery_backoff_max_secs", 120.0), 120.0, 1.0, 3600.0
+        ),
+        # Session-start gate (acp/runtime.py SessionStartGate).
+        session_start_concurrency=_safe_int(
+            agent_data.get("session_start_concurrency", 2), 2, 1, 64
+        ),
+        # Adaptive controller (adaptive/policy.py params_from_config).
+        adaptive_concurrency=_safe_bool(agent_data.get("adaptive_concurrency"), True),
+        adaptive_concurrency_mode=(
+            "fixed" if agent_data.get("adaptive_concurrency_mode") == "fixed" else "aimd"
+        ),
+        adaptive_floor=_safe_int(agent_data.get("adaptive_floor", 1), 1, 1, 64),
+        adaptive_initial=_safe_int(agent_data.get("adaptive_initial", 4), 4, 1, 64),
+        controller_sample_secs=_safe_int(agent_data.get("controller_sample_secs", 5), 5, 1, 300),
+        # Dependency coordinator (taskq/dependency.py coordinator_from_config).
+        dependency_max_attempts=_safe_int(
+            agent_data.get("dependency_max_attempts", 20), 20, 1, 1000
+        ),
+        dependency_wait_deadline_secs=_safe_int(
+            agent_data.get("dependency_wait_deadline_secs", 3600), 3600, 0, 86400
+        ),
+        dependency_wake_per_tick=_safe_int(
+            agent_data.get("dependency_wake_per_tick", 0), 0, 0, 4096
+        ),
+        dependency_wake_spacing_secs=_safe_float(
+            agent_data.get("dependency_wake_spacing_secs", 1.0), 1.0, 0.0, 60.0
+        ),
+        # Tool-stall watchdog (acp/session_handle.py WatchdogSettings).
+        interactive_command_policy=(
+            "wait" if agent_data.get("interactive_command_policy") == "wait" else "cancel"
+        ),
         subagent_max_turns=_safe_int(
             agent_data.get("subagent_max_turns", 100), 100, 1, SUBAGENT_MAX_TURNS_CEILING
         ),
@@ -2601,8 +2670,10 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             COMPLETION_KEEP_CHARS_MAX,
         ),
         subagent_result_ttl_secs=_safe_int(agent_data.get("subagent_result_ttl_secs", 3600), 3600),
+        # Same band workflows/service.py clamp_run_timeout enforces, so a
+        # hand-edited file and the live-bound setter agree.
         workflow_run_timeout_secs=_safe_int(
-            agent_data.get("workflow_run_timeout_secs", 3600), 3600
+            agent_data.get("workflow_run_timeout_secs", 3600), 3600, 60, 21600
         ),
         subagent_cwd_allowed_roots=(
             [r for r in _roots if isinstance(r, str)]
@@ -3336,6 +3407,8 @@ def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
 
 
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
+    _spawn_min = max(1, _safe_int(mcp_gateway_data.get("spawn_concurrency_min", 1), 1))
+    _spawn_max = max(_spawn_min, _safe_int(mcp_gateway_data.get("spawn_concurrency_max", 8), 8))
     return McpGatewayConfig(
         enabled=bool(mcp_gateway_data.get("enabled", False)),
         # Absent -> True so installs that never configured this keep
@@ -3375,6 +3448,31 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
             0, _safe_int(mcp_gateway_data.get("resolve_once_refresh_hours", 24), 24)
         ),
         max_backends=max(1, _safe_int(mcp_gateway_data.get("max_backends", 64), 64)),
+        # Admission keys. Clamps mirror the dataclass defaults: floor
+        # >= 1, ceiling >= floor, initial inside the band; 0 keeps the
+        # "auto" meaning on the host-budget ceilings.
+        spawn_concurrency_min=_spawn_min,
+        spawn_concurrency_max=_spawn_max,
+        spawn_concurrency_initial=min(
+            _spawn_max,
+            max(
+                _spawn_min,
+                _safe_int(mcp_gateway_data.get("spawn_concurrency_initial", 4), 4),
+            ),
+        ),
+        spawn_queue_wait_secs=max(
+            1, _safe_int(mcp_gateway_data.get("spawn_queue_wait_secs", 600), 600)
+        ),
+        initialize_timeout_secs=max(
+            1, _safe_int(mcp_gateway_data.get("initialize_timeout_secs", 10), 10)
+        ),
+        host_budget_max_procs=max(
+            0, _safe_int(mcp_gateway_data.get("host_budget_max_procs", 0), 0)
+        ),
+        host_budget_max_rss_mb=max(
+            0, _safe_int(mcp_gateway_data.get("host_budget_max_rss_mb", 0), 0)
+        ),
+        host_budget_max_fds=max(0, _safe_int(mcp_gateway_data.get("host_budget_max_fds", 0), 0)),
         poolable_servers=[
             s for s in mcp_gateway_data.get("poolable_servers", []) if isinstance(s, str)
         ],
@@ -4643,10 +4741,20 @@ class KiroCrewConfig:
             # so a read-and-skip that left its document cached would have every
             # later load serve the stale value and never retry -- the ceiling the
             # operator upgraded to fix would come back and stay. In a ``finally``
-            # rather than beside the write, because the write is skipped by three
-            # different paths (a contended lock, a degraded load, an exception) and
-            # all three leave the same stale cache entry.
-            if adopt_keys and not adoption_landed:
+            # rather than beside the write, because the write is skipped by more
+            # than one path (a contended lock, an exception) and each leaves the
+            # same stale cache entry.
+            #
+            # The degraded-sections branch is the exception, and it is excluded on
+            # purpose. Its retry condition is not "the next load" but "the operator
+            # fixes the file and restarts the gateway" -- degradation observations
+            # are sticky for the life of a process (``_OBSERVED_DEGRADED_SECTIONS``),
+            # so until then the write is refused every time, and dropping the cache
+            # buys nothing except a full re-read and re-parse of config.json on
+            # EVERY load for as long as the two conditions coexist. After the
+            # restart the fixed file's fingerprint misses the (empty) cache and the
+            # adoption retries on that first load -- no invalidation needed.
+            if adopt_keys and not adoption_landed and not cfg._degraded_sections:
                 _invalidate_config_cache()
 
         return cfg, ticket
@@ -5033,7 +5141,7 @@ class KiroCrewConfig:
         if not agent:
             return ""
         base = agents_dir if agents_dir is not None else kiro_agents_dir()
-        for af in base.glob("*.json"):
+        for af in iter_agent_spec_files(base, ordered=False):
             ad = _read_hardened_agent_spec(af)
             if ad is None:
                 continue
@@ -5374,7 +5482,7 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
     from kiro_crew.hooks import safe_read_file
 
     try:
-        candidates = sorted(agents_dir.glob("*.json"))
+        candidates = iter_agent_spec_files(agents_dir)
     except OSError:
         return frozenset()
     for af in candidates:
@@ -5385,7 +5493,7 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
             # refresh. safe_read_file re-checks the RESOLVED target and raises
             # PermissionError for a refused path — an OSError subclass, so a
             # refused entry is skipped by the same handler as an unreadable one.
-            data = json.loads(safe_read_file(str(af)))
+            data = parse_agent_spec_text(safe_read_file(str(af)), af)
         except (ValueError, OSError):
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The

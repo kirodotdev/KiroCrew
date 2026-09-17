@@ -12,6 +12,26 @@ export interface SubagentDetail {
   id: string; task: string; agent: string; turns: number; last_tool: string; startedAt: number
 }
 
+/** A close tombstone entry (see `applySlots`). */
+interface CloseHold {
+  /** The `deleteSlot` attempt that owns this hold. A stale attempt's lifecycle
+   *  actions (a `rejected` trailing a slow peer navigation) must not touch a
+   *  newer attempt's hold on the same key. */
+  requestId: string
+  /** Deadline while the DELETE is in flight; `null` once the server has answered. */
+  inFlightUntil: number | null
+  /** Straggler frames the hold survives after confirmation. */
+  graceFrames: number
+  /** `fetchSlots` requests that were already in flight when the server
+   *  confirmed the close. Their replies may predate the pop, so the hold
+   *  outlives them however many frames arrive first. */
+  awaitingFetches: string[]
+  /** Wall-clock deadline for the confirmed phase. `chatSlots()` carries no
+   *  deadline either, so an `awaitingFetches` entry that never settles would
+   *  otherwise pin the tombstone until a reload. Set at confirmation. */
+  confirmedUntil: number | null
+}
+
 interface DashboardState {
   status: StatusData | null
   /** The ad-hoc auto-approve duration this tab last saved in Settings, or
@@ -26,6 +46,22 @@ interface DashboardState {
   slotsGeneration: number
   /** Per-key optimistic/reconciliation pin writes, independent of other slot fields. */
   slotPinGenerations: Record<string, number>
+  /** Keys whose close is in flight or just confirmed, held out of `slots` until an
+   *  authoritative list omits them. See `applySlots` for why membership alone is
+   *  not enough: the server still lists a slot whose DELETE has not finished.
+   *  Bounded twice over — by the wall clock while the request is in flight, and
+   *  by a small frame budget after the server has confirmed. */
+  closingSlots: Record<string, CloseHold>
+  /** `fetchSlots` requests currently in flight, by thunk requestId — read by
+   *  a confirmed close to know which replies could still predate its pop. */
+  slotFetchesInFlight: string[]
+  /** `fetchSlots` requests a confirmed close was still waiting on when its
+   *  wall-clock cap expired, mapped to the closed keys each must not restore.
+   *  Such a reply is known to predate those pops, so on arrival the closed rows
+   *  are filtered out of it and the REST of the payload still applies — an
+   *  unrelated change it carries is not thrown away. Entries leave when the
+   *  request settles. */
+  staleSlotFetches: Record<string, string[]>
   // Slot keys in the order the session sidebar actually DISPLAYS them
   // (pinned-first + the user's sort, flat-view aware). Published by
   // ChatSidebar; consumed by the chat-jump / chat-cycle keyboard shortcuts so
@@ -215,6 +251,9 @@ const initialState: DashboardState = {
   slots: [],
   slotsGeneration: 0,
   slotPinGenerations: {},
+  closingSlots: {},
+  slotFetchesInFlight: [],
+  staleSlotFetches: {},
   sidebarOrder: [],
   approvalMode: 'normal',
   channelTrusted: false,
@@ -346,8 +385,167 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
  *  Skipping the assignment (rather than assigning an equal array) is the half
  *  that matters most: it leaves the array reference alone, which lets a
  *  downstream `useMemo` skip its filter and sort entirely instead of recomputing
- *  an equal result. */
-const applySlots = (state: DashboardState, next: ChatSlot[]): void => {
+ *  an equal result.
+ *
+ *  Membership has ONE exception: a key in `closingSlots`. `deleteSlot` removes
+ *  the row before its DELETE round-trips, but the server keeps the slot in its
+ *  registry across several awaits (nudge-loop retirement, the app hook, the
+ *  history save) before popping it, and slot pushes coalesce on a 200 ms window
+ *  that re-serializes at delivery time — so a frame listing the closing slot as
+ *  live is ordinary, not rare, and an HTTP `/api/chat/slots` reply can predate
+ *  the click outright. Taking membership at face value put the row back, and
+ *  the first post-pop frame removed it again: the disappear / reappear /
+ *  disappear flicker of #11224. A closing key is held out of `slots` for the
+ *  life of the tombstone. Everything else about the frame — the other rows, the
+ *  generation bump, the unread drain — still applies, so the hold never delays
+ *  anything but the one row being dismissed.
+ *
+ *  A list that OMITS the key does not release the hold. It would be tempting to
+ *  read that as the server's confirmation, but the two authoritative writers
+ *  are not ordered with each other: an HTTP `/api/chat/slots` reply can be
+ *  older than the live frames that arrived while it travelled (see
+ *  `fetchSlots.fulfilled`), so a post-pop frame that omitted the key could
+ *  release the hold and a pre-pop reply still in flight would then re-add the
+ *  row. The tombstone is instead retired by the close's OWN lifecycle: while
+ *  the DELETE is in flight it holds unconditionally, and once the server has
+ *  answered it survives a small, fixed budget of further authoritative lists
+ *  (listing the key or not — a straggler can only be that far behind) and then
+ *  yields to membership. A server that keeps listing a slot it claims to have
+ *  closed is a server bug, and hiding its row indefinitely would turn that bug
+ *  into a session the user can no longer see; the budget bounds that too.
+ *
+ *  "The request bounds it" needs one caveat: `deleteChatSlot` carries no
+ *  deadline, so a DELETE stalled server-side (the app hook or the history save
+ *  hanging on exactly the long-context session that made the close slow) would
+ *  otherwise hold the row hidden until a reload. The in-flight hold therefore
+ *  also expires on the wall clock: past `CLOSE_IN_FLIGHT_MAX_MS` the next
+ *  authoritative list applies as-is, so a frame that still lists the key shows
+ *  it again. That is the pre-fix behaviour — a row that visibly came back —
+ *  which is the right failure mode for a close that has not been confirmed in
+ *  that long. The confirmed phase has the same cap (`CLOSE_CONFIRMED_MAX_MS`)
+ *  for the same reason: `chatSlots()` carries no deadline either, so a
+ *  `fetchSlots` snapshotted into `awaitingFetches` that never settles must not
+ *  pin the tombstone until a reload. Unlike the in-flight case, though, the
+ *  server HAS confirmed this close, so a reply from one of those fetches that
+ *  finally lands is known to be pre-pop for THAT key: the pairing is recorded
+ *  in `staleSlotFetches` at expiry and the key is filtered out of the reply on
+ *  arrival (see `fetchSlots.fulfilled`) instead of resurrecting the row, while
+ *  the rest of the reply still applies. */
+/** Wall-clock cap on the in-flight hold; well past any healthy close, short of a reload. */
+const CLOSE_IN_FLIGHT_MAX_MS = 30_000
+/** Wall-clock cap on the confirmed hold: however many straggler lists or
+ *  unsettled pre-confirmation fetches remain, the row is shown again past this
+ *  if the server still lists it. A pre-pop reply cannot legitimately trail the
+ *  pop by anything like this long; one that does has stalled, and a stalled
+ *  request is the same failure the in-flight cap exists for. */
+const CLOSE_CONFIRMED_MAX_MS = 30_000
+/** Authoritative lists a confirmed close's tombstone outlives before yielding
+ *  to membership. Live pushes coalesce on 200 ms, so a frame serialized before
+ *  the pop is among the first few after the 200. HTTP replies are not bounded
+ *  by this budget: a `fetchSlots` that was in flight at the 200 is tracked by
+ *  requestId on the hold and the hold outlives its settlement outright. */
+const CLOSE_CONFIRMED_GRACE_FRAMES = 3
+/** Drop one close tombstone, but only the attempt that owns it: a stale
+ *  attempt's `rejected` must not release a retry's hold on the same key.
+ *  Prototype keys are refused at the writer, so they can never be present;
+ *  skipping them here keeps every dynamic access to the record behind the same
+ *  guard. */
+const releaseHold = (state: DashboardState, key: string, requestId: string): void => {
+  if (isUnsafeKey(key)) return
+  if (state.closingSlots?.[key]?.requestId === requestId) delete state.closingSlots[key]
+}
+/** Record that the fetches a confirmed hold was still awaiting at expiry must
+ *  not restore `key` when their replies land. */
+const markStaleSlotFetches = (state: DashboardState, key: string, requestIds: string[]): void => {
+  if (!requestIds.length) return
+  if (!state.staleSlotFetches) state.staleSlotFetches = {}
+  for (const id of requestIds) {
+    const keys = state.staleSlotFetches[id] ?? []
+    if (!keys.includes(key)) state.staleSlotFetches[id] = [...keys, key]
+  }
+}
+/** The closed keys a settling `fetchSlots` reply must not restore. Either the
+ *  expiry branch in `applySlots` already recorded them, or a confirmed hold is
+ *  STILL awaiting this request and has passed its own deadline — in which case
+ *  this very reply would be the first list to trigger that expiry, and it must
+ *  not be the one that puts the row back. Expire the hold here so the key is
+ *  filtered like any other stale pairing. */
+const staleKeysForSlotFetch = (state: DashboardState, requestId: string): Set<string> => {
+  const now = Date.now()
+  const closing = state.closingSlots ?? {}
+  for (const key of Object.keys(closing)) {
+    const hold = closing[key]
+    if (hold.confirmedUntil === null || now < hold.confirmedUntil || !hold.awaitingFetches.includes(requestId)) continue
+    markStaleSlotFetches(state, key, hold.awaitingFetches)
+    delete closing[key]
+  }
+  return new Set(state.staleSlotFetches?.[requestId] ?? [])
+}
+/** Move a hold from the in-flight clock to the confirmed phase. Called from the
+ *  thunk the moment the DELETE resolves (`confirmCloseHold`), NOT from the
+ *  thunk's `fulfilled`: that action trails an unbounded peer navigation, and a
+ *  successful close whose navigation outlasted the in-flight cap would
+ *  otherwise expire as if it had stalled. `fulfilled` still calls this as
+ *  belt-and-braces; the second call is a no-op. */
+const confirmHold = (state: DashboardState, key: string, requestId: string): void => {
+  const hold = isUnsafeKey(key) ? undefined : state.closingSlots?.[key]
+  if (!hold || hold.requestId !== requestId || hold.inFlightUntil === null) return
+  hold.inFlightUntil = null
+  hold.awaitingFetches = [...(state.slotFetchesInFlight ?? [])]
+  hold.confirmedUntil = Date.now() + CLOSE_CONFIRMED_MAX_MS
+}
+/** A `fetchSlots` request settled: no confirmed hold need wait for it any more.
+ *  Runs AFTER that reply's own `applySlots`, so the reply itself is still held. */
+const settleSlotFetch = (state: DashboardState, requestId: string | undefined): void => {
+  if (!requestId) return
+  state.slotFetchesInFlight = (state.slotFetchesInFlight ?? []).filter(id => id !== requestId)
+  if (state.staleSlotFetches?.[requestId]) delete state.staleSlotFetches[requestId]
+  const closing = state.closingSlots ?? {}
+  for (const key of Object.keys(closing)) {
+    const hold = closing[key]
+    if (!hold.awaitingFetches.includes(requestId)) continue
+    hold.awaitingFetches = hold.awaitingFetches.filter(id => id !== requestId)
+    if (hold.inFlightUntil === null && hold.graceFrames === 0 && hold.awaitingFetches.length === 0) delete closing[key]
+  }
+}
+const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
+  let next = incomingRows
+  const closing = state.closingSlots ?? {}
+  const closingKeys = Object.keys(closing)
+  if (closingKeys.length) {
+    const held = new Set<string>()
+    const now = Date.now()
+    for (const key of closingKeys) {
+      const hold = closing[key]
+      if (hold.inFlightUntil !== null) {
+        if (now < hold.inFlightUntil) { held.add(key); continue }
+        // Stalled past the cap: stop hiding a session nobody has confirmed gone.
+        delete closing[key]
+        continue
+      }
+      if (hold.confirmedUntil !== null && now >= hold.confirmedUntil) {
+        // A pre-pop reply that has not landed by now has stalled; stop waiting
+        // for it — but remember it, so that when it finally lands it is dropped
+        // rather than applied as if it described the current registry.
+        markStaleSlotFetches(state, key, hold.awaitingFetches)
+        delete closing[key]
+        continue
+      }
+      // Confirmed: every authoritative list, listing the key or not, spends
+      // one unit of the frame budget. Counting omissions too is what keeps a
+      // stale reply that lands AFTER an omitting frame from re-adding the row.
+      // A reply from a fetch that predates the confirmation is held regardless
+      // of the budget (see `awaitingFetches`): it is the one list that can be
+      // arbitrarily late and still list the key.
+      if (hold.graceFrames > 0) hold.graceFrames -= 1
+      if (hold.graceFrames > 0 || hold.awaitingFetches.length > 0) { held.add(key); continue }
+      // The budget's last list is still held; the entry just does not outlive
+      // it, so a same-key session seen from the NEXT list on shows.
+      held.add(key)
+      delete closing[key]
+    }
+    if (held.size) next = incomingRows.filter(s => !held.has(s.key))
+  }
   const prev = state.slots ?? []
   const byKey = new Map(prev.map(s => [s.key, s]))
   let changed = prev.length !== next.length
@@ -495,9 +693,25 @@ const dashboardSlice = createSlice({
       if (slot) slot.title = action.payload.title
     },
     addSlotOptimistic(state, action: PayloadAction<ChatSlot>) {
+      // A resume or fork under a key that was closing supersedes the tombstone:
+      // the caller has a fresh server acknowledgement that the key is live.
+      if (!isUnsafeKey(action.payload.key)) delete state.closingSlots?.[action.payload.key]
       if (!state.slots.find(s => s.key === action.payload.key)) {
         state.slots.push(action.payload)
       }
+    },
+    /** Drop a close tombstone (see `applySlots`). `deleteSlot` dispatches this in
+     *  its failure path BEFORE the recovery `fetchSlots`, because the thunk's
+     *  `rejected` action only fires after a trailing `await navigation` (a peer
+     *  transcript load, unbounded), and the refetch reply must not be filtered
+     *  by the very hold the failed close armed. */
+    releaseCloseHold(state, action: PayloadAction<{ key: string; requestId: string }>) {
+      releaseHold(state, action.payload.key, action.payload.requestId)
+    },
+    /** The DELETE resolved: the server has popped the slot. Dispatched by
+     *  `deleteSlot` before it awaits the peer navigation (see `confirmHold`). */
+    confirmCloseHold(state, action: PayloadAction<{ key: string; requestId: string }>) {
+      confirmHold(state, action.payload.key, action.payload.requestId)
     },
     removeSlotOptimistic(state, action: PayloadAction<string>) {
       state.slots = state.slots.filter(s => s.key !== action.payload)
@@ -759,16 +973,46 @@ const dashboardSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      .addCase(fetchSlots.pending, (state, action) => {
+        if (!state.slotFetchesInFlight) state.slotFetchesInFlight = []
+        state.slotFetchesInFlight.push(action.meta.requestId)
+      })
       .addCase(fetchSlots.fulfilled, (state, action) => {
+        // A reply a confirmed close waited on past its cap is known to predate
+        // that close's pop, so the closed key is filtered out of it — but ONLY
+        // that key. Whatever else the reply carries (an unrelated rename, a
+        // slot created meanwhile) is still the newest thing this transport has
+        // said and still applies. Before the first live snapshot the reply is
+        // the only list there is and applies unfiltered: an empty sidebar is
+        // worse than one stale row.
+        // `meta` is optional-chained for the hand-built actions in older tests.
+        const requestId = action.meta?.requestId
+        const staleKeys = requestId && state.slotsLoaded ? staleKeysForSlotFetch(state, requestId) : new Set<string>()
+        // For a stale key the reply's row is pre-pop and is NOT trusted, but the
+        // key may since have been recreated (a resume on another client): keep
+        // whatever row is on screen for it rather than dropping the key, so a
+        // live same-key session and its unread state survive the stale reply.
+        const current = staleKeys.size ? new Map((state.slots ?? []).map(s => [s.key, s])) : undefined
+        const rows: ChatSlot[] = current
+          ? action.payload.flatMap((s: ChatSlot) => {
+            if (!staleKeys.has(s.key)) return [s]
+            const live = current.get(s.key)
+            return live ? [live] : []
+          })
+          : action.payload
         // A reply in flight can be older than the live frames that arrived while
         // it travelled, so it may omit a slot the stream has since created. The
         // unread drain still runs — that is this path's documented job, and a
         // badge self-heals — but eviction is withheld once the stream is live.
         const fresh = !state.slotsLoaded
-        applySlots(state, action.payload)
+        applySlots(state, rows)
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
-        reconcileSlots(state, new Set(action.payload.map((s: { key: string }) => s.key)), fresh)
+        reconcileSlots(state, new Set(rows.map((s: { key: string }) => s.key)), fresh)
+        settleSlotFetch(state, requestId)
+      })
+      .addCase(fetchSlots.rejected, (state, action) => {
+        settleSlotFetch(state, action.meta?.requestId)
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })
       // The created slot joins the list on the SAME action that activates it
@@ -783,15 +1027,63 @@ const dashboardSlice = createSlice({
       .addMatcher(
         (action): action is PayloadAction<ChatSlot> => action.type === 'chat/createSlot/fulfilled',
         (state, action) => {
+          // A same-key recreation supersedes any tombstone (idempotent otherwise).
+          if (!isUnsafeKey(action.payload.key)) delete state.closingSlots?.[action.payload.key]
           if (!state.slots.find(s => s.key === action.payload.key)) {
             state.slots.push(action.payload)
           }
         },
       )
+      // Close tombstone lifecycle (see `applySlots`). Matched by type string for
+      // the same import-cycle reason as `createSlot` above. `pending` fires
+      // BEFORE the thunk body's `removeSlotOptimistic`, so the hold is armed by
+      // the time the row leaves the list and no frame can slip between the two.
+      .addMatcher(
+        (action): action is { type: string; meta: { arg: string; requestId: string } } => action.type === 'chat/deleteSlot/pending',
+        (state, action) => {
+          // The key is server-minted, but it is still a dynamic property name on
+          // a plain record: refuse the prototype keys the way every other
+          // per-slot map here does, rather than let Immer throw inside `pending`
+          // and leave the DELETE undispatched.
+          if (isUnsafeKey(action.meta.arg)) return
+          if (!state.closingSlots) state.closingSlots = {}
+          // A retry on the same key takes over the hold; the earlier attempt's
+          // later lifecycle actions no longer match and are ignored.
+          state.closingSlots[action.meta.arg] = {
+            requestId: action.meta.requestId,
+            inFlightUntil: Date.now() + CLOSE_IN_FLIGHT_MAX_MS,
+            graceFrames: CLOSE_CONFIRMED_GRACE_FRAMES,
+            awaitingFetches: [],
+            confirmedUntil: null,
+          }
+        },
+      )
+      .addMatcher(
+        (action): action is PayloadAction<string> & { meta?: { requestId?: string } } => action.type === 'chat/deleteSlot/fulfilled',
+        (state, action) => {
+          // Normally already confirmed by `confirmCloseHold` the moment the
+          // DELETE resolved; this covers a fulfilment that never went through
+          // the thunk body's dispatch (a test harness, which may also omit meta).
+          const requestId = action.meta?.requestId
+          if (requestId) confirmHold(state, action.payload, requestId)
+        },
+      )
+      .addMatcher(
+        (action): action is { type: string; meta: { arg: string; requestId: string } } => action.type === 'chat/deleteSlot/rejected',
+        (state, action) => {
+          // Belt and braces: the thunk releases the hold itself before its
+          // recovery refetch (see `releaseCloseHold`), because `rejected` only
+          // fires after the thunk's trailing `await navigation` and the refetch
+          // reply can land first. This covers a rejection that never reached
+          // that catch (a thrown `switchSlot` peer selection, a test harness).
+          // Owner-checked: this `rejected` can trail a same-key retry's `pending`.
+          releaseHold(state, action.meta.arg, action.meta.requestId)
+        },
+      )
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**

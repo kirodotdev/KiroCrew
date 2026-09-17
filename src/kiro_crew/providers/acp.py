@@ -76,6 +76,7 @@ from kiro_crew.providers.base import (
     resolve_billing_stats,
 )
 from kiro_crew.providers.cleanup import _is_safe_path
+from kiro_crew.recovery.ladder import InfraError
 
 logger = logging.getLogger(__name__)
 
@@ -1713,6 +1714,12 @@ class AcpProvider(LLMProvider):
             mcp_server_name=e.mcp_server_name,
             diff_old_text=e.diff_old_text,
             diff_path=e.diff_path,
+            # Typed execution-layer status (``kirocrew/status`` / the watchdog's
+            # ``waiting_input`` classification). The consumers read it here:
+            # chat_runner's tool-stall continuation takes ``wait_reason`` from
+            # it before the evidence text, and the sub-agent run loop yields
+            # its lane slot (``waiting_input`` WaitRecord) on it.
+            status=e.status,
         )
 
     @property
@@ -1981,6 +1988,19 @@ class AcpProvider(LLMProvider):
         ``True`` — a truthy stand-in must not read as a verdict.
         """
         return getattr(self._client, "last_compaction_transient", False) is True
+
+    @property
+    def last_infra_error(self) -> InfraError | None:
+        """The inner client's L1 verdict on the last tool result, or None.
+
+        ``getattr`` with a None default, like ``last_compaction_transient``: on
+        the kiro path ``self._client`` is the placeholder AcpClient until
+        ``_start_kiro_runtime_impl`` swaps in the AcpSessionProvider that reads the
+        session handle, and an AcpClient never classifies tool results, so the
+        seams that do not participate answer "no verdict" rather than raising.
+        """
+        err = getattr(self._client, "last_infra_error", None)
+        return err if isinstance(err, InfraError) else None
 
     def touch_activity(self) -> None:
         self._client.touch_activity()

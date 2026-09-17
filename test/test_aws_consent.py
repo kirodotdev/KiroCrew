@@ -1368,3 +1368,66 @@ class TestConsentEndpoint:
 
         resp = asyncio.run(handler.api_aws_consent_post(self._post(["not", "a", "dict"])))
         assert resp.status == 400
+
+
+class TestAuditDecisionRedactsBeforeTruncate:
+    """``audit_decision`` must redact ``detail`` BEFORE clipping it to 200 chars.
+
+    The ``resources`` string reaches the durable Security Event Log through
+    ``log_api_access``. SEL's own write-path pass runs over what it is handed,
+    so a credential that the caller has already cut in half at index 200 is a
+    fragment no credential grammar matches, and the partial secret persists in a
+    dashboard-readable audit log. Same invariant as ``redact_and_truncate``:
+    redaction runs over the FULL text, and only then is the text clipped.
+
+    The site sits inside an ``if detail else service`` ternary, so the second
+    test pins the branch the redact-first rewrite must not disturb: an empty
+    ``detail`` still emits the bare ``service`` with no ``": "`` separator.
+    """
+
+    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+
+    @staticmethod
+    def _capture(monkeypatch):
+        import kiro_crew.sel as sel_mod
+
+        calls: list[dict] = []
+
+        class _Recorder:
+            def log_api_access(self, **kwargs) -> None:
+                calls.append(kwargs)
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Recorder())
+        return calls
+
+    def test_a_credential_straddling_the_clip_is_fully_redacted(self, home, monkeypatch):
+        calls = self._capture(monkeypatch)
+        pad = "d" * (200 - 4)
+        detail = pad + self.SECRET + " " + "z" * 300
+        assert len(detail) > 200
+        assert 200 - len(pad) < len(self.SECRET)  # key straddles the cut
+
+        aws_consent.audit_decision("polly", outcome="denied", detail=detail)
+
+        assert len(calls) == 1
+        resources = calls[0]["resources"]
+        assert "AKIA" not in resources, resources
+        assert resources.startswith("polly: ")
+        # Redaction ran over the full text; only the redacted text was clipped.
+        assert len(resources) <= len("polly: ") + 200
+
+    def test_an_empty_detail_still_emits_the_bare_service(self, home, monkeypatch):
+        calls = self._capture(monkeypatch)
+
+        aws_consent.audit_decision("polly", outcome="revoked", detail="")
+
+        assert len(calls) == 1
+        assert calls[0]["resources"] == "polly"
+
+    def test_a_short_detail_is_emitted_verbatim(self, home, monkeypatch):
+        calls = self._capture(monkeypatch)
+
+        aws_consent.audit_decision("polly", outcome="granted", detail="account=1234")
+
+        assert len(calls) == 1
+        assert calls[0]["resources"] == "polly: account=1234"

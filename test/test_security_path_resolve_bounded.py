@@ -141,6 +141,65 @@ def test_every_gate_fails_closed_on_a_stall(monkeypatch) -> None:
         stalled.release.set()
 
 
+def test_a_stall_is_refused_as_unverifiable_not_as_a_match(monkeypatch) -> None:
+    # Same decision as the boolean gate above (refused), different WORDS: the
+    # refusal says the path could not be verified and is NOT a match, so an agent
+    # reading it retries instead of hunting for a credential in a project file.
+    stalled = _StalledResolver()
+    monkeypatch.setattr(security, "_resolved_spellings", stalled)
+    try:
+        token = "/home/someone/ws/README.md"
+        reason = security.sensitive_path_refusal(token)
+    finally:
+        stalled.release.set()
+    assert reason is not None
+    assert security.is_unverifiable_path_refusal(reason)
+    assert "NOT a match" in reason
+    assert repr(token) in reason
+    assert "access to sensitive path" not in reason
+    # The boolean gate is the producer's ``is not None``: it cannot say otherwise.
+    assert security.is_sensitive_path(token) is True
+
+
+def test_a_match_and_a_benign_path_keep_their_answers(tmp_path) -> None:
+    benign = tmp_path / "notes.md"
+    benign.write_text("x")
+    assert security.sensitive_path_refusal(str(benign)) is None
+    assert security.is_sensitive_path(str(benign)) is False
+    assert security.sensitive_path_refusal("~/.aws/credentials") == (
+        "Blocked: access to sensitive path: ~/.aws/credentials"
+    )
+    assert security.is_sensitive_path("~/.aws/credentials") is True
+    assert security.sensitive_path_refusal("") is None
+
+
+def test_a_stalled_publish_artifact_check_is_also_worded_as_unverifiable(monkeypatch) -> None:
+    # The producer's second matcher raises through it too: a stall while judging
+    # the keystone-temp rule must not fall back to the match wording.
+    def stalled(*args, **kwargs):
+        raise security.PathResolutionStalled("/home/someone/ws/x.tmp", "/home/someone")
+
+    monkeypatch.setattr(security.paths, "_path_in_home_dirs", lambda *a, **k: False)
+    monkeypatch.setattr(security.paths, "_is_keystone_publish_artifact", stalled)
+    reason = security.sensitive_path_refusal("/home/someone/ws/x.tmp")
+    assert reason is not None and security.is_unverifiable_path_refusal(reason)
+
+
+def test_a_matched_path_spelled_like_the_stall_wording_is_still_a_match(monkeypatch) -> None:
+    # Both refusals embed the caller-chosen path, so the stall is recognised by a
+    # fixed PREFIX the path cannot reach, never by searching the text. A path
+    # carrying the whole stall opening keeps the match wording and is not a stall.
+    forged = f"/home/someone/{security.UNVERIFIABLE_PATH_PREFIX}/x"
+    monkeypatch.setattr(security.paths, "_path_in_home_dirs", lambda *a, **k: True)
+    reason = security.sensitive_path_refusal(forged)
+    assert reason == f"Blocked: access to sensitive path: {forged}"
+    assert security.is_unverifiable_path_refusal(reason) is False
+    # And the genuine stall wording quotes the path LAST, behind the fixed prefix.
+    assert security.is_unverifiable_path_refusal(
+        f"{security.UNVERIFIABLE_PATH_PREFIX} (...). Path: {forged!r}"
+    )
+
+
 def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> None:
     # One bash command can carry many path tokens against the SAME wedged mount:
     # paying the full timeout per token would put the loop straight back past
@@ -151,23 +210,41 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
     clock = [1000.0]
     monkeypatch.setattr(security, "_path_resolve_clock", lambda: clock[0])
     real_resolver = security._resolved_spellings
+    real_executor = security.path_resolve_executor
     stalled = _StalledResolver()
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/home/a/one")  # times out -> opens cooldown
         assert len(stalled.calls) == 1
+        # "For free" is a claim about the POOL, not about the wall clock.  This
+        # was a 50ms stopwatch around each refusal, which is inside the noise
+        # band these runners actually produce -- one scheduler stall or GC pause
+        # inside the window reds the test with a pool regression that never
+        # happened -- and it is also blind in the other direction, since a
+        # regression that submits and comes straight back stays under the
+        # ceiling.  Count submissions instead: the cooldown short-circuit must
+        # be reached BEFORE ``path_resolve_executor().submit``.
+        submissions: list[str] = []
+
+        class _Counting:
+            def submit(self, fn, *args):
+                submissions.append(getattr(fn, "__name__", repr(fn)))
+                return real_executor().submit(fn, *args)
+
+        monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
         for token in ("/home/a/two", "/home/a/deeper/three"):
-            started = time.perf_counter()
             with pytest.raises(security.PathResolutionStalled):
                 security._candidate_forms(token)
-            assert time.perf_counter() - started < 0.05, "cooldown must not touch the pool"
+        assert submissions == [], "cooldown must not touch the pool"
         assert len(stalled.calls) == 1, "no resolution may be attempted under the cooldown"
     finally:
         stalled.release.set()
 
     # A different prefix is untouched by the cooldown: resolution still runs,
     # and on a healthy filesystem a symlink there still resolves to its target.
+    # That needs the live pool back, not the counting stand-in.
+    monkeypatch.setattr(security, "path_resolve_executor", real_executor)
     monkeypatch.setattr(security, "_resolved_spellings", real_resolver)
     target = tmp_path / "creds"
     target.write_text("k")
@@ -476,11 +553,25 @@ def test_a_known_stalled_prefix_is_not_reprobed_onto_the_last_free_worker(
             security._candidate_forms("/net/other/z")
         assert security._wedged_workers() == 2
         # ... after which a fresh prefix is refused immediately rather than
-        # queued behind two wedged futures: nothing reaches the resolver.
-        started = time.perf_counter()
+        # queued behind two wedged futures: nothing reaches the resolver.  The
+        # pool is the only witness available here, and it has to be COUNTED, not
+        # timed.  Both workers are pinned, so a lost guard would submit a future
+        # that never starts: the resolver stub is never entered, so
+        # ``second.calls`` stays at 1, and a never-run future charges no stall,
+        # so the assertion below it holds too.  A wall-clock ceiling would see
+        # it, but only by reading a scheduler stall as the same regression.
+        submissions: list[str] = []
+        real_executor = security.path_resolve_executor
+
+        class _Counting:
+            def submit(self, fn, *args):
+                submissions.append(getattr(fn, "__name__", repr(fn)))
+                return real_executor().submit(fn, *args)
+
+        monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/srv/fresh/w")
-        assert time.perf_counter() - started < 0.05
+        assert submissions == [], "a saturated pool must be refused without a submit"
         assert len(second.calls) == 1
         # ... and that healthy prefix is not charged a stall it never had, so
         # it is served again the moment a worker frees up.

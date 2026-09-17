@@ -3298,6 +3298,74 @@ def find_listening_pids(port: int) -> list[int]:
     return list(dict.fromkeys(entry.pid for entry in find_port_listeners(port)))
 
 
+def linux_process_name(pid: int, *, proc_root: Path | None = None) -> str | None:
+    """Return Linux ``comm`` for *pid*, or ``None`` when it is unproven.
+
+    The kernel caps ``comm`` and exposes it independently of environ, which
+    makes it suitable only for conservative process-class decisions. *proc_root*
+    is a test seam for fixture-owned process tables.
+    """
+    if sys.platform != "linux":
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+    try:
+        name = (
+            (root / str(pid) / "comm")
+            .read_bytes()
+            .decode("utf-8", errors="surrogateescape")
+            .strip()
+        )
+    except OSError:
+        return None
+    return name or None
+
+
+def process_cgroups_match(
+    pid: int,
+    reference_pid: int,
+    *,
+    proc_root: Path | None = None,
+) -> bool | None:
+    """Compare two Linux processes' stable unified-cgroup memberships.
+
+    Returns ``True`` for equal cgroup v2 memberships, ``False`` for proven
+    different memberships, and ``None`` off Linux, on cgroup v1, or when either
+    read is unavailable or changes during the probe. Reading both files twice
+    prevents a concurrent cgroup move from licensing a destructive action.
+    *proc_root* is a test seam for fixture-owned process tables.
+    """
+    if sys.platform != "linux":
+        return None
+    root = proc_root if proc_root is not None else Path("/proc")
+
+    def read_membership(process_pid: int) -> str | None:
+        raw = (
+            (root / str(process_pid) / "cgroup")
+            .read_bytes()
+            .decode("utf-8", errors="surrogateescape")
+        )
+        lines = tuple(line for line in raw.splitlines() if line)
+        if len(lines) != 1 or not lines[0].startswith("0::/"):
+            return None
+        return lines[0]
+
+    try:
+        pid_first = read_membership(pid)
+        reference_first = read_membership(reference_pid)
+        pid_second = read_membership(pid)
+        reference_second = read_membership(reference_pid)
+    except OSError:
+        return None
+    if (
+        pid_first is None
+        or reference_first is None
+        or pid_first != pid_second
+        or reference_first != reference_second
+    ):
+        return None
+    return pid_first == reference_first
+
+
 def process_command_line(pid: int) -> str:
     """Return the full command line of *pid*, or ``""`` on failure (best-effort).
 
@@ -4454,6 +4522,29 @@ def _is_junction_fallback(path: str | os.PathLike) -> bool:
     return getattr(info, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
 
 
+def strip_extended_length_prefix(path: Path) -> Path:
+    r"""*path* without Windows' extended-length prefix; unchanged elsewhere.
+
+    ``Path.resolve()`` on a file that another thread is replacing at that exact
+    moment comes back as ``\\?\C:\...``: ``ntpath.realpath`` drops the prefix
+    only after re-checking the stripped spelling, and that re-check fails when
+    the file has just been swapped out. The directory resolved separately comes
+    back plain, so a containment comparison reads the prefix alone as an escape.
+
+    The fold is LEXICAL and must stay that way: resolving again here could bless
+    a redirect, which is the thing the caller is trying to detect. Both
+    extended spellings are handled -- ``\\?\UNC\host\share`` becomes the
+    ordinary ``\\host\share`` -- so both sides of a comparison are spelled the
+    same way whatever ``realpath`` returned.
+    """
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return type(path)("\\\\" + text[8:])
+    if text.startswith("\\\\?\\"):
+        return type(path)(text[4:])
+    return path
+
+
 def is_link_or_junction(path: str | os.PathLike) -> bool:
     """True if *path* is a symlink OR (on Windows) a directory junction.
 
@@ -5248,6 +5339,30 @@ def restrict_dir_to_owner(path: str | os.PathLike) -> None:
         os.chmod(path, 0o700)
         return
     _apply_owner_only_dacl(path, inherit=True)
+
+
+def path_volume_is_remote(path: str | os.PathLike) -> bool | None:
+    """Is *path* on a NETWORK volume? True, False for local, None for unknown.
+
+    The Windows half of "which kind of filesystem holds this file", for a caller
+    that already answers the question from ``/proc/mounts`` or ``statfs``
+    elsewhere: Windows exposes no mount table, so the volume ROOT's drive type
+    is the source (:func:`windows_acl.volume_is_remote`, ``GetDriveTypeW``),
+    which reports a UNC root and a mapped network drive alike as remote.
+
+    None -- never False -- for every case where nothing was established: off
+    Windows, where the caller has its own mount-table source and must not read
+    this as "local"; a volume the OS reports as ``DRIVE_UNKNOWN`` or
+    ``DRIVE_NO_ROOT_DIR``; and a failed query. Root-only, so it costs no SMB
+    round trip and is safe for a path that does not exist yet.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        return windows_acl.volume_is_remote(path)
+    except (windows_acl.AclUnavailable, OSError, ValueError):
+        logger.debug("could not classify the volume holding a path", exc_info=True)
+        return None
 
 
 def _apply_owner_only_dacl(path: str | os.PathLike, *, inherit: bool) -> None:
@@ -6596,6 +6711,25 @@ def raise_nofile_soft_limit(target: int) -> None:
             resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
     except (ValueError, OSError, ImportError):
         logger.debug("Could not raise RLIMIT_NOFILE", exc_info=True)
+
+
+def nofile_soft_limit() -> int:
+    """This process's open-file soft limit, or ``0`` where there is none.
+
+    POSIX: ``resource.getrlimit(RLIMIT_NOFILE)`` soft value; ``RLIM_INFINITY``
+    reads as ``0``. Windows: ``0`` — there is no per-process descriptor rlimit
+    (see :func:`raise_nofile_soft_limit`), so a caller sizing an fd budget from
+    this value leaves the dimension unbounded, which matches the platform.
+    """
+    if not IS_POSIX:
+        return 0
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError, ImportError):
+        return 0
+    if soft == resource.RLIM_INFINITY:
+        return 0
+    return max(0, int(soft))
 
 
 # ---------------------------------------------------------------------------

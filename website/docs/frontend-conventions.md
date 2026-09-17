@@ -409,6 +409,40 @@ Two habits belong to the same concern:
 - Do NOT add a new CSS `@keyframes`. The existing ones in `index.css` back
   specific low-level effects (skeleton pulse, caret blink, indeterminate
   progress); a new component animation goes through Framer Motion.
+- **Hover PAINTS; it never moves or resizes.** A hover state may change colour,
+  border, brightness or shadow, but not `scale` or `translate` — growing a row
+  under the cursor nudges its neighbours and reads as a layout change rather
+  than "you are pointing at this". Press feedback (`whileTap`, `active:scale-*`)
+  is fine: that answers an action the user took. A selected-state scale applied
+  by STATE is an indicator, not a hover effect. A hover *rotation* is out of
+  scope — it leaves the element's box where it is.
+  - Removing a hover transform is only half the job: check the control still has
+    SOME hover cue. On a small swatch or dot the scale is often the only one, and
+    taking it away leaves a clickable thing that answers nothing.
+  - Pick the cue by what the element can actually show. `brightness` is a no-op
+    on a `transparent` fill (tint the border instead), and a class-based cue
+    cannot beat an inline `style`, so an element whose colour is animated needs
+    its cue on a property nothing animates.
+  - **A hover cue must not reuse a colour the control uses for its SELECTED
+    state — differ in colour, not merely strength.** A dimmer shade of the
+    selected colour still reads as "selected" at a glance (a bright or accent
+    mark is selection-grammar whatever its exact lightness), so hover must paint
+    in a genuinely different colour, not a fainter one. The colour swatches show
+    this: selection speaks in `--text-strong` (a near-white border) and
+    `--accent` (a border or `ring-1 ring-accent`), so their hover cue paints in
+    a neutral `--muted` outline — which is neither, and the lightest neutral
+    token with enough contrast on the darkest fill — and the memory-record card
+    hovers to `border-border-strong`, never its accent selected border. Where
+    selection is an offset accent ring, the hover outline must also CLEAR it
+    geometrically (`outline-offset:-3px` insets the line inside the fill) rather
+    than sit at the ring's radius and mask it; do this structurally, not with an
+    `:not([aria-pressed])` guard that silently misses a selected swatch marked
+    by a conditional class alone. This is the same lesson as the left rail,
+    where a full-strength `bg-bg-hover` read as selection and was fixed by
+    weakening it to `/60` — applied to colour rather than strength.
+  - `src/test/hoverNoScale.guard.test.ts` enforces this and names the fix in its
+    failure message. Deliberate exceptions live in that file's ALLOWLIST with a
+    written reason.
 
 ## Styling
 

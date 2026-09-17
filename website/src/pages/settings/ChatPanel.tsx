@@ -149,6 +149,7 @@ type KirocrewConfigShape = {
     completion_keep?: CompletionKeepMode
     completion_keep_chars?: number
     fallback_model?: string
+    refusal_fallback_model?: string
   }
   dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
 }
@@ -741,6 +742,31 @@ export function ChatPanel() {
           : m,
     )
 
+  // ── Content-filter (refusal) fallback model (agent.refusal_fallback_model) ──
+  // Same advertised-model dropdown as the throttle fallback above. "" =
+  // disabled (default — a refusal surfaces exactly as before), "auto" = retry
+  // on the model the provider's refusal envelope recommends (when it names
+  // one), concrete id = retry the declined message once on it; the primary
+  // model is restored on the next message either way.
+  const refusalFallbackModel = mcCfg?.agent?.refusal_fallback_model ?? ''
+  const shownRefusalFallbackModel = overlay.shown('agent.refusal_fallback_model', refusalFallbackModel)
+  const refusalFallbackMut = useMutation(
+    optimisticConfigOpts('agent.refusal_fallback_model', (err: unknown) => {
+      // Surface the backend's actual deny reason (e.g. an unentitled id)
+      // next to the generic failure line.
+      const reason = err instanceof Error && err.message ? `: ${err.message}` : ''
+      return i18nT('pages.settings.chatPanel.failed_to_save_refusal_fallback_model') + reason
+    })
+  )
+  const refusalFallbackModelLabels = (opts: string[]): string[] =>
+    opts.map(m =>
+      m === ''
+        ? i18nT('pages.settings.chatPanel.fallback_disabled')
+        : m === 'auto'
+          ? i18nT('pages.settings.chatPanel.refusal_fallback_auto')
+          : m,
+    )
+
   const [localKeepChars, setLocalKeepChars] = useState('')
   const keepCharsInitRef = useRef(false)
   useEffect(() => {
@@ -908,6 +934,7 @@ export function ChatPanel() {
   const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel)
   const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel)
   const fallbackOpts = fallbackModelOptions(shownFallbackModel, fallbackModel)
+  const refusalFallbackOpts = fallbackModelOptions(shownRefusalFallbackModel, refusalFallbackModel)
   const backgroundModelMut = useMutation(
     optimisticConfigOpts('agent.role_models.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
   )
@@ -1125,6 +1152,21 @@ export function ChatPanel() {
             onChange={v => fallbackMut.mutate(v)}
             disabled={!mcQ.isSuccess}
             configKey="agent.fallback_model"
+          />
+        </SettingsCard>
+
+        <SettingsCard>
+          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.chatPanel.refusal_fallback')}</div>
+          <div className="text-[12px] text-muted -mt-0.5">{i18nT('pages.settings.chatPanel.refusal_fallback_desc')}</div>
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.refusal_fallback_model')}
+            hint={i18nT('pages.settings.chatPanel.refusal_fallback_auto_hint')}
+            value={shownRefusalFallbackModel}
+            options={refusalFallbackOpts}
+            optionLabels={refusalFallbackModelLabels(refusalFallbackOpts)}
+            onChange={v => refusalFallbackMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="agent.refusal_fallback_model"
           />
         </SettingsCard>
       </SettingsSection>

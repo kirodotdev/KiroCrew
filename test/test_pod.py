@@ -833,21 +833,55 @@ class TestPortAllocation:
         Worth pinning rather than assuming: an un-runnable probe RAISES precisely
         because descriptor exhaustion is a real state, so a scan leaking one
         per peer would be feeding the very failure it sits in front of.
+
+        Asserted by spying on `os.open`/`os.close` and pairing what THIS scan
+        acquired under the pods directory, rather than by a `/proc/self/fd`
+        census: that census measures the whole xdist worker at two instants, so
+        two descriptors merely open at the second sample -- a pool thread holding
+        a file and a socket, a log rotation, a metrics export -- fail a pod-port
+        test for a reason that has nothing to do with pods. The pairing needs no
+        repeat loop either; the loop only existed to out-amplify census noise.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
         (c.pods_dir / "adir.env").mkdir()
         c.env_file("real").write_text("PORT='7877'\n")
 
-        def _open_fds() -> int:
-            return len(os.listdir("/proc/self/fd")) if os.path.isdir("/proc/self/fd") else -1
+        opened: list[int] = []
+        closed: list[int] = []
+        real_open, real_close = os.open, os.close
 
-        before = _open_fds()
-        for _ in range(50):
-            rt._ports_claimed_by_other_pods(c, "mine")
-        after = _open_fds()
-        if before != -1:
-            assert after <= before + 1, f"descriptors grew from {before} to {after}"
+        def tracking_open(target, *args, **kwargs):
+            fd = real_open(target, *args, **kwargs)
+            if str(target).startswith(str(c.pods_dir)):
+                opened.append(fd)
+            return fd
+
+        def tracking_close(fd):
+            closed.append(fd)
+            return real_close(fd)
+
+        # A private context, not the shared `monkeypatch` fixture: that instance is
+        # the one `_plane` pins this plane's env vars through, and undoing it here
+        # would take the plane down with the spies.
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(os, "open", tracking_open)
+            patched.setattr(os, "close", tracking_close)
+            assert rt._ports_claimed_by_other_pods(c, "mine") == {7877: "real"}
+
+        # The leak property itself, which holds on every platform: whatever this
+        # scan opened under the pods directory, it also closed.
+        assert opened, "the scan opened nothing -- the spy missed the read seam"
+        assert set(opened) <= set(closed), f"the scan leaked a descriptor: {opened} vs {closed}"
+        # The DIRECTORY branch is POSIX-only, and that is a property of the OS
+        # rather than of this scan: Windows has no `O_DIRECTORY` and refuses
+        # `os.open` on a directory outright, so the non-regular refusal there is
+        # reached by the open RAISING and never holds a descriptor at all. Only
+        # where a directory can be opened is there a second fd to account for --
+        # and that branch, which rejects only after opening, is where a leak
+        # would hide, so it is worth pinning exactly where it exists.
+        if os.name != "nt":
+            assert len(opened) == 2, f"expected one open per peer entry, got {opened}"
 
     @pytest.mark.skipif(
         not platform_compat.IS_POSIX, reason="symlink creation needs elevation on Windows"

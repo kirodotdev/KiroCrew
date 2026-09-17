@@ -11,6 +11,7 @@ import { settingsPath } from './settingsPath'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+import { activeElementIsEditable } from '../utils/editableTarget'
 /** Single source of truth for approval-mode presentation.
  *
  *  Only the language-INDEPENDENT metadata (key, icon, colour) lives at module
@@ -355,8 +356,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         // completion, so the user may already be typing in the composer —
         // leave their caret alone and let the callout sit passively.
         onOpenAutoFocus={e => {
-          const a = document.activeElement as HTMLElement | null
-          if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) e.preventDefault()
+          if (activeElementIsEditable()) e.preventDefault()
         }}
         // Return focus to the picker trigger on dismissal instead of dropping
         // it on <body> — unless the dismissal opened the menu, which manages

@@ -351,7 +351,7 @@ export default function FolderConfigModal({
                     aria-label={i18nT('components.folderConfigModal.set_color_to_name', { name })}
                     aria-pressed={draft.color === value}
                     onClick={() => setDraft(d => ({ ...d, color: value }))}
-                    className={`w-5 h-5 rounded-full cursor-pointer border transition-transform hover:scale-110 ${draft.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
+                    className={`w-5 h-5 rounded-full cursor-pointer border hover:brightness-125 swatch-cue ${draft.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                     style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                   />
                 )
@@ -411,7 +411,7 @@ export default function FolderConfigModal({
                       key={tag.id}
                       htmlFor={`folder-config-tag-input-${tag.id}`}
                       data-testid={`folder-config-tag-${tag.id}`}
-                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] cursor-pointer transition-transform hover:scale-105 focus-within:ring-2 focus-within:ring-accent focus-within:ring-offset-1 focus-within:ring-offset-bg ${selected ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] cursor-pointer hover:brightness-110 focus-within:ring-2 focus-within:ring-accent focus-within:ring-offset-1 focus-within:ring-offset-bg ${selected ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       style={{
                         background: selected
                           ? `color-mix(in srgb, ${tag.color} 30%, var(--bg-elevated))`

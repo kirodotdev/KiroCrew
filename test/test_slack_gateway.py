@@ -1874,7 +1874,8 @@ class TestInitCron:
         # Real predicate semantics: pending work == a running agent with this
         # parent (no queued spawns in this scenario).
         orch.subagent_mgr.queued_count_for = MagicMock(return_value=0)
-        orch.subagent_mgr.has_pending_work_for = MagicMock(
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
             side_effect=lambda key: any(
                 a.parent_session_key == key for a in orch.subagent_mgr.running
             )
@@ -1958,10 +1959,10 @@ class TestInitCron:
         # Nothing RUNNING for planner — but one spawn is QUEUED for it.
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.running = []
-        orch.subagent_mgr.queued_count_for = MagicMock(
+        orch.subagent_mgr.queued_count_for_async = AsyncMock(
             side_effect=lambda key: 1 if key == "cron:j1:planner" else 0
         )
-        orch.subagent_mgr.has_pending_work_for = MagicMock(
+        orch.subagent_mgr.has_pending_work_for_async = AsyncMock(
             side_effect=lambda key: key == "cron:j1:planner"
         )
 
@@ -3160,6 +3161,17 @@ class TestAutoApplyUpdateGitPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
+            # The pre-restart drain, shortened to nothing. Nothing in these tests
+            # makes its condition true, so it polled at 10ms all the way to its
+            # 30s deadline and then deferred the restart -- the same verdict these
+            # tests already assert, reached thirty seconds later. Eleven tests
+            # across the three TestAutoApplyUpdate* classes paid it in full:
+            # ~330s of pure sleeping per full suite run, measured identically in
+            # five runs. The branch still executes and the deferral still happens;
+            # only the waiting goes. The 30.0 itself stays pinned by
+            # test_restart_fences_then_closes_and_final_drains, which is the test
+            # that is ABOUT it.
+            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
 
@@ -3614,7 +3626,9 @@ class TestSubagentDone:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -4074,6 +4088,17 @@ class TestAutoApplyUpdateVenvPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
+            # The pre-restart drain, shortened to nothing. Nothing in these tests
+            # makes its condition true, so it polled at 10ms all the way to its
+            # 30s deadline and then deferred the restart -- the same verdict these
+            # tests already assert, reached thirty seconds later. Eleven tests
+            # across the three TestAutoApplyUpdate* classes paid it in full:
+            # ~330s of pure sleeping per full suite run, measured identically in
+            # five runs. The branch still executes and the deferral still happens;
+            # only the waiting goes. The 30.0 itself stays pinned by
+            # test_restart_fences_then_closes_and_final_drains, which is the test
+            # that is ABOUT it.
+            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
 
@@ -4173,7 +4198,7 @@ class TestAutoApplyUpdateVenvPath:
                                 with patch("os.execv", side_effect=OSError("test")):
                                     # Resolves: the optional kiro-cli step runs.
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/usr/bin/kiro-cli",
                                     ):
                                         # The gateway resolves _kill_and_reap
@@ -4236,7 +4261,7 @@ class TestAutoApplyUpdateVenvPath:
                             ):
                                 with patch("os.execv", side_effect=OSError("test")):
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/opt/pinned/bin/kiro-cli",
                                     ):
                                         await orch._auto_apply_update()
@@ -4284,7 +4309,7 @@ class TestAutoApplyUpdateVenvPath:
                             ):
                                 with patch("os.execv", side_effect=OSError("test")):
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value="/opt/pinned/bin/kiro-cli",
                                     ) as mock_resolve:
                                         await orch._auto_apply_update()
@@ -4330,7 +4355,7 @@ class TestAutoApplyUpdateVenvPath:
                             ) as mock_build:
                                 with patch("os.execv", side_effect=OSError("test")):
                                     with patch(
-                                        "kiro_crew.slack.gateway.resolve_kiro_cli",
+                                        "kiro_crew.kiro_cli.resolve_kiro_cli",
                                         return_value=None,
                                     ):
                                         await orch._auto_apply_update()
@@ -4365,7 +4390,9 @@ class TestSubagentSlackInjection:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -4911,6 +4938,17 @@ class TestAutoApplyUpdateResetPath:
                 "kiro_crew.slack.gateway.dep_sync.incoming_python_floor_breach",
                 return_value=None,
             ),
+            # The pre-restart drain, shortened to nothing. Nothing in these tests
+            # makes its condition true, so it polled at 10ms all the way to its
+            # 30s deadline and then deferred the restart -- the same verdict these
+            # tests already assert, reached thirty seconds later. Eleven tests
+            # across the three TestAutoApplyUpdate* classes paid it in full:
+            # ~330s of pure sleeping per full suite run, measured identically in
+            # five runs. The branch still executes and the deferral still happens;
+            # only the waiting goes. The 30.0 itself stays pinned by
+            # test_restart_fences_then_closes_and_final_drains, which is the test
+            # that is ABOUT it.
+            patch.object(gw.GatewayOrchestrator, "_UPDATE_DRAIN_TIMEOUT_SECS", 0.0),
         ):
             yield
 
@@ -5955,7 +5993,9 @@ class TestInjectWithRetry:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6043,7 +6083,9 @@ class TestOrchestrationGuard:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6428,7 +6470,9 @@ class TestRetriggerRecovery:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -6900,9 +6944,7 @@ class TestCheckMissingDepsPip:
         proc.kill = MagicMock()
         proc.communicate = MagicMock(side_effect=_communicate)
         orch = _make_orchestrator()
-        with patch(
-            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
-        ):
+        with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"):
             with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
                 await orch._warn_if_kiro_cli_outdated()  # must not raise
         proc.kill.assert_called_once()
@@ -7397,7 +7439,9 @@ class TestSlackSubagentCompletionPersistence:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
@@ -7647,7 +7691,9 @@ class TestSubagentChannelTransportDelivery:
                 mock_sm_inst.start_reaper = MagicMock()
                 mock_sm_inst.running = []
                 mock_sm_inst.queued_count_for = MagicMock(return_value=0)
+                mock_sm_inst.queued_count_for_async = AsyncMock(return_value=0)
                 mock_sm_inst.has_pending_work_for = MagicMock(return_value=False)
+                mock_sm_inst.has_pending_work_for_async = AsyncMock(return_value=False)
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()

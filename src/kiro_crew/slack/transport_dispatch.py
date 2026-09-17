@@ -30,7 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
 )
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title
@@ -616,14 +616,7 @@ async def handle_message_transport(
                 getattr(event, "title", "") or "",
                 session_key=session_key,
                 agent=_agent or "",
-                tool_kind=getattr(event, "tool_kind", "") or "",
-                raw_params=getattr(event, "raw_tool_params", None),
-                diff_path=getattr(event, "diff_path", "") or "",
-                command=getattr(event, "shell_command", None),
-                is_shell=bool(getattr(event, "is_shell", False)),
-                mcp_server_name=getattr(event, "mcp_server_name", "") or "",
-                mcp_tool_name=getattr(event, "tool_name", "") or "",
-                mcp_identity_trusted=bool(getattr(event, "mcp_identity_trusted", False)),
+                **hook_gate_kwargs(event),
             )
             if result.action == TOOL_DENY:
                 return "deny"

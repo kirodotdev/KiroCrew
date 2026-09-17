@@ -144,6 +144,11 @@ class TerminalCoordinator(ManagerComponent):
                 # amber chip would silently vanish from a downgraded finished run.
                 "requested_model": _redact(info.requested_model),
                 "result": _done_result(info.result),
+                # WHY the run ended and whether ``result`` is a partial, so the
+                # parent does not infer success from ``error`` being unset.
+                "stop_reason": info.stop_reason,
+                "stop_class": info.stop_class,
+                "partial": info.partial,
             },
         )
         if not self._manager._on_done:

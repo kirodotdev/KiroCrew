@@ -73,6 +73,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     append_and_surface,
 )
+from kiro_crew.doc_blocks import extract_blocks
 from kiro_crew.doc_parser import extract_text
 from kiro_crew.github_runner import validate_provider_executable
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, safe_read_prefix
@@ -95,7 +96,6 @@ from kiro_crew.security import (
     redact_path_segments,
     sandbox_credential_targets,
 )
-from kiro_crew.slack.handler import is_tracked_channel
 from kiro_crew.validation import (
     FILE_READ_SCHEMA,
     MODEL_ID_RE,
@@ -133,6 +133,13 @@ _SUBAGENT_SESSION_PREFIX = "subagent:"
 
 
 logger = logging.getLogger(__name__)
+
+
+def is_tracked_channel(channel_id: str) -> bool:
+    """Load the Slack probe only when a file delivery needs it."""
+    from kiro_crew.slack.handler import is_tracked_channel as probe
+
+    return probe(channel_id)
 
 
 def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str:
@@ -1196,6 +1203,8 @@ _ALLOWED_TEXT_EXT = {
     ".yaml",
     ".yml",
     ".xml",
+    # draw.io / diagrams.net XML source.
+    ".drawio",
     ".csv",
     ".tsv",
     ".log",
@@ -3195,6 +3204,71 @@ _OFFICE_PREVIEWABLE_EXT = {".docx", ".pptx"}
 # the frontend shows a "Download for full contents" affordance.
 _OFFICE_PREVIEW_CAP = 512_000
 
+#: Block keys whose value is structure, not document text: a fixed vocabulary the
+#: frontend switches on, a nesting level, or a formatting flag. None can carry a
+#: secret, and rewriting one could only corrupt the shape.
+_BLOCK_STRUCTURAL_KEYS = frozenset({"type", "level", "ordered", "bold", "italic"})
+
+
+def _redact_value(value: object) -> object:
+    """Redact every string reachable from a block value, walking containers.
+
+    The default is REDACT, not pass-through. Enumerating the keys that hold text
+    means a block shape added later carries its text out unredacted until someone
+    remembers to extend the list, and nothing fails while they have not: the miss
+    is silent and its consequence is exposure. Inverting the default costs a
+    no-op ``redact`` call on strings that never held a secret.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    if isinstance(value, dict):
+        return _redact_block(value)
+    return value
+
+
+def _redact_block(block: object) -> object:
+    """Redact one block, every string by default, with one carve-out.
+
+    **A paragraph is redacted on its JOINED runs**, never run by run. Word splits
+    a sentence at every formatting change, so a credential straddling a bold
+    boundary arrives as two fragments that match nothing on their own, while text
+    mode -- which redacts the whole joined extraction -- masks it. Joining first
+    is what makes the two modes mask the same things, so choosing a format cannot
+    weaken the control. Walking runs individually would re-open exactly that gap,
+    which is why this case is spelled out rather than left to the generic walk.
+    When redaction changes a paragraph its runs collapse into one: the redacted
+    string carries no run boundaries to map back onto, and losing bold on a
+    paragraph that contained a secret is much the cheaper loss.
+    """
+    if not isinstance(block, dict):
+        return block
+    if block.get("type") == "paragraph" and isinstance(block.get("runs"), list):
+        runs = [r for r in block["runs"] if isinstance(r, dict)]
+        joined = "".join(str(r.get("text", "")) for r in runs)
+        cleaned = redact(joined)
+        if cleaned == joined:
+            return block
+        return {
+            "type": "paragraph",
+            "runs": [{"text": cleaned, "bold": False, "italic": False}],
+        }
+    out: dict[str, object] = {}
+    for key, value in block.items():
+        if key in _BLOCK_STRUCTURAL_KEYS:
+            out[key] = value
+        else:
+            out[key] = _redact_value(value)
+    return out
+
+
+def _redact_blocks(blocks: object) -> object:
+    """Redact every block in a payload list. See :func:`_redact_block`."""
+    if not isinstance(blocks, list):
+        return blocks
+    return [_redact_block(block) for block in blocks]
+
 
 class _PreviewUnsupported(Exception):
     """The validated path's extension is outside :data:`_OFFICE_PREVIEWABLE_EXT`.
@@ -3208,7 +3282,7 @@ class _PreviewUnsupported(Exception):
 
 
 async def api_file_office_preview(request: web.Request) -> web.Response:
-    """GET /api/file-office-preview?path=... — extract inline text preview from a .docx/.pptx.
+    """GET /api/file-office-preview?path=...[&format=blocks] — inline preview of a .docx/.pptx.
 
     Sibling of /api/file-download. file-download streams original bytes for
     saving to disk; this endpoint returns plaintext extracted from the
@@ -3217,9 +3291,15 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
     card — a common ask for anyone browsing shared reports in the file
     tree without wanting to save each one.
 
-    Uses ``kiro_crew.doc_parser.extract_text`` which parses the .docx /
-    .pptx ZIP+XML with hardened defusedxml (XXE-safe) and returns "" on
-    any failure. python-docx / python-pptx are not required.
+    ``format`` selects the shape. The default ``text`` uses
+    ``kiro_crew.doc_parser.extract_text``, which parses the .docx / .pptx
+    ZIP+XML with hardened defusedxml (XXE-safe) and returns "" on any
+    failure. ``blocks`` uses ``kiro_crew.doc_blocks.extract_blocks`` for a
+    structured block list of a .docx — headings, formatted paragraph runs,
+    lists and tables; any other extension answers an empty list. Text stays
+    the default so every existing caller's response is byte-identical, and the
+    frontend falls back to it whenever blocks comes back empty. python-docx /
+    python-pptx are not required by either path.
 
     Not supported (fall through to download): .doc, .ppt, .xls, .xlsx,
     .odt, .ods, .odp. The frontend keeps the download card for these.
@@ -3273,6 +3353,16 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
         _log("denied", raw_path)
         return web.json_response({"error": "invalid input", "code": "invalid_input"}, status=400)
 
+    # An unrecognized format is a 400, never a silent fall back to text: a
+    # caller asking for a shape this build does not serve must learn that
+    # rather than render a plaintext blob as though it were structure.
+    fmt = request.query.get("format", "text")
+    if fmt not in ("text", "blocks"):
+        _log("denied", raw_path, "invalid_format")
+        return web.json_response(
+            {"error": "unknown preview format", "code": "invalid_format"}, status=400,
+        )
+
     # The validated path once the shared prefix produces one -- exported by
     # the worker callback so the exception handlers log the same SEL resource
     # the success path does.
@@ -3317,6 +3407,24 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
         with checked.file as fobj:
             if os.path.splitext(checked.path)[1].lower() not in _OFFICE_PREVIEWABLE_EXT:
                 raise _PreviewUnsupported(checked.path)
+            if fmt == "blocks":
+                # Same handle, same one-hop discipline as the text branch:
+                # extract_blocks reads through the fd the prefix opened and
+                # fstat-ed, so the bytes parsed are the bytes measured. Its own
+                # block-count and character budgets bound what one document can
+                # become; `truncated` says a budget stopped it, and an empty
+                # list means "no structured preview" (malformed container, or a
+                # document with nothing extractable) for the frontend to answer
+                # by falling back to text.
+                blocks, blocks_truncated = extract_blocks(
+                    checked.path,
+                    filename=os.path.basename(checked.path),
+                    fileobj=fobj,
+                )
+                return {
+                    "blocks": _redact_blocks(blocks),
+                    "truncated": blocks_truncated,
+                }
             # extract_text parses through the SAME handle the prefix opened
             # and fstat-ed (its opt-in fileobj parameter), so the bytes
             # parsed are exactly the bytes measured — no stat→open TOCTOU

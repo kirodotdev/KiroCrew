@@ -37,9 +37,12 @@ Layering::
                             |  resolves drivers through a registry
                             v
                      kiro_crew.agent_sdk.drivers.acp
-                                                  the only module INSIDE this
-                                                  package that imports
-                                                  kiro_crew.acp
+                     kiro_crew.agent_sdk.drivers.acp_vocab
+                                                  the only modules INSIDE this
+                                                  package that import
+                                                  kiro_crew.acp: the driver
+                                                  (call-time imports) and the
+                                                  by-value vocabulary it exposes
                             v
                      kiro_crew.acp  (foundation)  wire, dialects, adapters,
                                                   session handles, worker pool

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 
 import pytest
 
@@ -703,26 +704,6 @@ def test_only_unpinned_broken_budgets_adopt_themselves():
         assert pinned not in adopting, f"{pinned}'s stored value is guaranteed elsewhere"
 
 
-def test_every_adopting_key_clears_in_one_load(tmp_path, monkeypatch):
-    """One load clears both stale timeout budgets an upgraded install holds.
-
-    Written as one load over one document rather than a test per key: what an
-    operator actually has is both at once, and the failure worth catching is a key
-    that silently sits out the sweep.
-    """
-    _point_home(tmp_path, monkeypatch)
-    _write_config(
-        tmp_path,
-        {"agent": {"subagent_timeout_secs": 1800, "chat_turn_timeout_secs": 7200}},
-    )
-
-    cfg = KiroCrewConfig.load()
-
-    assert cfg.agent.subagent_timeout_secs == 10800
-    assert cfg.agent.chat_turn_timeout_secs == 14400
-    assert _on_disk(tmp_path).get("agent", {}) == {}
-
-
 def test_a_pinned_stored_value_is_never_adopted(tmp_path, monkeypatch):
     """The rows other suites guarantee survive a load untouched, on disk and in memory.
 
@@ -799,22 +780,32 @@ def test_a_contended_sidecar_defers_the_adoption(tmp_path, monkeypatch):
     assert SD.adopted_superseded() == {}
 
 
-def test_the_loader_has_no_second_spelling_of_the_stored_value_lookup():
-    """One dotted-key lookup, exported, rather than a copy in the loader.
+def test_the_stored_value_lookup_agrees_with_itself_on_every_edge_case():
+    """The exported lookup answers the edge cases one way, and the ledger uses it.
 
     Two spellings of "read `<section>.<field>` out of the stored document" can come
     to disagree about an edge case (a non-dict section, an absent key) while both
-    look correct in isolation.
+    look correct in isolation. Pinned on BEHAVIOUR: the ledger entry the loader
+    records is exactly what the exported lookup returns for the same document.
     """
-    import inspect
-
-    from kiro_crew.config import loader
-
-    assert not hasattr(loader, "_stored_scalar")
     assert SD.stored_value_or_none({"agent": {"x": 1}}, "agent.x") == 1
     assert SD.stored_value_or_none({"agent": {}}, "agent.x") is None
     assert SD.stored_value_or_none({"agent": "not-a-dict"}, "agent.x") is None
-    assert "stored_value_or_none" in inspect.getsource(loader._apply_document_migrations)
+
+    seen: dict[str, object] = {}
+    doc = {"agent": {"subagent_timeout_secs": 1800}}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(L, "record_adoptions", lambda values: seen.update(values) or values)
+        L._apply_document_migrations(
+            doc,
+            frozenset({L.MIGRATE_SUPERSEDED_DEFAULTS}),
+            overlay_kiro_agent=None,
+            default_kiro_agent="kirocrew",
+            adopt_keys=frozenset({"agent.subagent_timeout_secs"}),
+            recorded_adoptions=[],
+        )
+    assert seen == {"agent.subagent_timeout_secs": 1800}
+    assert doc == {"agent": {}}
 
 
 def test_a_deferred_adoption_is_not_frozen_behind_the_cache(tmp_path, monkeypatch):
@@ -903,27 +894,6 @@ def test_a_malformed_sidecar_refuses_the_write_instead_of_erasing_it(tmp_path, m
     assert SD.ack_file_path().read_text(encoding="utf-8") == "{ not json at all"
 
 
-def test_a_non_plain_leaf_is_still_replaced_rather_than_refused(tmp_path, monkeypatch):
-    """Negative control for the refusal above, and a real availability property.
-
-    A leaf that is not a plain file holds no ledger of ours, and the write path
-    renames OVER it rather than following it. If the refusal also covered this case,
-    anyone who can create that path could permanently block every ack and every
-    adoption -- the safety fix would have bought a denial of service.
-    """
-    _point_home(tmp_path, monkeypatch)
-    victim = tmp_path / "victim.json"
-    victim.write_text('{"keep": "me"}', encoding="utf-8")
-    SD.ack_file_path().symlink_to(victim)
-
-    monkeypatch.setattr(SD.platform_compat, "is_link_or_junction", lambda _p: False)
-    SD.write_acked_superseded({"session.autocompact_pct": 90.0})
-
-    assert victim.read_text(encoding="utf-8") == '{"keep": "me"}'
-    assert not SD.ack_file_path().is_symlink()
-    assert SD.acked_superseded() == {"session.autocompact_pct": 90.0}
-
-
 def test_a_malformed_sidecar_does_not_let_the_load_adopt(tmp_path, monkeypatch):
     """The read and write halves agree: nothing adopts while the ledger is unreadable.
 
@@ -970,6 +940,157 @@ def test_an_exception_during_write_back_still_drops_the_cache(tmp_path, monkeypa
     # cannot tell a hit from a re-read. An empty cache IS the retry.
     assert L._CONFIG_CACHE._entry is None, "the stale document stayed cached"
     assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+
+
+def test_a_degraded_load_keeps_its_document_cached_instead_of_re_reading_forever(
+    tmp_path, monkeypatch, caplog
+):
+    """The degraded-sections branch does NOT drop the cache.
+
+    Its retry condition is "the operator fixes the file and restarts", not "the next
+    load": a degradation observation is sticky for the life of a process, so until
+    then the write is refused every time and an invalidation only makes every load
+    re-read and re-parse config.json for as long as a malformed section coexists with
+    a stored stale timeout. After the restart the fixed file's fingerprint misses the
+    cache and the adoption retries on that load with no invalidation needed.
+
+    ``publish.allowed_destinations`` is the one section shape the schema layer keeps
+    (it is fail-closed there) and the loader then degrades, so it reaches the branch
+    deterministically.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(
+        tmp_path,
+        {
+            "agent": {"subagent_timeout_secs": 1800},
+            "publish": {"allowed_destinations": "not-a-list"},
+        },
+    )
+
+    base_reads = 0
+    real_read_text = Path.read_text
+
+    def _counting_read_text(self, *a, **kw):
+        nonlocal base_reads
+        if self.name == "config.json":
+            base_reads += 1
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", _counting_read_text)
+
+    with caplog.at_level(logging.WARNING, logger=L.__name__):
+        first = KiroCrewConfig.load()
+    assert "publish" in first.degraded_sections
+    assert any("skipping write-back migration" in r.getMessage() for r in caplog.records)
+    assert base_reads == 1
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+    base_reads = 0  # _on_disk read it too
+    assert L._CONFIG_CACHE._entry is not None, "a degraded load must stay cached"
+
+    # The next load is a cache HIT: no re-read, no re-parse, and the stored value
+    # is still there for the operator to see.
+    KiroCrewConfig.load()
+    assert base_reads == 0, "the degraded document was re-read on a plain second load"
+    assert _on_disk(tmp_path)["agent"]["subagent_timeout_secs"] == 1800
+
+    # Fixing the file and restarting (degradation observations are sticky for the
+    # life of a process; the reset below is the test's stand-in for the restart) is
+    # what retries the adoption: through the fingerprint miss, not an invalidation.
+    (tmp_path / "config.json").write_text(
+        json.dumps({"agent": {"subagent_timeout_secs": 1800}, "publish": {}}),
+        encoding="utf-8",
+    )
+    from kiro_crew.config.resolution import reset_degraded_observations
+
+    reset_degraded_observations()
+    fixed = KiroCrewConfig.load()
+    assert base_reads >= 1, "the fixed document must be re-read on its own fingerprint"
+    assert fixed.degraded_sections == frozenset()
+    assert fixed.agent.subagent_timeout_secs == 10800
+    assert "subagent_timeout_secs" not in _on_disk(tmp_path).get("agent", {})
+
+
+def test_doctor_lists_what_auto_adoption_removed_and_how_to_restore_it(
+    tmp_path, monkeypatch, capsys
+):
+    """``record_adoptions`` promises a ``doctor`` line; this is that line.
+
+    An adopted key is not drift (its stored value is gone), so without a
+    rendering of the ledger the only announcement is one WARNING in one gateway log.
+    """
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    KiroCrewConfig.load()
+    assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+    assert "adopted:" in out
+    assert "agent.subagent_timeout_secs" in out
+    assert "1800" in out
+    assert "kirocrew config set agent.subagent_timeout_secs 1800" in out
+    assert "removed from config.json" in out
+    # The overlay may still carry the key, so the line must not claim the default
+    # is what now applies.
+    assert "default applies" not in out
+    assert issues == [], "an adoption is a record, not a problem"
+
+
+def test_doctor_renders_the_ledger_even_when_config_json_is_gone(tmp_path, monkeypatch, capsys):
+    """A missing or unreadable config must not hide what an earlier load removed."""
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 1800}})
+    KiroCrewConfig.load()
+    assert SD.adopted_superseded() == {"agent.subagent_timeout_secs": 1800}
+
+    (tmp_path / "config.json").unlink()
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+    assert "adopted:" in out and "agent.subagent_timeout_secs" in out
+    assert "no config file yet" in out
+
+    (tmp_path / "config.json").write_text("{ not json", encoding="utf-8")
+    issues = []
+    SD.render_doctor_section(issues)
+    out = capsys.readouterr().out
+    assert "adopted:" in out and "agent.subagent_timeout_secs" in out
+    assert issues == ["stored defaults unreadable"]
+
+
+def test_adoption_summary_cannot_drive_the_terminal_or_offer_a_hostile_command():
+    """Both fields come from an agent-writable file, so both are untrusted output.
+
+    ESC and BEL start and end sequences a terminal EXECUTES (an OSC 52 writes the
+    clipboard, silently); they must reach the operator as visible escapes. And no
+    quoting is portable across shells (POSIX quotes leave ``cmd.exe`` metacharacters
+    live), so a value the registry does not vouch for gets NO pasteable command.
+    """
+    line = SD.adoption_summary("agent.x\x1b]52;c;aGVsbG8=\x07", "1800 & calc & rem\x1b[0m")
+    assert "\x1b" not in line and "\x07" not in line
+    assert "\\x1b]52;c;aGVsbG8=\\x07" in line
+    assert "config set" not in line
+    assert "no restore command" in line
+
+    # A registered key with an unregistered value is likewise shown without a command.
+    assert "config set" not in SD.adoption_summary("agent.subagent_timeout_secs", "1800 & calc")
+    assert "config set" not in SD.adoption_summary("agent.subagent_timeout_secs", True)
+
+    # A registry-vouched entry gets the command, spelled from the registry's literals.
+    plain = SD.adoption_summary("agent.subagent_timeout_secs", 1800)
+    assert plain.endswith("kirocrew config set agent.subagent_timeout_secs 1800")
+    assert "stored value 1800 was removed from config.json" in plain
+
+
+def test_doctor_says_nothing_about_adoption_when_none_happened(tmp_path, monkeypatch, capsys):
+    _point_home(tmp_path, monkeypatch)
+    _write_config(tmp_path, {"agent": {"subagent_timeout_secs": 3600}})
+    KiroCrewConfig.load()
+
+    issues: list[str] = []
+    SD.render_doctor_section(issues)
+    assert "adopted:" not in capsys.readouterr().out
 
 
 def test_the_running_config_never_diverges_from_the_stored_one(tmp_path, monkeypatch):

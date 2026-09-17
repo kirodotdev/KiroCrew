@@ -50,6 +50,18 @@ def _fast(mgr: SubagentManager, monkeypatch) -> None:
     monkeypatch.setattr(SubagentManager, "_FOLLOWUP_BUSY_RETRY_SECS", 0.01)
 
 
+def _patch_continue(monkeypatch, mgr, fn):
+    """Stub BOTH continuation entry points: the follow-up watcher awaits
+    ``continue_conversation_async`` (the durable row is written off-loop), and
+    the sync ``continue_conversation`` stays patched for direct callers."""
+
+    async def _async(cid, task, **kw):
+        return fn(cid, task, **kw)
+
+    monkeypatch.setattr(mgr, "continue_conversation", fn)
+    monkeypatch.setattr(mgr, "continue_conversation_async", _async)
+
+
 class TestFollowUpQueueing:
     @pytest.mark.asyncio
     async def test_unknown_run_is_not_found(self) -> None:
@@ -92,9 +104,9 @@ class TestFollowUpDelivery:
         mgr._agents["r3"] = info
         info.pending_followups = ["fix the tests", "also update the docs"]
         continues: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 continues.append((cid, task, kw)),
                 SubagentInfo(id="child", task=task),
@@ -121,9 +133,9 @@ class TestFollowUpDelivery:
         mgr._tasks["r4"] = MagicMock()  # teardown not finished yet
         info.pending_followups = ["msg"]
         continues: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 continues.append(cid),
                 SubagentInfo(id="child", task=task),
@@ -152,9 +164,9 @@ class TestFollowUpDelivery:
             SubagentInfo(id="child", task="msg"),
         ]
         calls: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (calls.append(cid), results.pop(0))[1],
         )
         await asyncio.wait_for(mgr._deliver_followups(info), timeout=2)
@@ -179,9 +191,9 @@ class TestFollowUpDelivery:
         mgr._agents["r6"] = info
         info.pending_followups = ["msg"]
         continues: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 continues.append(cid),
                 SubagentInfo(id="child", task=task),
@@ -210,9 +222,9 @@ class TestFollowUpDelivery:
         mgr._agents["r7"] = info
         info.pending_followups = ["keep going"]
         continues: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 continues.append(cid),
                 SubagentInfo(id="child", task=task),
@@ -240,7 +252,7 @@ class TestFollowUpDelivery:
         failure = SubagentInfo(
             id="x", task="msg", done=True, error="conversation_gone: files pruned"
         )
-        monkeypatch.setattr(mgr, "continue_conversation", lambda cid, task, **kw: failure)
+        _patch_continue(monkeypatch, mgr, lambda cid, task, **kw: failure)
         await asyncio.wait_for(mgr._deliver_followups(info), timeout=2)
         assert announced == [failure]
 
@@ -265,9 +277,9 @@ class TestFollowUpDelivery:
         assert ok and "r9" in mgr._followup_watchers
         watcher = mgr._followup_watchers["r9"]
         continues: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 continues.append(cid),
                 SubagentInfo(id="child", task=task),
@@ -321,7 +333,7 @@ class TestFollowUpDelivery:
         # Dispatch always answers conversation_busy, parking the watcher in
         # its retry sleep with the message still pending.
         busy = SubagentInfo(id="x", task="m", done=True, error="conversation_busy: in flight")
-        monkeypatch.setattr(mgr, "continue_conversation", lambda cid, task, **kw: busy)
+        _patch_continue(monkeypatch, mgr, lambda cid, task, **kw: busy)
         # Slow the retry sleep so shutdown reliably lands mid-retry.
         monkeypatch.setattr(SubagentManager, "_FOLLOWUP_BUSY_RETRY_SECS", 5.0)
         ok, _ = await mgr.follow_up_run("r13", "important correction")
@@ -368,9 +380,9 @@ class TestFollowUpDelivery:
         # A later follow-up arms a NEW watcher and delivers once the run ends.
         mgr._default_timeout = 3600
         dispatched: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 dispatched.append(task),
                 SubagentInfo(id="child", task=task),
@@ -402,9 +414,9 @@ class TestFollowUpDelivery:
         info = SubagentInfo(id="r11", task="t")  # alive
         mgr._agents["r11"] = info
         dispatched: list = []
-        monkeypatch.setattr(
+        _patch_continue(
+            monkeypatch,
             mgr,
-            "continue_conversation",
             lambda cid, task, **kw: (
                 dispatched.append(task),
                 SubagentInfo(id="child", task=task),

@@ -260,3 +260,43 @@ def test_escalation_still_honours_the_rate_limit(caplog: pytest.LogCaptureFixtur
         )
 
     assert [r.levelno for r in _watchdog_records(caplog)] == [logging.WARNING, logging.WARNING]
+
+
+# ── Platform-limited UNKNOWN is bounded by the no-progress budget ────────────
+
+
+def test_platform_limited_window_is_the_standard_bounded_budget() -> None:
+    """On a host with no stdin-block evidence the oracle answers UNKNOWN tagged
+    ``platform_limited`` for a live-but-flat shell child. That verdict falls
+    under the SAME bounded budget as every UNKNOWN — the suspect window,
+    hard-capped — and never under WORKING's unbounded deferral. The settings
+    that bound it are all strictly inside the turn ceiling, so the branch is
+    reachable on Windows and macOS exactly as on Linux."""
+    settings = WatchdogSettings()
+    for key in ("tool_stall_suspect_secs", "tool_stall_hard_cap_secs", "stale_window_secs"):
+        assert 0 < getattr(settings, key) < _WINDOW_BUDGET, key
+    # The narrowed window a prompt-shaped command falls under is the ordinary
+    # silence budget, which is itself below the build-scale one.
+    assert settings.stale_window_secs < settings.tool_stall_suspect_secs
+    # The interactive policy defaults to today's non-lethal cancel; the seam is
+    # a plain string so a config wave can bind it without touching the loop.
+    assert settings.interactive_command_policy == session_handle.INTERACTIVE_POLICY_CANCEL
+    assert session_handle.INTERACTIVE_POLICY_WAIT != session_handle.INTERACTIVE_POLICY_CANCEL
+
+
+def test_platform_limited_evidence_is_its_own_metric_class() -> None:
+    """The declared degradation must be visible in telemetry, not folded into
+    ``degraded`` (which means "the oracle could not sample") or ``shell``."""
+    assert (
+        session_handle._watchdog_evidence_class(
+            "platform_limited: shell child 7 alive, subtree flat (cpu +0ns (darwin cpu-only)); "
+            "stdin-block evidence unavailable on this platform"
+        )
+        == "platform_limited"
+    )
+    assert (
+        session_handle._watchdog_evidence_class(
+            "platform_limited: no process-tree backend on this platform"
+        )
+        == "platform_limited"
+    )

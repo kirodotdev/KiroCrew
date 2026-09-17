@@ -22,6 +22,7 @@ from kiro_crew.agent import (
     rebuild_agent_config,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     FORWARD_DECLARED_ENV_DEFAULT,
@@ -816,6 +817,28 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _agent_mcp_server_names(agent: str) -> list[str] | None:
+    """The sorted ``mcpServers`` names of the user-level spec declaring *agent*.
+
+    ``None`` when no spec declares that name. A thread-side read: it walks the
+    agents directory and parses specs (both forms) until the first match.
+    """
+    for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
+        spec = _read_agent_spec(
+            f,
+            operation="api_mcp_active",
+            source="dashboard",
+        )
+        if spec is None:
+            continue
+        if spec.get("name") == agent:
+            # ``mcpServers: null`` (or any non-mapping) declares no servers; it
+            # must answer an empty list, not a 500 from ``sorted(None)``.
+            servers = spec.get("mcpServers")
+            return sorted(servers) if isinstance(servers, dict) else []
+    return None
+
+
 async def api_mcp_active(request: web.Request) -> web.Response:
     """GET /api/mcp/active — return MCP servers for the current agent.
 
@@ -838,20 +861,14 @@ async def api_mcp_active(request: web.Request) -> web.Response:
         except Exception:
             pass
 
-    # Non-kirocrew agent: read from agent config
+    # Non-kirocrew agent: read from agent config. The lookup walks the agents
+    # directory and reads specs until the name matches, so it runs in a thread:
+    # a large directory must not stall every other request on the loop.
     if agent and agent != "kirocrew":
-        for f in kiro_agents_dir_path().glob("*.json"):
-            spec = _read_agent_spec(
-                f,
-                operation="api_mcp_active",
-                source="dashboard",
-            )
-            if spec is None:
-                continue
-            if spec.get("name") == agent:
-                agent_mcps = spec.get("mcpServers", {})
-                return web.json_response([{"name": n, "enabled": True} for n in sorted(agent_mcps)])
-        return web.json_response([])
+        agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent)
+        if agent_mcps is None:
+            return web.json_response([])
+        return web.json_response([{"name": n, "enabled": True} for n in agent_mcps])
 
     # Kirocrew / default: read from global mcp.json
     from kiro_crew.mcp_discovery import list_servers  # noqa: F811
@@ -2991,7 +3008,7 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return rows
-    for path in sorted(agents_dir.glob("*.json")):
+    for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(
             path,
             operation="mcp_server_rows",
@@ -3058,7 +3075,7 @@ def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return specs
-    for path in sorted(agents_dir.glob("*.json")):
+    for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(
             path,
             operation="mcp_stub_eligibility",

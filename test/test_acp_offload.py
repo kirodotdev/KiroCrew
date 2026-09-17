@@ -32,7 +32,7 @@ def teardown_function() -> None:
 class TestCaptureChildRecords:
     def test_returns_start_time_and_basename_per_pid(self) -> None:
         with (
-            patch.object(client_mod, "_get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
             patch.object(client_mod, "_read_basename", side_effect=lambda p: f"bin{p}".encode()),
         ):
             result = _capture_child_records([1, 2, 3])

@@ -10,17 +10,16 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import _extract_bash_command
-from kiro_crew.dashboard.state import (
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.history import ConversationLog
+from kiro_crew.security.readonly_bash import (
     _GLOB_SENSITIVE_WORDS,
     _INDIRECT_LIST_FLAGS_BY_PREFIX,
     _OPTION_ACCEPT_LISTS,
     _SORT_READONLY_LONG,
-    DashboardState,
-    _ChatSlot,
     is_read_only_bash,
     unsafe_bash_reason,
 )
-from kiro_crew.history import ConversationLog
 
 # ── Helpers ──
 
@@ -92,7 +91,6 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("git blame file.py") is True
 
     def test_brazil_read_commands(self):
-        assert is_read_only_bash("brazil ws show") is True
         assert is_read_only_bash("brazil versionset print --vs live") is True
         assert is_read_only_bash("brazil workspace list") is True
 

@@ -1,18 +1,21 @@
 """MCP discovery search over the CapabilityManager seam.
 
-The regression these pin: ``CapabilityProvider`` consumes at most
-``_LIST_LIMIT_GUARD`` registry rows, so on a registry bigger than that guard the
-client-side filter only ever sees the head of the list and every row past it is
-unfindable. Measured on an internal registry of 5612 servers before the fix: a
-search for a bundle sorted past the cap returned only substring noise.
+The regression these pin: ``CapabilityProvider`` caps the MATCHES it hands on
+at ``_LIST_LIMIT_GUARD``, not the rows it scans. Capping rows first bounds the
+search window itself: on a registry bigger than the guard, a row sorted past
+the cap is unfindable. Measured on an internal registry of 5612 servers before
+the fix: a search for a bundle sorted past the cap returned only substring noise.
 
-The fix passes the query DOWN to the manager as a HINT. These tests cover both
+The query is also passed DOWN to the manager as a HINT. These tests cover both
 sides of that contract -- a manager that filters server-side becomes fully
 searchable, and a manager that ignores the hint (including one still on the
-older zero-arg signature) keeps working with its old reach.
+older zero-arg signature) is fully searchable too, because the match runs
+before the cap.
 """
 
 from __future__ import annotations
+
+import logging
 
 import pytest
 
@@ -116,19 +119,139 @@ async def test_legacy_zero_arg_manager_still_searches():
     assert mgr.calls == 1
 
 
+class IgnoringManager(QueryAwareManager):
+    """A manager that takes ``query=`` and returns its whole catalog anyway.
+
+    The seam calls the query a HINT: an edition may filter server-side, narrow
+    its own truncation, or ignore it. This is the third case, and it is the one
+    the guard's ordering decides. Hoisted from inside
+    ``test_client_side_filter_survives_a_manager_that_ignores_the_hint``, which
+    defined this same class locally, so the reach tests below can reuse it.
+    """
+
+    async def registry(self, query: str | None = None) -> list[dict[str, object]]:
+        self.queries.append(query)
+        return self._rows
+
+
 @pytest.mark.asyncio
 async def test_client_side_filter_survives_a_manager_that_ignores_the_hint():
     """The hint is advisory: a manager returning everything must not leak rows."""
-
-    class IgnoringManager(QueryAwareManager):
-        async def registry(self, query: str | None = None):
-            self.queries.append(query)
-            return self._rows
-
     mgr = IgnoringManager(_rows(10))
     results = await CapabilityProvider(lambda: mgr).search("srv-00003")
 
     assert [r.id for r in results] == ["srv-00003-mcp"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manager_cls", [IgnoringManager, LegacyManager])
+async def test_search_reaches_past_the_guard_when_the_hint_is_not_honoured(manager_cls):
+    """Reach must not depend on the hint being honoured.
+
+    Both managers here return the whole catalog: one accepts ``query=`` and
+    ignores it, the other is still on the zero-arg signature and never sees it.
+    Capping the ROWS before the client-side match made the guard bound the
+    search window, so the only row that matches — sorted well past it — was
+    unreachable for either.
+    """
+    rows = _rows(_LIST_LIMIT_GUARD * 4)
+    target = str(rows[-1]["id"])
+    mgr = manager_cls(rows)
+
+    results = await CapabilityProvider(lambda: mgr).search(target)
+
+    assert [r.id for r in results] == [target]
+
+
+@pytest.mark.asyncio
+async def test_detail_reaches_past_the_guard_when_the_hint_is_not_honoured():
+    """``fetch_detail`` hints with the id, and the id is part of the haystack,
+    so the same pre-cap filter keeps the clicked row reachable."""
+    rows = _rows(_LIST_LIMIT_GUARD * 4)
+    target = str(rows[-1]["id"])
+
+    detail = await CapabilityProvider(lambda: IgnoringManager(rows)).fetch_detail(target)
+
+    assert detail is not None and detail.id == target
+
+
+@pytest.mark.asyncio
+async def test_the_guard_still_bounds_what_the_provider_hands_on():
+    """Matching first must not turn the cap into no cap.
+
+    Every row matches this needle, so the guard is the only thing standing
+    between a misbehaving manager's catalog and the fan-out.
+    """
+    rows = _rows(_LIST_LIMIT_GUARD * 3)
+    mgr = IgnoringManager(rows)
+
+    entries = await CapabilityProvider(lambda: mgr)._list_entries("srv-")
+
+    assert len(entries) == _LIST_LIMIT_GUARD
+
+
+@pytest.mark.asyncio
+async def test_an_unfiltered_listing_is_still_capped_at_the_guard():
+    """No query means no match to cap, so the raw row bound applies as before."""
+    rows = _rows(_LIST_LIMIT_GUARD * 2)
+
+    entries = await CapabilityProvider(lambda: LegacyManager(rows))._list_entries()
+
+    assert len(entries) == _LIST_LIMIT_GUARD
+    assert entries[0]["id"] == rows[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_exact_id_match_survives_a_cap_of_substring_matches():
+    """A clicked row must resolve even when other rows quote its id.
+
+    Every decoy's description contains the target id, so the decoys alone
+    exhaust the match cap before the real row is reached. The exact-id match
+    still comes back -- dropping it would 404 a server the user just clicked
+    in search results -- and the guard's bound still holds exactly.
+    """
+    target = "the-real-server-mcp"
+    rows: list[dict[str, object]] = [
+        {
+            "id": f"decoy-{i:05d}",
+            "title": f"Decoy {i}",
+            "description": f"bundles {target}",
+            "installed": False,
+        }
+        for i in range(_LIST_LIMIT_GUARD + 100)
+    ]
+    rows.append({"id": target, "title": "Real", "description": "d", "installed": False})
+    provider = CapabilityProvider(lambda: IgnoringManager(rows))
+
+    entries = await provider._list_entries(target)
+    assert len(entries) == _LIST_LIMIT_GUARD
+    assert any(e["id"] == target for e in entries)
+
+    detail = await provider.fetch_detail(target)
+    assert detail is not None and detail.id == target
+
+
+@pytest.mark.asyncio
+async def test_matches_that_fit_the_guard_exactly_log_no_overflow(caplog):
+    """Coverage at exactly the guard is complete, so nothing is invisible and
+    the partial-coverage log must stay silent."""
+    rows = _rows(_LIST_LIMIT_GUARD)
+    with caplog.at_level(logging.INFO, logger="kiro_crew.mcp_providers.capability"):
+        entries = await CapabilityProvider(lambda: IgnoringManager(rows))._list_entries("srv-")
+
+    assert len(entries) == _LIST_LIMIT_GUARD
+    assert not [r for r in caplog.records if "matched more than" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_a_match_past_the_guard_logs_partial_coverage(caplog):
+    """One match beyond the cap means search coverage really is partial."""
+    rows = _rows(_LIST_LIMIT_GUARD + 1)
+    with caplog.at_level(logging.INFO, logger="kiro_crew.mcp_providers.capability"):
+        entries = await CapabilityProvider(lambda: IgnoringManager(rows))._list_entries("srv-")
+
+    assert len(entries) == _LIST_LIMIT_GUARD
+    assert [r for r in caplog.records if "matched more than" in r.getMessage()]
 
 
 @pytest.mark.asyncio

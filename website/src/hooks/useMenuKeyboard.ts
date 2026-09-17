@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useDocumentImeLatch, type ImeLatch } from './useImeGuard'
+import { deepActiveElement, isEditableElement } from '../utils/editableTarget'
 
 /**
  * Shared keyboard contract for `role="menu"` surfaces (WAI-ARIA menu pattern):
@@ -159,10 +160,9 @@ export function useMenuKeyboard(opts: {
     const items = () => menuItemsOf(containerRef.current)
     if (focusFirstOnOpen) items()[0]?.focus()
     const onKey = (e: KeyboardEvent) => {
-      const active = document.activeElement as HTMLElement | null
+      const active = deepActiveElement()
       if (active && !containerRef.current?.contains(active)) {
-        const tag = active.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || active.isContentEditable) return
+        if (isEditableElement(active)) return
       }
       handleMenuKeydown(e, items, imeLatch)
     }

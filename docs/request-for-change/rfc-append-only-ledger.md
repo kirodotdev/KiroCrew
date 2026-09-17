@@ -209,3 +209,36 @@ of the crew store's JSON files and of the work ledger, and the secretaries.
    `gone`.
 3. An `ignorable` marker so a reader refuses to reconstruct on an unknown required type.
 4. App and cron kinds: same envelope, emitters not landed.
+
+## Amendment 2026-09-16 — the layering
+
+Three corrections to the sections above, from implementing them. The model is one base
+envelope plus session-only and crew-only halves, and the sections were written with the two
+halves mixed. `docs/system-specs/modules/ledger-core.md` sections 4, 4a, 4b and 6 are the
+current specification of all three.
+
+**The signed family is two plain crew-owned types.** §4's `crew:<parent>/dispatch` and
+`crew:<child>/report` are `crew/dispatch` and `crew/report`. A type carries the fact; the
+writer is `src`, so `crew:qa` reporting and `crew:docs` reporting write one type into one
+parent ledger and are told apart by who signed them. Spelling the writer into the type would
+make the same fact a different type per writer -- a fold would parse the type to group two
+children's reports on one item, and the ownership registry would grow an entry per crew. The
+two contracts carry required fields: `crew/dispatch` needs `data.target`, because a dispatch
+naming nobody is a row the `board` fold cannot place, and `crew/report` needs a `ref` into
+the child's segment, because `board` and `budget` take status and credits off the report
+without opening the child's ledger and the `ref` is what makes that checkable. Both are
+stated in section 4b.
+
+**Authorization hangs off `src`, not off the type prefix.** FR-3's "a guest writes only in
+its namespace" holds for an app, whose `app:<name>/` type prefix is the one guest type
+namespace and its whole permission. A guest CREW is authorized by its `src` instead: it
+writes the crew kind's built-in domains, and `crew:<name>/<action>` is refused as a
+malformed type. This layer still checks no relationship — it has no crew tree, so whether
+`crew:qa` is really a child of the ledger it writes into arrives with the grants in §6.
+
+**`src` is validated per kind.** §3 lists the emitters as one set for both kinds. They are
+two: a session ledger takes `gateway` and `acp`, a crew ledger takes `gateway`,
+`dashboard`, `patrol`, `crew:<name>` and `app:<name>`. One shared list accepts `patrol`
+inside a single session's turn history, and `src` is what a reader attributes an entry to.
+`session:<id>` is accepted by neither kind: no emitter writes it, and adding a source to a
+kind is additive, since no reader validates `src`.

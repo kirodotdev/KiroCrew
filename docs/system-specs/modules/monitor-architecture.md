@@ -117,6 +117,24 @@ to integrate with two contracts. The remaining target is one plugin shape that
 both drivers consume; the acceptance fixture below proves the structured half
 is provider-neutral, not that the two stacks are already one.
 
+### Retiring `irq.Probe` is gated on layer 3
+
+Retirement is downstream of layer 3, not of the coalescing window the pure
+decision engine gained. That window folds successive changes to one subject over
+time, which is not the mechanism the cron path depends on. What that path uses,
+and the shared engine cannot yet express, is already named in layers 3 and 4
+below: the urgency claim layer 3 calls `IMMEDIATE` and the kernel implements as
+`Severity.NMI`, for a condition where waiting observes nothing further; and the
+per-entry `resets_on` distinction, which decides whether a new revision clears an
+entry or the entry outlives it. One fingerprint per subject can express neither.
+It has no per-entry identity to scope and no severity to raise, so an entry that
+must fire now cannot say so, and an entry that survives a force-push cannot be
+told from one the force-push resolved.
+
+Deleting the old extension point before layer 3 lands would therefore delete
+those two behaviours rather than move them. Until then the two drivers keep two
+contracts, and an author adding a cron-path kind still subclasses `irq.Probe`.
+
 ## A monitor is a field, not a system
 
 A reader who knows the code arrives expecting a monitor subsystem sitting beside
@@ -327,6 +345,21 @@ fingerprint against `last_wake_fingerprint`), is the budget spent
 (`monitor_budget_reason`), is this error retryable (`_provider_error_decision`
 against `_RETRYABLE_PROVIDER_ERRORS`). It takes the clock as a value through its
 `now` parameter and performs no IO at all.
+
+**A skip is a third outcome, and it reaches three places.** A shared `github:api`
+cooldown makes a probe return WITHOUT calling the API, and it borrows the shape of a
+refusal to say so (`REASON_SHARED_COOLDOWN`, `is_unattempted_probe`). That is
+neither a success nor a provider error: it is no evidence about the subject at all,
+so it moves NEITHER counter — at `shadow.apply_monitor_probe` and at the production
+counting site in `autonudge`. `_provider_error_decision` is the third place, and it
+is the one a counter fix does not reach: it reads the same budget one tick into the
+FUTURE (`consecutive_provider_errors + 1 >= max_provider_errors`), so a watch two
+real errors into a budget of three would be retired by an unrelated scope's
+cooldown, having made no call of its own. The prediction therefore refuses to spend
+an unattempted probe, while `monitor_budget_reason` above it keeps stopping a watch
+whose budget is genuinely gone — a cooldown must not become a way to outlive the
+ceiling. The kind gate stays FIRST of the three, so an unattempted probe reporting a
+non-retryable kind is still blocked.
 
 The **delivery** policy is the other half, and it is impure. It lives in
 `MonitorController.tick`, which decides whether a wake is already in flight

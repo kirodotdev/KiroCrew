@@ -384,7 +384,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # children run on. ``slot.running`` is False while they keep going (the
         # parent turn ends first), so nothing above catches it and a child's
         # work would be destroyed by an edit it has no part in.
-        attached = _subagents_attached_response(state, slot, session_key, "chat.slot_edit_resend")
+        attached = await _subagents_attached_response(
+            state, slot, session_key, "chat.slot_edit_resend"
+        )
         if attached is not None:
             return attached
 

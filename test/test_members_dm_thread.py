@@ -768,6 +768,12 @@ class TestPinEnforcement:
         slot_key = "member-code-reviewer" if mode == DM_SLOT_MODE else "chat-1-100"
         agent = CREW if private else "default"
         slot = state.get_or_create_slot(slot_key, agent=agent, mode=mode)
+        if private:
+            # The turn only confirms a grant an owner-gated route wrote; the
+            # harness stands in for that route.
+            from kiro_crew.member_memory_auth import bind_private_session_store
+
+            bind_private_session_store(f"dashboard:{slot_key}", cfg.agents[CREW].memory_store)
         slot.append("user", "hello", "msg msg-u")
 
         client = state.sessions.get_or_create.return_value[0]

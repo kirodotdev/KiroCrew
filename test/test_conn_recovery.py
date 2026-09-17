@@ -108,14 +108,22 @@ async def test_queue_dispatch_preserves_recovery_provenance(
     assert slot.task is not None
     await slot.task
 
+    _expected_kwargs = {
+        "_current_message": slot.messages[-1],
+        "_synthetic_payload": expected_recovery,
+        "_directive_user_origin": False,
+        "_directive_channel_origin": False,
+    }
+    if expected_recovery:
+        # A recovery-kind entry also tells the runner it IS a recovery
+        # dispatch, structurally — the refusal-retry allowance must not
+        # re-arm on a requeue of the user's own words.
+        _expected_kwargs["_synthetic_recovery_turn"] = True
     mock_run.assert_awaited_once_with(
         state,
         slot,
         _CONN_RECOVER_MSG,
-        _current_message=slot.messages[-1],
-        _synthetic_payload=expected_recovery,
-        _directive_user_origin=False,
-        _directive_channel_origin=False,
+        **_expected_kwargs,
     )
     assert slot.messages[-1]["role"] == expected_role
 
@@ -222,6 +230,9 @@ async def test_dispatch_classifies_the_payload_not_the_recovery(
         "Build and deploy the service",
         _current_message=slot.messages[-1],
         _synthetic_payload=expected_synthetic,
+        # Recovery-ness is its own structural signal, independent of the
+        # payload classification this test pins down.
+        _synthetic_recovery_turn=True,
         _directive_user_origin=False,
         _directive_channel_origin=False,
     )

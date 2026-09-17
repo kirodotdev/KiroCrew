@@ -497,6 +497,7 @@ import { CodeBlock } from './CodeBlock'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 import DiagramLightbox from './DiagramLightbox'
 import { usePinchZoom } from '../hooks/usePinchZoom'
+import { isEditableTarget } from '../utils/editableTarget'
 
 /** Forward the `data-sourcepos` attribute from rehypeSourcepos onto the
  *  rendered element. Used in every MD_COMPONENTS override; returns an
@@ -4456,14 +4457,6 @@ const LIGHTBOX_PAGE_DISTANCE = 64
  *  not commit but must not feel dead either — a silent no-op reads as broken. */
 const LIGHTBOX_RUBBER_BAND_DIVISOR = 4
 
-/** True when a keyboard event originates from an editable element, so global
- *  printable-key shortcuts (like the lightbox 'd' download) don't hijack typing. */
-function isEditableTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null
-  if (!el || typeof el.tagName !== 'string') return false
-  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true
-}
-
 /** Derive a download filename for a lightbox image. Local images are served
  *  as `/api/file-raw?path=<abs>`, so prefer the basename of that path; for
  *  other URLs fall back to the pathname basename, then the alt text. */
@@ -4829,16 +4822,16 @@ export function Lightbox() {
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
         setState(s => (s && s.index < s.images.length - 1 ? { ...s, index: s.index + 1 } : s))
-      } else if ((e.key === '+' || e.key === '=') && !isEditableTarget(e.target) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if ((e.key === '+' || e.key === '=') && !isEditableTarget(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
         zoomIn()
-      } else if ((e.key === '-' || e.key === '_') && !isEditableTarget(e.target) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if ((e.key === '-' || e.key === '_') && !isEditableTarget(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
         zoomOut()
-      } else if (e.key === '0' && !isEditableTarget(e.target) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if (e.key === '0' && !isEditableTarget(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
         setZoom(LIGHTBOX_ZOOM_MIN)
-      } else if ((e.key === 'd' || e.key === 'D') && !isEditableTarget(e.target)) {
+      } else if ((e.key === 'd' || e.key === 'D') && !isEditableTarget(e)) {
         e.preventDefault()
         const cur = stateRef.current
         if (cur) void downloadLightboxImage(cur.images[cur.index])

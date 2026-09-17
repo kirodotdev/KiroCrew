@@ -116,10 +116,12 @@ const lid = (x: number, dip: number): string =>
  * once so the two tables cannot drift apart: the working variant of an eye must
  * draw exactly the geometry the seed drew, only wrapped in animation groups. */
 
+/** The twinkle's outline, traced from its top point. Shared by the `sparkle`
+ *  eye and the `sparkle` reaction so the two glints cannot drift apart. */
+const STAR_D = 'l11 24 24 11-24 11-11 24-11-24-24-11 24-11z'
+
 /** A four-point twinkle beside an eye. */
-const star = (x: number): string =>
-  `<path d="M${x + 12} ${EY - 46}l11 24 24 11-24 11-11 24-11-24-24-11 24-11z" ` +
-  `fill="${WHITE}"/>`
+const star = (x: number): string => `<path d="M${x + 12} ${EY - 46}${STAR_D}" fill="${WHITE}"/>`
 
 const VISOR_BAR =
   `<rect x="${EL - 52}" y="${EY - 50}" width="${ER - EL + 104}" height="100" rx="50" ` +
@@ -257,7 +259,7 @@ export const WORKING_EYES: Record<string, string> = {
  * the artwork is smaller than the full-tier excursion, so headroom is made, not
  * assumed.
  */
-const MOTION: Record<
+const BODY_MOTION: Record<
   WorkingIntensity,
   { fitScale: number; fitDrop: number; rise: number; sink: number; stretch: number; sway: number; secs: number }
 > = {
@@ -270,7 +272,7 @@ const MOTION: Record<
  *  scales. Reduced-motion users get the still frame: identity is identical, so
  *  dropping every animation is a complete, lossless fallback. */
 export function workingStyle(intensity: WorkingIntensity): string {
-  const m = MOTION[intensity]
+  const m = BODY_MOTION[intensity]
   return (
     '<style>' +
     `@keyframes kg-bob{0%,100%{transform:translateY(${m.sink}px)}50%{transform:translateY(-${m.rise}px)}}` +
@@ -306,6 +308,215 @@ export function workingStyle(intensity: WorkingIntensity): string {
     // transform, so it must be reset too or a reduced-motion user sees a
     // shrunken, lowered ghost with no motion to justify that headroom.
     '@media (prefers-reduced-motion:reduce){*{animation:none!important}.kg-fit{transform:none}}' +
+    '</style>'
+  )
+}
+
+/* ────────────────────────── Reaction motions ──────────────────────────
+ *
+ * A ghost REACTS when a turn ends: one built-in motion for `done` and one for
+ * `error`, picked per crew in the avatar builder.
+ *
+ * Where the working animation may only MOVE what the seed drew, a reaction may
+ * also swap the EYES and add a transient glint on the tile — that is what a
+ * reaction is: the face doing something it does not do at rest. Every other
+ * axis stays exactly as the seed rolled it (brows, mouth, headwear, prop,
+ * blush, flip, tile), which is what keeps a reacting crew the same crew.
+ *
+ * The vocabulary is CLOSED and mirrors `_AVATAR_MOTIONS` in
+ * `config/sections.py` name for name: a motion names an animation this module
+ * implements, so an unknown name has nothing to resolve to and draws the still
+ * frame rather than a substitute reaction.
+ *
+ * Each motion carries its own rest inside its keyframes ("hop, settle, hop")
+ * and loops, so it reads alive for whatever dwell the caller gives it and can
+ * never be cut off mid-gesture. Reduced motion falls back to the still frame,
+ * which for `cross-eyes` and `droop` keeps the reaction's eyes — the half of
+ * it that is not movement.
+ */
+
+/** The states a reaction exists for. `working` has none: the working animation
+ *  IS the ghost at work, and a reaction fires on a transition out of it. */
+export const MOTION_STATES = ['done', 'error'] as const
+export type MotionState = (typeof MOTION_STATES)[number]
+
+export interface GhostMotion {
+  /** Animation class wrapped around the whole drawing, or '' for a still one. */
+  cls: string
+  /** Eye variant the reaction swaps in, or '' to keep the face's own eyes. */
+  eyes: string
+  /** Transient decoration, drawn on the tile outside the drawing. */
+  art: string
+  /** Largest upward excursion the keyframes reach, in 1200-space px. Above the
+   *  margin over the artwork it lowers the drawing through `.kg-mfit`, so
+   *  headroom for a tall accessory is MADE rather than assumed. */
+  rise: number
+  /** Keyframes and rules `cls` and `art` need. '' when neither animates. */
+  css: string
+}
+
+/** `none` is a stored choice — deliberate stillness — not an absent one. */
+const STILL: GhostMotion = { cls: '', eyes: '', art: '', rise: 0, css: '' }
+
+/** Glint placements: x, y, scale, delay. All three sit in the MARGIN beside or
+ *  above the silhouette (bbox 272.9,202.7 654x795), because a glint is white
+ *  and white on the body is invisible — ink is for pieces that sit on it. */
+const GLINTS: readonly (readonly [number, number, number, string])[] = [
+  [150, 300, 1.5, '0s'],
+  [975, 235, 1.3, '.5s'],
+  [1000, 640, 1.1, '.95s'],
+]
+
+/** One twinkle on the tile, popping on its own beat. */
+const glint = (x: number, y: number, scale: number, delay: string): string =>
+  `<g transform="translate(${x},${y}) scale(${scale})">` +
+  `<g class="kg-pop" style="transform-origin:0px 35px;animation-delay:${delay}">` +
+  `<path d="M0 0${STAR_D}" fill="${WHITE}"/></g></g>`
+
+const GLINT_ART = GLINTS.map(([x, y, scale, delay]) => glint(x, y, scale, delay)).join('')
+
+/**
+ * The built-in reactions, per state. Keys mirror the backend vocabulary
+ * exactly; `MOTION_NAMES` is the same list in render order and the test pins
+ * the two against each other.
+ */
+export const MOTIONS: Record<MotionState, Record<string, GhostMotion>> = {
+  done: {
+    none: STILL,
+    /** Two hops, the second smaller, then a beat of rest. */
+    bounce: {
+      cls: 'kg-bounce',
+      eyes: '',
+      art: '',
+      rise: 84,
+      css:
+        '@keyframes kg-bounce{0%,58%,100%{transform:translateY(0)}' +
+        '14%{transform:translateY(-84px)}30%{transform:translateY(0)}' +
+        '42%{transform:translateY(-40px)}52%{transform:translateY(0)}}' +
+        '.kg-bounce{animation:kg-bounce 1.7s ease-out infinite}',
+    },
+    /** A tip forward from the base, twice — the ghost acknowledging. */
+    nod: {
+      cls: 'kg-nod',
+      eyes: '',
+      art: '',
+      rise: 0,
+      css:
+        '@keyframes kg-nod{0%,56%,100%{transform:rotate(0deg) translateY(0)}' +
+        '18%{transform:rotate(10deg) translateY(22px)}' +
+        '34%{transform:rotate(0deg) translateY(0)}' +
+        '44%{transform:rotate(7deg) translateY(16px)}}' +
+        '.kg-nod{animation:kg-nod 1.5s ease-in-out infinite;transform-origin:600px 985px}',
+    },
+    /** Three glints around the head, in sequence, over a small proud swell. */
+    sparkle: {
+      cls: 'kg-swell',
+      eyes: '',
+      art: GLINT_ART,
+      // scale(1.06) about 600,620 lifts the antenna ball (y 60) by 34px.
+      rise: 34,
+      css:
+        '@keyframes kg-swell{0%,64%,100%{transform:scale(1)}26%{transform:scale(1.06)}}' +
+        '@keyframes kg-pop{0%,100%{opacity:0;transform:scale(.3)}' +
+        '18%{opacity:1;transform:scale(1)}42%{opacity:0;transform:scale(.5)}}' +
+        '.kg-swell{animation:kg-swell 1.6s ease-in-out infinite;transform-origin:600px 620px}' +
+        // `opacity:0` is the BASE, not only the keyframe's first stop: the
+        // reduced-motion fallback kills the animation, and a glint whose only
+        // hidden state lives inside `kg-pop` then paints at the SVG default —
+        // three permanent white stars beside a still ghost, which is the
+        // opposite of what the fallback promises. The animation still shows
+        // them: its own stops set opacity while it plays.
+        '.kg-pop{opacity:0;animation:kg-pop 1.5s ease-out infinite}',
+    },
+  },
+  error: {
+    none: STILL,
+    /** Horizontal jitter that damps out, then starts again. */
+    shake: {
+      cls: 'kg-shake',
+      eyes: '',
+      art: '',
+      rise: 0,
+      css:
+        '@keyframes kg-shake{0%,72%,100%{transform:translateX(0)}' +
+        '8%{transform:translateX(-30px)}20%{transform:translateX(26px)}' +
+        '32%{transform:translateX(-18px)}44%{transform:translateX(12px)}' +
+        '56%{transform:translateX(-6px)}}' +
+        '.kg-shake{animation:kg-shake 1.4s ease-out infinite}',
+    },
+    /** Eyes alone: the one reaction that is a FRAME rather than a movement, so
+     *  it reads identically for a reduced-motion user. */
+    'cross-eyes': { cls: '', eyes: 'cross', art: '', rise: 0, css: '' },
+    /** Sags and tilts, holds there, recovers. Sleepy lids sell the deflation. */
+    droop: {
+      cls: 'kg-droop',
+      eyes: 'sleepy',
+      art: '',
+      rise: 0,
+      css:
+        '@keyframes kg-droop{0%{transform:translateY(0) rotate(0deg)}' +
+        '34%,72%{transform:translateY(52px) rotate(-7deg)}' +
+        '100%{transform:translateY(0) rotate(0deg)}}' +
+        '.kg-droop{animation:kg-droop 2.8s ease-in-out infinite;transform-origin:600px 985px}',
+    },
+  },
+}
+
+/** The vocabulary as an ordered list, for a picker and for the backend parity
+ *  test. `none` is first in both states: it is the "no reaction" choice. */
+export const MOTION_NAMES: Record<MotionState, readonly string[]> = {
+  done: ['none', 'bounce', 'nod', 'sparkle'],
+  error: ['none', 'shake', 'cross-eyes', 'droop'],
+}
+
+/** Topmost y any head accessory reaches — the antenna ball (cy 104, r 44). */
+const ACCESSORY_TOP = 60
+/** Kept above zero so rounding cannot land art on the tile's own edge. */
+const MOTION_MARGIN = 8
+
+/**
+ * How far a motion lowers the drawing to buy its own headroom. Zero while the
+ * margin over the artwork already covers the excursion, so a reaction that
+ * never rises is drawn at full size in its normal place.
+ */
+export function motionDrop(rise: number): number {
+  return Math.max(0, Math.round(rise - ACCESSORY_TOP + MOTION_MARGIN))
+}
+
+/** Which reaction to render: a state and one name from that state's list. */
+export interface MotionRender {
+  state: MotionState
+  name: string
+}
+
+/**
+ * The reaction a render parameter selects, or null for "nothing to play" — an
+ * absent parameter, `none`, or a name from a vocabulary this build predates.
+ * An unknown name resolves to the still frame rather than to a substitute
+ * reaction: playing a bounce where the record says something else would report
+ * a moment the crew's author never chose.
+ */
+export function motionFrom(motion: MotionRender | null | undefined): GhostMotion | null {
+  if (!motion) return null
+  const found = MOTIONS[motion.state]?.[motion.name]
+  return found && (found.cls || found.eyes || found.art) ? found : null
+}
+
+/** The `<style>` block for a reacting avatar. Empty for a reaction that only
+ *  swaps eyes, which needs no keyframes and no headroom. */
+export function motionStyle(motion: GhostMotion): string {
+  if (!motion.css) return ''
+  const drop = motionDrop(motion.rise)
+  return (
+    '<style>' +
+    motion.css +
+    // `.kg-mfit` is emitted only when the drop is real; the group compose wraps
+    // is then a no-op, which is cheaper than teaching compose the arithmetic.
+    (drop ? `.kg-mfit{transform:translateY(${drop}px);transform-origin:600px 600px}` : '') +
+    // Same two-part fallback the working variant needs: animations off AND the
+    // static drop reset, or a reduced-motion user sees a lowered ghost with no
+    // motion to justify the headroom.
+    '@media (prefers-reduced-motion:reduce){*{animation:none!important}.kg-mfit{transform:none}}' +
     '</style>'
   )
 }
@@ -526,13 +737,27 @@ export interface KiroGhostTraits {
  * The only composition path. `create` calls it with prng-drawn traits and tests
  * call it with explicit ones, so a fixture cannot drift from real output.
  *
- * `working` is a RENDER parameter, not a trait: it is never drawn from the prng
- * (so it cannot re-roll a face) and with it unset the output is byte-identical
- * to what this function has always produced. Set, it swaps each eye for its
- * animated twin and wraps the drawing in the body-motion groups.
+ * `working` and `motion` are RENDER parameters, not traits: neither is ever
+ * drawn from the prng (so neither can re-roll a face) and with both unset the
+ * output is byte-identical to what this function has always produced. `working`
+ * swaps each eye for its animated twin and wraps the drawing in the body-motion
+ * groups; `motion` plays one reaction instead — see the reaction section above.
+ *
+ * The two are exclusive by construction (a crew is either at work or reacting
+ * to a turn that ended), and where both arrive the reaction wins: it is the
+ * more specific statement about the moment.
  */
-export function compose(t: KiroGhostTraits, working?: WorkingIntensity | null): string {
-  const eyesArt = working ? (WORKING_EYES[t.eyes] ?? EYES[t.eyes] ?? '') : (EYES[t.eyes] ?? '')
+export function compose(
+  t: KiroGhostTraits,
+  working?: WorkingIntensity | null,
+  motion?: MotionRender | null,
+): string {
+  const react = motionFrom(motion)
+  const animate = react ? null : (working ?? null)
+  const eyesKey = react && react.eyes ? react.eyes : t.eyes
+  const eyesArt = animate
+    ? (WORKING_EYES[eyesKey] ?? EYES[eyesKey] ?? '')
+    : (EYES[eyesKey] ?? '')
   const inner = [
     `<path d="${BODY}" fill="${WHITE}"/>`,
     t.blush
@@ -547,16 +772,23 @@ export function compose(t: KiroGhostTraits, working?: WorkingIntensity | null): 
   ].join('')
   // Body motion wraps INSIDE the flip group, so transform origins stay in the
   // unmirrored coordinate space and a flipped ghost sways identically.
-  const core = working
+  const core = animate
     ? `<g class="kg-fit"><g class="kg-sway"><g class="kg-bob"><g class="kg-sq">${inner}</g></g></g></g>`
-    : inner
+    : react && react.cls
+      ? `<g class="kg-mfit"><g class="${react.cls}">${inner}</g></g>`
+      : inner
   // The tile rect is painted here rather than through core's `backgroundColor` so
   // its color is drawn from the same prng as every other trait. It stays outside
   // the mirror group so flipping cannot move it.
+  //
+  // A reaction's decoration stays outside the mirror group too: it is placed in
+  // absolute tile coordinates, so mirroring it would move the glints for half
+  // the roster and leave the other half alone.
   return (
-    (working ? workingStyle(working) : '') +
+    (animate ? workingStyle(animate) : react ? motionStyle(react) : '') +
     `<rect width="1200" height="1200" fill="${t.tile}"/>` +
-    (t.flip ? `<g transform="translate(1200,0) scale(-1,1)">${core}</g>` : core)
+    (t.flip ? `<g transform="translate(1200,0) scale(-1,1)">${core}</g>` : core) +
+    (react?.art ?? '')
   )
 }
 
@@ -576,11 +808,15 @@ const GHOST_RADIUS_UNITS = (1200 * GHOST_RADIUS_PCT) / 100
  * file unconditionally, and this wrapper is brand-mark geometry, which is
  * exactly what this module already owns.
  */
-export function ghostDataUri(traits: KiroGhostTraits, working?: WorkingIntensity | null): string {
+export function ghostDataUri(
+  traits: KiroGhostTraits,
+  working?: WorkingIntensity | null,
+  motion?: MotionRender | null,
+): string {
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200">` +
     `<clipPath id="r"><rect width="1200" height="1200" rx="${GHOST_RADIUS_UNITS}"/></clipPath>` +
-    `<g clip-path="url(#r)">${compose(traits, working)}</g></svg>`
+    `<g clip-path="url(#r)">${compose(traits, working, motion)}</g></svg>`
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
 }
 

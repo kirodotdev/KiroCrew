@@ -38,24 +38,12 @@ class WorkflowMemoryError(RuntimeError):
     """The workflow cannot safely continue under its original identity."""
 
 
-def _plain_path(path: Path) -> Path:
-    """Compare resolved Windows paths without the optional extended prefix.
-
-    realpath may retain this prefix when another thread creates the leaf during
-    its final spelling check. Do not resolve again: that could bless a redirect.
-    """
-    text = str(path)
-    if text.startswith("\\\\?\\UNC\\"):
-        return type(path)("\\\\" + text[8:])
-    if text.startswith("\\\\?\\"):
-        return type(path)(text[4:])
-    return path
-
-
 def binding_path(run_id: str) -> Path:
     digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
     path = config_dir().resolve() / "member-memory-bindings" / "workflows" / digest / "memory.json"
-    if _plain_path(path.resolve()) != _plain_path(path):
+    if platform_compat.strip_extended_length_prefix(
+        path.resolve()
+    ) != platform_compat.strip_extended_length_prefix(path):
         raise WorkflowMemoryError("Workflow binding path is redirected")
     return path
 
@@ -65,7 +53,9 @@ _RUN_ID_ENABLED = b"1"
 
 
 def _allocator_path(path: Path) -> None:
-    if _plain_path(path.resolve()) != _plain_path(path):
+    if platform_compat.strip_extended_length_prefix(
+        path.resolve()
+    ) != platform_compat.strip_extended_length_prefix(path):
         raise WorkflowMemoryError("Workflow allocator path is redirected")
 
 
@@ -271,7 +261,9 @@ def publish_binding(
 def private_payload_path(run_id: str) -> Path:
     digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
     path = config_dir().resolve() / "memory_stores" / ".workflow-runs" / f"{digest}.json"
-    if _plain_path(path.resolve()) != _plain_path(path):
+    if platform_compat.strip_extended_length_prefix(
+        path.resolve()
+    ) != platform_compat.strip_extended_length_prefix(path):
         raise WorkflowMemoryError("Private workflow payload path is redirected")
     return path
 
@@ -499,7 +491,9 @@ def task_snapshot_path(public_path: Path) -> Path:
     """Private task state never lives in the agent-readable execution directory."""
     digest = hashlib.sha256(str(public_path.resolve()).encode("utf-8")).hexdigest()
     path = config_dir().resolve() / "memory_stores" / ".task-runs" / f"{digest}.json"
-    if _plain_path(path.resolve()) != _plain_path(path):
+    if platform_compat.strip_extended_length_prefix(
+        path.resolve()
+    ) != platform_compat.strip_extended_length_prefix(path):
         raise WorkflowMemoryError("Private task snapshot path is redirected")
     return path
 

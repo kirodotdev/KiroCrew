@@ -13,12 +13,15 @@
  * Its whole draft is one pack id, so the pane lives in its own component
  * (`CrewAvatarLibraryTab`) which owns the listing, the import and the delete.
  *
- * Expressions is the REACTION layer rather than a tier: per state (working, done,
- * error) a different pair of eyes and mouth, and a sound. It is separate from the
- * axes because it is not part of the crew's identity — every other axis stays
- * fixed across states, which is what keeps a reacting crew recognisable as the
- * same crew. Only the ghost tier has a face to change, so a picture and a pack
- * get the Sounds half alone.
+ * Reactions is the REACTION layer rather than a tier: per state (working, done,
+ * error) a built-in motion and a sound. It is separate from the axes because it
+ * is not part of the crew's identity — every other axis stays fixed across
+ * states, which is what keeps a reacting crew recognisable as the same crew.
+ *
+ * The pane is GHOST-ONLY, and it is absent rather than explanatory on the other
+ * two tiers: a picture is a static, silent drawing, and a pack ships its own
+ * per-state art and audio, so on both there is nothing here to author. A tab
+ * that renders only a note saying so is a promise the tier cannot keep.
  *
  * Composition goes through `compose()` from the style module — the same and
  * only path the roster uses — so the preview cannot drift from the saved
@@ -43,19 +46,22 @@ import {
   BROWS,
   BRAND_PURPLE,
   EYES,
+  MOTION_NAMES,
+  MOTION_STATES,
   MOUTHS,
   PROPS,
   TILES,
   ghostDataUri,
   type KiroGhostTraits,
+  type MotionState,
 } from '../lib/kiroGhostAvatar'
 import {
   AVATAR_STATES,
-  applyExpression,
-  type AvatarExpression,
-  type AvatarExpressions,
+  MOTION_DEFAULTS,
+  type AvatarMotions,
   type AvatarSounds,
   type AvatarState,
+  type RetiredCue,
 } from '../lib/crewAvatarState'
 import { SOUND_PRESETS, loadSoundSettings, playPreset, type SoundPreset } from '../hooks/useNotificationSound'
 import CrewAvatar, { seededTraits, type CrewAvatarOverride } from './CrewAvatar'
@@ -82,12 +88,12 @@ const AXIS_OPTIONS: Record<Exclude<Axis, 'tile' | 'blush'>, string[]> = {
 
 const AXES: Axis[] = ['eyes', 'brows', 'mouth', 'accessory', 'prop', 'blush', 'tile']
 
-/** The two axes a per-state expression may vary. */
-const EXPRESSION_AXES = ['eyes', 'mouth'] as const
-type ExpressionAxis = (typeof EXPRESSION_AXES)[number]
-
-/** "Same as idle" — the absence of an override, first in every expression row. */
-const SAME_AS_IDLE = ''
+/** The states that HAVE a motion, as a lookup the row builder can narrow with.
+ *  `working` is not one of them: the ghost's working animation is its own, and a
+ *  reaction fires on the transition out of it. */
+const MOTION_ROW_STATES: ReadonlySet<string> = new Set<string>(MOTION_STATES)
+const motionStateOf = (state: AvatarState): MotionState | null =>
+  MOTION_ROW_STATES.has(state) ? (state as MotionState) : null
 
 /**
  * Literal catalog keys, indexed rather than assembled: a key built at runtime
@@ -109,6 +115,19 @@ const STATE_LABEL_KEYS: Record<AvatarState, string> = {
   working: 'components.avatarBuilder.state_working',
   done: 'components.avatarBuilder.state_done',
   error: 'components.avatarBuilder.state_error',
+}
+
+/** Motion names, labelled. Same indexed-literal rule as AXIS_LABEL_KEYS — the
+ *  key is written out rather than assembled from the motion name, so the
+ *  extractor and the dead-key gate can both see it. */
+const MOTION_LABEL_KEYS: Record<string, string> = {
+  none: 'components.avatarBuilder.motion_none',
+  bounce: 'components.avatarBuilder.motion_bounce',
+  nod: 'components.avatarBuilder.motion_nod',
+  sparkle: 'components.avatarBuilder.motion_sparkle',
+  shake: 'components.avatarBuilder.motion_shake',
+  'cross-eyes': 'components.avatarBuilder.motion_cross_eyes',
+  droop: 'components.avatarBuilder.motion_droop',
 }
 
 const SOUND_LABEL_KEYS: Record<Exclude<SoundPreset, 'none'>, string> = {
@@ -272,9 +291,9 @@ async function cropToSquareDataUri(file: File): Promise<string> {
 
 /** The identity tier: hand-pick ghost traits, wear a picture, or wear a pack. */
 type Tier = 'face' | 'picture' | 'pack'
-/** The dialog's panes. `expressions` is not a fourth identity — it decorates
- *  whichever tier is selected, which is why `tier` is tracked separately. */
-type Pane = Tier | 'expressions'
+/** The dialog's panes. `reactions` is not a fourth identity — it decorates the
+ *  ghost tier, which is why `tier` is tracked separately. */
+type Pane = Tier | 'reactions'
 
 /** The tier a stored override selects when the dialog opens. */
 const tierOf = (value: CrewAvatarOverride | null): Tier =>
@@ -283,13 +302,15 @@ const tierOf = (value: CrewAvatarOverride | null): Tier =>
 /** Only the states the user actually configured are stored, so an untouched
  *  reaction layer stays absent from the record rather than shipping three
  *  empty objects. */
-const prune = <T,>(map: Partial<Record<AvatarState, T>>): Partial<Record<AvatarState, T>> | undefined =>
-  Object.keys(map).length ? map : undefined
+const isSet = (map: object): boolean => Object.keys(map).length > 0
 
 export default function CrewAvatarBuilder({
   open,
   name,
   value,
+  retiredCue = null,
+  savedPack = false,
+  savedReactions,
   onCancel,
   onSave,
 }: {
@@ -298,6 +319,43 @@ export default function CrewAvatarBuilder({
   name: string
   /** The pinned override currently held by the editor, or null for default. */
   value: CrewAvatarOverride | null
+  /**
+   * The SAVED record still names a preset sound on a tier that no longer plays
+   * one (a picture, a pack), so the crew went quiet without the user doing
+   * anything. Read from the record rather than from `value`, which cannot carry
+   * it: the reaction readers are ghost-gated, which is the retirement itself.
+   *
+   * Passed in rather than derived here because the builder is handed a coerced
+   * draft, and the raw record is the editor's to read.
+   *
+   * The STATES, not a flag: the notice names which sounds are going, because
+   * "your saved sound" about an unnamed one of three reads as a threat to
+   * whichever the reader cares about most. And the TIER they were saved on,
+   * because each pane's notice explains its own tier's silence and the
+   * explanation is only true there.
+   */
+  retiredCue?: RetiredCue | null
+  /**
+   * The crew's SAVED record wears an appearance pack.
+   *
+   * Read from the record rather than from `value`, which is the editor's draft
+   * and stops saying "pack" the moment one Apply has landed — while the stored
+   * record keeps wearing it until the editor's own Save. `buildResult` needs the
+   * stored tier, not the drafted one (see the faceless-ghost branch there).
+   */
+  savedPack?: boolean
+  /**
+   * Which reaction keys the crew's SAVED record carries a non-empty map for.
+   *
+   * `buildResult` names an emptied map on the wire so the backend's carry does
+   * not restore what the user cleared — and the question "is there anything to
+   * restore" is about the STORED record, not the draft. `value` is the draft, and
+   * it stops carrying the original after the first Apply lands an empty map: a
+   * later reopen re-inits from `{}`, the draft-only test reads "never had one",
+   * the key is omitted, and the carry brings the cleared motion back. Read from
+   * the record by the editor, the same way `retiredCue` and `savedPack` are.
+   */
+  savedReactions?: { motions?: boolean; sounds?: boolean }
   onCancel: () => void
   /** null = reset to the name-derived face. */
   onSave: (next: CrewAvatarOverride | null) => void
@@ -321,10 +379,15 @@ export default function CrewAvatarBuilder({
   /** The pack the draft wears, or null. A pack override is nothing BUT this id,
    *  so the Library pane needs no draft of its own. */
   const [packId, setPackId] = useState<string | null>(value?.kind === 'pack' ? value.id : null)
-  /** Per-state overrides. Held flat (not nested under the tier) so switching
-   *  between a ghost face and a picture never discards them. */
-  const [expressions, setExpressions] = useState<AvatarExpressions>(value?.expressions ?? {})
-  const [sounds, setSounds] = useState<AvatarSounds>(value?.sounds ?? {})
+  /** Per-state reactions. Held flat (not nested under the tier) so a trip
+   *  through the Picture tab and back never discards them — the pane is hidden
+   *  there, not reset. Only a ghost result carries them out. */
+  const [motions, setMotions] = useState<AvatarMotions>(
+    value?.kind === 'ghost' ? (value.motions ?? {}) : {},
+  )
+  const [sounds, setSounds] = useState<AvatarSounds>(
+    value?.kind === 'ghost' ? (value.sounds ?? {}) : {},
+  )
   /** The cropped-and-scaled picture chosen THIS opening (data URI), not yet
    *  uploaded — upload happens on the editor's Save, keeping Apply free of
    *  side effects for pictures exactly as it is for traits. */
@@ -333,6 +396,10 @@ export default function CrewAvatarBuilder({
   )
   const [pickError, setPickError] = useState('')
   const [dragOver, setDragOver] = useState(false)
+  /* The states the retired-cue notice names, in the record's own order. A
+     plain comma list rather than a localised conjunction: "A, B" needs no
+     per-language joining rule, where "A and B" would. */
+  const retiredCueLabel = (retiredCue?.states ?? []).map(state => t(STATE_LABEL_KEYS[state])).join(', ')
   const fileInput = useRef<HTMLInputElement>(null)
   /** Monotonic pick generation: only the LATEST pick (of this dialog
    *  opening) may land its decode result, so a slow decode of pick A cannot
@@ -349,8 +416,8 @@ export default function CrewAvatarBuilder({
       setTier(tierOf(value))
       setPane(tierOf(value))
       setPackId(value?.kind === 'pack' ? value.id : null)
-      setExpressions(value?.expressions ?? {})
-      setSounds(value?.sounds ?? {})
+      setMotions(value?.kind === 'ghost' ? (value.motions ?? {}) : {})
+      setSounds(value?.kind === 'ghost' ? (value.sounds ?? {}) : {})
       setPending(value?.kind === 'image' ? (value.pendingData ?? null) : null)
       setPickError('')
       setDragOver(false)
@@ -412,19 +479,12 @@ export default function CrewAvatarBuilder({
 
   const optLabel = (key: string) => { const k = OPT_LABEL_KEYS[key]; return k ? t(k) : key }
 
-  /** Set or clear one axis of one state's expression. Clearing the last axis
-   *  drops the state entirely, so "same as idle" on both axes is stored as the
-   *  absence it is rather than as an empty object. */
-  const setExpressionAxis = (state: AvatarState, axisKey: ExpressionAxis, option: string) =>
-    setExpressions(prev => {
-      const next: AvatarExpression = { ...prev[state] }
-      if (option) next[axisKey] = option
-      else delete next[axisKey]
-      const out = { ...prev }
-      if (next.eyes || next.mouth) out[state] = next
-      else delete out[state]
-      return out
-    })
+  /** Store one state's motion. Written even when it equals the default: the
+   *  select shows the default as the current choice, so a user who opens the
+   *  list and picks that same entry has made a decision, and a record that
+   *  omitted it would silently follow a future change of default. */
+  const setStateMotion = (state: MotionState, name: string) =>
+    setMotions(prev => ({ ...prev, [state]: name }))
 
   const setStateSound = (state: AvatarState, preset: string) =>
     setSounds(prev => {
@@ -435,14 +495,15 @@ export default function CrewAvatarBuilder({
     })
 
   const resetState = (state: AvatarState) => {
-    setExpressions(prev => { const out = { ...prev }; delete out[state]; return out })
+    const ms = motionStateOf(state)
+    if (ms) setMotions(prev => { const out = { ...prev }; delete out[ms]; return out })
     setSounds(prev => { const out = { ...prev }; delete out[state]; return out })
   }
 
   /** Accessible name of one state's sound control — the state alone would
    *  repeat three times on the pane. */
   const soundLabel = (state: AvatarState) =>
-    `${t(STATE_LABEL_KEYS[state])} — ${t('components.avatarBuilder.expr_sound')}`
+    `${t(STATE_LABEL_KEYS[state])} — ${t('components.avatarBuilder.react_sound')}`
 
   const previewSound = (preset: SoundPreset) => {
     // An explicit preview ignores the global on/off — the user just asked to
@@ -450,34 +511,6 @@ export default function CrewAvatarBuilder({
     const settings = loadSoundSettings()
     playPreset(preset, settings.volume > 0 ? settings.volume : PREVIEW_FALLBACK_VOLUME)
   }
-
-  /**
-   * Every expression thumbnail, keyed `state|axis|option`.
-   *
-   * Built in one memo rather than per row so the whole pane recomputes exactly
-   * once per edit. Each entry is a string built by `compose` — no canvas, no
-   * network — and a state's own other axis stays applied, so a thumbnail shows
-   * the combination it would actually produce.
-   */
-  const expressionThumbs = useMemo(() => {
-    const out = new Map<string, string>()
-    for (const state of AVATAR_STATES) {
-      const base = expressions[state]
-      for (const axisKey of EXPRESSION_AXES) {
-        const options = axisKey === 'eyes' ? AXIS_OPTIONS.eyes : AXIS_OPTIONS.mouth
-        for (const option of [SAME_AS_IDLE, ...options]) {
-          const overlay: AvatarExpression = { ...base }
-          if (option) overlay[axisKey] = option
-          else delete overlay[axisKey]
-          out.set(
-            `${state}|${axisKey}|${option}`,
-            ghostDataUri(applyExpression(shown, overlay), state === 'working' ? 'full' : undefined),
-          )
-        }
-      }
-    }
-    return out
-  }, [shown, expressions])
 
   /** Icons keep every axis visible when the strip collapses to its compact
    *  form on narrow widths — an icon-less segment there renders as an empty
@@ -526,46 +559,78 @@ export default function CrewAvatarBuilder({
   /**
    * The override Apply commits.
    *
-   * The reaction layer rides on whichever tier is selected, INCLUDING the
-   * picture tier: a picture has no face to change, so the expressions are
-   * inert there, but keeping them means switching to a picture and back does
-   * not silently discard work the user did on the Expressions tab. Reactions
-   * alone are also a complete override — `{kind:'ghost', sounds}` means "the
-   * name-derived face, plus these sounds".
+   * The reaction layer leaves only through a GHOST result. A picture is static
+   * and silent and a pack plays its own art and audio, so neither carries a
+   * reaction key — but the pane's state is kept while another tier is selected,
+   * so switching to a picture and back does not discard work done here.
+   * Reactions alone are also a complete override — `{kind:'ghost', motions}`
+   * means "the name-derived face, plus these reactions".
    */
   const buildResult = (): CrewAvatarOverride | null => {
-    const reactions = {
-      ...(prune(expressions) ? { expressions } : {}),
-      ...(prune(sounds) ? { sounds } : {}),
-    }
-    const hasReactions = Object.keys(reactions).length > 0
     if (tier === 'pack') {
-      // A pack override is the id and the reactions, nothing else: the art is
-      // the library's, so there is no draft to merge and no stored field to
-      // preserve. Apply is disabled until an id is picked, so the guard is a
-      // type narrowing rather than a reachable branch.
+      // A pack override is the id and nothing else: the art is the library's, so
+      // there is no draft to merge and no stored field to preserve. Apply is
+      // disabled until an id is picked, so the guard is a type narrowing rather
+      // than a reachable branch.
       if (!packId) return null
-      return { kind: 'pack', id: packId, ...reactions }
+      return { kind: 'pack', id: packId }
     }
-    if (tier === 'picture') {
-      if (!pictureResult) return null
-      // The CURRENT maps are the truth, so the stored value's own reactions are
-      // stripped before merging: `pictureResult` is `value` verbatim when no new
-      // picture was picked, and `value` still carries the reactions that were
-      // saved. Handing it back untouched when the maps are empty would keep
-      // reactions the user just cleared -- and reopening would re-seed from
-      // them, so they could never be cleared at all.
-      const { expressions: _e, sounds: _s, ...stored } = pictureResult
-      if (!hasReactions && !_e && !_s) return pictureResult
-      return { ...stored, ...reactions }
+    if (tier === 'picture') return pictureResult
+    // An emptied map is a STATEMENT, not an absence, and the wire cannot tell
+    // the two apart unless this says so: `_carry_motions_through_motionless_save`
+    // keeps a ghost's stored `motions` when a save says NOTHING about the key,
+    // because the shipped editor could not author them and a save from a client
+    // that cannot see a value is not a decision about it. This builder can see
+    // them, so clearing the last one has to name the key — omitting it reads as
+    // that older client and the backend restores what the user just cleared.
+    // Both keys go through one rule rather than only the one that has a carry
+    // today, so a second carry cannot quietly resurrect a cleared cue.
+    //
+    // Judged on the SAVED record first: that is what the backend would restore.
+    // The draft is consulted too, for the window between an Apply that set a
+    // reaction and the Save that persists it — clearing inside that window has
+    // nothing stored to restore, so naming the key there costs nothing and
+    // keeps the rule one sentence. What the draft alone cannot answer is the
+    // reopen after a clear was applied: it re-inits from `{}` and would read
+    // "never had one" while the record still has it.
+    const cleared = (key: 'motions' | 'sounds'): boolean =>
+      !!savedReactions?.[key] || (value?.kind === 'ghost' && isSet(value[key] ?? {}))
+    const reactions = {
+      ...(isSet(motions) ? { motions } : cleared('motions') ? { motions: {} } : {}),
+      ...(isSet(sounds) ? { sounds } : cleared('sounds') ? { sounds: {} } : {}),
     }
     if (draft) return { kind: 'ghost', traits: draft, ...reactions }
-    return hasReactions ? { kind: 'ghost', ...reactions } : null
+    const anyReaction = isSet(motions) || isSet(sounds)
+    // A faceless ghost — "the name-derived face, plus these reactions" — cannot
+    // express a TIER CHANGE when the stored record is a pack:
+    // `_carry_pack_through_faceless_save` reads a ghost carrying no `traits` as a
+    // save from a client that cannot see packs, keeps the pack, and copies only
+    // the cue across — so choosing Ghost face, picking a motion and saving left
+    // the crew wearing its pack with the motion gone. Pinning the face the pane
+    // is SHOWING makes the change unambiguous, and it is the face the user was
+    // looking at when they chose it.
+    //
+    // Only over a stored pack, and only with a reaction to carry: a ghost-to-ghost
+    // save keeps the faceless spelling, where deriving the face from the name is
+    // the point, and with nothing set at all the reset below is the honest answer
+    // (an explicit `null` is a reset the backend honours on every tier, pack
+    // included).
+    if (savedPack && anyReaction) return { kind: 'ghost', traits: shown, ...reactions }
+    // Judged on what is actually SET, never on `reactions`: a record whose only
+    // content is two empty maps is not an override, and sending it as one would
+    // reach the validator's all-empty collapse and be refused as junk. With
+    // nothing set and no face pinned, the honest answer is the reset — which
+    // deletes the whole record, cleared maps included.
+    return anyReaction ? { kind: 'ghost', ...reactions } : null
   }
 
-  /** One state's row on the Expressions tab. */
+  /** One state's row on the Reactions tab. */
   const stateRow = (state: AvatarState) => {
-    const current = expressions[state] ?? {}
+    const ms = motionStateOf(state)
+    // The default IS the current choice until the user overrides it, so the
+    // select shows it rather than an empty trigger. A name from a newer
+    // vocabulary has no option row, and falls back to itself in the trigger.
+    const motion = ms ? (motions[ms] ?? MOTION_DEFAULTS[ms]) : ''
     const storedSound = sounds[state]
     // A stored `'none'` and an absent key are both silence, and the select
     // offers one option for that — so `'none'` shows as (and, on the next
@@ -588,78 +653,64 @@ export default function CrewAvatarBuilder({
             className="text-[11px] text-muted underline underline-offset-2 hover:text-text"
             data-testid={`avatar-state-reset-${state}`}
           >
-            {t('components.avatarBuilder.expr_reset_state')}
+            {/* Named after the row it clears: the pane also carries the
+                footer's whole-avatar reset, and two unscoped "Reset" controls on
+                one surface read as one control nobody can predict. */}
+            {t('components.avatarBuilder.react_reset_state', { state: t(STATE_LABEL_KEYS[state]) })}
           </button>
         </div>
-        <div className="flex gap-3">
-          {tier === 'face' && (
-            <img
-              src={ghostDataUri(
-                applyExpression(shown, current),
-                state === 'working' ? 'full' : undefined,
-              )}
-              alt=""
-              aria-hidden="true"
-              width={72}
-              height={72}
-              className="h-[72px] w-[72px] shrink-0 rounded-lg border border-border"
-              data-testid={`avatar-state-preview-${state}`}
-            />
+        {/* Narrow-first: ONE column on a phone, where a 72px preview beside
+            the selects leaves about 64px of trigger and every motion name
+            truncates — the preview stacks above the controls instead, and both
+            get the row's full width. The two-column shape starts at `sm`, and
+            there the preview column is RESERVED on the working row (which has no
+            preview) so all three rows' controls share one left edge instead of
+            the working one starting 72px further in. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[72px_minmax(0,1fr)]">
+          {/* The preview goes through `CrewAvatar` rather than composing a URI
+              here, so what the row shows is drawn by the same resolution the
+              roster uses — including the default this select is displaying. */}
+          {ms && (
+            <div className="sm:col-start-1" data-testid={`avatar-state-preview-${state}`}>
+              <CrewAvatar
+                seed={name}
+                avatar={{ kind: 'ghost', traits: shown, motions }}
+                state={state}
+                size={72}
+                className="rounded-lg"
+              />
+            </div>
           )}
-          <div className="flex min-w-0 flex-1 flex-col gap-2">
-            {tier === 'face' &&
-              EXPRESSION_AXES.map(axisKey => (
-                <div key={axisKey} className="flex min-w-0 flex-col gap-1">
-                  <span className="text-[11px] text-muted">
-                    {t(axisKey === 'eyes' ? AXIS_LABEL_KEYS.eyes : AXIS_LABEL_KEYS.mouth)}
-                  </span>
-                  <div
-                    className="flex gap-1.5 overflow-x-auto pb-1"
-                    role="listbox"
-                    aria-label={`${t(STATE_LABEL_KEYS[state])} — ${t(axisKey === 'eyes' ? AXIS_LABEL_KEYS.eyes : AXIS_LABEL_KEYS.mouth)}`}
-                    data-testid={`avatar-expr-${state}-${axisKey}`}
-                  >
-                    {[SAME_AS_IDLE, ...(axisKey === 'eyes' ? AXIS_OPTIONS.eyes : AXIS_OPTIONS.mouth)].map(
-                      option => {
-                        const selected = (current[axisKey] ?? SAME_AS_IDLE) === option
-                        const label = option
-                          ? optLabel(option)
-                          : t('components.avatarBuilder.opt_same_as_idle')
-                        return (
-                          <button
-                            key={option || 'idle'}
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            aria-label={label}
-                            title={label}
-                            onClick={() => setExpressionAxis(state, axisKey, option)}
-                            className={`shrink-0 rounded-md border-2 p-0.5 transition-colors ${
-                              selected ? 'border-ring bg-accent-subtle' : 'border-transparent hover:bg-bg-hover'
-                            }`}
-                            data-testid={`avatar-expr-opt-${state}-${axisKey}-${option || 'idle'}`}
-                          >
-                            <img
-                              src={expressionThumbs.get(`${state}|${axisKey}|${option}`)}
-                              alt=""
-                              aria-hidden="true"
-                              width={44}
-                              height={44}
-                              className="rounded"
-                            />
-                          </button>
-                        )
-                      },
-                    )}
-                  </div>
-                </div>
-              ))}
-            <div className="flex items-end gap-2">
+          {/* Nested grid for the same reason one level down: the play button
+              lives in column two of the SOUND row only, and both selects sit in
+              column one — so they are exactly as wide as each other rather than
+              the sound one being short by a button. */}
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 sm:col-start-2">
+            {ms && (
               <div
-                className="flex min-w-0 flex-1 flex-col gap-1"
+                className="col-start-1 flex min-w-0 flex-col gap-1"
+                data-testid={`avatar-state-motion-${state}`}
+              >
+                <span className="text-[11px] text-muted">
+                  {t('components.avatarBuilder.react_motion')}
+                </span>
+                <SimpleSelect
+                  options={[...MOTION_NAMES[ms]]}
+                  optionLabels={MOTION_NAMES[ms].map(nm => t(MOTION_LABEL_KEYS[nm]))}
+                  value={motion}
+                  triggerFallback={motion}
+                  onChange={next => setStateMotion(ms, next)}
+                  aria-label={`${t(STATE_LABEL_KEYS[state])} — ${t('components.avatarBuilder.react_motion')}`}
+                  className="w-full"
+                />
+              </div>
+            )}
+            <>
+              <div
+                className="col-start-1 flex min-w-0 flex-col gap-1"
                 data-testid={`avatar-state-sound-${state}`}
               >
-                <span className="text-[11px] text-muted">{t('components.avatarBuilder.expr_sound')}</span>
+                <span className="text-[11px] text-muted">{t('components.avatarBuilder.react_sound')}</span>
                 {/* `clearLabel` IS the unset row: selecting it clears to '' and
                     the state's key is dropped, which is the same silence a
                     stored `'none'` means. */}
@@ -674,6 +725,7 @@ export default function CrewAvatarBuilder({
                 />
               </div>
               <Btn
+                className="col-start-2"
                 onClick={() => selectedSound && previewSound(selectedSound)}
                 disabled={!selectedSound}
                 aria-label={t('components.avatarBuilder.sound_preview')}
@@ -682,7 +734,7 @@ export default function CrewAvatarBuilder({
               >
                 <Play size={13} aria-hidden="true" />
               </Btn>
-            </div>
+            </>
           </div>
         </div>
       </section>
@@ -702,14 +754,14 @@ export default function CrewAvatarBuilder({
           {/* Tier switch: hand-picked ghost vs uploaded picture, plus the
               reaction layer. Above every pane so switching never loses any
               side's in-progress state — the ghost draft, the pending picture
-              and the per-state overrides live in separate state. Picking an
-              identity tier also SETS the tier; the expressions pane decorates
-              whichever one is selected. */}
+              and the per-state reactions live in separate state. Picking an
+              identity tier also SETS the tier; the Reactions pane decorates the
+              ghost, and is offered only while the ghost is the selected tier. */}
           {/* overflow-x-auto is the floor under `compact` below: compact clears
               every shipped locale at 320px, but the strip must stay reachable
               rather than clipped if a longer one ever lands. It shows no
               scrollbar while nothing overflows, which is every desktop width. */}
-          <div className="mb-3 overflow-x-auto">
+          <div className="mb-3 overflow-x-auto" data-testid="avatar-builder-tabs">
             <SegmentedControl
               segments={[
                 {
@@ -729,17 +781,23 @@ export default function CrewAvatarBuilder({
                   // width, so the icon has to say the same word as the label.
                   icon: <LibraryBig size={13} aria-hidden="true" />,
                 },
-                {
-                  key: 'expressions',
-                  label: t('components.avatarBuilder.mode_expressions'),
-                  icon: <Sparkles size={13} aria-hidden="true" />,
-                },
+                // Ghost-only: a picture cannot move and a pack moves from its
+                // own files, so on those tiers there is nothing to author here.
+                ...(tier === 'face'
+                  ? [
+                      {
+                        key: 'reactions',
+                        label: t('components.avatarBuilder.mode_reactions'),
+                        icon: <Sparkles size={13} aria-hidden="true" />,
+                      },
+                    ]
+                  : []),
               ]}
               value={pane}
               onChange={next => {
                 const p = next as Pane
                 setPane(p)
-                if (p !== 'expressions') setTier(p)
+                if (p !== 'reactions') setTier(p)
               }}
               // `compact` below the mobile breakpoint, never measured collapse:
               // collapse reads the parent's width and falls to a DROPDOWN when
@@ -754,35 +812,50 @@ export default function CrewAvatarBuilder({
               layoutId="avatar-builder-mode"
             />
           </div>
-          {pane === 'expressions' ? (
-            <div className="flex flex-col gap-3" data-testid="avatar-expressions-pane">
-              {/* Only the ghost tier has a face to pick, and this line promises
-                  one — on the other tiers it sat directly above a note saying
-                  the opposite. Those notes carry the whole explanation there. */}
-              {tier === 'face' && (
-                <p className="text-[11.5px] text-muted">{t('components.avatarBuilder.expr_hint')}</p>
-              )}
-              {tier === 'picture' && (
-                <p className="text-[11px] text-muted" data-testid="avatar-expressions-picture-note">
-                  {t('components.avatarBuilder.expr_picture_note')}
-                </p>
-              )}
-              {tier === 'pack' && (
-                <p className="text-[11px] text-muted" data-testid="avatar-expressions-pack-note">
-                  {t('components.avatarBuilder.expr_pack_note')}
-                </p>
-              )}
-              <div className="flex max-h-[380px] flex-col gap-3 overflow-y-auto pr-1">
+          {pane === 'reactions' ? (
+            <div className="flex flex-col gap-3" data-testid="avatar-reactions-pane">
+              <p className="text-[11.5px] text-muted">{t('components.avatarBuilder.react_hint')}</p>
+              {/* No inner scroller: the list is exactly three rows, and a
+                  height cap on it cut the last row in half with no affordance to
+                  say so. `DialogBody` already scrolls (`min-h-0 flex-1
+                  overflow-y-auto`), so on a short window the whole pane scrolls
+                  with a real scrollbar instead. The face pane keeps its own cap
+                  because its grid is dozens of thumbnails, not three rows. */}
+              <div className="flex flex-col gap-3">
                 {AVATAR_STATES.map(stateRow)}
               </div>
             </div>
           ) : pane === 'pack' ? (
-            <CrewAvatarLibraryTab
-              open={open}
-              name={name}
-              selectedId={packId}
-              onSelect={setPackId}
-            />
+            <div className="flex flex-col gap-2">
+              <CrewAvatarLibraryTab
+                open={open}
+                name={name}
+                selectedId={packId}
+                onSelect={setPackId}
+              />
+              {/* Same reason as the picture tier's line: this tier has no
+                  Reactions tab, and an unexplained absence reads as a bug. */}
+              <span className="text-[11px] text-muted" data-testid="avatar-reactions-absent-pack">
+                {t('components.avatarBuilder.react_absent_note')}
+              </span>
+              {retiredCue?.kind === 'pack' && (
+                /* Consequence copy, not a footnote: this line is the only
+                   warning between the user and a saved cue that disappears
+                   for good on the next save, so it is a callout rather than
+                   the muted aside it was (UX lens 2 -- never mute
+                   consequence copy). `text-warn` and not `text-warn-fg`:
+                   that token is the ink for a SOLID `--warn` fill and is
+                   `#000` in almost every dark theme, which on a 12% tint
+                   over a dark page is black on brown. */
+                <p
+                  role="note"
+                  className="rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn"
+                  data-testid="avatar-reactions-retired-cue-pack"
+                >
+                  {t('components.avatarBuilder.react_retired_cue_note_pack', { states: retiredCueLabel })}
+                </p>
+              )}
+            </div>
           ) : pane === 'picture' ? (
             <div className="flex flex-col items-center gap-3 py-2" data-testid="avatar-upload-pane">
               {pending ? (
@@ -846,6 +919,30 @@ export default function CrewAvatarBuilder({
                 />
               )}
               <span className="text-[11px] text-muted">{t('components.avatarBuilder.upload_note')}</span>
+              {/* The Reactions tab is the ghost's, so on this tier it is not in
+                  the strip at all — and a tab that vanishes with no word said
+                  reads as something missing rather than as something decided
+                  (first-run reader: "why 'Reactions' is absent… I do not know").
+                  The absence is explained where the user is looking. */}
+              <span className="text-[11px] text-muted" data-testid="avatar-reactions-absent-picture">
+                {t('components.avatarBuilder.react_absent_note')}
+              </span>
+              {/* This crew was SAVED with a preset chime and will not make it
+                  any more. Silence with no word said is the worst version of
+                  that: the user hunts for a broken sound setting rather than
+                  reading one line about a tier that has none. Shown only for a
+                  record that really carries one, so it is not a standing notice
+                  every picture crew has to dismiss with its eyes. */}
+              {retiredCue?.kind === 'image' && (
+                /* Same callout, same token reasoning as the pack tier above. */
+                <p
+                  role="note"
+                  className="rounded-md border border-warn/30 bg-warn-subtle px-2 py-1.5 text-[11px] text-warn"
+                  data-testid="avatar-reactions-retired-cue-picture"
+                >
+                  {t('components.avatarBuilder.react_retired_cue_note_picture', { states: retiredCueLabel })}
+                </p>
+              )}
             </div>
           ) : (
           <div className="flex flex-col gap-4 md:flex-row">
@@ -953,8 +1050,11 @@ export default function CrewAvatarBuilder({
                 setPending(null)
                 setPackId(null)
                 // The default face has no reactions either: this link is the
-                // one control that means "everything back to the default".
-                setExpressions({})
+                // one control that means "everything back to the default" — and
+                // the label says both halves out loud, because a link promising
+                // only the face while also erasing two motions and three sounds
+                // is a control the user cannot predict.
+                setMotions({})
                 setSounds({})
                 setTier('face')
                 setPane('face')

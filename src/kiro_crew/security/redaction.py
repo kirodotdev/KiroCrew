@@ -20,6 +20,7 @@ gate is a separate predicate so a refusal can name which one fired.
 from __future__ import annotations
 
 import base64
+import bisect
 import hashlib
 import hmac
 import math
@@ -937,45 +938,94 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
 
 
+#: One redaction the batch redactor has decided on, positioned against the
+#: ORIGINAL text: ``(start, end, replacement)``. Every pass produces these and
+#: nothing is written until every pass has spoken.
+_RedactionSpan = tuple[int, int, str]
+
+
+def _span_end(span: _RedactionSpan) -> int:
+    return span[1]
+
+
+def _uncovered(start: int, end: int, taken: list[_RedactionSpan]) -> list[tuple[int, int]]:
+    """Return the parts of ``[start, end)`` that no span in *taken* covers.
+
+    *taken* must be sorted and pairwise disjoint, which is how
+    :func:`redact_credentials` builds it, so the spans are ordered by ``end`` as
+    well as by ``start`` and one bisect on ``end`` lands on the first span that
+    can still reach into ``[start, end)``. From there a forward walk over the
+    spans that begin before ``end`` yields each gap between them.
+    """
+    gaps: list[tuple[int, int]] = []
+    cursor = start
+    i = bisect.bisect_right(taken, start, key=_span_end)
+    while i < len(taken) and taken[i][0] < end:
+        if taken[i][0] > cursor:
+            gaps.append((cursor, taken[i][0]))
+        cursor = max(cursor, taken[i][1])
+        i += 1
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def _splice(text: str, spans: list[_RedactionSpan]) -> str:
+    """Apply *spans* (sorted, disjoint) to *text* in one left-to-right pass."""
+    parts: list[str] = []
+    cursor = 0
+    for start, end, replacement in spans:
+        parts.append(text[cursor:start])
+        parts.append(replacement)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
 def redact_credentials(text: str) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
+
+    Every pass positions its redactions as spans against the IMMUTABLE input,
+    and the string is rewritten exactly once at the end. Redacting by matched
+    VALUE (``result.replace(matched, tag, 1)``) rewrites the first textual
+    occurrence of the value, which is not necessarily the span that matched:
+    when a later match also occurs as a substring of an earlier, longer run
+    that is NOT itself redacted, the tag lands inside the innocent host and the
+    real standalone credential survives in plaintext. Splicing by span makes
+    that unreachable in all three passes.
+
+    Passes are ranked: pass 1 outranks pass 2 outranks pass 3. A later pass's
+    span never rewrites text an earlier pass already claimed; it redacts only
+    the part of its span still standing in plaintext, so no character is
+    redacted twice and no character a pass flagged is left behind.
     """
     warnings: list[str] = []
-    result = text
 
-    # 1. Redact plaintext credential patterns
+    # 1. Plaintext credential patterns.
     #
     # Gated on the cheap superset pre-filter: when no branch of
     # `_CREDENTIAL_PATTERNS` can possibly match, `finditer` would yield nothing
     # and the loop body would not run, so skipping it cannot change the output.
     # This is the hot path — the alternation is 23 branches retried at nearly
     # every position, and real text almost never contains a credential.
-    if _might_contain_credential(result):
-
-        def _redact_one(m: re.Match[str]) -> str:
+    #
+    # `taken` is every span an earlier pass has claimed, kept sorted and
+    # disjoint; it is what the later passes subtract from.
+    taken: list[_RedactionSpan] = []
+    if _might_contain_credential(text):
+        for m in _CREDENTIAL_PATTERNS.finditer(text):
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
             # is genuine plaintext key material — a fixed-length token prefix leaves
             # ~12-16 secret chars in a 20-char slice. The warnings list is a
             # redaction-subsystem output expected to be safe to log/surface, so it
-            # must carry no secret bytes. Mirrors the base64 / bare-secret branches
-            # below, which already log length only.
+            # must carry no secret bytes. The base64 / bare-secret passes below
+            # likewise log length only.
             warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            return _REDACTED_CREDENTIAL_TAG
-
-        # ONE pass. `sub` walks the matches left-to-right exactly as `finditer`
-        # did and calls the replacer in that same order, so `warnings` is
-        # appended in an identical order with identical contents. The previous
-        # shape rebuilt the entire string per match via
-        # `result.replace(matched, tag, 1)` — O(n) per match, O(n²) overall on
-        # credential-dense text — and replaced the FIRST occurrence of the
-        # matched text rather than the span that actually matched. `sub` splices
-        # each matched span in place, which is both linear and positionally
-        # exact.
-        result = _CREDENTIAL_PATTERNS.sub(_redact_one, result)
+            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
@@ -986,29 +1036,43 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # in the run's character class, so `rstrip("=")` recovers the bare run
     # exactly. So one scan feeds both passes instead of two.
     #
-    # The two loops stay SEPARATE and in their original order. Fusing them into a
-    # single per-run loop would interleave the passes, which changes both the
-    # order of `warnings` and — because each pass mutates `result` via
-    # `str.replace(…, 1)` — which occurrence each replacement lands on, and
-    # whether pass 3's `run not in result` guard sees pass 2's edits. Sharing the
-    # scan while keeping the loops ordered is what makes this byte-identical.
-    b64_chunks = [m.group() for m in _B64_CHUNK_RE.finditer(text)]
+    # The two loops stay SEPARATE and in their original order: `warnings` is a
+    # contract (all pass-2 warnings precede all pass-3 warnings), and pass 3
+    # subtracts every pass-2 claim, so pass 2 must have finished first.
+    b64_matches = list(_B64_CHUNK_RE.finditer(text))
 
-    # 2. Detect and redact base64-encoded credentials
-    for chunk in b64_chunks:
-        decoded = _decode_b64_chunk(chunk)
-        if decoded:
-            result = result.replace(chunk, _REDACTED_ENCODED_CREDENTIAL_TAG, 1)
-            warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
+    # 2. Base64-encoded credentials.
+    #
+    # The warning is emitted for every chunk that decodes to a credential, even
+    # one that pass 1 already claimed in full: the encoded credential IS
+    # redacted, and the warning counts credentials found, not splices made.
+    pass2: list[_RedactionSpan] = []
+    for m in b64_matches:
+        chunk = m.group()
+        if not _decode_b64_chunk(chunk):
+            continue
+        warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
+        for start, end in _uncovered(m.start(), m.end(), taken):
+            pass2.append((start, end, _REDACTED_ENCODED_CREDENTIAL_TAG))
+    # Pass-2 chunks are disjoint from each other and were cut around `taken`,
+    # so the union is disjoint and a sort restores the order.
+    taken = sorted(taken + pass2)
 
-    # 3. Detect and redact BARE 40-char AWS secret keys with no label/prefix
-    # These carry no distinctive marker for _CREDENTIAL_PATTERNS
-    # to anchor on, so an entropy + structural heuristic is the only way to catch
-    # a standalone secret value. Scan the ORIGINAL text (not the already-mutated
-    # result) so match offsets are stable; skip any run whose text has already
-    # been redacted away by an earlier pass.
-    for chunk in b64_chunks:
-        run = chunk.rstrip("=")
+    # 3. BARE 40-char AWS secret keys with no label/prefix. These carry no
+    # distinctive marker for _CREDENTIAL_PATTERNS to anchor on, so an entropy +
+    # structural heuristic is the only way to catch a standalone secret value.
+    #
+    # A run an earlier pass has claimed in full (it was a labelled value, or an
+    # encoded-credential chunk) is skipped WITHOUT a warning. The check is
+    # positional: a second occurrence of the same run elsewhere in the text is
+    # judged on its own span, never on whether the value still appears
+    # somewhere. A run only PARTLY claimed — a glued key whose tail is the first
+    # word of a `aws_secret_access_key=` label, say — has the part still in
+    # plaintext redacted, because the run as a whole was judged to hold a key
+    # and the earlier pass consumed only its label.
+    pass3: list[_RedactionSpan] = []
+    for m in b64_matches:
+        run = m.group().rstrip("=")
         # Slide a 40-char window across the run rather than gating the whole run
         # on len == 40: a real secret glued to an adjacent base64 char (no
         # delimiter) yields a 41+ char run that the exact-40 shape check would
@@ -1016,14 +1080,16 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
         # secret.
         if not _contains_bare_secret(run):
             continue
-        if run not in result:
-            # Already redacted by pass 1/2 (e.g. it was a labelled value or an
-            # encoded-credential chunk) — nothing left to replace.
+        gaps = _uncovered(m.start(), m.start() + len(run), taken)
+        if not gaps:
             continue
-        result = result.replace(run, _REDACTED_CREDENTIAL_TAG, 1)
+        for start, end in gaps:
+            pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
         warnings.append(f"Redacted bare secret key ({len(run)} chars)")
 
-    return result, warnings
+    if not taken and not pass3:
+        return text, warnings
+    return _splice(text, sorted(taken + pass3)), warnings
 
 
 # Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to

@@ -238,6 +238,16 @@ cycle's fleet view; when the two disagree the ledger wins and this file is what
 gets fixed. Two independent spellings of item state would drift, and the drift
 would be silent.
 
+Two more conductor-owned artifacts live beside the spec, opened empty at
+startup: `decisions.md`, one line per decision
+(`<ts> | <subject> | <decision> | <reason>`) appended at the moment the decision
+is made, and the run's retrospective, appended in the cycle a lesson happens.
+They are the durable record, and they exist because every alternative is a
+tail: `events_tail` is a bounded, newest-first mirror of the most recent
+`decisions.md` lines, and the session ledger keeps `_MAX_EVENTS` = 100 events on
+disk while `session_ledger_read` returns only the newest `_MAX_EVENT_TAIL` = 20
+(`session_ledger.py`), so neither can hold a whole run's rulings.
+
 `open_rulings` is reviewed every cycle independently of what the probe fired.
 That is structural: the probe is right not to re-fire a signal already marked
 handled, and that suppression is what keeps a quiet cycle quiet, so a worker on

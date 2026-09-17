@@ -71,7 +71,7 @@ function SeedMemory({ store, member, onClose, onCopied }: { store: string; membe
     const item = { kind: kindOf(row), id: keyOf(row) }
     setSelection(old => old.some(s => s.id === item.id && s.kind === item.kind) ? old.filter(s => s.id !== item.id || s.kind !== item.kind) : [...old, item])
   }
-  return <Modal open title={t('memoryV2.copy_dialog_title', { member })} guardAccidentalDismiss={selection.length > 0} onClose={copy.isPending ? () => {} : onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+  return <Modal open title={t('memoryV2.copy_dialog_title', { member })} guardAccidentalDismiss={selection.length > 0} dismissDisabled={copy.isPending} onClose={onClose} footer={<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
     <span className="text-[12px] text-muted">{t('memoryV2.copy_limit')}</span>
     <Btn primary className="min-h-11 justify-center" disabled={copy.isPending || !!data.error || !selection.length || selection.length > 50} onClick={() => copy.mutate()}><Copy className="lucide-inline" />{t('memoryV2.copy_selected', { count: fmtNumber(selection.length) })}</Btn>
   </div>}>

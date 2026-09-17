@@ -89,8 +89,8 @@ _FAKE_HEADER = "TIERS = {tiers!r}\n"
 _FAKE_TIER_SOURCE = {
     "sensitive-path": """
 
-def is_sensitive_path(value, base_dir=None):
-    return value in TIERS["sensitive-path"]
+def sensitive_path_refusal(value, base_dir=None):
+    return "Blocked: fake sensitive path" if value in TIERS["sensitive-path"] else None
 """,
     "sensitive-bash": """
 
@@ -312,7 +312,7 @@ def test_the_measured_checks_are_the_checks_the_tool_gate_applies():
         body.append(line)
     applied = set(re.findall(r"\b(\w+)\(target\b", "\n".join(body)))
     assert applied == {
-        "is_sensitive_path",
+        "sensitive_path_refusal",
         "is_sensitive_bash_command",
         "audit_bash_exfiltration",
     }, f"the tool gate's per-target checks changed: {sorted(applied)}"

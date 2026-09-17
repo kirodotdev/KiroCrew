@@ -2511,9 +2511,6 @@ def list_pr_checks(
     return rows
 
 
-_CHECK_BUCKETS = _normalization._CHECK_BUCKETS
-
-
 def summarize_checks(checks: list[dict]) -> dict:
     """Return the provider-neutral check summary."""
     return _normalization.summarize_checks(checks)

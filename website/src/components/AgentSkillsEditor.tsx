@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { createPortal } from 'react-dom'
 import { Brain, ChevronDown, Lock, Plus, X } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn, Input } from './ui'
+import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import InfoTip from './InfoTip'
-import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { isTouchDevice } from '../utils/isTouchDevice'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
@@ -64,10 +65,18 @@ interface Props {
  * which the backend materializes as kiro-cli-native `skill://` entries in the
  * agent's `resources`. Each edit saves immediately (same interaction model as
  * the model picker on this page) — there is no separate Save button to forget.
+ *
+ * The popup must stay a Radix Popover, not a portal to `document.body`: it
+ * renders inside a modal dialog, whose pointer-events cut and FocusScope leave
+ * anything outside its layer stack unclickable and unfocusable.
  */
 export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], onChange, beforeSave, pendingChain, onSavePending }: Props) {
   const [error, setError] = useState('')
+  const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState('')
   const btnRef = useRef<HTMLButtonElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const { data: catalog = [] } = useQuery<CatalogSkill[]>({
     queryKey: ['skills-catalog'],
@@ -91,8 +100,16 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     [catalog, skills],
   )
 
-  const { open, setOpen, filter, setFilter, dropdownRef, inputRef, filtered } =
-    useFilteredDropdown(candidates)
+  const filtered = useMemo(
+    () => filter
+      ? candidates.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()))
+      : candidates,
+    [candidates, filter],
+  )
+
+  // Not in onOpenChange: Radix only calls that for closes it initiates itself,
+  // so a filter typed before a select/Escape close would leak into the next open.
+  useEffect(() => { if (!open) setFilter('') }, [open])
 
   const save = useMutation({
     // The agent name travels WITH the request so the response can be matched to
@@ -125,12 +142,40 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     onSavePending?.(save.isPending)
   }, [save.isPending, onSavePending])
 
+  // Close only: the popover's FocusScope is still trapping when this runs, so the
+  // focus return to the trigger is onCloseAutoFocus's job below.
+  const close = useCallback(() => setOpen(false), [])
+
   const add = (key: string) => {
-    setOpen(false)
+    close()
     save.mutate({ agent: agentName, next: [...skills, key] })
   }
   const remove = (key: string) =>
     save.mutate({ agent: agentName, next: skills.filter(k => k !== key) })
+
+  // On WebKit a composition-cancel Escape arrives after compositionend with
+  // isComposing already false, so the raw flags cannot identify it.
+  const imeLatch = useDocumentImeLatch(open)
+
+  // Window capture, because Radix hands the Escape listener from the host dialog
+  // to this popover asynchronously: until it does, one Escape closes both and
+  // takes the editor's unsaved pane edits with it. Scoped to keys from this popup
+  // so other surfaces keep their own dismissal.
+  useEffect(() => {
+    if (!open) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const t = e.target
+      const inPopup = t instanceof Node
+        && (dropdownRef.current?.contains(t) || btnRef.current?.contains(t))
+      if (!inPopup) return
+      if (!imeLatch.claimKey(e)) return
+      e.preventDefault()
+      close()
+    }
+    window.addEventListener('keydown', onEsc, { capture: true })
+    return () => window.removeEventListener('keydown', onEsc, { capture: true })
+  }, [open, close, imeLatch])
 
   const { onListKeyDown } = useListboxKeyboard({
     open,
@@ -139,7 +184,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     hasFilterInput: true,
     filteredCount: filtered.length,
     onEnterSingleMatch: () => add(filtered[0].key),
-    closeToTrigger: () => { setOpen(false); btnRef.current?.focus() },
+    closeToTrigger: close,
   })
 
   return (
@@ -181,69 +226,85 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
             {uri}
           </span>
         ))}
-        <div className="relative">
-          <Btn
-            ref={btnRef}
-            className="flex items-center gap-1 px-2 py-1 text-[12px]"
-            disabled={save.isPending || candidates.length === 0}
-            onClick={() => setOpen(!open)}
-          >
-            <Plus className="lucide-inline" /> {i18nT('components.agentSkillsEditor.add_skill')}
-            <span className="text-muted text-[10px]"><ChevronDown className="lucide-inline" /></span>
-          </Btn>
-          {open && btnRef.current && createPortal(
-            // Presentational positioning wrapper: interactive semantics live on
-            // the inner role="listbox" and its option buttons, so this element
-            // only hosts the roving-focus keydown handler (mirrors the model
-            // dropdown on this page).
-            // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-            <div
-              ref={dropdownRef}
-              tabIndex={-1}
-              onKeyDown={onListKeyDown}
-              className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg min-w-[280px] max-w-[380px] max-h-[320px] flex flex-col overflow-hidden animate-slide-up"
-              style={(() => {
-                const r = btnRef.current!.getBoundingClientRect()
-                const dropH = 320
-                const top = r.bottom + 4 + dropH > window.innerHeight ? r.top - dropH - 4 : r.bottom + 4
-                const left = Math.max(8, Math.min(r.left, window.innerWidth - 388))
-                return { top, left }
-              })()}
+        {/* `modal`: the host crew editor is a modal dialog, and only a modal popover
+            takes over its scroll lock — without that the host cancels wheel events
+            over the list. */}
+        <Popover open={open} onOpenChange={setOpen} modal>
+          <PopoverTrigger asChild>
+            <Btn
+              ref={btnRef}
+              className="flex items-center gap-1 px-2 py-1 text-[12px]"
+              disabled={save.isPending || candidates.length === 0}
             >
-              <div className="p-2 border-b border-border">
-                <Input
-                  ref={inputRef}
-                  type="text"
-                  aria-label={i18nT('components.agentSkillsEditor.filter_skills')}
-                  placeholder={i18nT('components.agentSkillsEditor.type_to_filter')}
-                  value={filter}
-                  onChange={e => setFilter(e.target.value)}
-                  className="w-full px-2 py-1 text-[13px]"
-                />
-              </div>
-              <div role="listbox" aria-label={i18nT('components.agentSkillsEditor.available_skills')} className="overflow-y-auto flex-1 min-h-0 p-1">
-                {filtered.length === 0 ? (
-                  <div className="px-2 py-3 text-[12px] text-muted text-center">{i18nT('components.agentSkillsEditor.no_matching_skills')}</div>
-                ) : filtered.map(s => (
-                  <button
-                    key={s.key}
-                    role="option"
-                    aria-selected={false}
-                    tabIndex={-1}
-                    className="w-full text-left px-2 py-1.5 rounded-md hover:bg-bg-hover focus-ring transition-colors"
-                    onClick={() => add(s.key)}
-                  >
-                    <span className="block text-[13px] font-mono text-text truncate">{s.name}</span>
-                    {s.description && (
-                      <span className="block text-[11px] text-muted truncate">{s.description}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>,
-            document.body
-          )}
-        </div>
+              <Plus className="lucide-inline" /> {i18nT('components.agentSkillsEditor.add_skill')}
+              <span className="text-muted text-[10px]"><ChevronDown className="lucide-inline" /></span>
+            </Btn>
+          </PopoverTrigger>
+          <PopoverContent
+            ref={dropdownRef}
+            align="start"
+            // Needed for the touch focus() below to be more than a no-op.
+            tabIndex={-1}
+            // Radix gives this surface role="dialog", which needs its own name.
+            aria-label={i18nT('components.agentSkillsEditor.available_skills')}
+            onKeyDown={onListKeyDown}
+            // On touch, keep the on-screen keyboard down but still move focus off
+            // the trigger, which hideOthers() has aria-hidden.
+            onOpenAutoFocus={e => {
+              if (!isTouchDevice()) return
+              e.preventDefault()
+              dropdownRef.current?.focus()
+            }}
+            // The focus return, deferred to FocusScope teardown because the trap is
+            // still live when `close` runs.
+            onCloseAutoFocus={e => {
+              e.preventDefault()
+              btnRef.current?.focus()
+            }}
+            // Backstop for an Escape the window handler above declines to claim,
+            // so the host dialog never takes the dismissal.
+            onEscapeKeyDown={e => {
+              if (!imeLatch.claimKey(e)) return
+              e.preventDefault()
+              close()
+            }}
+            collisionPadding={8}
+            className="w-auto min-w-[280px] max-w-[min(380px,calc(100vw-16px))] max-h-[min(320px,var(--radix-popover-content-available-height))] p-0 flex flex-col overflow-hidden bg-card"
+          >
+            <div className="p-2 border-b border-border">
+              <Input
+                ref={inputRef}
+                type="text"
+                aria-label={i18nT('components.agentSkillsEditor.filter_skills')}
+                placeholder={i18nT('components.agentSkillsEditor.type_to_filter')}
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+                className="w-full px-2 py-1 text-[13px]"
+              />
+            </div>
+            <div role="listbox" aria-label={i18nT('components.agentSkillsEditor.available_skills')} className="overflow-y-auto flex-1 min-h-0 p-1">
+              {filtered.length === 0 ? (
+                <div className="px-2 py-3 text-[12px] text-muted text-center">{i18nT('components.agentSkillsEditor.no_matching_skills')}</div>
+              ) : filtered.map(s => (
+                // Not `Btn`: its inline-flex base would put the name and
+                // description side by side instead of stacked.
+                <button
+                  key={s.key}
+                  role="option"
+                  aria-selected={false}
+                  tabIndex={-1}
+                  className="w-full text-left px-2 py-1.5 rounded-md hover:bg-bg-hover focus-ring transition-colors"
+                  onClick={() => add(s.key)}
+                >
+                  <span className="block text-[13px] font-mono text-text truncate">{s.name}</span>
+                  {s.description && (
+                    <span className="block text-[11px] text-muted truncate">{s.description}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
       {skills.length === 0 && unmanaged.length === 0 && (
         <div className="text-[11px] text-muted mt-1.5">

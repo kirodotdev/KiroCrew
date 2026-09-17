@@ -23,6 +23,8 @@ from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
+from kiro_crew.board_tag_grammar import is_grantable_tag_id
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
@@ -971,6 +973,31 @@ def _neutralize_reply_format_markers(text: str) -> str:
     return _apply_marker_spans(text, spans)
 
 
+def _board_safe_tag_name(raw: object) -> str:
+    """Admit one board tag handle onto the trusted [BOARD] context line.
+
+    ALLOWLIST, not sanitize-then-screen — the terminal form of this guard.
+    The board line carries tag IDS (machine handles, the same strings
+    ``chat_tag`` consumes); prose was never legitimate here. The admitted
+    grammar is the CLOSED set of ids a grant can exist for at all
+    (``is_grantable_tag_id``): a 12-hex id the dashboard minted, or one of the
+    code-level default workflow states. That grammar has no room for words —
+    an instruction cannot be spelled in twelve hex digits, and the defaults
+    are five known constants — so an agent-authored id planted in
+    agent-writable ``tags.json`` can neither acquire a grant (the PATCH mint
+    refuses it) nor be rendered here even if a row for it somehow existed.
+    Nothing is rewritten, so no strip can reconstruct a payload. The
+    injection heuristic below is kept as a redundant second screen, not as
+    the defense. Rejected handles are dropped by the caller.
+    """
+    value = raw if isinstance(raw, str) else ""
+    if not is_grantable_tag_id(value):
+        return ""
+    if contains_injection(re.sub(r"[-_./]", " ", value)):
+        return ""
+    return value
+
+
 # kiro-cli task_executor slices strings at fixed byte offsets (e.g. 4096).
 # Multi-byte UTF-8 chars straddling the boundary cause a Rust panic:
 #   "byte index 4096 is not a char boundary; it is inside '—'"
@@ -1894,13 +1921,13 @@ def _reply_style_rules(level: str) -> str:
             "1. Shape check. Does the answer have a shape — steps, "
             "before/after, cases and verdicts, sizes? Then draw it. A "
             "picture is payload, not prose: it replaces the words, never "
-            "repeats them. Use the richest form this surface renders: an "
-            "inline widget, an HTML artifact or a mermaid fence ONLY when "
-            "your instructions carry an Inline Widgets section; on any other "
-            "surface (a chat channel, a CLI) a plain table — widget, HTML or "
-            "mermaid markup lands there as raw text. A picture holds labels "
-            "of one to three words and numbers, never a sentence. If a "
-            "sentence is needed, it goes under the picture, once.\n"
+            "repeats them. When your instructions carry an Inline Widgets "
+            "section, the picture IS an inline widget (an HTML artifact when "
+            "it is large) — never a plain table of sentences. On any other "
+            "surface (a chat channel, a CLI) a plain table — widget or HTML "
+            "markup lands there as raw text. A picture holds labels of one "
+            "to three words and numbers, never a sentence. If a sentence is "
+            "needed, it goes under the picture, once.\n"
             "2. Word check. Each sentence: at most 12 words. Each word: one "
             "the user has used, or one a child knows. A word that fails "
             "both is replaced, or defined in three words.\n"
@@ -2232,7 +2259,7 @@ def _read_include_crew_context(agent: str) -> bool:
     directory error all default to injecting, reproducing the pre-opt-out behavior.
     """
     try:
-        candidates = kiro_agents_dir().glob("*.json")
+        candidates = iter_agent_spec_files(kiro_agents_dir(), ordered=False)
     except OSError:
         return True
     for f in candidates:
@@ -2249,7 +2276,7 @@ def _read_include_crew_context(agent: str) -> bool:
             # re-resolves, refuses a sensitive target, and opens O_NOFOLLOW —
             # closing the TOCTOU where the final path component is swapped to a
             # symlink into ~/.aws etc. AFTER the is_sensitive_path check above.
-            data = json.loads(safe_read_file(str(f)))
+            data = parse_agent_spec_text(safe_read_file(str(f)), f)
             if not isinstance(data, dict):
                 continue
             if data.get("name") == agent or f.stem == agent:
@@ -4073,6 +4100,7 @@ class ContextBuilder:
         exclude_last_n: int = 0,
         folder_path: str | None = None,
         model_window: int | None = None,
+        board_tags: list[tuple[str, str]] | None = None,
         user_text_range: tuple[int, int] | None = None,
         user_span_out: list[int] | None = None,
         needs_reinjection: bool = False,
@@ -4597,6 +4625,40 @@ class ContextBuilder:
                 "this directory. Prefer files and patterns from this project "
                 "when answering questions.\n\n"
             )
+
+        # Board state — the session's dashboard board tags, so the agent knows
+        # its own workflow lane and which tags it is allowed to change with
+        # chat_tag. One line, omitted entirely when the slot carries no tags.
+        # ``board_tags`` is a pre-resolved [(tag_id, policy)] list from the
+        # caller (chat_runner), which owns the live vocabulary. Canonical IDs,
+        # never the free-form ``name`` field: names are agent-writable prose,
+        # and an instruction-shaped name must never land on the trusted rail;
+        # ids are also the handles chat_tag consumes.
+        # agent-writable = policy is not "none".
+        if board_tags:
+            # Even ids are read from agent-writable tags.json, and this line
+            # lands on the model's TRUSTED context rail — the same channel as
+            # [PROJECT] and [RUNTIME]. ``_board_safe_tag_name`` stays as
+            # defense in depth: it neutralizes structural markers, control
+            # characters and newlines, and caps length, so a hostile id
+            # hand-written into tags.json cannot smuggle instructions or fake
+            # a context header. Ids that sanitize to empty are dropped.
+            _safe_names = [
+                n for n in (_board_safe_tag_name(name) for name, _policy in board_tags) if n
+            ]
+            _safe_writable = [
+                n
+                for n in (
+                    _board_safe_tag_name(name) for name, policy in board_tags if policy != "none"
+                )
+                if n
+            ]
+            if _safe_names:
+                _tag_names = ", ".join(_safe_names)
+                _writable = ", ".join(_safe_writable)
+                parts.append(
+                    f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
+                )
 
         # Resource pressure — inject a compact advisory ONLY when host memory is
         # tight/critical, so the model can choose the lighter path for heavy work

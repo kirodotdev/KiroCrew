@@ -74,6 +74,11 @@ from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME as _SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
+from kiro_crew.agent_spec_format import (
+    agent_spec_candidates,
+    is_markdown_spec,
+    iter_agent_spec_files,
+)
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config import config_dir
 from kiro_crew.config import config_path as _mc_config_path
@@ -3290,6 +3295,9 @@ def migrate_agent_specs() -> int:
     if not agents_dir.is_dir():
         return 0
     cleaned = 0
+    # JSON only, deliberately: this is a rewrite pass, and a markdown spec is
+    # never rewritten by Kiro Crew. A bookkeeping key in a markdown
+    # frontmatter is the author's to remove.
     for spec_path in sorted(agents_dir.glob("*.json")):
         # This read is followed by a rewrite, so the hardened reader's
         # sensitive-target refusal is not sufficient on its own: refuse every
@@ -3397,10 +3405,13 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     provider's cwd before the user registry. Omission keeps the user-level
     behavior; parsing, unreadable-file handling and ambiguity rules are shared.
 
-    Prefers ``<agents dir>/<name>.json`` and falls back to a scan for a spec
-    whose ``name`` field matches, mirroring how the dashboard's per-agent
-    handler resolves an agent to a file (a spec's filename and its ``name`` are
-    not required to agree).
+    Prefers ``<agents dir>/<name>.json`` or ``<name>.md`` and falls back to a
+    scan for a spec whose ``name`` field matches, mirroring how the dashboard's
+    per-agent handler resolves an agent to a file (a spec's filename and its
+    ``name`` are not required to agree). Both on-disk forms are scanned (see
+    :mod:`kiro_crew.agent_spec_format`); a markdown result is a READ-ONLY
+    resolution, and every writer that receives one refuses rather than
+    serializing JSON over a markdown file.
 
     *name* is validated against the shared agent-name grammar BEFORE it reaches
     the path join, so a caller passing a traversal (``../../something``) gets
@@ -3429,10 +3440,10 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
     if not agents_dir.is_dir():
         return None
 
-    direct = agents_dir / f"{name}.json"
+    direct = set(agent_spec_candidates(agents_dir, name))
     declared_matches: list[Path] = []
-    fallback: Path | None = None
-    for spec_path in sorted(agents_dir.glob("*.json")):
+    fallbacks: list[Path] = []
+    for spec_path in iter_agent_spec_files(agents_dir):
         if not _spec_path_is_safe(spec_path, agents_dir):
             continue
         try:
@@ -3444,7 +3455,7 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
         declared = data.get("name")
         if declared == name:
             declared_matches.append(spec_path)
-        elif spec_path == direct:
+        elif spec_path in direct:
             # Right filename. Accepted as the fallback even when it declares a
             # DIFFERENT name, because the runtime resolver matches on
             # `data["name"] == agent OR path.stem == agent` -- so with nothing
@@ -3453,7 +3464,7 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
             # bug this change exists to fix. Only used when no declared match is
             # found, and a declared match alongside it is the ambiguity the
             # caller refuses rather than resolves.
-            fallback = spec_path
+            fallbacks.append(spec_path)
     if len(declared_matches) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
         # directory is untrusted input, and this message is printed to a terminal.
@@ -3465,7 +3476,48 @@ def agent_spec_path(name: str, *, agents_dir: Path | None = None) -> Path | None
         )
     if declared_matches:
         return declared_matches[0]
-    return fallback
+    # At most one: the scan already drops a ``<name>.md`` shadowed by its
+    # ``<name>.json`` twin (JSON wins), so both never reach this list.
+    return fallbacks[0] if fallbacks else None
+
+
+def markdown_spec_for_agent(agent: str, work_dir: str | Path | None = None) -> Path | None:
+    """The markdown file *agent* is defined in when NO JSON spec claims it, else ``None``.
+
+    Only the KAS backend reads the markdown form; kiro-cli discovers ``*.json``
+    alone, so a markdown-only agent selected there is not the active mode after
+    ``session/new`` and the runtime's activation guard refuses the session. That
+    guard asks this on its refusal branch, to name the file in its message
+    instead of prescribing a JSON repair. The question is therefore whether
+    kiro-cli, which does not see markdown at all, finds a JSON spec for the
+    name anywhere in its own resolution order -- the project checkout's
+    ``.kiro/agents`` first, then the user directory. A project ``foo.md``
+    beside a user-level ``foo.json`` is NOT markdown-only: kiro-cli skips the
+    markdown file and runs the JSON one, so this returns ``None``. A markdown
+    file is returned only when both scopes hold no JSON spec for the name; the
+    project file is named when both scopes have one.
+
+    Never raises: an ambiguous or unreadable resolution is ``None`` here, and
+    the resolver that owns that refusal reports it on its own path.
+    """
+    project_markdown: Path | None = None
+    try:
+        if work_dir:
+            for spec in project_agent_files(work_dir):
+                if project_agent_name(spec) != agent:
+                    continue
+                if not is_markdown_spec(spec):
+                    return None
+                if project_markdown is None:
+                    project_markdown = spec
+        path = agent_spec_path(agent)
+    except (OSError, ValueError):
+        return None
+    if path is not None and not is_markdown_spec(path):
+        return None
+    if project_markdown is not None:
+        return project_markdown
+    return path
 
 
 def _conflicting_spec_for(name: str, chosen: Path, agents_dir: Path) -> Path | None:
@@ -3482,6 +3534,9 @@ def _conflicting_spec_for(name: str, chosen: Path, agents_dir: Path) -> Path | N
     the live pin in place and strip the model from a spec nothing is reading, so
     the caller refuses instead of guessing.
     """
+    # The JSON filename only: a ``<name>.md`` beside a chosen ``<name>.json`` is
+    # shadowed (JSON wins), not a competing claimant; a chosen ``<name>.md`` has
+    # no JSON twin by construction, since the twin would have been chosen.
     direct = agents_dir / f"{name}.json"
     if direct == chosen or not direct.is_file():
         return None
@@ -3501,6 +3556,14 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
     spec_path = agent_spec_path(name)
     if spec_path is None:
         raise FileNotFoundError(f"no kiro agent spec for {name!r} in {kiro_agents_dir_path()}")
+    if is_markdown_spec(spec_path):
+        # A markdown spec is one hand-authored document; serializing a JSON
+        # object over it would destroy the prompt and every field this
+        # writer does not model. The pin is edited in the frontmatter.
+        raise ValueError(
+            f"agent {name!r} is defined in markdown ({spec_path}); edit its frontmatter "
+            f"'model' field directly -- Kiro Crew does not rewrite markdown agent specs"
+        )
     conflict = _conflicting_spec_for(name, spec_path, kiro_agents_dir_path())
     if conflict is not None:
         raise ValueError(
@@ -5535,6 +5598,18 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
             if spec_path is None:
                 # No spec on disk: nothing carries grants, nothing to refresh.
                 continue
+            if is_markdown_spec(spec_path):
+                # Forks are JSON copies Kiro Crew wrote; a markdown file that
+                # resolves as one cannot be re-serialized, so its grants cannot
+                # be refreshed. Fail closed like an unreadable spec.
+                failures.add(fork_name)
+                logger.warning(
+                    "fork refresh: %r resolves to a markdown spec %s, which this writer "
+                    "cannot rewrite; treating its grants as unrefreshed",
+                    fork_name,
+                    spec_path,
+                )
+                continue
             # The whole read-modify-write sits under the shared spec lock: a
             # refresh that reads, loses the CPU to a dashboard PATCH, then
             # writes its stale snapshot would silently revert the user's edit.
@@ -6931,6 +7006,28 @@ pipeline's folder, patrol the fleet, verify claimed results independently,
 intervene when a worker loops or stalls, adjudicate blocked items, govern host
 resources and per-item credit budgets, and report verified greens to the
 person as plain-language digests.
+
+**You track exactly TWO columns per work item: is this session still working,
+and is this PR / this item solved.** That is the whole state, so the failure you
+chase is one shape — an item with no owner, or an owner that is not working.
+Everything a red PR is ABOUT belongs to the worker that owns it: which lane is
+red, whether a cancellation was fail-fast or teardown, which head a verdict was
+bound to, whether a rebase is curative. You send INTENT — *you own this item end
+to end, the deliverable is a green board, diagnose and decide it yourself* — and
+you do NOT read PR boards, item bodies or full worker reports to re-derive a
+worker's reasoning. Verifying a CLAIMED GREEN against the bar is measurement and
+stays yours; re-deriving a diagnosis is duplication, and the worker is closer to
+the code than you are. When a worker is stuck and its status line does not say
+what it needs, ask it in one line rather than reading its history.
+
+**Decide; do not escalate.** Scope calls, design judgements inside one item and
+dispositions on reviewer findings are yours. Four classes go to the person, and
+only these four: dismissing a human's recorded review, overriding a fenced or
+security-class finding, a disagreement between two maintainers about the same
+code, and content you cannot verify yourself. Append every decision as ONE LINE
+to the pipeline's `decisions.md`, and append a lesson to the run's retrospective
+in the cycle it happens — never saved for the end of the run, because by then the
+reasoning is precisely what has been lost.
 
 **You never do a work item's work yourself.** A file to write, a build to run,
 a fix to make — each one belongs to a worker session you dispatch, verify and

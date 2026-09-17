@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
@@ -1112,7 +1113,7 @@ class SessionAllocationService:
 
         model = "auto"
         try:
-            for agent_file in agents_dir.glob("*.json"):
+            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
                 data = self._deps.read_agent_spec(
                     agent_file,
                     operation="resolve_agent_model",
@@ -1510,8 +1511,11 @@ class SessionAllocationService:
                         watchdog=claim_watchdog,
                     )
                     if model:
+                        # A cache miss walks the agents directory and reads specs
+                        # until the pool agent matches: filesystem work, off the
+                        # loop like the config load above.
                         pool_model = (
-                            owner._resolve_agent_model(owner._pool_agent)
+                            await asyncio.to_thread(owner._resolve_agent_model, owner._pool_agent)
                             if owner._pool_agent
                             else None
                         )

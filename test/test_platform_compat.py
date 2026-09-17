@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew import windows_acl
 
 
 @pytest.mark.skipif(
@@ -2788,6 +2789,40 @@ class TestRestrictToOwnerArgvOnLinux:
         monkeypatch.setattr(pc.os, "chmod", lambda p, m: modes.append(m))
         pc.restrict_dir_to_owner(tmp_path)
         assert modes == [0o700], modes
+
+
+class TestPathVolumeIsRemote:
+    """The Windows half of "which kind of filesystem holds this", on Linux.
+
+    Nothing was established is None, never False: a caller that reads a failed
+    query as "local" is the case this tri-state exists to prevent.
+    """
+
+    def test_off_windows_the_answer_is_unknown(self, monkeypatch, tmp_path):
+        # POSIX callers have their own mount-table source, so the answer here is
+        # "nothing established". The branch is named rather than inherited from the
+        # host: on Windows this same call reaches a real volume and correctly reports
+        # a local one, which is a different fact from the one under test.
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.path_volume_is_remote(tmp_path) is None
+
+    @pytest.mark.parametrize("verdict", [True, False, None])
+    def test_the_windows_volume_verdict_is_passed_through(self, monkeypatch, verdict):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.windows_acl, "volume_is_remote", lambda p: verdict)
+        assert pc.path_volume_is_remote("Z:\\kiro") is verdict
+
+    @pytest.mark.parametrize(
+        "exc", [windows_acl.AclUnavailable("no api"), OSError("call failed"), ValueError("root")]
+    )
+    def test_a_failed_query_is_unknown(self, monkeypatch, exc):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _boom(_path):
+            raise exc
+
+        monkeypatch.setattr(pc.windows_acl, "volume_is_remote", _boom)
+        assert pc.path_volume_is_remote("Z:\\kiro") is None
 
 
 class TestChmodShimsApply:
@@ -5555,3 +5590,57 @@ class TestWindowsDescendantFailureDiagnostics:
                 raise RuntimeError("sensitive-secret")
 
         assert pc._open_process_termination_handle(101, failure=BrokenList()) is None
+
+
+class TestStripExtendedLengthPrefix:
+    r"""One lexical fold for the extended-length prefix, shared by both guards.
+
+    ``Path.resolve()`` on a file another thread is replacing at that moment comes
+    back as a prefixed path, while the directory beside it comes back plain. A
+    containment comparison that reads the two spellings as-is sees the prefix
+    alone as a path escape, so both guards compare through this fold.
+    """
+
+    def test_a_drive_prefixed_path_loses_the_prefix(self):
+        assert pc.strip_extended_length_prefix(Path("\\\\?\\C:\\x\\y")) == Path("C:\\x\\y")
+
+    def test_a_unc_prefixed_path_becomes_a_plain_unc_path(self):
+        assert pc.strip_extended_length_prefix(Path("\\\\?\\UNC\\host\\share\\y")) == Path(
+            "\\\\host\\share\\y"
+        )
+
+    def test_an_ordinary_windows_path_is_returned_unchanged(self):
+        assert pc.strip_extended_length_prefix(Path("C:\\x\\y")) == Path("C:\\x\\y")
+
+    def test_a_posix_path_is_returned_unchanged(self):
+        assert pc.strip_extended_length_prefix(Path("/home/a/b")) == Path("/home/a/b")
+
+    def test_the_fold_is_idempotent(self):
+        """A path that is already plain keeps its separators intact."""
+        once = pc.strip_extended_length_prefix(Path("\\\\?\\C:\\x\\y"))
+        assert pc.strip_extended_length_prefix(once) == once
+
+    def test_the_ledger_guard_shares_the_one_fold(self):
+        """``session_ledger`` must call the shared helper, not keep a copy.
+
+        Identity is the property, not equal behaviour: a second copy answers the
+        same values on these inputs and still drifts when one side is edited.
+        """
+        from kiro_crew import session_ledger
+
+        assert session_ledger.strip_extended_length_prefix is pc.strip_extended_length_prefix
+
+    def test_the_workflow_guard_shares_the_one_fold(self, monkeypatch):
+        """``workflow_memory`` must reach the same helper on its guarded path."""
+        from kiro_crew import workflow_memory
+
+        calls = []
+        real = pc.strip_extended_length_prefix
+
+        def record(path):
+            calls.append(path)
+            return real(path)
+
+        monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
+        workflow_memory.binding_path("wf_shared_fold")
+        assert calls, "workflow_memory did not reach the shared fold"

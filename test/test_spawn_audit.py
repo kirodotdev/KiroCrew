@@ -370,10 +370,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::_git",
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py::setUp",
         # Diagnostics support-bundle version probe: fixed argv
-        # ``["kiro-cli", "--version"]`` with a 5s timeout, no shell, no cwd, and
+        # ``[<kiro-cli>, "--version"]`` with a 5s timeout, no shell, no cwd, and
         # no agent-influenced args — it only stamps the collected kiro-cli
-        # version into versions.txt. The binary name is a module constant; a
-        # resource ceiling / sandbox adds nothing to a `--version` call.
+        # version into versions.txt. The binary is the absolute path
+        # ``kiro_cli.pin_kiro_cli`` returns from the known install directories
+        # with the inherited PATH excluded (no pin, no spawn), so nothing an
+        # agent can write to names the executable; a resource ceiling / sandbox
+        # adds nothing to a `--version` call.
         "diagnostics.py::_kiro_cli_version",
         # Tailnet origin derivation + forwarded-peer whois (RFC:
         # rfc-tailnet-dashboard-access): one fixed argv — ``["<tailscale>",
@@ -1219,6 +1222,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/ssm.py::_kill_tree_windows",
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
+        # Local identity probe: `<resolved kiro-cli> whoami --format json`, a
+        # fixed argv with no shell and no agent-reachable input — the binary
+        # comes from `kiro_cli.resolve_kiro_cli` (the same resolution every
+        # other kiro-cli spawn uses), stdin is DEVNULL and the output is only
+        # parsed, never executed. Same classification as the whoami probes
+        # in `cloud/ssm.py` above.
+        "cloud/login_target.py::discover_local_identity",
         "dashboard/chat_voice.py::api_voice_voices",
         # Computer-use permission probe: `<our own kirocrew binary> computer
         # doctor --json`, a fixed argv (module constants) with no shell and no

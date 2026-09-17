@@ -9,6 +9,8 @@ correct order.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -116,9 +118,7 @@ class TestResetAllSessionsShutdown:
         # module (handlers.sessions), not the handlers package re-export —
         # ``_safe_shutdown`` reads the global from its own module, so patching
         # the re-export is a silent no-op and the test blocks the full 10s.
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 
         async def _never_returns() -> None:
             await asyncio.sleep(60)
@@ -147,9 +147,7 @@ class TestResetAllSessionsShutdown:
         """
         # Patch the DEFINING module (handlers.sessions), not the package
         # re-export — see test_force_kills_hung_provider_after_timeout.
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 
         async def _never_returns() -> None:
             await asyncio.sleep(60)
@@ -173,6 +171,99 @@ class TestResetAllSessionsShutdown:
         # Fallback kill was attempted but raised — must not abort _safe_shutdown.
         mock_kill.assert_called_once_with(hung)
         # start_pool must still have run despite the fallback kill exception.
+        assert sessions.start_pool_called is True
+
+    @pytest.mark.asyncio
+    async def test_force_kill_runs_off_the_event_loop(self, monkeypatch) -> None:
+        """The force kill is offloaded, never run inline on the event loop.
+
+        The kill signals the provider's whole process group and then waits out
+        a bounded SIGTERM grace, so inline it freezes the gateway for that
+        whole grace — per provider, in series across the ``gather`` — stalling
+        websockets and every other session mid-restart. Thread identity is the
+        deterministic pin: an offloaded call cannot report the loop's thread.
+        Ordering is pinned too, because the offload is awaited: the tree must
+        be reaped before ``start_pool`` spawns its replacements.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
+
+        async def _never_returns() -> None:
+            await asyncio.sleep(60)
+
+        hung = MagicMock()
+        hung.shutdown = MagicMock(side_effect=lambda: _never_returns())
+        sessions = _FakeSessionManager([hung])
+        request, state = _make_request(sessions)
+
+        loop_thread = threading.get_ident()
+        kill_threads: list[int] = []
+        kill_finished_at: list[float] = []
+        loop = asyncio.get_running_loop()
+
+        def _blocking_kill(_p: object) -> None:
+            kill_threads.append(threading.get_ident())
+            time.sleep(0.05)  # stands in for the SIGTERM grace
+            kill_finished_at.append(loop.time())
+
+        with patch(
+            "kiro_crew.dashboard.handlers._sync_kill_provider", side_effect=_blocking_kill
+        ) as mock_kill:
+            await _reset_all_sessions(request)
+            for task in list(state._background_tasks):
+                await task
+
+        mock_kill.assert_called_once_with(hung)
+        # Off the loop: a call on the loop's own thread is the regression.
+        assert kill_threads, "force kill never ran"
+        assert kill_threads[0] != loop_thread
+        # Awaited, so the kill completed before the replacements were spawned.
+        assert kill_finished_at, "force kill never completed"
+        assert sessions.start_pool_called_at is not None
+        assert kill_finished_at[0] <= sessions.start_pool_called_at
+
+    @pytest.mark.asyncio
+    async def test_force_kill_falls_back_to_a_thread_when_executor_is_gone(
+        self, monkeypatch
+    ) -> None:
+        """A shut-down executor must not mean the kill is skipped.
+
+        A gateway teardown racing this restart leaves the subprocess executor
+        closed, so submitting to it raises ``RuntimeError``. Swallowing that
+        would leak the very process tree this path exists to reap, so the kill
+        falls back to a plain daemon thread — still off the loop.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
+
+        async def _never_returns() -> None:
+            await asyncio.sleep(60)
+
+        hung = MagicMock()
+        hung.shutdown = MagicMock(side_effect=lambda: _never_returns())
+        sessions = _FakeSessionManager([hung])
+        request, state = _make_request(sessions)
+
+        def _dead_executor() -> object:
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.subprocess_executor", _dead_executor
+        )
+
+        loop_thread = threading.get_ident()
+        killed = threading.Event()
+        kill_threads: list[int] = []
+
+        def _record_kill(_p: object) -> None:
+            kill_threads.append(threading.get_ident())
+            killed.set()
+
+        with patch("kiro_crew.dashboard.handlers._sync_kill_provider", side_effect=_record_kill):
+            await _reset_all_sessions(request)
+            for task in list(state._background_tasks):
+                await task
+
+        assert killed.wait(timeout=10), "kill was skipped when the executor was gone"
+        assert kill_threads[0] != loop_thread
         assert sessions.start_pool_called is True
 
     @pytest.mark.asyncio

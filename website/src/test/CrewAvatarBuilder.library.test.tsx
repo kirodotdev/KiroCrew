@@ -131,43 +131,58 @@ describe('avatar builder — Library tier', () => {
     expect(screen.getByTestId('avatar-pack-select-aurora')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('keeps a pack crew\u2019s sounds and drops the face pickers it has no use for', async () => {
-    const { onSave } = mount({ kind: 'pack', id: 'aurora', sounds: { done: 'chime' } })
+  it('offers no Reactions tab on a pack, and carries a legacy sound out of the record', async () => {
+    // A pack ships its own per-state art AND its own audio, so a preset on the
+    // crew record would be a second, competing answer to the same question.
+    // There is nothing to author here, and a tab that renders only a note
+    // saying so is a promise the tier cannot keep.
+    const stored = { kind: 'pack', id: 'aurora', sounds: { done: 'chime' } }
+    const { onSave } = mount(stored as Parameters<typeof mount>[0])
     await screen.findByTestId('avatar-library-pane')
 
-    gotoTier('Expressions')
-    // Self-defining: this is the first place the word "pack" can reach a user
-    // who never opened the Library tier, so the note says what one IS.
-    expect(screen.getByTestId('avatar-expressions-pack-note')).toHaveTextContent(
-      'This crew wears a pack — a ready-made set of faces — so only the sound applies here.',
-    )
-    // Sounds still apply — a pack reacts by ear.
-    expect(screen.getByTestId('avatar-state-sound-done')).toBeInTheDocument()
-    // Eyes and mouth do not: there is no face here to repaint.
-    expect(screen.queryByTestId('avatar-expr-done-eyes')).toBeNull()
-    expect(screen.queryByTestId('avatar-expr-done-mouth')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reactions' })).toBeNull()
 
     apply()
-    expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora', sounds: { done: 'chime' } })
+    expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
   })
 
-  it('drops the "pick a face" lead-in on the tiers that have no face', async () => {
-    // The generic hint sat directly above each tier's own note, which says the
-    // opposite ("only the sound applies here"). It belongs to the one tier that
-    // has a face to pick.
-    const HINT = 'Pick a different face and a sound for each moment.'
+  it('offers the Reactions tab only while the ghost is the selected tier', async () => {
+    mount({ kind: 'image', v: 3 })
+    expect(screen.queryByRole('button', { name: 'Reactions' })).toBeNull()
+    gotoTier('Ghost face')
+    expect(screen.getByRole('button', { name: 'Reactions' })).toBeInTheDocument()
+    gotoTier('Reactions')
+    // The hint covers all THREE rows it renders: it promised two moments while a
+    // Working row was on screen, and a first-run reader guessed at that row. It
+    // also says the working cue fires when work STARTS -- "while it works" read
+    // as a sound that runs for the whole turn, where it plays once on the edge.
+    expect(
+      screen.getByText(
+        'Pick a motion and a sound for when a turn finishes or fails, and the sound it makes when work starts.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('explains on both served tiers why the Reactions tab is not theirs', async () => {
+    // The tab is simply absent there, and an absence with no word said reads as
+    // something missing rather than as something decided — a first-run reader
+    // could not tell which. The line goes where they are looking.
+    // "a pack from the Library", not "a pack": a cold reader could not place the
+    // bare word ("I don't know what a pack is… that's a guess").
+    // "…so there is no Reactions tab here": a cold reader understood the concept
+    // and still asked why the tab was gone, so the line names the tab.
+    const NOTE =
+      'Reactions belong to the ghost face, so there is no Reactions tab here. A picture stays still and silent; a pack from the Library plays its own art and sound.'
     const { unmount } = mount({ kind: 'pack', id: 'aurora' })
     await screen.findByTestId('avatar-library-pane')
-    gotoTier('Expressions')
-    expect(screen.queryByText(HINT)).toBeNull()
+    expect(screen.getByTestId('avatar-reactions-absent-pack')).toHaveTextContent(NOTE)
     unmount()
 
     mount({ kind: 'image', v: 3 })
-    gotoTier('Expressions')
-    expect(screen.queryByText(HINT)).toBeNull()
+    expect(screen.getByTestId('avatar-reactions-absent-picture')).toHaveTextContent(NOTE)
+    // The ghost tier has the tab, so it needs no such line.
     gotoTier('Ghost face')
-    gotoTier('Expressions')
-    expect(screen.getByText(HINT)).toBeInTheDocument()
+    expect(screen.queryByTestId('avatar-reactions-absent-picture')).toBeNull()
   })
 
   it('reset puts the crew back on its own face, pack included', async () => {

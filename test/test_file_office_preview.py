@@ -6,11 +6,17 @@ _resolve_project_relative helper) plus the response contract the frontend
 relies on (text/truncated, no format/supported/empty fields) and the
 aggregate extraction budget (a many-slide deck cannot accumulate unbounded
 text — doc_parser stops at the caller's cap).
+
+``format=blocks`` is covered here too: that the default stays byte-identical
+text, that an unknown format is refused rather than silently answered with text,
+and that the structured payload is redacted and carries the same security
+envelope. The block EXTRACTION itself is test_doc_blocks.py's subject.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import zipfile
@@ -20,6 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from ooxml_fixtures import docx_para, docx_table, write_docx
 
 from kiro_crew.dashboard.handlers import api_file_office_preview
 from kiro_crew.dashboard.handlers import files as files_mod
@@ -320,3 +327,213 @@ async def test_redaction_runs_before_truncation(tmp_path, mock_sel):
     # Neither the full secret nor its cap-cut prefix may appear.
     assert secret not in body["text"]
     assert secret[:10] not in body["text"]
+
+
+# --- format=blocks: the structured preview ---
+
+
+@pytest.mark.asyncio
+async def test_default_and_explicit_text_are_the_same_response(tmp_path, mock_sel):
+    """`format` is additive. Omitting it and passing `text` must produce the same
+    bytes, and the same two-key shape existing callers already parse — a caller
+    that never learned about the parameter cannot be affected by it."""
+    f = tmp_path / "report.docx"
+    _write_docx(str(f), ["Introduction", "Body."])
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            implicit = await (await client.get(f"/api/file-office-preview?path={f}")).read()
+            explicit = await (
+                await client.get(f"/api/file-office-preview?path={f}&format=text")
+            ).read()
+    assert implicit == explicit
+    assert set(json.loads(implicit)) == {"text", "truncated"}
+
+
+@pytest.mark.asyncio
+async def test_unknown_format_is_refused_rather_than_answered_with_text(tmp_path, mock_sel):
+    """A caller asking for a shape this build does not serve must learn that,
+    not receive a plaintext blob to misread as structure."""
+    f = tmp_path / "report.docx"
+    _write_docx(str(f), ["Body."])
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}&format=html")
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_format"
+    assert mock_sel.log_tool_invocation.call_args.kwargs["error"] == "invalid_format"
+
+
+@pytest.mark.asyncio
+async def test_blocks_returns_structure_and_no_text_field(tmp_path, mock_sel):
+    f = tmp_path / "structured.docx"
+    write_docx(
+        str(f),
+        docx_para("Overview", style="Heading1")
+        + docx_para("Body copy.")
+        + docx_table([["Region", "Total"]]),
+    )
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            assert resp.status == 200
+            body = await resp.json()
+    assert set(body) == {"blocks", "truncated"}
+    assert [b["type"] for b in body["blocks"]] == ["heading", "paragraph", "table"]
+    assert body["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_blocks_text_is_credential_redacted(tmp_path, mock_sel):
+    """The blocks payload carries the same document text the text mode does, so
+    it goes through the same redaction — per string, so structure survives."""
+    f = tmp_path / "leaky.docx"
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    write_docx(
+        str(f),
+        docx_para(f"key {secret} here", style="Heading1") + docx_table([[f"cell {secret}"]]),
+    )
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            body = await (
+                await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            ).json()
+    assert secret not in json.dumps(body)
+    # Redaction did not flatten the structure it walked through.
+    assert [b["type"] for b in body["blocks"]] == ["heading", "table"]
+
+
+@pytest.mark.asyncio
+async def test_a_credential_split_across_two_runs_is_still_redacted(tmp_path, mock_sel):
+    """Word splits a run at every formatting change, so a secret can arrive as two
+    fragments that match nothing on their own. Redacting per RUN leaves both in
+    place while the text mode -- which redacts the whole joined extraction --
+    masks it, so the blocks payload would be the weaker of the two surfaces."""
+    f = tmp_path / "split.docx"
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    head, tail = secret[:8], secret[8:]
+    write_docx(
+        str(f),
+        f"<w:p><w:r><w:t>{head}</w:t></w:r>"
+        f"<w:r><w:rPr><w:b/></w:rPr><w:t>{tail}</w:t></w:r></w:p>",
+    )
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            body = await (
+                await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            ).json()
+    assert secret not in json.dumps(body)
+    # Redacting the joined text has no run boundaries to map back onto, so the
+    # paragraph collapses to one run. Formatting is lost only where a secret was.
+    assert len(body["blocks"][0]["runs"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_redaction_leaves_formatting_alone_when_nothing_matched(tmp_path, mock_sel):
+    """The complement of the collapse above: an ordinary paragraph keeps its runs."""
+    f = tmp_path / "clean.docx"
+    write_docx(
+        str(f),
+        "<w:p><w:r><w:t>plain </w:t></w:r>"
+        "<w:r><w:rPr><w:b/></w:rPr><w:t>strong</w:t></w:r></w:p>",
+    )
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            body = await (
+                await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            ).json()
+    assert body["blocks"][0]["runs"] == [
+        {"text": "plain ", "bold": False, "italic": False},
+        {"text": "strong", "bold": True, "italic": False},
+    ]
+
+
+def test_an_unknown_string_field_is_redacted_by_default():
+    """The point of the inversion. Enumerating the keys that hold text means a
+    block shape added later carries its text out unredacted until someone extends
+    the list, and nothing fails while they have not."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    out = files_mod._redact_block({"type": "caption", "some_future_field": secret})
+    assert isinstance(out, dict)
+    assert secret not in str(out["some_future_field"])
+    assert out["type"] == "caption", "a structural label must survive untouched"
+
+
+def test_structural_values_survive_the_walk():
+    """The complement: "redact everything" must not corrupt the shape the frontend
+    switches on, or a heading level and a bold flag would ride out as strings."""
+    block = {"type": "heading", "level": 3, "text": "Plain title"}
+    assert files_mod._redact_block(block) == block
+    para = {"type": "paragraph", "runs": [{"text": "hi", "bold": True, "italic": False}]}
+    assert files_mod._redact_block(para) == para
+
+
+@pytest.mark.asyncio
+async def test_blocks_keeps_the_unsupported_format_refusal(tmp_path, mock_sel):
+    f = tmp_path / "legacy.doc"
+    f.write_bytes(b"\xd0\xcf\x11\xe0")
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            assert resp.status == 415
+            assert (await resp.json())["code"] == "unsupported_preview_format"
+
+
+@pytest.mark.asyncio
+async def test_blocks_keeps_the_sensitive_path_refusal(tmp_path, mock_sel):
+    f = tmp_path / "secret.docx"
+    _write_docx(str(f), ["Body."])
+    with (
+        patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)),
+        patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", return_value=True),
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "sensitive_path"
+
+
+@pytest.mark.asyncio
+async def test_blocks_reads_through_the_prefix_fd(tmp_path, mock_sel):
+    """Same one-hop discipline as the text branch: the extractor parses the handle
+    the prefix opened and fstat-ed, so the bytes parsed are the bytes measured."""
+    f = tmp_path / "handle.docx"
+    _write_docx(str(f), ["Body."])
+    seen: list[object] = []
+    real = files_mod.extract_blocks
+
+    def spy(path, filename="", fileobj=None):
+        seen.append(fileobj)
+        return real(path, filename=filename, fileobj=fileobj)
+
+    with (
+        patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)),
+        patch.object(files_mod, "extract_blocks", spy),
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            assert resp.status == 200
+    assert len(seen) == 1 and seen[0] is not None
+    # Closed by the worker callback's `with`, never handed back to the loop.
+    assert seen[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_empty_blocks_still_answers_200_for_the_frontend_to_fall_back(tmp_path, mock_sel):
+    """A malformed container is not an error here: the frontend answers an empty
+    list by retrying in text mode, and a 500 would look like a broken endpoint."""
+    f = tmp_path / "broken.docx"
+    f.write_bytes(b"PK\x03\x04 truncated garbage")
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(f)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={f}&format=blocks")
+            assert resp.status == 200
+            assert await resp.json() == {"blocks": [], "truncated": False}
+
+
+def test_the_block_character_budget_equals_the_text_preview_cap():
+    """``format=blocks`` must not widen what one request extracts. The two caps
+    are restated rather than imported -- doc_blocks sits below the dashboard
+    handlers and cannot import from them -- so their equality is pinned here."""
+    from kiro_crew import doc_blocks
+
+    assert doc_blocks.MAX_CHARS == _OFFICE_PREVIEW_CAP

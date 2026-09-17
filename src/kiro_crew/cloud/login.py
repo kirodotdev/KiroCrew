@@ -28,6 +28,12 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from kiro_crew.cloud import ssm
+from kiro_crew.cloud.aws import AWSError
+from kiro_crew.cloud.login_target import (
+    KiroLoginTarget,
+    identity_matches_target,
+    parse_whoami_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +50,62 @@ _LOCAL_CALLBACK_PORT_RE = re.compile(
 _LOGIN_LOG_PATH = "/tmp/kirocrew-kiro-login.log"
 _LOGIN_PID_PATH = "/tmp/kirocrew-kiro-login.pid"
 _LOGIN_FIFO_PATH = "/tmp/kirocrew-kiro-login.stdin"
+# Printed (and the launch skipped) when the pty driver could not be staged in a
+# fresh private directory on the instance -- the caller reports it instead of
+# guessing at a missing device-code prompt.
+_DRIVER_SETUP_FAILED_SENTINEL = "__KIRO_LOGIN_DRIVER_SETUP_FAILED__"
 _DEVICE_LOGIN_CAPTURE_ATTEMPTS = 20
 _DEVICE_LOGIN_CAPTURE_SLEEP = 1
+
+# Runs `kiro-cli login ...` under a pseudo-terminal on the instance and presses
+# Enter on each prefilled prompt (Identity Center asks for the start URL and the
+# region even when both are on the command line). Everything kiro-cli prints is
+# forwarded to stdout -- which the launcher redirects to the login log -- EXCEPT
+# the prompt lines themselves: they echo the start URL, and a URL in the log is
+# what the capture loop and `parse_login_output` read as the verification URL.
+# Plain Python 3 stdlib only; the instance template installs python3. The
+# driver exits with the child's status once the login completes or fails, so
+# the pid file (its pid) keeps meaning "the login is still running".
+_LOGIN_PTY_DRIVER = r"""
+import os, pty, re, select, sys, time
+cmd = sys.argv[1:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(cmd[0], cmd)
+PROMPT_CARET = "\u203a".encode("utf-8")
+PROMPT_MARKERS = (b"Enter Start URL", b"Enter Region")
+ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\r")
+buf = b""
+answered = 0
+out = os.fdopen(sys.stdout.fileno(), "wb", buffering=0)
+while True:
+    try:
+        r, _, _ = select.select([fd], [], [], 1.0)
+    except InterruptedError:
+        continue
+    if not r:
+        continue
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    if PROMPT_CARET in chunk and answered < len(PROMPT_MARKERS):
+        time.sleep(0.2)
+        os.write(fd, b"\r")
+        answered += 1
+    buf += ANSI.sub(b"", chunk)
+    # Emit whole lines; drop the ones that are the prompt echo.
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        if line.strip() and not any(m in line for m in PROMPT_MARKERS):
+            out.write(line + b"\n")
+if buf.strip() and not any(m in buf for m in PROMPT_MARKERS):
+    out.write(buf + b"\n")
+_, status = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8))
+""".strip()
 _CALLBACK_LOGIN_CAPTURE_ATTEMPTS = 20
 _CALLBACK_LOGIN_CAPTURE_SLEEP = 1
 _TOKEN_PRESENT_SENTINEL = "__KIRO_AUTH_TOKEN_PRESENT__"
@@ -86,6 +146,11 @@ class LoginPrompt:
     browser_opened: bool = False
     ports: list[int] = field(default_factory=list)  # forwarded ports (social login)
     error: str = ""
+    #: True when ``error`` is a VERIFIED identity mismatch: the box holds a valid
+    #: session for a different identity than the pinned target. Structured so
+    #: callers decide on the flag, not on the error text; a mismatch is a
+    #: failed sign-in that only ``cloud logout`` can clear, never a warning.
+    identity_mismatch: bool = False
     port_forward: Optional[subprocess.Popen] = field(default=None, repr=False, compare=False)
 
     @property
@@ -97,15 +162,26 @@ class LoginPrompt:
         _close_process(self.port_forward)
 
 
-def parse_login_output(text: str) -> LoginPrompt:
-    """Extract the verification URL + code (or 'already logged in') from output."""
+def parse_login_output(text: str, *, ignore_url: str = "") -> LoginPrompt:
+    """Extract the verification URL + code (or 'already logged in') from output.
+
+    *ignore_url* is the login target's own start URL: a pinned Identity Center
+    login echoes it (prompt prefill), and it must never be mistaken for the
+    verification URL the user has to open.
+    """
     low = text.lower()
     # Match the CONTIGUOUS phrase, not two unordered substrings — otherwise
     # "you are not logged in ... if you already have an account" false-positives
     # as signed-in and we'd drop the device-code URL. And only trust it when
     # there's no actionable verification URL in the same output.
     already = any(p in low for p in ("already logged in", "already signed in", "you're logged in"))
-    has_verification_url = bool(_URL_RE.search(text))
+    ignore = ignore_url.rstrip("/").lower()
+    urls = [
+        u
+        for u in (u.rstrip(".,)") for u in _URL_RE.findall(text))
+        if not ignore or u.rstrip("/").lower() != ignore
+    ]
+    has_verification_url = bool(urls)
     if already and not has_verification_url:
         return LoginPrompt(already_logged_in=True, raw=text)
 
@@ -115,7 +191,6 @@ def parse_login_output(text: str) -> LoginPrompt:
     # (…?user_code=…) and deep-links straight to the approve screen. Prefer the
     # latter so the user isn't dropped on a general login with nowhere obvious to
     # type the code; fall back to the first URL when no complete one is printed.
-    urls = [u.rstrip(".,)") for u in _URL_RE.findall(text)]
     if urls:
         url = next((u for u in urls if "user_code=" in u), urls[0])
     code = ""
@@ -156,14 +231,80 @@ def _auth_probe(instance_id: str, profile: str = "", region: str = "") -> Option
     return not any(marker in low for marker in _AUTH_FAILURE_MARKERS)
 
 
-def is_logged_in(instance_id: str, profile: str = "", region: str = "") -> bool:
+def is_logged_in(
+    instance_id: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    target: Optional[KiroLoginTarget] = None,
+) -> bool:
     """Best-effort check whether kiro-cli is already authenticated on the box.
 
     An undeterminable state answers False: this only gates whether to start a
     sign-in, and a redundant one is harmless (``kiro-cli login`` itself
     short-circuits when a session already exists).
+
+    With *target*, "authenticated" means authenticated AS THAT IDENTITY: a
+    valid session for the wrong account family (Builder ID where the launch
+    asked for the organization's Identity Center, or vice versa) answers
+    False, so the caller starts the correct sign-in instead of adopting a
+    session that happens to exist. That is the difference between "some Kiro
+    session" and "my Kiro" — see :mod:`kiro_crew.cloud.login_target`. EVERY
+    supplied target is compared, the default Builder ID one included: a
+    reused instance carrying an Identity Center session must not be adopted by
+    a launch that asked for Builder ID (wrong license, wrong models). Only a
+    caller that passes no target at all asks the legacy question "is there
+    some session".
     """
-    return _auth_probe(instance_id, profile, region) is True
+    if _auth_probe(instance_id, profile, region) is not True:
+        return False
+    if target is None:
+        return True
+    return remote_identity_state(instance_id, profile, region, target=target) == "match"
+
+
+def remote_identity(
+    instance_id: str, profile: str = "", region: str = ""
+) -> Optional[dict[str, str]]:
+    """Read the remote ``kiro-cli whoami --format json`` identity.
+
+    ``None`` when it cannot be read at all (SSM transport failure, no output);
+    ``{}`` when kiro-cli ran but reported no identity (signed out); otherwise
+    any of ``email`` / ``account_type`` / ``start_url``. Keeping "unreadable"
+    distinct from "signed out" matters: a transient SSM fault must never be
+    reported as an identity mismatch.
+    """
+    try:
+        res = ssm.run_command(instance_id, _whoami_json_command(), profile, region, total_wait=60)
+    except AWSError as exc:
+        # send-command itself failed (throttled, denied, unreachable): the
+        # identity was not read. Callers classify this as "unknown", never as a
+        # verdict on the session.
+        logger.debug("remote whoami could not be sent: %s", exc)
+        return None
+    out = (res.stdout or "").strip()
+    if not res.ok and not out:
+        return None
+    if _NOAUTH_SENTINEL in out:
+        return {}
+    return parse_whoami_output(out)
+
+
+def remote_identity_state(
+    instance_id: str, profile: str = "", region: str = "", *, target: KiroLoginTarget
+) -> str:
+    """Classify the remote session against *target*.
+
+    One of ``"match"``, ``"mismatch"``, ``"absent"`` or ``"unknown"``. Only
+    ``"match"`` may short-circuit a sign-in; ``"mismatch"`` is the case a bare
+    boolean check cannot express — a real, valid session for the wrong account.
+    """
+    ident = remote_identity(instance_id, profile, region)
+    if ident is None:
+        return "unknown"
+    if not ident:
+        return "absent"
+    return "match" if identity_matches_target(ident, target) else "mismatch"
 
 
 def logout(instance_id: str, profile: str = "", region: str = "") -> bool:
@@ -195,27 +336,62 @@ def logout(instance_id: str, profile: str = "", region: str = "") -> bool:
     return _auth_probe(instance_id, profile, region) is False
 
 
+def _verified_already_logged_in(
+    instance_id: str,
+    profile: str,
+    region: str,
+    resolved: KiroLoginTarget,
+    prompt: LoginPrompt,
+) -> LoginPrompt:
+    """Turn kiro-cli's "already logged in" into a verdict about *resolved*.
+
+    A match keeps the prompt as the success it is. Anything else — a session for
+    a different identity, or an identity that cannot be read — is NOT a
+    success: ``already_logged_in`` is cleared and ``error`` names the mismatch
+    and the recovery (``kirocrew cloud logout`` then sign in again), so the
+    prompt is not actionable and every caller refuses it the same way.
+    """
+    state = remote_identity_state(instance_id, profile, region, target=resolved)
+    if state == "match":
+        return prompt
+    prompt.already_logged_in = False
+    if state == "mismatch":
+        prompt.identity_mismatch = True
+        prompt.error = (
+            f"the instance is signed in to a different Kiro identity than {resolved.describe()}; "
+            "run `kirocrew cloud logout` on this instance, then sign in again"
+        )
+    else:
+        prompt.error = (
+            f"the instance reports an existing Kiro session but its identity could not be "
+            f"read ({state}); refusing to treat it as {resolved.describe()}. Retry, or run "
+            "`kirocrew cloud logout` and sign in again"
+        )
+    return prompt
+
+
 def start_device_login(
     instance_id: str,
     profile: str = "",
     region: str = "",
     *,
     open_browser: bool = True,
-    identity_provider: str = "",
-    license_: str = "",
-    idp_region: str = "",
+    target: Optional[KiroLoginTarget] = None,
 ) -> LoginPrompt:
     """Kick off ``kiro-cli login`` on the instance and return the sign-in prompt.
 
-    Prefer the device-code flow. If kiro-cli cannot produce a device-code URL,
-    fall back to the social-provider callback flow by opening the required SSM
-    port-forward automatically.
+    Prefer the device-code flow. If kiro-cli cannot produce a device-code URL
+    for a DEFAULT (Builder ID) target, fall back to the social-provider callback
+    flow by opening the required SSM port-forward automatically. An
+    identity-PINNED target (Identity Center) never falls back: the callback
+    flow is a different identity family, so degrading into it would silently
+    sign the crew in as the wrong account — the failure is surfaced instead.
 
-    Enterprise / IAM Identity Center users pass *identity_provider* (the start
-    URL), *license_* (``pro`` or ``free``), and *idp_region* (the Identity
-    Center region, e.g. ``us-east-1``) to select the correct identity.
+    *target* is the durable identity a managed launch carries
+    (:class:`KiroLoginTarget`); ``None`` means the default Builder ID target.
     """
-    if is_logged_in(instance_id, profile, region):
+    resolved = target or KiroLoginTarget()
+    if is_logged_in(instance_id, profile, region, target=resolved):
         return LoginPrompt(already_logged_in=True)
 
     # `kiro-cli login --use-device-flow` prints the URL+code and then blocks
@@ -223,20 +399,38 @@ def start_device_login(
     # log. The same process keeps polling for the exact code shown to the user.
     res = ssm.run_command(
         instance_id,
-        _device_login_command(
-            replace_existing=True,
-            identity_provider=identity_provider,
-            license_=license_,
-            idp_region=idp_region,
-        ),
+        _device_login_command(replace_existing=True, **resolved.login_kwargs()),
         profile,
         region,
         total_wait=90,
     )
-    prompt = parse_login_output(res.stdout or res.stderr or "")
+    prompt = parse_login_output(res.stdout or res.stderr or "", ignore_url=resolved.start_url)
+    if prompt.already_logged_in:
+        # kiro-cli ignores a login over a LIVE session and prints "already
+        # logged in" whatever that session's identity is. The caller asked for
+        # `resolved`; only a session that MATCHES it is a success. Anything
+        # else is the mismatch every caller (CLI, wizard, launch engine) must
+        # refuse rather than record as signed in — decided HERE, once, so no
+        # caller can forget the check.
+        return _verified_already_logged_in(instance_id, profile, region, resolved, prompt)
     if prompt.actionable:
         if open_browser and prompt.url:
             prompt.browser_opened = _open_browser(prompt.url)
+        return prompt
+
+    if resolved.is_identity_center:
+        # Pinned: stay on this identity. Report, do not degrade.
+        if _DRIVER_SETUP_FAILED_SENTINEL in (res.stdout or ""):
+            prompt.error = (
+                "could not stage the sign-in driver in a private temporary directory on "
+                "the instance (mktemp/write failed); nothing was started. Retry, or check "
+                "the instance's TMPDIR."
+            )
+        elif not prompt.error:
+            prompt.error = (
+                f"kiro-cli did not produce a device-code prompt for {resolved.describe()}; "
+                "retry, or check the start URL and Identity Center region."
+            )
         return prompt
 
     callback_prompt = _start_callback_login(instance_id, profile, region, open_browser=open_browser)
@@ -253,23 +447,21 @@ def resume_login_daemon(
     profile: str = "",
     region: str = "",
     *,
-    identity_provider: str = "",
-    license_: str = "",
-    idp_region: str = "",
+    target: Optional[KiroLoginTarget] = None,
 ) -> None:
-    """Ensure a background ``kiro-cli login`` exists.
+    """Ensure a background ``kiro-cli login`` exists — for the SAME identity.
 
     ``start_device_login`` already keeps the displayed device-code process
     alive. This helper is retained for manual fallback paths and starts a new
-    background login only when the recorded process is not running.
+    background login only when the recorded process is not running. It
+    must receive the same *target* the start did: a resume that drops the
+    identity restarts the flow as Builder ID, which is exactly the omission
+    this type exists to make visible.
     """
+    resolved = target or KiroLoginTarget()
     ssm.run_command(
         instance_id,
-        _resume_login_command(
-            identity_provider=identity_provider,
-            license_=license_,
-            idp_region=idp_region,
-        ),
+        _resume_login_command(**resolved.login_kwargs()),
         profile,
         region,
         total_wait=30,
@@ -277,11 +469,16 @@ def resume_login_daemon(
 
 
 def wait_until_logged_in(
-    instance_id: str, profile: str = "", region: str = "", *, attempts: int = 30
+    instance_id: str,
+    profile: str = "",
+    region: str = "",
+    *,
+    attempts: int = 30,
+    target: Optional[KiroLoginTarget] = None,
 ) -> bool:
-    """Poll :func:`is_logged_in` until true or attempts exhausted."""
+    """Poll :func:`is_logged_in` (against *target* when given) until true or attempts exhausted."""
     for _ in range(max(1, attempts)):
-        if is_logged_in(instance_id, profile, region):
+        if is_logged_in(instance_id, profile, region, target=target):
             return True
         ssm._sleep(5)
     return False
@@ -322,6 +519,28 @@ if [ "$rc" -eq 0 ]; then
 fi
 echo "{_NOAUTH_SENTINEL}"
 exit 1
+""".strip()
+
+
+def _whoami_json_command() -> str:
+    """Build the remote identity read: ``kiro-cli whoami --format json``.
+
+    Same discipline as :func:`_login_check_command` — stdin detached, exit code
+    authoritative, explicit no-auth sentinel — but the OUTPUT is what matters
+    here: the leading JSON object names the account type and start URL the
+    session belongs to, which is what turns "logged in" into "logged in as whom".
+    """
+    return f"""
+set +e
+{_KIRO_BIN_RESOLVE}
+out="$("$KIRO" whoami --format json < /dev/null 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "{_NOAUTH_SENTINEL}"
+  exit 1
+fi
+echo "$out"
+exit 0
 """.strip()
 
 
@@ -381,6 +600,50 @@ fi
         extra_flags += f" --license {shlex.quote(license_)}"
     if idp_region:
         extra_flags += f" --region {shlex.quote(idp_region)}"
+    if identity_provider or license_ or idp_region:
+        # Identity Center: kiro-cli PROMPTS for the start URL and region even
+        # when the flags supply them (the flags only prefill the answers), and
+        # it reads those prompts from a TTY. With stdin on /dev/null the answers
+        # come back empty and the flow dies before any device code is printed
+        # ("invalid value for field: region - must be a valid host label"). The
+        # driver gives it a pty and presses Enter on each prefilled prompt.
+        # The driver file must not be a predictable path a second local user
+        # could pre-create or symlink: `mktemp -d` makes a fresh 0700 directory
+        # with an unpredictable name, the write goes inside it, and any failure
+        # aborts the launch (a sentinel the caller reports) instead of running
+        # whatever sits at the path. The directory is removed by the driver's
+        # parent shell once the login process has exited.
+        launch = (
+            'nohup sh -c \'python3 "$0" "$@"; rm -rf "$(dirname "$0")"\' "$KC_DRIVER" '
+            f'"$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &'
+        )
+        launch_block = f"""
+KC_DRIVER_DIR="$(mktemp -d "${{TMPDIR:-/tmp}}/kirocrew-login-pty.XXXXXXXX")" || KC_DRIVER_DIR=""
+if [ -z "$KC_DRIVER_DIR" ] || [ ! -d "$KC_DRIVER_DIR" ]; then
+  echo "{_DRIVER_SETUP_FAILED_SENTINEL}"
+  exit 0
+fi
+KC_DRIVER="$KC_DRIVER_DIR/driver.py"
+if ! cat > "$KC_DRIVER" <<'PYDRIVER'
+{_LOGIN_PTY_DRIVER}
+PYDRIVER
+then
+  rm -rf "$KC_DRIVER_DIR"
+  echo "{_DRIVER_SETUP_FAILED_SENTINEL}"
+  exit 0
+fi
+{launch}
+""".strip()
+    else:
+        # Builder ID prompts for nothing, so the plain background process is
+        # enough and stays exactly as it is.
+        launch_block = f"""
+if command -v stdbuf >/dev/null 2>&1; then
+  nohup stdbuf -oL -eL "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
+else
+  nohup "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
+fi
+""".strip()
     return f"""
 set +e
 {_KIRO_BIN_RESOLVE}
@@ -391,11 +654,7 @@ rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
 # from world-readable /tmp (default umask 0022 -> 0644). umask 077 makes the
 # files below 0600.
 umask 077
-if command -v stdbuf >/dev/null 2>&1; then
-  nohup stdbuf -oL -eL "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
-else
-  nohup "$KIRO" login --use-device-flow{extra_flags} >"{_LOGIN_LOG_PATH}" 2>&1 </dev/null &
-fi
+{launch_block}
 echo $! > "{_LOGIN_PID_PATH}"
 for _ in $(seq 1 {_DEVICE_LOGIN_CAPTURE_ATTEMPTS}); do
   if [ -s "{_LOGIN_LOG_PATH}" ] && grep -Eiq "https://|verification code|user_code=|already .*logged in|already .*signed in" "{_LOGIN_LOG_PATH}"; then

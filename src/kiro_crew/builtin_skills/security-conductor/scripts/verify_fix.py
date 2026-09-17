@@ -347,13 +347,14 @@ def child_env(worktree: Path, *, extra: dict[str, str] | None = None) -> dict[st
 def reap(process: subprocess.Popen[bytes]) -> None:
     """Kill a child that hit the deadline, then wait once. Safe to call twice.
 
-    The DIRECT child only, matching ``verify_finding.py`` exactly. A process-tree
-    kill has no portable spelling in the standard library -- every one available is
-    POSIX-only -- and a verifier whose own teardown works on a single host would be
-    the PLATFORM LOCK-IN this corpus exists to catch. The two children spawned here
-    are a checked-in script and this script itself, so a detached grandchild is the
-    operator's own code on the operator's own machine, inside the boundary the RFC
-    already draws there.
+    The DIRECT child only -- unlike ``verify_finding.py``, which tears down the
+    proof's whole process group because what it runs is model-authored. A
+    process-tree kill has no portable spelling in the standard library -- every one
+    available is POSIX-only -- and a verifier whose own teardown works on a single
+    host would be the PLATFORM LOCK-IN this corpus exists to catch. The two children
+    spawned here are a checked-in script and this script itself, so a detached
+    grandchild is the operator's own code on the operator's own machine, inside the
+    boundary the RFC already draws there.
     """
     try:
         process.kill()
@@ -492,7 +493,7 @@ def run_verifier(
 #: composite. A check the tree does not carry is coverage lost, and the probe
 #: reports it as unavailable rather than skipping it.
 TIERS: tuple[tuple[str, str], ...] = (
-    ("sensitive-path", "is_sensitive_path"),
+    ("sensitive-path", "sensitive_path_refusal"),
     ("sensitive-bash", "is_sensitive_bash_command"),
     ("exfil", "audit_bash_exfiltration"),
     ("deny-rules", "is_denied"),

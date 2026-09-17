@@ -518,8 +518,9 @@ class TestNotThisCommand:
     """``None`` is the sentinel that keeps normal routing going."""
 
     @pytest.mark.parametrize("text", ["", "hello", "spawnish thing", "  ", "bgone"])
-    def test_spawn_declines_text_that_is_not_a_spawn(self, text: str) -> None:
-        assert spawn_command_reply(text, MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_spawn_declines_text_that_is_not_a_spawn(self, text: str) -> None:
+        assert await spawn_command_reply(text, MagicMock()) is None
 
     @pytest.mark.parametrize("text", ["", "cron", "crond list", "not cron list"])
     @pytest.mark.asyncio
@@ -537,50 +538,72 @@ class TestNotThisCommand:
 
 
 class TestSpawn:
-    def test_both_prefixes_reach_the_same_spawn(self) -> None:
+    @pytest.mark.asyncio
+    async def test_both_prefixes_reach_the_same_spawn(self) -> None:
         manager = MagicMock(max_concurrent=2)
         manager.spawn.return_value = SimpleNamespace(id="z9")
         for text in ("spawn do it", "bg do it", "SPAWN do it"):
             manager.spawn.reset_mock()
-            assert "z9" in (spawn_command_reply(text, manager) or "")
+            assert "z9" in (await spawn_command_reply(text, manager) or "")
             assert manager.spawn.call_args.args[0] == "do it"
 
-    def test_the_parsed_form_is_public_for_a_prefixed_command_grammar(self) -> None:
+    @pytest.mark.asyncio
+    async def test_the_parsed_form_is_public_for_a_prefixed_command_grammar(self) -> None:
         # A channel whose own grammar carries the prefix (/spawn, !spawn) has the
         # argument already; it must not have to rebuild "spawn " + arg.
         manager = MagicMock(max_concurrent=2)
         manager.spawn.return_value = SimpleNamespace(id="q1")
-        assert "q1" in (spawn_task_reply("do it", manager) or "")
+        assert "q1" in (await spawn_task_reply("do it", manager) or "")
 
-    def test_an_empty_argument_declines(self) -> None:
-        assert spawn_task_reply("", MagicMock()) is None
-        assert spawn_command_reply("spawn    ", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_a_manager_with_spawn_async_is_never_spawned_on_the_loop(self) -> None:
+        """The store write a spawn performs must not run on the gateway loop.
+
+        A real ``SubagentManager`` exposes ``spawn_async``, which writes the
+        durable row on the task store's writer thread; the sync ``spawn`` takes
+        ``BEGIN IMMEDIATE`` on the calling thread.
+        """
+        manager = MagicMock(max_concurrent=2)
+        manager.spawn_async = AsyncMock(return_value=SimpleNamespace(id="a9"))
+        assert "a9" in (await spawn_task_reply("do it", manager, "slack:C1:1") or "")
+        manager.spawn.assert_not_called()
+        assert manager.spawn_async.await_args.kwargs["parent_session_key"] == "slack:C1:1"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_argument_declines(self) -> None:
+        assert await spawn_task_reply("", MagicMock()) is None
+        assert await spawn_command_reply("spawn    ", MagicMock()) is None
 
     @pytest.mark.parametrize("verb", ["list", "status", "LIST"])
-    def test_the_list_verbs_report_an_empty_roster(self, verb: str) -> None:
-        assert spawn_task_reply(verb, MagicMock(running=[])) == "No subagents running."
+    @pytest.mark.asyncio
+    async def test_the_list_verbs_report_an_empty_roster(self, verb: str) -> None:
+        assert await spawn_task_reply(verb, MagicMock(running=[])) == "No subagents running."
 
-    def test_a_running_subagent_is_listed_with_its_elapsed_time(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_running_subagent_is_listed_with_its_elapsed_time(self) -> None:
         agent = SimpleNamespace(id="a7", started=time.time() - 5, task="reindex the corpus")
-        out = spawn_task_reply("list", MagicMock(running=[agent])) or ""
+        out = await spawn_task_reply("list", MagicMock(running=[agent])) or ""
         assert "a7" in out and "reindex the corpus" in out
 
-    def test_capacity_is_reported_with_the_limit_that_was_reached(self) -> None:
+    @pytest.mark.asyncio
+    async def test_capacity_is_reported_with_the_limit_that_was_reached(self) -> None:
         manager = MagicMock(max_concurrent=3)
         manager.spawn.return_value = None
-        assert "capacity reached (3)" in (spawn_task_reply("work", manager) or "")
+        assert "capacity reached (3)" in (await spawn_task_reply("work", manager) or "")
 
-    def test_the_echoed_task_is_redacted(self) -> None:
+    @pytest.mark.asyncio
+    async def test_the_echoed_task_is_redacted(self) -> None:
         # The echo goes to an external surface and into the persisted log, and the
         # task is free-form text a user typed or an LLM proposed.
         manager = MagicMock(max_concurrent=2)
         manager.spawn.return_value = SimpleNamespace(id="r1")
-        out = spawn_task_reply(f"push with {_AWS_KEY}", manager) or ""
+        out = await spawn_task_reply(f"push with {_AWS_KEY}", manager) or ""
         assert _AWS_KEY not in out
 
-    def test_a_listed_task_is_redacted(self) -> None:
+    @pytest.mark.asyncio
+    async def test_a_listed_task_is_redacted(self) -> None:
         agent = SimpleNamespace(id="a1", started=time.time(), task=f"key {_AWS_KEY}")
-        out = spawn_task_reply("list", MagicMock(running=[agent])) or ""
+        out = await spawn_task_reply("list", MagicMock(running=[agent])) or ""
         assert _AWS_KEY not in out
 
 
@@ -1040,7 +1063,8 @@ class TestListsHostState:
         assert commands.normalize_task_arg("running the tests") == "running the tests"
         assert commands.normalize_task_arg("run") == ""
 
-    def test_the_spawn_listing_really_does_ignore_the_session(self) -> None:
+    @pytest.mark.asyncio
+    async def test_the_spawn_listing_really_does_ignore_the_session(self) -> None:
         """The premise, asserted rather than assumed.
 
         The gate exists because `spawn list` renders every subagent on the box. If it
@@ -1052,7 +1076,7 @@ class TestListsHostState:
             SimpleNamespace(id="a2", started=0.0, task="somebody elses"),
         ]
         manager = SimpleNamespace(running=agents, max_concurrent=4)
-        out = commands.spawn_task_reply("list", manager, "telegram:kirocrew:direct:7")
+        out = await commands.spawn_task_reply("list", manager, "telegram:kirocrew:direct:7")
         assert out is not None
         assert "mine" in out and "somebody elses" in out
 

@@ -49,30 +49,109 @@ Session ledgers do **not** live under the flat `sessions/<key>.jsonl` transcript
 
 The `ledgers` root is established EAGERLY, and that is what makes the mask non-vacuous. Both fences are stated per PATH, and the Linux bind-mask loop skips a leaf that does not exist -- so a root created lazily on the first write is unmasked in every sandbox spawned before it, one of which can then create the directory itself and fill it with entries a reader would take as the gateway's. Two mechanisms close that: `ensure_data_home()` creates it `0700` at startup, and `chmod`s it too, since `mkdir`'s mode is umask-masked on creation and a no-op on a directory that already exists; and `sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES` materialises it empty before every namespace spawn so the bind always has a name to cover. macOS needs neither: a Seatbelt deny is a path rule that holds for a name that does not exist yet.
 
-## 4. Format
+## 4. Envelope
 
-Line 1 is the header; every later line is an entry.
+Line 1 is the header; every later line is an entry. This section is the part that is the same for both kinds -- the fields, the bounds, and what `ref` and `thread` mean. What belongs to one kind alone is in 4a and 4b.
 
 ```json
 {"type":"crew","version":1,"id":"qa","createdAt":1789000000000}
-{"type":"crew:qa/report","seq":388,"time":1789000000000,"src":"crew:qa","thread":120,
+{"type":"crew/report","seq":388,"time":1789000000000,"src":"crew:qa","thread":120,
  "ref":{"unit":"session","id":"s-7f3a","from":40,"to":96},"data":{"item":"pr-4127","status":"done"}}
 ```
 
 | Field | Meaning |
 |---|---|
-| `type` | `domain/action`, or a guest-namespaced `crew:<name>/<action>` / `app:<name>/<action>`. |
+| `type` | `domain/action`, or the one guest form `app:<name>/<action>`. A type carries the FACT; who wrote it is `src`. |
 | `seq` | Contiguous from 1 after the header. Writer-assigned. |
 | `time` | Epoch milliseconds. Writer-assigned. |
-| `src` | `gateway`, `acp`, `dashboard`, `patrol`, `session:<id>`, `crew:<name>` or `app:<name>`. |
+| `src` | The emitter. Which names a kind accepts is per kind: 4a and 4b. |
 | `thread` | Optional. The seq of an earlier entry in this same file -- a grouping key, like a chat thread id. |
 | `ref` | Optional. `{unit, id, from, to?}`, a pointer to a segment of another (or the same) ledger. `to` absent means one line. |
 | `ignorable` | Optional, `true` only. The writer's promise that a reader which does not know this `type` may skip the line. Absent on every entry that does not set it. |
 | `data` | A JSON object. |
 
-A crew header carries nothing else. A crew's display name and template belong to the members store, which owns them and can change them; an append-only line cannot, so duplicating them here would make this file the system of record for values it has no way to update, and the first rename would leave a permanent lie on line 1.
+A serialized entry is capped at `MAX_ENTRY_BYTES` (64 KiB) and a `ref` at `MAX_REF_SPAN` (500) lines. Both refuse rather than truncate; section 6 states why.
 
-A session header additionally carries `owner`, `agent`, and the optional `task`, `pack`, `slot`, `thread` (`{crew, seq}`), `cwd` and `remote` -- the facts fixed for the session's whole life, which a reader needs before reading any entry.
+`thread` and `ref` answer different questions and the difference is the file boundary. `thread` groups entries INSIDE one ledger, so it is an int -- a seq this same writer assigned, which is why the anchor can be proved to exist before the append lands. `ref` points ACROSS files, so it must name a unit as well as a seq range, and it is resolved at read time with four outcomes rather than dereferenced at write time: the cited file can be pruned or damaged between the citation and the read, and the citing entry is not rewritten when it is.
+
+`ref` is deliberately kind-independent: it is the envelope's, so a crew ledger may cite a session's segment and a session ledger may cite a crew's. Section 4b names the one bridge a writer takes today.
+
+Two overlaps between the kinds are intentional and are not collisions. The `message` domain exists in BOTH kinds with different `data` -- a crew forwards messages, a session records its own bodies -- because ownership answers "does this kind have such events", and both do. And `ref` crossing kinds is the mechanism the two records are joined by, rather than one kind copying the other's bytes.
+
+### 4a. Session ledger
+
+One session's own history: the ACP turn lifecycle, what was put in front of the model, and what the model did.
+
+`src` is `gateway` or `acp`, and nothing else. Those are the two writers a session's entries come from -- the gateway around each turn, the ACP runtime for the measured path -- and a list wider than that is an authorization hole rather than a convenience, because `src` is what a reader attributes an entry to. A `patrol` or a guest crew has nothing to say inside one session's turn history. Adding a name is ADDITIVE: no reader validates `src`, so the list names the emitters that exist. `session:<id>` is spelled by no kind, because no emitter writes it.
+
+`thread` stays unset. A session entry's grouping key is its turn, which it carries in `data.turn` (and `data.step` where a step exists) and which is known at emit time, so threading would be a second spelling of a fact the entry already states.
+
+The type tables are section 5, which lists every session type, its `data` and whether an emitter writes it today.
+
+A session header carries `owner`, `agent`, and the optional `task`, `pack`, `slot`, `thread` (`{crew, seq}`), `cwd` and `remote` -- the facts fixed for the session's whole life, which a reader needs before reading any entry. `owner` never changes. Among them, `thread {crew, seq}` is where a session's place in a crew's work lives: it points back at the crew entry that caused the session to exist, on line 1 rather than in an entry, because it is settled before the first turn.
+
+### 4b. Crew ledger
+
+A crew's activity record: its members, its work items, the messages it forwarded, and the sentences a conductor reads. A crew entry is often a sentence plus a `ref` -- "I opened PR-4127" and where to read the work.
+
+A crew header carries the unit's id and its creation time and nothing else. A crew's display name and template belong to the members store, which owns them and can change them; an append-only line cannot, so duplicating them here would make this file the system of record for values it has no way to update, and the first rename would leave a permanent lie on line 1.
+
+`src` is `gateway`, `dashboard`, `patrol`, or one of the two guest forms `crew:<name>` and `app:<name>`. A guest is an emitter that names an INSTANCE rather than a subsystem, and a crew ledger is the one kind that accepts one, because it is the record several units contribute to: a child crew reports into its parent's ledger, a conductor signs its own dispatches, and an app records a fact no built-in domain covers. Section 6 states what each guest may write.
+
+The families, from the RFC:
+
+| family | types | pointer |
+|---|---|---|
+| shipped | `member/*`, `activity/record`, `slot/*`, `patrol/*` | `slot/*` -> the session |
+| messages | `message/received`, `message/sent` | redacted body in the ledger |
+| tree | `crew/child-attached`, `crew/parent-attached`, `*-detached` | -- |
+| dispatch | `crew/dispatch`, `crew/report` | report -> the child's segment |
+| topics | `crew/topic-*`, `crew/forwarded`, `crew/run-state` | topic -> its work session |
+| items | `item/phase {from,to,reason}`, `item/next`, `item/probe`, `item/verdict`, `crew/round-*` | probe, verdict -> evidence |
+| knowledge | `crew/finding`, `crew/summary`, `crew/note-*`, `crew/link` | the segment covered |
+| memory | `memory/bound\|copied\|forgotten\|restored` | -- |
+
+Two of these families carry a contract with REQUIRED fields. **Required here is a contract on the writer, and what enforces it is a declaration rather than a branch:** a per-type `data` requirement belongs to the type registry, next to that type's own `data` shape, not to `check_ownership`, which answers who may write a type rather than what the type must contain. Until that module exists these two contracts are held by review against this section. TODO: declare them in the ledger type registry module, `kiro_crew.ledger.types`, when it lands.
+
+**`crew/dispatch`** -- a parent asking for an item to be worked.
+
+```json
+{"type":"crew/dispatch","seq":120,"time":1789000000000,"src":"crew:conductor",
+ "data":{"item":"pr-4127","target":{"kind":"session","slot":"dashboard:3"},"brief":"drive it green"}}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `data.item` | yes | The item this dispatch is about. |
+| `data.target` | yes | `{kind: "session", slot}` or `{kind: "crew", name}`. |
+| `data.brief` | no | What the target is being asked to do. |
+
+`target` is required because a dispatch with no target names nobody. It is not a hint a reader can fill in later: the `board` projection folds dispatches into who owes what, so an entry naming no one is a row the fold cannot place, in a file nothing rewrites.
+
+**`crew/report`** -- the answer to a dispatch.
+
+```json
+{"type":"crew/report","seq":388,"time":1789000000000,"src":"crew:qa","thread":120,
+ "ref":{"unit":"session","id":"s-7f3a","from":40,"to":96},
+ "data":{"item":"pr-4127","status":"done","credits":0.21,"summary":"merged"}}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `data.item` | yes | The item being reported on. |
+| `data.status` | yes | One of `done`, `blocked`, `failed`, `progress`. |
+| `data.credits` | no | Credits the child spent. Absent is not zero. |
+| `data.summary` | no | One sentence. |
+| `ref` | yes | A segment of the child's ledger: the evidence. |
+| `thread` | when replying | The dispatch's `seq`. |
+
+`ref` is required for the same reason `target` is. A report is a CLAIM about work that happened somewhere else, and `board` and `budget` fold status and credits straight off it without opening the child's ledger; the `ref` is what makes that fold checkable rather than trusted. A report with no `ref` is an unfalsifiable claim, permanently, since nothing later can attach the evidence to a line that is already written.
+
+`thread` is the dispatch's `seq` when the report answers one, which is what makes a dispatch and its replies one conversation inside the parent's file. A report volunteered with no dispatch behind it carries no `thread`.
+
+Both of these are one type each, not one per writer. The child's identity is `src`, so two children reporting on one item write the same `type` into one file and are told apart by who signed them.
+
+`ref` on a report is **the one cross-kind bridge a writer takes**: from a crew ledger into a session's segment, one level down, in the direction a conductor reads. The pair is symmetric with `subagent/spawned` (section 5): the child's header `thread` points up at the entry that caused it, and that entry's `ref` points down into the child's record.
 
 ## 5. The frozen session-log format
 
@@ -189,9 +268,16 @@ same pair as a crew dispatch, one level down.
 
 Every refusal is a `LedgerError` carrying a stable `code`; the codes are API surface and are additive-only.
 
-**Ownership** answers whether a kind of unit has such events at all. `schema.TYPE_OWNERSHIP` maps kind to owned `type` domains -- crew: `member` `activity` `slot` `patrol` `message` `crew` `item` `memory`; session: `session` `turn` `step` `tool` `approval` `model` `compaction` `summary` `plan` `remote` `message` `request` `context` `skill` `background` `subagent` -- and anything else is `event_type_not_owned`. It is prefix-based, so a new action under an owned domain needs no change. `message` appears in both registries, which is what ownership means: a crew forwards messages and a session records its own bodies, so both kinds have such events and neither name is a collision.
+**Ownership** answers whether a kind of unit has such events at all. `schema.TYPE_OWNERSHIP` maps kind to owned `type` domains -- crew: `member` `activity` `slot` `patrol` `message` `crew` `item` `memory`; session: `session` `turn` `step` `tool` `approval` `model` `compaction` `summary` `plan` `remote` `message` `request` `context` `skill` `background` `subagent` -- and anything else is `event_type_not_owned`. It is prefix-based, so a new action under an owned domain needs no change: `crew/dispatch` and `crew/report` are owned by the `crew` domain the registry already lists. `message` appears in both registries, which is what ownership means: a crew forwards messages and a session records its own bodies, so both kinds have such events and neither name is a collision.
 
-**Namespacing** answers whether an emitter may write it. A `crew:<name>` or `app:<name>` emitter is a guest: it may write only under its own prefix, and only into a crew ledger, else `namespace_violation`. A guest type is judged by this rule *instead of* ownership, which is why the registry needs no guest entries -- a guest's own name is its permission.
+**Namespacing** answers whether an emitter may write it, and it is a rule about `src`. Two halves:
+
+- **Which emitters a kind takes at all.** `schema.KIND_FIXED_SOURCES` and `schema.KIND_SOURCE_PREFIXES` are the lists, spelled out in 4a and 4b; anything else is `bad_src`. The lists are per kind rather than shared because the writers are: a shared list accepts `patrol` inside one session's own turn history, and `src` is what a reader attributes an entry to, so that is an authorization hole rather than a convenience. `require_src` therefore takes `kind` as a required keyword argument -- it selects the rule, so a caller that omits it fails loudly instead of having its `src` measured against some default kind's list.
+- **What a guest may write.** A `crew:<name>` emitter writes the crew kind's own built-in domains: its name in `src` is the signature, so `crew/report` is one type every child writes and the entries are told apart by who signed them. An `app:<name>` emitter writes only under its own `app:<name>/` type prefix, else `namespace_violation`. That prefix is the ONE guest type namespace, kept for a fact no built-in domain covers, and it is judged by this rule *instead of* ownership -- which is why the registry needs no app entries.
+
+A type never carries the writer's identity. `crew:<name>/<action>` is not a type at all but a malformed one (`bad_type`): identity belongs in `src`, where authorization reads it, and a type that repeats it would make the same fact a different type per writer -- so a fold would need to parse the type to group two children's reports on one item, and the registry would grow an entry per crew.
+
+What this layer does NOT check is any relationship between the guest and the ledger. It has no crew tree to consult, so it cannot ask whether `crew:qa` is really a child of the crew whose file it is writing into -- and a check with nothing behind it only looks like a boundary, the same reason `resolve` has no `forbidden` status yet. Authorization here is that the emitter is a form this kind accepts and that a guest stays inside its own namespace; who is whose child arrives with the grants, at the layer that has the tree.
 
 The remaining bounds: `thread` must name an existing, parseable, earlier seq (`bad_thread`); `ref` must be well-formed and span at most `MAX_REF_SPAN` lines (`bad_ref`); a serialized entry must be at most `MAX_ENTRY_BYTES` (`entry_too_large`). Caps refuse rather than truncate, leaving the file byte-identical -- a clipped record the caller believes landed intact is a loss the caller cannot detect.
 
@@ -257,7 +343,7 @@ Release is bound to the HANDLE being dropped rather than to an explicit call, an
 
 There is deliberately NO expiry. The case ownership is for needs none: a crashed, killed or evicted owner has its lock dropped by the kernel when its descriptor closes, so a successor takes ownership at once and closes the turn its predecessor left open. What an expiry would add is the power to expropriate a writer that is merely SLOW, whose next append then lands after a successor has already closed its turn -- the exact damage this prevents, reintroduced as a timeout. A live but wedged owner therefore keeps ownership until its process exits, and the claim it blocks reports its own loss instead of taking the log.
 
-After locking, the held inode is compared with the file now at the lease path, and a mismatch starts over. A POSIX lock names an inode, so a lock on a path that was unlinked and recreated proves nothing about the file a writer is about to append to. Nothing in this tree removes a live unit's lease file; the check is what makes that a property of the code rather than an assumption about it.
+After locking, the held inode is compared with the file now at the lease path, and a mismatch starts over. A POSIX lock names an inode, so a lock on a path that was unlinked and recreated proves nothing about the file a writer is about to append to. Nothing in this tree removes a LIVE unit's lease file: the one path that removes one -- `remove_unit`, under "Retention: whole units" below -- first takes ownership no other handle shares, so by then the unit has no writer, and it unlinks the lease last, after every other file is already gone. The check is what makes that a property of the code rather than an assumption about it.
 
 ## 8. Retention: segment files
 
@@ -288,8 +374,192 @@ boundary while reporting no cursor -- claiming the whole history had been seen w
 ledger today. What creates the second segment, and on what trigger, is a later change that needs no
 format change to land.
 
+### Retention: whole units
+
+A unit's whole ledger is removed by `store.remove_unit(kind, id)`, and that is the ONE spelling of
+deletion in this module: the retention sweep and the session permanent-delete funnel both call it,
+because two callers deleting one tree two ways is two chances to get the order wrong and the order is
+the entire correctness argument. It is not rotation and not a format change, and NOTHING is written
+to a ledger that is about to go -- no tombstone, no `pruned` entry. A reader holding a citation into
+it already has its answer: `resolve` reports `gone` for a pointer into a unit with no ledger at all.
+
+**Removal goes through the lease, and the lease it takes is SOLE.** Ownership is what stands between
+a removal and unlinking the segments a live writer is appending to, so the removal claims it
+non-blocking and is refused with `already_owned` when it cannot -- the unit is live, that pass does
+nothing, and a later one collects it once its writer is gone. `sole` is load bearing rather than
+decorative: the lock is refcounted per process, so a plain claim against a unit THIS process is
+already writing succeeds by joining that count and proves nothing, which would let a sweep running
+inside the gateway delete the ledger of a session the emitter's cached handle is mid-append to. A
+sole holder also blocks every later claim, shared or not, until it is released; without that the
+refusal is one-directional -- a writer arriving second would join the remover's own lock and append
+into a unit whose files are being unlinked.
+
+**Then the caller RE-DECIDES, inside the hold.** A `guard` callback is REQUIRED and is called once
+ownership is held; the unit is removed only if it answers true. The lease alone is not enough, and the
+gap is the one `purge_matching` already documents: a selection made outside it is a SNAPSHOT, and
+ownership deliberately ends BETWEEN turns, so a session can be revived, append, finish its turn and
+release the lease in the window between the decision and the delete -- after which the removal would
+take a live conversation's log while contending with nobody. Re-reading under the hold is what makes
+the decision current, which is why the guard is a callback rather than a filter the caller applies
+first, and why there is no default that skips it. The sweep's guard re-derives the same expiry answer
+and requires the same unit id; a caller whose reason is not a property of the file passes an
+accept-all guard and says at its call site what does decide.
+
+Then order, with IDENTITY LAST. Segments carry the header, so they are the history and they go first;
+the per-append `.lock` next; then any other entry, none of them followed if it is a link. The
+`.lease` file is removed LAST and only by its holder, which is what keeps the inode check under
+"Write ownership" a fact about this code rather than an assumption: while the lease exists its path
+names the file whose lock proves ownership, and a lease unlinked before the segments would let a
+second remover take a lock on a fresh inode at the same path and unlink the same files concurrently.
+Windows refuses an in-hold unlink and gets it after release instead, which is safe there precisely
+because it fails while any handle is open -- the same asymmetry `session_ledger.unlink_lock_in_hold`
+documents, and that function is reused rather than copied. Failures are COUNTED and reported for what
+they are: a unit that could not be fully removed answers `failed` rather than being reported as
+collected, and stays addressable by the next pass -- but `failed` does not promise its history
+survived. Segments go FIRST, so the ordinary partial removal is history already gone with something
+else left standing, and the log line distinguishes that from a removal that got nowhere. Claiming the
+segments were kept would send a reader looking for a record the pass had destroyed.
+
+A unit directory that is a LINK is refused, and the check is on the name as WRITTEN. `ledger_dir`
+returns the RESOLVED path, so a link pointing at another unit stays inside the root, satisfies
+containment, and hands the removal its target -- which is not itself a link, so checking the resolved
+path would prove nothing and one unit's id would delete another unit's history.
+
+**What the sweep selects.** `store.sweep_expired(days)` is called by
+`history._cleanup_old_archives`, so `session.archive_retention_days` governs ledgers too: one switch,
+one hourly throttle, no new config key, and a negative value disables both halves. It walks
+`ledgers/sessions` alone -- crew ledgers are never in scope, since they have no writer and no
+`session/closed` to age from, and a rule invented for them now would be a guess applied to files
+nothing produces. A missing root costs one directory listing, which is also what makes the sweep de
+facto gated by `KIROCREW_SESSION_LEDGER` without reading it: only the emitter creates session units.
+Reading the flag here would be worse than not reading it, because turning it off would then strand
+every ledger already written, permanently.
+
+A unit is EXPIRED when its newest LIFECYCLE entry is a `session/closed` older than the cutoff.
+`session/opened` and `session/closed` are the pair that moves a unit between open and closed, and the
+newest of the PAIR is what decides -- not the newest close on its own. A resumed session appends to
+the ledger it already had, so `... closed ... opened ...` is a legitimate file whose session is
+running right now, and a rule that read the newest close would call it expired and delete a live
+conversation's log. Entries that are neither -- a turn, a tool, an in-flight closer the emitter writes
+after a teardown by design -- say nothing about the state and are skipped.
+
+Four things are skipped regardless of age, and each is a refusal rather than an oversight:
+
+- **An OPEN unit** -- one whose newest lifecycle entry is a `session/opened`, or which has no
+  lifecycle entry in the window at all. The deciding entry is looked for in a bounded read of the
+  newest segment's end, and only entries written after it can push it out; once a unit is closed the
+  emitter writes nothing but a handful of in-flight closers unless the session is revived, which
+  appends its own `session/opened`. So a lifecycle entry outside the window means a live session --
+  exactly the unit that must be kept -- and the bound fails closed instead of scanning every ledger on
+  every pass.
+- **A torn tail.** Unterminated trailing bytes are what `open(repair=True)` truncates, and the sweep
+  cannot tell a dead writer's crash artifact from an append that has not reached its fsync -- the
+  bytes are identical. Deleting the unit would destroy the history the repair exists to recover.
+- **A header whose id does not fold back to its own directory name.** The removal is aimed by id, so
+  a directory carrying another unit's id would have the removal land on that other unit.
+- **A close whose reason does not END the ACP id's life.** A unit is collectable on exactly ONE reason:
+  `destroyed`, and that word asserts REVOCATION COMPLETED rather than "a destroy ran". `destroy` removes
+  exactly one map key, so before claiming it the teardown checks that no OTHER key still maps to that
+  sid; when one does, it records `destroyed_sid_retained` instead and the log stays. Two keys on one sid
+  is a state the system itself produces -- importing a transferred session twice allocates a new slot key
+  each time and deliberately leaves the source intact (`dashboard/session_transfer.py`) -- so the other
+  holder is NOT revoked to make the record tidy, and its shared log is not collected while it can resume.
+  An unreadable map withholds the claim for the same reason. Reading the map to WITHHOLD a claim is safe
+  in the way reading it to grant one is not: a forged or emptied map can only make the gateway assert
+  less than the truth, and the sweep itself still reads nothing but the ledger. The permanent-delete
+  funnel applies the same veto, because it deletes without consulting the reason.
+
+  `reset` is deliberately excluded even though it cold-starts its successor on a new id, because its own
+  `clear_sid` is guarded by `if clear_conversation and session is not None` -- so a reset that keeps the
+  conversation writes `session/closed {reset}` while LEAVING the old id mapped, still resumable and its
+  log still needed. `discarded` clears the sid unconditionally and would qualify on that test, but no
+  path writes that reason into a ledger today, so admitting it would be a rule about a file nothing
+  produces. Every other reason -- a shutdown, a crash, an eviction, or a spelling this build does not
+  know -- ends the gateway's SERVICE of the session without ending the id's life. An absent, empty or
+  non-string reason is read as absent, never matched.
+
+  Because the deciding entry is the newest LIFECYCLE one, a `session/opened` after a `destroyed` puts the
+  unit back out of reach. So planting a mapping and resuming causes the log to be KEPT, never deleted:
+  every way of making the id reachable again also makes the unit uncollectable.
+
+  This reason is the WHOLE authorization for deleting a unit, and it is read from the ledger rather than
+  from anything outside it. Asking `session_map.json` which sessions are still mapped, and keeping those,
+  was implemented and then removed: that file is agent-WRITABLE while this tree is bind-masked, and a
+  VALID empty map is not a failed read -- it reads as "nothing is revivable" and hands the trusted sweep
+  a positive answer that authorizes deleting a fenced unit the writer of that file cannot touch directly.
+  Absence of protection must never be authorization, which is why the rule needs positive proof from
+  inside the fence. It also subsumes the revival race it replaced: an id whose mapping the gateway
+  DELETED cannot be resumed at all, so there is no window between a revival's authorization and its
+  first entry.
+
+**Being UNREADABLE is not one of them.** Segment provenance is checked on the read path: a segment
+whose header names another unit or another schema version, or whose filename declares a first sequence
+its own first entry does not carry, refuses the whole read with `bad_segment`. The sweep never goes
+through that path -- it reads the header line and a bounded tail directly -- so a unit the reader
+refuses is still collected on age. That is deliberate. Gating removal on readability would make a
+damaged ledger IMMORTAL: the one unit nothing can use would be the one unit retention could never
+reclaim, and the corruption would be preserved forever by the rule meant to protect history. None of
+the three refusals above needs the entries to be readable end to end, so what is dropped is a closed,
+aged, unowned unit either way.
+
+The age comes from the close entry's own `time`, and the newest segment's MTIME is a fallback used
+only when that field is unusable. The entry wins because it is the writer's own record of when the
+session ended and nothing rewrites it, while mtime is metadata a copy, a restore or a backup tool
+resets -- a restored tree would read as freshly closed and never expire. The fallback is kept rather
+than skipping the unit because a damaged `time` still proves the session ended, and mtime is then the
+best available bound on when writing stopped; it can only be at or after the real close, so it errs
+toward keeping the file. The LAST close in the file is the one read, because a resumed session
+appends to the ledger it already had and only the newest close describes the life that ended.
+
+**Permanently deleting a session removes its ledger; closing a tab does not.** The dashboard's
+history-delete funnel calls `remove_unit` with the ACP session id it captured BEFORE the teardown,
+and only once that teardown SUCCEEDED. The gate is on success rather than on the attempt because
+`destroy_if` refuses when the session was replaced by a successor generation, is busy, or still has a
+live slot owner -- in each of those cases the session it names is preserved and may be writing right
+now. The write lease is not a substitute for that check: ownership ends between turns by design, so an
+idle-but-live session holds nothing for the removal to be refused by. Only an id the delete claim
+PROVED is used -- it is dropped on every path that disowns the slot, and a value that is not a
+non-empty string reads as absent -- so an unresolvable one removes nothing and the sweep collects that
+ledger on age instead. The removal is best-effort: the transcript row is already gone by then, so
+raising would ask a person to retry a delete against a row that is absent.
+
+**Every destroy records its teardown, and without that entry neither half collects the unit.**
+`session_lifecycle.destroy` writes `session/closed {destroyed}` through the emitter, beside the
+`reset` route that already did. It is not bookkeeping. The emitter holds a destroyed session's cached
+handle, and the write lease that handle carries, so a removal claiming the lease `sole` answers
+`owned`; the sweep is blocked from the other side, because a unit whose newest lifecycle entry is not
+a close reads as OPEN whatever its age. One missing entry defeated both paths, which is why the entry
+is written where every destroy passes rather than only in the delete funnel. Writing it cannot start a
+file either -- the emitter never creates a ledger for a session that has none -- and the entry itself
+is what RELEASES the handle, since `on_session_closed` drops it once no turn of that session is
+pinned. The delete funnel therefore FLUSHES before it claims the lease, waiting for that release; a
+flush that times out is not a failure, because the entry stays owed and the sweep collects the unit
+once it lands.
+
+**The unit's own HEADER has to name the slot being deleted.** The id above arrives from
+`session_map.json`, which lives inside the agent-visible tree, so a mapping that named another
+conversation's session would aim this removal at that conversation's ledger. `store.unit_header_slot`
+is the independent answer: the header is written once at creation inside the FENCED ledger tree and is
+never rewritten, so it does not move when a mapping does, and a unit belonging to another slot fails the
+check. Slot recycling does not weaken it, because the id is what selects the unit and the slot only has
+to prove that unit belonged to the slot being deleted -- a successor in the same slot is selected by its
+own id and passes on its own header. The reader answers `None`, and the removal is refused, for every
+reason a caller must not proceed on: no directory, no segment, an unreadable header, a header whose own
+id does not fold back to its directory, or a header with no slot -- which is the case for a session that
+never ran on a dashboard slot, and those are left to the sweep rather than removed on a guess.
+
+That is the opposite of the rule for the WORK ledger, which the same funnel deliberately PRESERVES
+(`session-work-ledger.md`), and the difference is mechanical rather than a re-reading of that ruling.
+A work ledger is keyed by the SLOT KEY, which is recycled: a successor tab in the same slot
+legitimately inherits and resumes that record, and no in-process check can prove one is not about to
+appear, so deleting it can destroy a successor's resumable state. A session ledger is keyed by the ACP
+SESSION ID, which never names a different conversation, so the removal cannot reach a successor at
+all; and it holds a kernel-arbitrated lease, so a writer that IS still there refuses the removal
+rather than racing it. Neither property is available to the work ledger, which is why one is collected
+here and the other is not.
+
 ## 9. Scope
 
-The first consumer is the session-ledger emitter (`docs/system-specs/modules/session-ledger-emitter.md`), which writes the ACP turn lifecycle behind the `KIROCREW_SESSION_LEDGER` flag. No crew writer exists yet, so the crew half of the ownership registry has no emitter; the guest namespace is why that is safe to leave open, since a guest crew or app needs no entry in it.
+The first consumer is the session-ledger emitter (`docs/system-specs/modules/session-ledger-emitter.md`), which writes the ACP turn lifecycle behind the `KIROCREW_SESSION_LEDGER` flag. No crew writer exists yet, so the crew half of the ownership registry has no emitter. That is safe to leave open because the crew half is a registry of the kind's own domains rather than a list of writers: a guest crew writes those domains under its own `src`, and an app needs no entry at all, since its `app:<name>/` prefix is its permission.
 
 Read and write paths ship together deliberately: the guarantees this format makes -- contiguous seq under a lock, torn-tail repair, refusal before any byte is written -- are each a claim about what a reader sees after a writer acted, so neither half demonstrates them alone. `test/test_ledger_core.py` exercises them against real files rather than against a mock.

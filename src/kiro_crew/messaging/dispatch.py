@@ -34,7 +34,13 @@ from typing import Any, Awaitable, Callable, Optional
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run
+from kiro_crew.hooks import (
+    HOOK_REPLY,
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    event_is_spawn_run,
+    hook_gate_kwargs,
+)
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
@@ -425,14 +431,7 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             getattr(event, "title", "") or "",
             session_key=session_key,
             agent=agent,
-            tool_kind=getattr(event, "tool_kind", "") or "",
-            raw_params=getattr(event, "raw_tool_params", None),
-            diff_path=getattr(event, "diff_path", "") or "",
-            command=getattr(event, "shell_command", None),
-            is_shell=bool(getattr(event, "is_shell", False)),
-            mcp_server_name=getattr(event, "mcp_server_name", "") or "",
-            mcp_tool_name=getattr(event, "tool_name", "") or "",
-            mcp_identity_trusted=bool(getattr(event, "mcp_identity_trusted", False)),
+            **hook_gate_kwargs(event),
         )
         if result.action == TOOL_DENY:
             return "deny"

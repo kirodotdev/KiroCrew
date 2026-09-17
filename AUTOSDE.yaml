@@ -630,3 +630,304 @@ custom-rules:
         tests, i18n, refactors.
       - Deleting an existing built-in, or moving one OUT of the repo to the
         registry — that is the direction this rule pushes.
+
+  - id: no-sync-store-call-from-a-coroutine
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      A coroutine on the gateway event loop MUST NOT call a synchronous
+      persistent-store method. This is narrower and stricter than
+      `no-blocking-call-on-event-loop`: those are kernel-blocking syscalls, and a
+      store call looks harmless because it usually returns in under a
+      millisecond. It stops being harmless the moment a SECOND connection exists
+      — a `kirocrew doctor` reader, a second gateway on the same home, a
+      `sqlite3` shell, or `journal_mode=DELETE` on a network home — because then
+      `PRAGMA busy_timeout` can hold the loop for its full window per call.
+
+      A durable store owns a single connection behind a single lock and a
+      dedicated writer thread. Route the DATABASE phase through that writer
+      (`await store.run(...)`, or the surface's existing `*_async` seam) and keep
+      Futures, Events, slot counts, wake callbacks and in-memory run state ON the
+      loop. Do not hand a whole coordinator that touches asyncio primitives to a
+      thread: split the site explicitly into a DB phase and a loop-apply phase.
+
+      Judge by CALL CHAIN, not by the enclosing function. A sync helper, a sync
+      closure, or a facade method invoked from an `async def` is on the loop.
+      `check_sync_io_in_async` being clean means nothing here: it is intraprocedural.
+
+      THE TRAP THAT COST THIS REPO THREE REVIEW ROUNDS: a caller wrapped in
+      `try/except Exception` SWALLOWS the on-loop guard's exception, so the site
+      is invisible to an armed run and the suite goes green over it. When a
+      caller swallows, pin the site on the store's on-loop COUNTER
+      (`loop_thread_calls` before/after) instead, or narrow the `except` to the
+      exceptions it actually means.
+
+      FLAG a new store call reachable from a coroutine. FLAG an `except
+      Exception` newly wrapped around one, which hides it.
+
+      Allowed (do NOT flag):
+      - the DB phase already goes through the writer or an `*_async` seam;
+      - a terminal write on an `except CancelledError` / `except BaseException`
+        unwinding arm, where an `await` can be interrupted before the write is
+        submitted and a dropped terminal write leaks state to the next boot —
+        but it must say so in a comment;
+      - a call whose RETURN VALUE the caller cannot proceed without and which no
+        seam can supply — again, only with the reason stated;
+      - a site provably unreachable with a live store (constructed and called in
+        one statement block with no await between), stated as such;
+      - CLI / one-shot paths that run with no loop, and test code.
+
+  - id: persist-before-you-publish
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      When a durable record is the authority for a piece of state, the PERSISTED
+      transition must be a precondition for publishing that state in memory —
+      not a task fired alongside it.
+
+      Real defects this rule exists for, both found in review here:
+      - a run marked running in memory while its `RUNNING` write was merely
+        SCHEDULED, so the next transition was refused by the state machine and
+        the durable wait reason was lost;
+      - a resume that restored a slot count, set its resume event and returned
+        success after the durable wake had RAISED, leaving the row and the
+        runtime disagreeing about whether the work was allowed to continue.
+
+      Require, for a state a record owns:
+      - the write is AWAITED and its RESULT inspected before the in-memory
+        publish, the counter change, or the event set;
+      - a refused transition or a store failure leaves an explicitly retryable
+        or explicitly terminal state — never log-and-report-success;
+      - where a generation or lease fences the row, the value published is the
+        one the write returned, not one read before it;
+      - reserve-then-commit for capacity: take the reservation on the loop, do
+        the write, then publish — and release the reservation on EVERY refusal.
+
+      A second fire-and-forget write is not an ordering guarantee. Two posted
+      writes are ordered only if they share one writer and one submission order;
+      one posted and one inline are not ordered at all.
+
+      FLAG a `create_task` / fire-and-forget durable write whose in-memory effect
+      is applied before it lands. FLAG a boolean success returned on a path where
+      the write raised or returned falsy.
+
+  - id: a-ratchet-may-only-tighten
+    blocking: true
+    file-patterns:
+      - "test/**/*.py"
+      - "website/src/test/**"
+      - "website/src/**/*.test.ts"
+      - "website/src/**/*.test.tsx"
+    rule: |
+      A test that pins a COUNT, an exact set, or a universal property over every
+      site is a ratchet: it exists so that adding an unreviewed instance of some
+      class fails. Re-pinning it because the diff added a legitimate instance is
+      correct. LOOSENING it so the diff fits is not, and it is the most
+      comfortable way to ship the defect the ratchet was written to catch.
+
+      FLAG, in a test the diff touches:
+      - a universal assertion (`for site in sites: assert ok(site)`) replaced by
+        an allowlist or an expected-failure set — especially when the entries are
+        this PR's own new code;
+      - a strict count or set equality relaxed to `>=`, `<=`, `in`, `issubset`,
+        or a truthiness check;
+      - a poll count, timeout or retry budget RAISED so a race stops firing. A
+        flake is a missing signal: wait on the event, the store row or the future
+        that the production path actually resolves, and bound it only as a
+        lost-run ceiling;
+      - a newly added `skip` / `xfail`, a broadened `except`, or a deleted
+        assertion in a file the diff otherwise only extends.
+
+      Allowed (do NOT flag): the count MOVES to the new true value and the
+      comment naming the roles moves with it; a slice/region marker is widened so
+      an extracted fragment still executes with every name it references defined;
+      the assertion is genuinely re-derived and stated to be stronger.
+
+      When a ratchet cannot be satisfied without loosening it, that is the
+      finding — say so on the PR instead of editing the ratchet.
+
+  - id: prefer-subtracting-a-duplicate-mechanism
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      A long-lived branch can be in review while `main` lands its OWN fix for the
+      same incident. Merging both leaves two mechanisms deciding one question,
+      and the weaker one usually wins by being consulted last.
+
+      This happened here: the branch carried a self-report side channel so the
+      supervisor would not kill a busy daemon, while `main` landed an escalated
+      probe for the same incident. Kept together, a genuinely wedged daemon's
+      worst-case detection went from 168 s to 840 s, and the side channel's own
+      signal was a flag that stays true until the socket is closed — so it
+      vouched for a daemon whose accept path was already dead.
+
+      For a mechanism this PR adds that answers a question something else already
+      answers, ask in order:
+      - does `main` (or another merged PR) already handle this? Compare the
+        rebase's incoming hunks against what the branch built;
+      - if both exist, which signal is FRESHER and which can actually observe the
+        failure? Prefer the one on the path that has to work anyway;
+      - what does keeping both do to the worst case? Grace multiplied by grace is
+        the usual answer, and it is rarely intended;
+      - can the added one be SUBTRACTED, leaving the upstream fix? Prefer that
+        over reconciling two mechanisms.
+
+      FLAG a second retry ladder, liveness oracle, cap actuator, admission gate
+      or capacity accounting where one already exists, and say which one to keep.
+      Do not flag a genuine second OPINION that is deliberately independent and
+      documented as such.
+
+  - id: a-refusal-is-not-a-commit
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      The inverse of `persist-before-you-publish`, and it shipped separately.
+      That rule says do not publish AHEAD of the write. This one says: when the
+      write comes back REFUSED, do not carry on down the committed path — and
+      when a refusal has more than one CAUSE, do not treat the causes alike.
+
+      A refused durable write has two families of cause and they need OPPOSITE
+      handling:
+      - the state machine refused it and the row is still THIS owner's at THIS
+        generation. Nobody else will ever report the outcome, so the caller's
+        own compensation (the parent wake, the slot release, the retry) is the
+        only thing that will happen. It MUST run.
+      - a generation or lease fenced it: the row belongs to another owner now,
+        whose own report will run the same compensation. Running it here is not
+        redundant, it is WRONG — it reports an outcome for work that is still in
+        flight.
+
+      Found in review here: a child's terminal write fenced by its replacement's
+      generation still ran the parent propagation, and the ledger counts a child
+      terminal from the ID it is handed, so the parent left `waiting_children`
+      for a claimable state while the replacement child was still `running` —
+      unbounded silent loss, with no reconciliation until the next boot sweep.
+
+      Require, at a site that inspects a durable write's result:
+      - the two causes are DISTINGUISHED where they call for different handling,
+        by re-reading the row (state AND generation), never by the boolean alone;
+      - "another owner's" is proved, not assumed: a store that could not be READ
+        is not another owner, because an outage leaves this owner's generation on
+        the row, so it falls through to the compensating path;
+      - a fenced-but-TERMINAL row still gets the compensation. Another owner
+        already settled it, the compensation is idempotent there, and skipping it
+        strands whoever was waiting when the terminal came from a path with no
+        propagation of its own (an operator cancel, a boot sweep).
+
+      FLAG a compensating action (a parent wake, a tree cancel, a slot release, a
+      counter decrement) that runs unconditionally after a write whose result was
+      consumed only by a log line. FLAG "skip on a stale generation" written as a
+      test on the generation alone, with no terminality check.
+
+  - id: an-invariant-line-needs-a-mutation-pin
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+      - "test/**/*.py"
+    rule: |
+      A line that CARRIES an invariant — a `generation=` argument, an
+      `only_from=` predicate, a cap comparison, an ordering guard, a `frozenset`
+      membership test — is load-bearing exactly to the extent that deleting it
+      reds a test. Most of them here red nothing.
+
+      Measured on this PR: deleting `generation=record.generation` from the task
+      panel's `answer_input` call reds ZERO of 225 tests, and so does deleting it
+      from the `cancel_wait` call beside it. Both are the only thing standing
+      between an operator's answer and a DIFFERENT question the row asked after a
+      re-dispatch, and the state fences around them are satisfied in exactly that
+      case.
+
+      Half-pinned is the shape that ships. A fence pinned only on the REFUSED
+      side goes green when it is LOOSENED, because the loosening produces the
+      commit the healthy-side test never asserts.
+
+      For an invariant line the diff adds or edits, expect a test that:
+      - reds when the line is DELETED, and
+      - reds when it is LOOSENED to the next-weakest thing a reader might write
+        (a fence's predicate widened to the full claimable set, a generation
+        replaced by None, a strict cap turned into a warning), and
+      - asserts the HEALTHY side too: under a satisfied fence the write COMMITS
+        and the row moves. Otherwise the pin passes on a fence that stopped
+        distinguishing anything.
+
+      The check is mechanical: apply the mutation, run the tests that cover the
+      file, report the count. Zero red on a load-bearing line is the finding.
+      FLAG an invariant line added with no such test, and say which mutation
+      survives.
+
+  - id: a-bound-bounds-every-field-it-retains
+    blocking: true
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      A cap on how many items are stored bounds memory only when every STORED
+      FIELD of an item is bounded too. 4096 rows of an unbounded title is
+      unbounded, and the cap's own comment will say the growth is refused.
+
+      Found in review here: the native-child roster capped its ROW COUNT at 4096
+      and type-checked the id, while each row also retained a backend-authored
+      name, title and status with no length bound at all — and a second structure
+      keyed on the same population capped itself at 256, so one announced roster
+      split into two classes by list position, and the ids past 256 lost their
+      approval routing while the count still called them children.
+
+      Require, for a structure retaining externally-controlled data:
+      - a bound on the COUNT and a bound on each retained STRING or nested
+        container, applied at the point of RETENTION, not at a render site
+        downstream — a bound applied where the value is displayed leaves the
+        store unbounded;
+      - one NAMED constant shared by every structure bounding the same
+        population, so the two cannot drift. Two literals bounding one population
+        is the defect, whatever the numbers are;
+      - the admission answer for the count GATES the other stores: an item the
+        count refused must get no row anywhere, or the refused item can never be
+        recognised as a duplicate and reintroduces the growth the cap refuses;
+      - overflow is COUNTED and said out loud once per snapshot. A truncated tail
+        otherwise reads exactly like a population that never named those items,
+        and the audit reason for anything denied past the cap must name the
+        truncation rather than borrowing the reason for "never announced".
+
+      FLAG a `[:N]` slice or a `len(...) >= CAP` guard whose items carry unbounded
+      strings. FLAG two different bounds on the same population.
+
+  - id: an-operator-facing-string-states-what-was-measured
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/config/sections.py"
+      - "config-baseline.json"
+      - "docs/system-specs/**/*.md"
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      `recurring-defect-patterns` already flags a docstring that contradicts the
+      code BELOW it. This is the case adjacency cannot catch: a config help
+      string, a CLI message or a spec sentence that states an arithmetic
+      CONSEQUENCE which no gate evaluates and which is false.
+
+      Found in review here: `mcp_gateway.spawn_queue_wait_secs` shipped help
+      saying "raising this above 600 needs that constant raised too, or the stub
+      gives up before the queue does". Measured, the daemon arms
+      `min(asked, key)` less a refusal margin — so the DAEMON gives up first and
+      raising the key buys a queued stub no extra wait at all. An operator who
+      believed the string raised the key, got nothing, and concluded the queue
+      was broken. Three copies of the sentence (schema, committed baseline,
+      owning spec) were byte-identically wrong, and the snapshot-parity test held
+      all three consistent with each other the whole time.
+
+      Where a user-facing string states a consequence a reader could ACT on
+      ("raising this...", "the default matches...", "this is capped by..."),
+      require a test that MEASURES the claim through the production code rather
+      than re-implementing its arithmetic, and that reads each copy of the
+      sentence down to the text about that key — a spec paragraph, not a whole
+      file, or the assertion passes on a word borrowed from elsewhere.
+
+      Also assert the FALSIFIED direction in the spellings that shipped it. A
+      test that only checks the new wording is present goes green again the day
+      someone restores the old sentence beside it.
+
+      FLAG a changed help/spec sentence naming a threshold, a default equality or
+      a cap relationship with no test that measures it. Do NOT flag ordinary
+      descriptive copy that states no consequence.

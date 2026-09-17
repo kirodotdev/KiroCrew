@@ -202,3 +202,32 @@ describe('packDetailFrom', () => {
     })
   })
 })
+
+describe('declared cues', () => {
+  it('reads the presence map the detail route reports', () => {
+    const detail = packDetailFrom({
+      animations: { idle: svg },
+      sounds: { done: true, error: true },
+    })
+    expect(detail.sounds).toEqual({ done: true, error: true })
+  })
+
+  it('keeps `true` only — anything else is not a promise this client can act on', () => {
+    // The route reports PRESENCE. A filename a newer server inlined, a number, a
+    // null: acting on any of them asks for bytes the route answers 404 for, which
+    // is silence dressed as a cue.
+    const detail = packDetailFrom({
+      animations: { idle: svg },
+      sounds: { done: true, error: 'error.mp3', working: 1, idle: null },
+    })
+    expect(detail.sounds).toEqual({ done: true })
+  })
+
+  it('is absent when the pack declares none, so one check tests the layer', () => {
+    expect(packDetailFrom({ animations: { idle: svg } }).sounds).toBeUndefined()
+    expect(packDetailFrom({ animations: { idle: svg }, sounds: {} }).sounds).toBeUndefined()
+    for (const junk of [null, 7, 'done', [], [{ done: true }]]) {
+      expect(packDetailFrom({ animations: { idle: svg }, sounds: junk }).sounds).toBeUndefined()
+    }
+  })
+})

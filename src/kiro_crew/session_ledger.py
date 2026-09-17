@@ -60,7 +60,11 @@ from typing import Any, Iterator
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
-from kiro_crew.platform_compat import release_lock, try_acquire_lock
+from kiro_crew.platform_compat import (
+    release_lock,
+    strip_extended_length_prefix,
+    try_acquire_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,19 +151,6 @@ def _ledger_root() -> Path:
     return data_home() / "ledger"
 
 
-_EXTENDED_LENGTH_PREFIX = "\\\\?\\"
-
-
-def _plain(path: Path) -> Path:
-    """*path* without Windows' extended-length prefix; unchanged elsewhere."""
-    text = str(path)
-    if text.startswith(_EXTENDED_LENGTH_PREFIX + "UNC\\"):
-        return Path("\\\\" + text[len(_EXTENDED_LENGTH_PREFIX) + 4 :])
-    if text.startswith(_EXTENDED_LENGTH_PREFIX):
-        return Path(text[len(_EXTENDED_LENGTH_PREFIX) :])
-    return path
-
-
 def resolved_within(base: Path, name: str) -> Path | None:
     """``base / name`` resolved, or ``None`` when it does not stay inside *base*.
 
@@ -180,8 +171,8 @@ def resolved_within(base: Path, name: str) -> Path | None:
     The root itself is not a member: a name that folds to nothing must not be
     granted the whole store.
     """
-    parent = _plain(base.resolve())
-    resolved = _plain((parent / name).resolve())
+    parent = strip_extended_length_prefix(base.resolve())
+    resolved = strip_extended_length_prefix((parent / name).resolve())
     if resolved == parent or not resolved.is_relative_to(parent):
         return None
     return resolved

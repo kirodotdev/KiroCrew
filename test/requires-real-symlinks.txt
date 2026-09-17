@@ -80,14 +80,11 @@ test/test_messaging_commands.py::TestTaskSpecPathIsGated::test_a_symlink_into_a_
 test/test_messaging_commands.py::TestTaskSpecPathIsGated::test_the_runner_receives_the_canonical_path_not_the_raw_argument
 test/test_node_modules_txn.py::TestTransactionPolicy::test_a_dangling_tree_link_does_not_crash_the_transaction
 test/test_node_modules_txn.py::TestTransactionPolicy::test_a_symlinked_tree_is_still_protected
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_a_banned_match_outside_the_fleet_is_foreign_not_banned
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_a_subdirectory_of_a_fleet_worktree_is_fleet_owned
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_a_symlinked_fleet_root_cannot_smuggle_a_wider_scope
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_a_symlinked_fleet_root_still_matches
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_an_undeclared_fleet_scope_reports_every_match
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_ownership_fails_toward_the_non_stopping_class
+# This fixture plants a FILE symlink out of the session store, and a file link has
+# no junction form, so an unelevated Windows shell cannot build it at all. The
+# fleet-root and /proc cwd links in the same class are directory links, which
+# make_dir_link builds without the privilege, so those keep their Windows coverage.
 test/test_pipeline_conductor_agent.py::TestFleetProbe::test_symlink_out_of_the_store_reads_gone
-test/test_pipeline_conductor_agent.py::TestFleetProbe::test_the_banned_line_still_withholds_argv_under_scoping
 test/test_pod.py::TestLinuxTeardownOrdering::test_both_teardown_messages_name_the_same_path
 test/test_pod.py::TestOrphanSymlinkSafety::test_a_dangling_symlink_swap_is_reported_not_swallowed
 test/test_pod.py::TestOrphanSymlinkSafety::test_cleanup_home_deletes_by_name_never_by_resolved_target

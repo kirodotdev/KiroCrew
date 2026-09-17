@@ -38,9 +38,10 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
-from kiro_crew.messaging.renderer import credential_redaction_notice
+from kiro_crew.messaging.renderer import redaction_notice
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -1059,7 +1060,8 @@ async def _refresh_channels_modal(view_id: str) -> None:
     ]
     from kiro_crew.slack.events import _get_agent_names
 
-    modal = channels_modal(channels, agent_names=_get_agent_names())
+    agent_names = await asyncio.to_thread(_get_agent_names)
+    modal = channels_modal(channels, agent_names=agent_names)
     try:
         await _orch.slack.views_update(view_id=view_id, view=modal)
     except Exception:
@@ -2263,7 +2265,9 @@ async def _handle_agent_select(
             return
         label = "🔄 Reset to default agent."
     else:
-        resolved = _resolve_agent_name(agent_name)
+        # The resolver lists the agents directory and reads the matching spec:
+        # filesystem work, off the loop like the other async callers of it.
+        resolved = await asyncio.to_thread(_resolve_agent_name, agent_name)
         if not resolved:
             return
         try:
@@ -3266,18 +3270,22 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     await _orch.slack.post_message(channel, draft, thread_ts)
     # Approving a draft posts it publicly to the channel, so this egress carries
     # the same silent-corruption hazard as the streaming reply path: the two lines
-    # above replaced a credential in the draft with a placeholder, and a channel
-    # member who copies the command hits an opaque downstream failure with no hint
-    # the text was rewritten. Count the tags in the redacted draft that actually
-    # shipped and post one best-effort follow-up notice. The notice carries only a
-    # count, never secret bytes, and its failure must not undo the posted draft --
-    # the draft is already public, so raising here would lose the warning and the
-    # approve's remaining teardown too.
+    # above replaced a credential or a suspicious URL in the draft with a
+    # placeholder, and a channel member who copies the command hits an opaque
+    # downstream failure with no hint the text was rewritten. Count the tags in
+    # the redacted draft that actually shipped -- credential tags exactly, the URL
+    # tag by `EXFILTRATION_REDACTION_TAG_PREFIX` prefix since it interpolates the
+    # domain -- and post one best-effort follow-up notice worded by kind (the
+    # remedies differ). The notice carries only counts, never secret bytes or the
+    # redacted domain, and its failure must not undo the posted draft -- the draft
+    # is already public, so raising here would lose the warning and the approve's
+    # remaining teardown too.
     _cred_redactions = sum(draft.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    if _cred_redactions > 0:
+    _url_redactions = draft.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    if _cred_redactions > 0 or _url_redactions > 0:
         try:
             await _orch.slack.post_message(
-                channel, credential_redaction_notice(_cred_redactions), thread_ts
+                channel, redaction_notice(_cred_redactions, _url_redactions), thread_ts
             )
         except Exception:
             logger.debug("Failed to post review-approve redaction notice", exc_info=True)

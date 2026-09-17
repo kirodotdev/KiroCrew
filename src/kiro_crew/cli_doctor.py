@@ -28,13 +28,14 @@ from kiro_crew.acp.kas_transport import (
     build_kas_argv,
 )
 from kiro_crew.acp.types import ACP_BACKEND_KAS
-from kiro_crew.agent import AGENT_FILENAME
+from kiro_crew.agent import AGENT_FILENAME, agent_spec_path
 from kiro_crew.agent_discovery import (
     _read_agent_spec,
     project_agent_files,
     project_agent_name,
 )
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_spec_format import is_agent_spec_name
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_perf import _read_gateway_pid
@@ -255,8 +256,20 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
 
     bound_model = ""
     bound_spec: Path | None = None
+    bound_spec_missing = False
     if bound != "kirocrew":
-        bound_spec = agents_dir / f"{bound}.json"
+        # Display only, through the same resolver the writers use, so the path
+        # shown is the file that holds the agent -- whichever form (``.json``
+        # or ``.md``) and whichever filename declares the name -- rather than a
+        # ``.json`` join that names a file a markdown agent does not have.
+        try:
+            bound_spec = agent_spec_path(bound, agents_dir=agents_dir)
+        except ValueError:
+            # Two safe specs declare the name, so no single file IS the bound
+            # spec; the model resolver below refuses for the same reason and
+            # its tier shows as deferring.
+            bound_spec = None
+        bound_spec_missing = bound_spec is None
         # Read through the resolver's own accessor: it matches on the spec's
         # ``name`` field as well as the filename, which a bare path join misses.
         try:
@@ -292,6 +305,10 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     print(f"  spec file:   {_safe_display(str(default_spec))}")
     if bound_spec is not None:
         print(f"  bound spec:  {_safe_display(str(bound_spec))}")
+    elif bound_spec_missing:
+        print(
+            f"  bound spec:  ⚠️  no spec for {_safe_display(bound)} under {_safe_display(str(agents_dir))}"
+        )
 
     # Self-check: the marked tier must be what the resolver actually returned.
     if decided_value != effective:
@@ -434,7 +451,7 @@ def _strict_agent_json_specs(directory: Path) -> list[Path]:
                 (
                     Path(entry.path)
                     for entry in entries
-                    if entry.name.endswith(".json") and not entry.name.startswith("._")
+                    if is_agent_spec_name(entry.name) and not entry.name.startswith("._")
                 ),
                 key=lambda path: path.stem,
             )
@@ -2666,6 +2683,138 @@ def _format_job_labels(entries: list[tuple[str, str]]) -> str:
     return f"{shown}, +{len(labels) - _CRON_REPORT_CAP} more"
 
 
+def _doctor_task_store(issues: list[str]) -> None:
+    """Report the durable task queue: depth, oldest wait, journal warnings.
+
+    Reads ``$KIROCREW_HOME/tasks/tasks.db`` directly with a read-only view of
+    the store's own diagnostics, so a wedged gateway cannot hide a backlog.
+    Silent on a fresh install with no store yet. A network-filesystem data home
+    is reported here because the store then runs on ``journal_mode=DELETE``,
+    which is slower but never a refusal.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.taskq import TaskStore, TaskStoreUnavailable
+
+    path = TaskStore.default_path(data_home())
+    # A quarantined copy beside the live file is the boot-time verdict that the
+    # previous store was corrupt: the gateway recreated it empty and moved the
+    # damaged file here. Say so, once per copy, until the operator removes it.
+    quarantined = sorted(path.parent.glob(f"{path.name}.corrupt-*")) if path.parent.exists() else []
+    for copy in quarantined:
+        if copy.name.endswith(("-journal", "-wal", "-shm")):
+            continue
+        print(f"  task store: ⚠️  a corrupt store was quarantined as {copy.name}")
+        issues.append(
+            f"task store {path} was found corrupt at a gateway boot and quarantined as "
+            f"{copy}; work accepted into the old file was not recovered -- inspect or "
+            "delete the quarantined copy"
+        )
+    if not path.exists():
+        return
+    store = TaskStore(path, diagnostic=True)
+    try:
+        store.open()
+        lines = store.doctor_lines()
+        by_state = store.count_by_state()
+    except TaskStoreUnavailable as exc:
+        print(f"  task store: ⚠️  {path} cannot be opened ({exc})")
+        issues.append(
+            f"task store {path} cannot be opened: accepted subagent work cannot be "
+            "persisted or recovered until this is fixed"
+        )
+        return
+    finally:
+        store.close()
+    for line in lines:
+        print(f"  {line}")
+    queued = {state: n for state, n in sorted(by_state.items()) if n}
+    if queued:
+        print("  task states: " + ", ".join(f"{state}={n}" for state, n in queued.items()))
+    for warning in store.warnings:
+        issues.append(warning)
+
+
+def _doctor_overload_resilience(cfg: KiroCrewConfig) -> None:
+    """Print the overload-resilience contract this install runs under.
+
+    Configuration and static platform facts only: the live gate counts, the
+    adaptive caps and the per-scope dependency schedules are gateway-process
+    state, served by ``GET /api/sessions/health`` — a doctor process cannot
+    read them and must not pretend to. What it CAN state is the bound each
+    mechanism is configured to (so a stuck queue can be read against its
+    budget) and which liveness evidence this host's platform provides.
+    """
+    from kiro_crew.recovery.ladder import configure_default_ladder
+
+    agent = cfg.agent
+    gw = cfg.mcp_gateway
+    print(
+        "  admission: session_start_concurrency="
+        f"{agent.session_start_concurrency} "
+        f"spawn_gate={gw.spawn_concurrency_initial} "
+        f"[{gw.spawn_concurrency_min}..{gw.spawn_concurrency_max}] "
+        f"queue_wait={gw.spawn_queue_wait_secs}s "
+        f"dispatch_window={agent.task_dispatch_window} "
+        f"(live gate counts: GET /api/sessions/health)"
+    )
+    mode = agent.adaptive_concurrency_mode if agent.adaptive_concurrency else "off"
+    print(
+        f"  adaptive concurrency: {mode} floor={agent.adaptive_floor} "
+        f"initial={agent.adaptive_initial} sample={agent.controller_sample_secs}s"
+    )
+    print("  recovery ladder:")
+    # Through the boot seam a gateway uses, on this process's own ladder: these
+    # rows are the CONFIGURED schedule, so they cannot disagree with the
+    # dependency-wait line below, which reads the same two keys. Still config
+    # only — a doctor process has no live attempt count to show.
+    for row in configure_default_ladder(cfg).table():
+        print(
+            f"    {row['layer']}: backoff {row['backoff_base_secs']:g}s→"
+            f"{row['backoff_max_secs']:g}s, {row['attempts_before_escalation']} attempts → "
+            f"{row.get('escalates_to') or 'notify'}"
+        )
+    print(
+        "  dependency waits: backoff "
+        f"{agent.recovery_backoff_base_secs:g}s→{agent.recovery_backoff_max_secs:g}s "
+        "(the shared recovery schedule), "
+        f"max_attempts={agent.dependency_max_attempts}, "
+        f"deadline={agent.dependency_wait_deadline_secs}s"
+    )
+    print(f"  interactive commands: policy={agent.interactive_command_policy}")
+    print(
+        "  uncharged residency: native children (kiro-cli use_subagent / KAS subtasks) "
+        "are counted on the parent session, never a budget slot, lane slot or task row "
+        '(live count: GET /api/sessions/health "uncharged")'
+    )
+    print(f"  liveness evidence: {_liveness_platform_line()}")
+
+
+def _liveness_platform_line() -> str:
+    """Which stall evidence this platform's liveness oracle can produce.
+
+    Mirrors the platform matrix in ``acp/liveness.py``: a missing column is a
+    DECLARED degradation (bounded by the no-progress budget), never a stall
+    the oracle silently calls WORKING.
+    """
+    if sys.platform.startswith("linux"):
+        return (
+            "linux /proc — process tree, CPU+IO movement, STUCK_INPUT (blocked "
+            "tty/pipe read), established-flat sockets: full matrix"
+        )
+    if sys.platform == "darwin":
+        return (
+            "macOS libproc — process tree and CPU-only movement; STUCK_INPUT and "
+            "socket evidence absent (a live but flat shell child reads UNKNOWN "
+            "platform_limited and is bounded by the no-progress budget)"
+        )
+    if sys.platform.startswith("win"):
+        return (
+            "windows — no process-tree backend; shell and MCP tool calls read "
+            "UNKNOWN platform_limited and are bounded by the no-progress budget"
+        )
+    return f"{sys.platform} — no process-tree backend; UNKNOWN platform_limited"
+
+
 def _doctor_cron_health(issues: list[str]) -> None:
     """Report cron jobs that auto-paused or last ran with an error.
 
@@ -3759,6 +3908,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # Reads crons.json off disk, not the gateway API: the gateway's own
     # per-job badge and hourly failure re-alert cannot report a wedged gateway.
     _doctor_cron_health(issues)
+
+    # ── Durable task queue (silent when no tasks.db exists yet) ──
+    _doctor_task_store(issues)
+
+    # ── Overload resilience: configured bounds + platform liveness evidence ──
+    _doctor_overload_resilience(cfg)
 
     # ── Agent Spec Paths (dead command/args/env paths) ──
     # Own module + single call so a sibling sweep wiring into doctor rebases

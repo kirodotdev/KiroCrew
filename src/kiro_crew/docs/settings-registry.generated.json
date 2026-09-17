@@ -488,6 +488,13 @@
       "description": "Compact is the original view. Comfortable and Full use more screen space."
     },
     {
+      "id": "chat.content-filter-fallback-model",
+      "label": "Content-filter fallback model",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=key%3Aagent.refusal_fallback_model",
+      "configKey": "agent.refusal_fallback_model"
+    },
+    {
       "id": "chat.default-memory-mode",
       "label": "Default Memory Mode",
       "tab": "chat",

@@ -3,7 +3,7 @@
 ``_resolve_permission`` inspects EVERY string ``_extract_tool_input_strings``
 pulls out of the parsed tool input — including whole document bodies, which are
 scanned as shell commands. The three predicates
-(``is_sensitive_path`` / ``is_sensitive_bash_command`` / ``is_denied``) are
+(``sensitive_path_refusal`` / ``is_sensitive_bash_command`` / ``is_denied``) are
 regex-heavy, so one long newline-free line held the loop past the 25s watchdog
 and killed the gateway (Mesh-3693). The scan now happens in ONE
 ``asyncio.to_thread`` hop for the whole loop.
@@ -31,7 +31,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import kiro_crew.sel as sel_mod
-from kiro_crew import llm_helpers
+from kiro_crew import llm_helpers, security
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 
@@ -170,14 +170,14 @@ class TestOffLoop:
         loop_ident = threading.get_ident()
         probe_target = "kirocrew-offload-probe.md"
         seen: list[int] = []
-        real = llm_helpers.is_sensitive_path
+        real = llm_helpers.sensitive_path_refusal
 
         def _probe(s: str, *a, **kw):
             if s == probe_target:
                 seen.append(threading.get_ident())
             return real(s, *a, **kw)
 
-        with patch.object(llm_helpers, "is_sensitive_path", _probe):
+        with patch.object(llm_helpers, "sensitive_path_refusal", _probe):
             approved, _provider, _rows = await _resolve(json.dumps({"path": probe_target}))
 
         assert approved is True
@@ -193,14 +193,14 @@ class TestOffLoop:
         loop_ident = threading.get_ident()
         strings = [f"offload-file-{i}.txt" for i in range(25)]
         seen: list[int] = []
-        real = llm_helpers.is_sensitive_path
+        real = llm_helpers.sensitive_path_refusal
 
         def _probe(s: str, *a, **kw):
             if s.startswith("offload-file-"):
                 seen.append(threading.get_ident())
             return real(s, *a, **kw)
 
-        with patch.object(llm_helpers, "is_sensitive_path", _probe):
+        with patch.object(llm_helpers, "sensitive_path_refusal", _probe):
             await _resolve(json.dumps(strings))
 
         assert len(seen) == 25, seen
@@ -377,7 +377,7 @@ class TestTitleTierOffLoop:
         input_target = "offload-input-probe.md"
         seen: dict[str, int] = {}
         real_bash = llm_helpers.is_sensitive_bash_command
-        real_path = llm_helpers.is_sensitive_path
+        real_path = llm_helpers.sensitive_path_refusal
 
         def _bash_probe(s: str, *a, **kw):
             if s == title:
@@ -391,7 +391,7 @@ class TestTitleTierOffLoop:
 
         with (
             patch.object(llm_helpers, "is_sensitive_bash_command", _bash_probe),
-            patch.object(llm_helpers, "is_sensitive_path", _path_probe),
+            patch.object(llm_helpers, "sensitive_path_refusal", _path_probe),
         ):
             approved, _provider, _rows = await _resolve(
                 json.dumps({"path": input_target}), title=title
@@ -414,3 +414,47 @@ class TestTitleTierOffLoop:
         _outcome, error, mechanism = _decision(rows)
         assert error == "Blocked: missing tool title"
         assert mechanism == "always_deny"
+
+
+class TestPathTierWording:
+    """What the two path tiers SAY when the resolver stalls versus matches.
+
+    Both tiers apply ``security.sensitive_path_refusal``. A match keeps each
+    producer's historical wording; a stall passes the producer's unverifiable
+    wording through unchanged, because that wording carries the anchor phrase
+    ``deny_guidance`` classifies by.
+    """
+
+    def test_a_stalled_path_title_is_refused_as_unverifiable_not_as_sensitive(self) -> None:
+        stalled = f"{security.UNVERIFIABLE_PATH_PREFIX}, so it is refused. Path: 'notes/todo.md'"
+        with patch.object(llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: stalled):
+            hit = llm_helpers._title_denial("notes/todo.md", None)
+        assert hit == ("path", stalled)
+
+    def test_a_matched_path_title_keeps_this_producers_wording(self) -> None:
+        with patch.object(
+            llm_helpers,
+            "sensitive_path_refusal",
+            lambda p, *_a, **_k: f"Blocked: access to sensitive path: {p}",
+        ):
+            hit = llm_helpers._title_denial("~/.ssh/id_rsa", None)
+        assert hit == ("path", "Blocked: sensitive path: ~/.ssh/id_rsa")
+
+    def test_a_stalled_tool_input_string_is_refused_as_unverifiable(self) -> None:
+        stalled = f"{security.UNVERIFIABLE_PATH_PREFIX}, so it is refused. Path: 'notes/todo.md'"
+        with patch.object(llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: stalled):
+            hit = llm_helpers._first_tool_input_denial(["notes/todo.md"], None)
+        assert hit == ("path", stalled, "notes/todo.md")
+
+    def test_a_matched_tool_input_string_keeps_this_producers_wording(self) -> None:
+        with patch.object(
+            llm_helpers,
+            "sensitive_path_refusal",
+            lambda p, *_a, **_k: f"Blocked: access to sensitive path: {p}",
+        ):
+            hit = llm_helpers._first_tool_input_denial(["~/.ssh/id_rsa"], None)
+        assert hit == (
+            "path",
+            "Blocked: sensitive path in tool_input: ~/.ssh/id_rsa",
+            "~/.ssh/id_rsa",
+        )

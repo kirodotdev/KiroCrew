@@ -412,7 +412,13 @@ async def test_actionable_probe_claims_once_before_concurrent_dispatch(tmp_path)
         dispatch=dispatch,
     )
     first = asyncio.create_task(controller.tick(loop, now=120.0))
-    await entered.wait()
+    # `entered` is set only inside the dispatch stub, so any regression that makes
+    # tick() return before the transport handoff -- a budget stop, a non-actionable
+    # verdict, a dispatch-not-authorized verdict, or an exception swallowed into the
+    # task -- leaves nobody to set it. Unbounded, that parks the whole run on an
+    # Event instead of failing this test: pytest-timeout's thread method kills the
+    # xdist worker and every test it had not reached goes silently uncollected.
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert loop.monitor is not None and loop.monitor.wake_in_flight
 
     await controller.tick(loop, now=121.0)
@@ -489,7 +495,11 @@ async def test_terminal_transition_queued_during_claim_persistence_prevents_disp
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _block_claim_write)
     tick = asyncio.create_task(controller.tick(loop, now=120.0))
-    await write_entered.wait()
+    # Same shape as the claim/dispatch test above: `write_entered` is set only by the
+    # monkeypatched snapshot write, so a tick that stops before persisting the claim,
+    # or a rename of `_write_monitor_snapshot_locked` that leaves this setattr
+    # intercepting nothing, would hang the run rather than fail the test.
+    await asyncio.wait_for(write_entered.wait(), timeout=5)
     terminal = asyncio.create_task(getattr(service, terminal_transition)(loop.id, now=121.0))
     await asyncio.sleep(0)
     release_write.set()
@@ -831,6 +841,70 @@ async def test_probe_persistence_failure_leaves_live_claim_and_timer_unchanged(
     service.stop()
 
 
+@pytest.mark.asyncio
+async def test_a_shared_cooldown_skip_does_not_retire_a_healthy_watch(tmp_path):
+    """The PRODUCTION counting site owes the third outcome the same answer as shadow.
+
+    A probe the monitor declined itself -- the shared ``github:api`` schedule was
+    still ahead of now -- borrows a refusal's SHAPE, so charging it spends a budget
+    that exists to count refusals the HOST gave THIS watch. Unrelated work opening
+    that cooldown then retires a healthy watch on its own cadence, with no request
+    ever sent. Clearing the streak is the opposite error, so the skip must move
+    neither counter.
+    """
+    from kiro_crew.monitoring.github_provider_errors import REASON_SHARED_COOLDOWN
+
+    service = AutoNudgeService(base_dir=tmp_path, on_monitor_tick=AsyncMock())
+    loop = await service.add_monitor(
+        slot_key="chat-1",
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(max_runtime_secs=600, max_provider_errors=2),
+        now=100.0,
+    )
+    assert loop.monitor is not None
+    skip = GitHubPullRequestProbeResult(
+        response=None,
+        canonical={},
+        observation=MonitorObservation(
+            "",
+            MonitorObservationStatus.PROVIDER_ERROR,
+            provider_error=ProviderErrorKind.RATE_LIMITED,
+            reason_code=REASON_SHARED_COOLDOWN,
+            summary="Shared GitHub cooldown; no request sent.",
+        ),
+    )
+
+    budget = loop.monitor.budgets.max_provider_errors
+    for tick in range(budget + 1):
+        verdict = await service.apply_monitor_probe(
+            loop.id,
+            skip,
+            now=120.0 + tick,
+            config_generation=loop.monitor.config_generation,
+        )
+        assert verdict.decision is MonitorDecision.RETRY_PROVIDER, tick
+
+    assert loop.monitor.outcome is None and loop.monitor.stopped_reason == ""
+    assert loop.monitor.provider_error_count == 0
+    assert loop.monitor.consecutive_provider_errors == 0
+    assert loop.monitor.last_observation_reason_code == REASON_SHARED_COOLDOWN
+
+    # A refusal the HOST gave still spends the budget, so the skip did not make a
+    # real outage survivable.
+    real = _result(MonitorObservationStatus.PROVIDER_ERROR)
+    for _ in range(budget):
+        verdict = await service.apply_monitor_probe(
+            loop.id, real, now=200.0, config_generation=loop.monitor.config_generation
+        )
+    assert verdict.decision is MonitorDecision.STOP_BLOCKED
+    assert loop.monitor.provider_error_count == budget
+    service.stop()
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_supplemental_provider_failures_advance_the_bounded_error_streak(tmp_path):
     """Readable canonical facts do not make an incomplete provider read free to retry."""

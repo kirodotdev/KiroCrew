@@ -98,6 +98,11 @@ with no row here.
      - driver-internal (whether ``$HOME`` is relocated onto the pod tree)
    * - ``ACP_BACKENDS_ACP_RUNTIME``
      - pre-session registry query (which start path a session takes)
+   * - ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``
+     - driver-internal (whether the host loads the markdown agent form; nothing
+       is gated before the spawn -- the activation guard that runs after
+       ``session/new`` reads it through the harness, only on its refusal
+       branch, to explain a markdown-only agent the host did not load)
    * - ``acp_runtime_backends()``
      - pre-session registry query (the same question as the row above, with the
        ``KIROCREW_CODEX_ACP_RUNTIME`` preview switch applied). The FOREGROUND
@@ -940,6 +945,24 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # a demux that is not kiro-shaped, which is its own work. It takes the AcpClient
 # path, one process per session, until that exists.
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends that load an agent defined as ONE markdown file (YAML frontmatter
+# plus the body as the system prompt) -- the form the v3 engine and Kiro IDE
+# read from ``~/.kiro/agents/<name>.md``. Kiro Crew's own discovery lists that
+# form for every backend (``kiro_crew.agent_spec_format``), so a session can
+# select an agent its HOST cannot load: kiro-cli discovers ``*.json`` only, so a
+# markdown-only agent selected there is not the active mode after
+# ``session/new`` and fails the runtime's existing activation guard, exactly as
+# a missing JSON spec does. Nothing is refused BEFORE the spawn on account of
+# this set (harness-parity H13); membership decides only how that guard
+# explains the failure -- the markdown file and the members that can run it,
+# rather than a JSON repair. Read through the harness
+# (``reads_markdown_agent_specs``), never as "is KAS": a host added later that
+# reads markdown joins here and gets no markdown explanation. KAS is
+# a member because Crew reads the spec itself and hands it over the wire, so the
+# on-disk form is Crew's to parse; codex-acp, opencode and pi are not members
+# because none of them reads ``~/.kiro/agents`` at all.
+ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 
 # ── The preview switch: codex-acp on AcpRuntime ──
 #

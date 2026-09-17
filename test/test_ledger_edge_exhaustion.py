@@ -187,7 +187,7 @@ def test_hung_write_starves_another_session_until_cleared():
                 SESSION_B,
                 _pending(
                     lambda idx=n: lg.Ledger.open(lg.KIND_SESSION, SESSION_B).append(
-                        "turn/started", {"turn": idx + 1, "actor": "user"}, src="acp"
+                        "turn/started", {"turn": idx + 1, "actor": "user", "depth": 0}, src="acp"
                     ),
                     f"B turn {n + 1}",
                 ),

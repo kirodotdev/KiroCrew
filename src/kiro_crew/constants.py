@@ -567,10 +567,57 @@ OPTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTIONS_RE_TRAILER)
 # quadratic). An unterminated ``<!--`` is NOT matched: swallowing to
 # end-of-text on a missing ``-->`` silently deletes visible prose. A tag
 # body over the bound is not a real control tag and stays visible.
-_TRAILING_CONTROL_LINES_RE = re.compile(
-    r"(?:(?:^|\n)[ \t]{0,3}"
+_CONTROL_TAG_BODY = (
     r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
-    r"[ \t]{0,16})+\s{0,16}\Z",
+)
+_TRAILING_CONTROL_LINES_RE = re.compile(
+    r"(?:(?:^|\n)[ \t]{0,3}" + _CONTROL_TAG_BODY + r"[ \t]{0,16})+\s{0,16}\Z",
+    re.IGNORECASE,
+)
+
+
+def _prefix_closure(literal: str, tail: str = "") -> str:
+    """Regex matching every prefix of *literal* -- including the empty one and,
+    once the literal is whole, any match of *tail* -- as nested optionals.
+
+    Built rather than hand-spelled so the streaming probe below is derived from
+    the same literals as :data:`_CONTROL_TAG_BODY` and cannot drift from them
+    by a typo. Nested optionals with no quantified repetition: matching is
+    linear in the literal's length.
+    """
+    out = tail
+    for ch in reversed(literal):
+        out = f"(?:{re.escape(ch)}{out})?"
+    return out
+
+
+# STILL-STREAMING control-tag line: a message tail that is a strict PREFIX of a
+# recognized tag line. The streaming twin of :data:`_TRAILING_CONTROL_LINES_RE`
+# for surfaces that render text while it is still arriving (live Discord /
+# Telegram frames, Webex's status frame): a chunk boundary can fall inside
+# ``<!-- keep-visible -->``, and rendering the half that has arrived shows the
+# reader reserved protocol as raw text for one frame -- or, on a surface that
+# rotates on length, seals it into a message no later frame replaces. Same
+# shape as ``split_options_trailer``'s ``hide_partial`` for ``[OPTIONS``.
+#
+# Admits only what can still extend into a complete tag: line-leading (≤3
+# indent), ``<`` ``<!`` ``<!-`` ``<!--``, then bounded whitespace, then a
+# prefix of one family literal -- ``keep-visible`` (then optional whitespace
+# and up to two dashes), ``deliver:`` / ``plan_task_id:`` (then a bounded
+# ``>``-free body, which already covers the closing dashes). The moment a byte
+# diverges (``<!-- ordin``, ``<div``) the tail is prose or an ordinary comment
+# and is NOT held. A complete tag is not a prefix: ``>`` never appears here, so
+# the complete grammar and this one are disjoint by construction and the
+# complete strip decides complete tags.
+_PARTIAL_CONTROL_LINE_RE = re.compile(
+    r"(?:^|\n)[ \t]{0,3}"
+    r"<(?:!(?:-(?:-(?:\s{0,16}(?:"
+    + _prefix_closure("keep-visible", r"(?:\s{0,16}(?:-(?:-)?)?)")
+    + "|"
+    + _prefix_closure("deliver:", r"[^>\n]{0,258}")
+    + "|"
+    + _prefix_closure("plan_task_id:", r"[^>\n]{0,258}")
+    + r"))?)?)?)?\Z",
     re.IGNORECASE,
 )
 
@@ -639,7 +686,31 @@ def _in_open_fence(text: str, idx: int) -> bool:
     return open_run is not None
 
 
-def strip_control_comments(text: str) -> str:
+def is_control_tag_tail(text: str) -> bool:
+    """Whether *text*, read from a line-leading position, is so far NOTHING
+    BUT a control-tag tail: complete recognized tag lines (stacked, with their
+    bounded trailing whitespace) and at most one still-arriving tag prefix.
+
+    For an append-only streaming sink (Slack) that holds a candidate span
+    byte by byte and must decide per byte whether to keep holding. Same
+    answer as ``strip_control_comments(text, hide_partial=True) == ""``, but
+    ANCHORED: the two grammars are applied with ``fullmatch`` at the span's
+    own start and at its last line break, so a call costs one linear pass
+    over the span rather than a search from every position -- a hold is
+    re-judged on every byte, and a search per byte is quadratic in the span.
+    """
+    if _TRAILING_CONTROL_LINES_RE.fullmatch(text) is not None:
+        return True
+    nl = text.rfind("\n")
+    if nl == -1:
+        return _PARTIAL_CONTROL_LINE_RE.fullmatch(text) is not None
+    return (
+        _PARTIAL_CONTROL_LINE_RE.fullmatch(text, nl) is not None
+        and _TRAILING_CONTROL_LINES_RE.fullmatch(text, 0, nl) is not None
+    )
+
+
+def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
     """Remove trailing control-tag lines from *text* for a plain-text
     projection (preview, TTS, channel delivery).
 
@@ -655,7 +726,21 @@ def strip_control_comments(text: str) -> str:
     code-span grammar this module would have to keep re-deriving (rounds
     5–8 each found another dialect). Stacked trailing tags are all
     removed. This is the ONE backend strip implementation.
+
+    *hide_partial* is the STREAMING question, and it is a parameter for the
+    same reason ``split_options_trailer`` makes it one: a tail that is a
+    strict prefix of a tag line (``<!-- keep-vis``) may be a tag mid-flight
+    on a live frame, where hiding it costs nothing because the next frame
+    re-renders from the full buffer -- but on a sealed answer the stream is
+    over and the same tail is the assistant's own prose, so the default
+    keeps it. A partial is peeled BEFORE the complete strip so a complete
+    tag followed by a still-arriving sibling is removed whole; the same
+    fence-parity guard applies to both.
     """
+    if hide_partial:
+        pm = _PARTIAL_CONTROL_LINE_RE.search(text)
+        if pm is not None and not _in_open_fence(text, pm.start()):
+            text = text[: pm.start()]
     m = _TRAILING_CONTROL_LINES_RE.search(text)
     if m is None or _in_open_fence(text, m.start()):
         return text
@@ -768,8 +853,8 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     whose tail cannot extend into a complete marker stays visible, instead of
     being detached and silently dropped from the rendered cut.
     """
-    suffix_start = len(text)
-    idx = _rightmost_unfinished_marker(text)
+    suffix_start = len(strip_control_comments(text))
+    idx = _rightmost_unfinished_marker(text[:suffix_start])
     # DELIBERATELY ASCII-ONLY -- do not widen the helper's gate to
     # ``MARKER_CLOSERS``. It asks "is the tail an UNFINISHED marker?", and
     # mere PRESENCE of a closer is not completeness: a closer sitting inside
@@ -787,6 +872,20 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     options = OPTIONS_RE_TRAILER.search(text[:suffix_start])
     if options:
         suffix_start = options.start()
+
+    # Control-tag lines are protocol too, and they can sit on EITHER side of
+    # the OPTIONS trailer (both prompt rules say "final line"; a message that
+    # carries both puts one of them last). Peeled twice -- once before the
+    # marker probes above so a tag after the trailer does not hide it from the
+    # end anchor, once after so a tag before it rides along. COMPLETE tags
+    # only: a consumer that sends once (WhatsApp's final render) discards the
+    # detached suffix, and an unfinished ``<!-- keep-vis`` is the assistant's
+    # own prose under the buffered rule, so detaching it there would delete
+    # a visible line. The rotation hazard the OPTIONS probe guards against
+    # does not reach a tag prefix: the splitter cuts at line boundaries first,
+    # and a tag line is far shorter than any transport's message cap, so it
+    # is never cut through unless it alone exceeds the cap.
+    suffix_start = len(strip_control_comments(text[:suffix_start]))
 
     if suffix_start == len(text):
         return text, ""

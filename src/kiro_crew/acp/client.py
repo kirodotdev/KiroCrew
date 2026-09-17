@@ -33,6 +33,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
@@ -209,6 +210,8 @@ from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_cal
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
 from kiro_crew.providers.mirrors.codex import drop_unadvertised_transports
+from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
+from kiro_crew.recovery.ladder import LADDER as _LADDER
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -281,7 +284,10 @@ KIRO_CLI_SUBCMD = "acp"
 CLAUDE_ACP_BIN = "claude-agent-acp"
 # A self-updating ACP adapter can briefly disappear or remain locked while its
 # executable is replaced. Delay the one permitted startup retry past that window.
-_ACP_RESPAWN_BACKOFF_S = 2.0
+# The delay is the L3 (ACP runtime) rung's base on the shared recovery ladder --
+# one schedule for every layer that rebuilds a runtime (RFC overload-resilience
+# §7) -- read at import so the sleep site stays a plain constant.
+_ACP_RESPAWN_BACKOFF_S = _LADDER.layer(_L3_ACP_RUNTIME).base_secs
 # On-disk name of the Claude backend CLI.  The claude-agent-acp adapter
 # delegates the actual model turn to @anthropic-ai/claude-agent-sdk, which
 # needs a per-platform native binary (~250 MB each).  Those ship as npm
@@ -2938,6 +2944,98 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     )
 
 
+#: ``ProviderErrorClass.kind`` values, in the precedence
+#: :func:`classify_provider_error` applies (first match wins).
+PROVIDER_ERROR_USAGE_LIMIT = "usage_limit"
+PROVIDER_ERROR_MALFORMED_REQUEST = "malformed_request"
+PROVIDER_ERROR_MODEL_UNAVAILABLE = "model_unavailable"
+PROVIDER_ERROR_THROTTLE = "throttle"
+PROVIDER_ERROR_CREDENTIAL_PROPAGATION = "credential_propagation"
+PROVIDER_ERROR_AUTH = "auth"
+PROVIDER_ERROR_SESSION_EXPIRED = "session_expired"
+PROVIDER_ERROR_CONNECTION = "connection"
+PROVIDER_ERROR_HTTP_5XX = "http_5xx"
+PROVIDER_ERROR_UNKNOWN = "unknown"
+
+_PROVIDER_ERROR_RETRYABLE: frozenset[str] = frozenset(
+    {
+        PROVIDER_ERROR_MODEL_UNAVAILABLE,
+        PROVIDER_ERROR_THROTTLE,
+        PROVIDER_ERROR_CREDENTIAL_PROPAGATION,
+        PROVIDER_ERROR_CONNECTION,
+        PROVIDER_ERROR_HTTP_5XX,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ProviderErrorClass:
+    """One provider-error verdict: what the text says and whether a retry can help.
+
+    ``kind`` is one of the ``PROVIDER_ERROR_*`` tokens; ``retryable`` is exactly
+    the answer :func:`_is_transient_raw_error` gives for the same text, so the
+    two can never disagree about a frame; ``matched`` is the token the pattern
+    hit (for logs), never the whole message.
+    """
+
+    kind: str
+    retryable: bool
+    matched: str = ""
+
+    @property
+    def terminal(self) -> bool:
+        return not self.retryable
+
+
+def classify_provider_error(haystack: str, *, data: str | None = None) -> ProviderErrorClass:
+    """Name the provider failure in *haystack* using this module's ONE pattern set.
+
+    *haystack* is the message text (formatted or raw); *data* is the raw JSON-RPC
+    ``error.data`` field when the caller has it (defaults to *haystack*), because
+    the malformed-request and model-unavailable patterns are matched against the
+    provider's own field only, never against a phrase echo in ``message``.
+
+    Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
+    malformed-request → model-unavailable → throttle → credential-propagation →
+    auth → session-expiry → connection → 5xx (named / status / retry hint) →
+    unknown. ``unknown`` is terminal. This is the public face of the private
+    ``_RE_*`` patterns: the dependency coordinator's ACP adapter and any other
+    reader classify through it so a third copy of the vocabulary cannot drift.
+    """
+    text = haystack or ""
+    data_field = text if data is None else data
+    if _RE_USAGE_LIMIT.search(text):
+        return ProviderErrorClass(PROVIDER_ERROR_USAGE_LIMIT, False, "usage limit")
+    if _RE_MALFORMED_REQUEST.search(data_field):
+        return ProviderErrorClass(PROVIDER_ERROR_MALFORMED_REQUEST, False, "malformed request")
+    if _RE_MODEL_UNAVAILABLE.search(data_field) or _RE_MODEL_TEMP_UNAVAILABLE.search(data_field):
+        return ProviderErrorClass(PROVIDER_ERROR_MODEL_UNAVAILABLE, True, "model unavailable")
+    match = _RE_THROTTLE_NAMED.search(text) or _RE_THROTTLE_GENERIC.search(text)
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_THROTTLE, True, match.group(0))
+    if is_credential_propagation_delay(text):
+        return ProviderErrorClass(
+            PROVIDER_ERROR_CREDENTIAL_PROPAGATION, True, "credential propagation"
+        )
+    match = _RE_AUTH.search(text)
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_AUTH, False, match.group(0))
+    if _is_session_expired(text):
+        return ProviderErrorClass(PROVIDER_ERROR_SESSION_EXPIRED, False, "session expired")
+    match = _RE_CONNECTION.search(text)
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
+    match = (
+        _RE_5XX_NAMED.search(text)
+        or _RE_5XX_STATUS.search(text)
+        or _RE_5XX_HINT.search(text)
+        or _RE_GENERATE_FAILED.search(data_field)
+    )
+    if match:
+        return ProviderErrorClass(PROVIDER_ERROR_HTTP_5XX, True, match.group(0))
+    return ProviderErrorClass(PROVIDER_ERROR_UNKNOWN, False)
+
+
 def advertised_model_ids(entries: object) -> list[str]:
     """Model ids out of an ``availableModels``-shaped list, defensively.
 
@@ -3969,34 +4067,50 @@ def _read_basename(pid: int) -> bytes | None:
         return None
 
 
-# Type alias for child PID records: (start_time, recorded_basename)
-ChildRecord = tuple[int | None, bytes | None]
+# Type alias for child PID records: (start_id, recorded_basename).
+#
+# The identity half is ``platform_compat.get_process_start_id``, NOT the local
+# ``_get_start_time``. That matters on macOS, where ``_get_start_time`` returns
+# ``hash(ps -o lstart=)``: ``ps`` reports whole seconds, so two processes started
+# in the same second alias to one value and a recycled pid can FALSE-MATCH, and
+# ``hash()`` is PYTHONHASHSEED-randomized so the value is not comparable outside
+# the interpreter that produced it. ``get_process_start_id`` is microsecond
+# libproc on macOS, 100 ns creation FILETIME on Windows and stat field 22 on
+# Linux, is stable to persist and compare across processes, and spawns nothing.
+# Being a neutral value also lets the pid-lifecycle layer verify these records
+# with platform_compat alone, instead of importing this module to do it.
+ChildRecord = tuple[str | None, bytes | None]
 
 
 def _capture_child_records(pids: list[int]) -> dict[int, ChildRecord]:
-    """Capture (start_time, basename) for each pid as a ChildRecord map.
+    """Capture (start_id, basename) for each pid as a ChildRecord map.
 
-    On macOS ``_get_start_time`` / ``_read_basename`` shell out to ``ps`` (and
-    ``_get_child_pids`` to ``pgrep``), which can block during the subprocess
-    spawn (fork/exec). Callers running on the event loop MUST invoke this via
+    On macOS ``_read_basename`` shells out to ``ps`` (and ``_get_child_pids`` to
+    ``pgrep``), which can block during the subprocess spawn (fork/exec). Callers
+    running on the event loop MUST invoke this via
     ``run_in_executor(subprocess_executor(), ...)`` so the spawns happen on a
-    worker thread and never wedge the loop.
+    worker thread and never wedge the loop. Only the basename half needs that:
+    the identity half spawns nothing on any platform.
     """
-    return {p: (_get_start_time(p), _read_basename(p)) for p in pids}
+    return {p: (platform_compat.get_process_start_id(p), _read_basename(p)) for p in pids}
 
 
 def _is_our_child(
-    pid: int, expected_start: int | None = None, expected_basename: bytes | None = None
+    pid: int, expected_start: str | None = None, expected_basename: bytes | None = None
 ) -> bool:
     """Verify a PID still belongs to a process we spawned (deny-by-default).
 
-    Compares recorded basename and start_time against live values. No hardcoded
+    Compares recorded basename and start id against live values. No hardcoded
     allowlist — any binary recorded at spawn time is automatically supervised.
     Returns False for recycled PIDs or unreadable processes.
+
+    The start id comes from ``platform_compat.get_process_start_id`` so it is
+    read the same way it was recorded (see :data:`ChildRecord` for why that is
+    not ``_get_start_time``).
     """
     try:
-        # Start-time check: definitive PID recycling detection (always required)
-        actual_start = _get_start_time(pid)
+        # Start-id check: definitive PID recycling detection (always required)
+        actual_start = platform_compat.get_process_start_id(pid)
         if expected_start is None or actual_start is None:
             logger.debug("PID %d start time unavailable — denying (fail-closed)", pid)
             return False
@@ -4046,12 +4160,16 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
             if not platform_compat.pid_exists(cpid):
                 continue  # gone — nothing to sweep
             record = child_pids.get(cpid)
-            # Support both old (int|None) and new (tuple) record shapes
+            # Support both the legacy (int|None) and current (tuple) record shapes.
+            # A legacy int is a pre-neutral-start-id reading and can never equal a
+            # ``get_process_start_id`` value, so it is carried as unproven rather
+            # than compared: _is_our_child then denies, which is the same outcome a
+            # mismatch would produce, and keeps this branch honest about what it can
+            # actually verify.
+            expected_start: str | None = None
+            expected_basename: bytes | None = None
             if isinstance(record, tuple):
                 expected_start, expected_basename = record
-            else:
-                expected_start = record
-                expected_basename = None
             if not _is_our_child(
                 cpid, expected_start=expected_start, expected_basename=expected_basename
             ):
@@ -4351,7 +4469,7 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
-        self._start_time: int | None = None  # process start time for PID recycling detection
+        self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
         # session/load path), so the session id cannot distinguish the process
@@ -7286,6 +7404,23 @@ class AcpClient:
             if self._private_memory
             else {}
         )
+        # Per-process scratch containment -- see acp/runtime.py's twin block.
+        # Allocated BEFORE the sandbox is built: the scratch ROOT is masked for
+        # every sandboxed process (``sandbox._CREW_HIDDEN_LEAVES``), so this
+        # child's own directory is re-exposed as a PRIVATE window (siblings stay hidden).
+        # Fail-open; owner recorded after spawn; reclamation is
+        # liveness-keyed, never age-keyed.
+        self._scratch_dir = None
+        try:
+            self._scratch_dir = await asyncio.to_thread(
+                agent_scratch.allocate_scratch, self._session_key or "session"
+            )
+        except OSError:
+            logger.warning(
+                "agent-scratch: could not allocate; spawning with inherited temp",
+                exc_info=True,
+            )
+        scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -7294,6 +7429,7 @@ class AcpClient:
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
             extra_hidden_dirs=adapter_hidden_dirs,
+            extra_private_dirs=scratch_window,
             extra_expose_files=adapter_expose,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
@@ -7409,20 +7545,10 @@ class AcpClient:
         if browser_env:
             lifecycle_env = {**os.environ, **browser_env}
             env.update(await self._to_thread_guarding_sandbox(browser_socket_env, lifecycle_env))
-        # Per-process scratch containment -- see acp/runtime.py's
-        # twin block. Allocated off-loop, fail-open; owner recorded after
-        # spawn; reclamation is liveness-keyed, never age-keyed.
-        self._scratch_dir = None
-        try:
-            self._scratch_dir = await asyncio.to_thread(
-                agent_scratch.allocate_scratch, self._session_key or "session"
-            )
+        # The scratch dir was allocated before the sandbox wrap (carved out of
+        # the masked root there); hand it to the child as its temp.
+        if self._scratch_dir is not None:
             env.update(agent_scratch.scratch_env(self._scratch_dir))
-        except OSError:
-            logger.warning(
-                "agent-scratch: could not allocate; spawning with inherited temp",
-                exc_info=True,
-            )
         # Memory-aware cap for pytest-xdist's ``-n auto``: xdist sizes auto to
         # the CPU count, ignoring memory, so a full-suite run in an agent turn
         # can spawn cpu_count workers x ~1 GB each and exhaust the host. xdist
@@ -7512,9 +7638,11 @@ class AcpClient:
                     finish_suspended_spawn, self._process, self._pid, label=_spawn_label
                 ),
             )
-            self._start_time = await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), _get_start_time, self._pid
-            )
+            # Identity for the recycle guards that later decide whether this pid
+            # may be signalled. ``get_process_start_id`` is in-process on every
+            # platform (its own docstring pins that), so unlike the ``ps``-forking
+            # reader it replaces there is nothing here to offload.
+            self._start_time = platform_compat.get_process_start_id(self._pid)
             if self._scratch_dir is not None:
                 # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
                 # twin block. Off-loop, fail-open.

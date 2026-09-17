@@ -29,12 +29,13 @@ from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.renderer import (
     Renderer,
-    credential_redaction_notice,
+    redaction_notice,
     render_options_as_text,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -165,8 +166,9 @@ class IMessageRenderer(Renderer):
                 )
                 raise
 
-        # The answer shipped. If credential redaction rewrote it, the reader is
-        # holding a command that will not run when pasted. A sent iMessage cannot
+        # The answer shipped. If either redactor rewrote it -- a credential, or a
+        # suspicious URL `_default_redactor` also strips -- the reader is holding
+        # a command that will not run when pasted. A sent iMessage cannot
         # be edited and the transport carries no annotation channel, so -- unlike
         # the dashboard, which appends a notice row to the same segment -- the only
         # way to say so is an ADDITIONAL follow-up message.
@@ -176,16 +178,21 @@ class IMessageRenderer(Renderer):
         # the way out, so re-redacting the assembled answer reports nothing while
         # the placeholders are plainly visible. Sum every tag the redactor can emit
         # (`CREDENTIAL_REDACTION_TAGS`) so an encoded-credential-only answer is not
-        # missed.
+        # missed, and count the URL tag by `EXFILTRATION_REDACTION_TAG_PREFIX`
+        # prefix (it interpolates the domain, so it has no constant form). The two
+        # stay separate because the notice is worded by kind: the remedies differ.
         #
         # Best-effort AFTER the answer succeeded: a failure to deliver the notice
         # must NOT re-raise and convert an already-delivered answer into a failed
         # turn. That trade is deliberate -- the answer is out; losing the notice
         # is a degraded warning, losing the turn would discard a delivered reply.
         _cred_redactions = sum(content.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-        if _cred_redactions > 0:
+        _url_redactions = content.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+        if _cred_redactions > 0 or _url_redactions > 0:
             try:
-                await self._client.send(self._handle, credential_redaction_notice(_cred_redactions))
+                await self._client.send(
+                    self._handle, redaction_notice(_cred_redactions, _url_redactions)
+                )
             except (RpcError, RpcTransportError) as exc:
                 logger.warning(
                     "imessage: could not deliver the redaction notice to %s "

@@ -4,7 +4,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { api } from '../api/client'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
-import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseConnected } from './dashboardSlice'
+import { addSlotOptimistic, updateSlot, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, markSlotRead, fetchSlots, slotSurfaceKey, slotIsRemoteBound, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
@@ -3309,7 +3309,7 @@ export const createSlot = createAsyncThunk<
 
 export const deleteSlot = createAsyncThunk(
   'chat/deleteSlot',
-  async (key: string, { dispatch, getState }) => {
+  async (key: string, { dispatch, getState, requestId }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
     // Use the surface key (forward-compat alias for `mode`) so a future
@@ -3345,8 +3345,16 @@ export const deleteSlot = createAsyncThunk(
     dispatch(removeSlotOptimistic(key))
     try {
       await api.deleteChatSlot(key)
+      // Confirm the close hold NOW, not on `fulfilled`: that action trails the
+      // `await navigation` below, and a peer transcript load that outlasts the
+      // in-flight cap would otherwise expire a hold whose close succeeded.
+      dispatch(confirmCloseHold({ key, requestId }))
       gcSessionStorage(key)
     } catch {
+      // Release the close hold BEFORE refetching: this thunk's `rejected` (which
+      // also releases it) fires only after the `await navigation` below, and
+      // the refetch reply must not be filtered out by the hold it exists to undo.
+      dispatch(releaseCloseHold({ key, requestId }))
       dispatch(fetchSlots())
       throw new Error('save failed')
     } finally {
@@ -4479,23 +4487,36 @@ const chatSlice = createSlice({
       if (suggestion.turns > FOLDER_SUGGESTION_MAX_TURNS) delete state.folderSuggestions[slot]
     },
     removeByApprovalId(state, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
-    resolveByApprovalId(state, action: PayloadAction<{ id: string; decision?: string }>) {
+    resolveByApprovalId(state, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string }>) {
+      const { id, slot, registry } = action.payload
+      if (!slot || isUnsafeKey(slot)) return
+      const messages = slot === state.activeSlot
+        ? state.messages
+        : state.slotMessages[safeKey(slot)]
+      const matches = messages?.filter(message => message.meta?.approval_id === id)
+      const m = (registry
+        ? matches?.find(message => message.meta?.registry === registry)
+        : undefined) ?? matches?.[0]
       const decision = action.payload.decision || 'approved'
-      let m = state.messages.find(m => m.meta?.approval_id === action.payload.id)
-      if (!m) {
-        for (const arr of Object.values(state.slotMessages)) {
-          const f = arr.find(x => x.meta?.approval_id === action.payload.id)
-          if (f) { m = f; break }
-        }
-      }
-      if (m?.meta) m.meta.resolved = decision
+      // A 'stale' retirement carries no outcome (an expired wait, a 404, or a
+      // reconcile snapshot that no longer lists the id), so it may only settle
+      // a row that is still pending — the same only-if-pending rule as the
+      // switchSlot sweep and the backend marker. The reconcile retire-loop
+      // walks the pre-fetch provenance map, so a card decided while that read
+      // was in flight (by a live frame or by this tab's own Allow click) is
+      // retired a second time as 'stale'; without this guard that second
+      // write downgraded the decision. The reverse direction stays open: a
+      // real decision landing after 'stale' is new information and overwrites.
+      if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
       // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
       // Every rejection token counts: a reject-once that missed this would leave
       // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
       // auto-deny and paints a human refusal as a policy block.
       const toolCallId = m?.meta?.tool_call_id as string | undefined
       if (isRejectedDecision(decision) && toolCallId) {
-        const log = state.toolLog
+        const log = slot === state.activeSlot
+          ? state.toolLog
+          : state.slotActivity[safeKey(slot)]?.toolLog ?? []
         for (let i = log.length - 1; i >= 0; i--) {
           if (log[i].type === 'tool' && log[i].tool_call_id === toolCallId) {
             log[i].rejected = true; break

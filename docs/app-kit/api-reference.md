@@ -47,9 +47,38 @@ function MyPage() {
 }
 ```
 
-`useAppApi()` returns a client whose methods (`get`, `post`, `put`, `patch`,
-`del`) call the Gateway endpoints listed below, scoped to the `permissions.api`
-paths your `app.json` declares. The host injects auth automatically.
+`useAppApi()` returns a client whose methods (`request`, `get`, `post`, `put`,
+`patch`, `del`) call the Gateway endpoints listed below, scoped to the
+`permissions.api` paths your `app.json` declares. All methods parse a JSON
+response; an empty successful response returns `undefined`.
+
+- `request<T>(path, init?)` accepts `RequestInit`, including raw bodies such as
+  `FormData`, headers and an abort signal. It does not set a content type for you.
+- `get<T>(path, init?)` and `del<T>(path, init?)` fix the HTTP method.
+- `post<T>(path, body?, init?)`, `put<T>(path, body?, init?)` and
+  `patch<T>(path, body?, init?)` serialize the body argument as JSON. Their method
+  and body arguments take precedence over `init.method` and `init.body`. Headers
+  are merged with a default `Content-Type: application/json` unless you specify
+  another media type.
+
+The host owns `X-Session-Key`: chat surfaces use their bound session and routed
+app pages use the core dashboard-page identity, `dashboard:ui`. A host-provided
+key overrides a caller-supplied one. If a host has no binding, supplying that
+header is rejected before a request is sent; callers of this scoped client
+cannot choose a session. This is a frontend guardrail, not isolation from other
+JavaScript in the dashboard document; backend authorization remains authoritative.
+The path check applies to the initial URL. Browser redirect behavior remains
+controlled by `RequestInit.redirect` (default `follow`); use `redirect: 'error'`
+when the call must not follow redirects. Redirect targets are not rechecked by
+this client.
+
+HTTP failures remain `Error` objects with the message `API <status>: <body>` and
+now also carry `name: 'AppApiError'`, numeric `status` and string `body`. Import
+`AppApiError` as a **type**, not a runtime constructor. The body is unparsed, so
+parse it only when the endpoint promises JSON (for example, a conflict response).
+Network, abort and successful-response JSON parsing failures retain their original
+error types. Stale-owner reauthentication signaling still runs before an HTTP
+failure is thrown.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 

@@ -572,7 +572,13 @@ class TestRedeliveryHandling:
         await asyncio.gather(*c._handler_tasks)
 
         assert [p["messageId"] for p in sent] == ["act-1"]
-        assert "raw-uuid" not in str(c._seen) or c._seen  # the mark is kept
+        # The retention half is pinned positively, on the key actually stored: the
+        # mark is the base64 Hydra id, so a substring test for the raw uuid can
+        # never be satisfied whatever the client did, and an `_ack_after` that
+        # popped the mark for any exception instead of only `_HydrationFailed`
+        # would let the service redeliver the message into the turn that already
+        # failed — as a steer, answering nothing — with the test still green.
+        assert c._seen == {hydra_id("raw-uuid", "MESSAGE"): None}
 
     @pytest.mark.asyncio
     async def test_a_failed_ack_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:

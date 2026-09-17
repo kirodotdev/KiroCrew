@@ -41,7 +41,7 @@ from kiro_crew.config.sections import _clamp_pct
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
@@ -1058,14 +1058,7 @@ class TelegramDispatcher:
                     getattr(event, "title", "") or "",
                     session_key=session_key,
                     agent=agent,
-                    tool_kind=getattr(event, "tool_kind", "") or "",
-                    raw_params=getattr(event, "raw_tool_params", None),
-                    diff_path=getattr(event, "diff_path", "") or "",
-                    command=getattr(event, "shell_command", None),
-                    is_shell=bool(getattr(event, "is_shell", False)),
-                    mcp_server_name=getattr(event, "mcp_server_name", "") or "",
-                    mcp_tool_name=getattr(event, "tool_name", "") or "",
-                    mcp_identity_trusted=bool(getattr(event, "mcp_identity_trusted", False)),
+                    **hook_gate_kwargs(event),
                 )
                 if result.action == TOOL_DENY:
                     return "deny"
@@ -2500,7 +2493,7 @@ class TelegramDispatcher:
         # Rotated: the subagent's completion arrives later and is routed by this
         # key, so binding it to a generation the next message abandons sends the
         # result to a conversation nobody is reading.
-        reply = spawn_task_reply(
+        reply = await spawn_task_reply(
             arg, self.subagent_manager, session_key or self._rotated_session_key(route)
         )
         if reply is None:

@@ -21,6 +21,7 @@ import type { Artifact } from '../types'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { isEditableTarget } from '../utils/editableTarget'
 interface Props {
   slug: string
   /** Kind captured at open time; the live query overrides it once loaded. */
@@ -281,8 +282,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       // Don't hijack Esc while the user is in an editable field (e.g. the
       // add-instruction textarea) — let the field handle it instead of
       // closing/exiting the panel out from under them.
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
+      if (isEditableTarget(e)) return
       if (fullscreen) setFullscreen(false); else onClose()
     }
     document.addEventListener('keydown', h)

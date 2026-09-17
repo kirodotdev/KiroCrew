@@ -31,12 +31,19 @@ all*: a session has turns and tool calls, a crew has members and patrols. It is
 a prefix registry, :data:`TYPE_OWNERSHIP`, so adding an action to an existing
 domain needs no change here.
 
-**Namespacing** (rule 2) answers *may this emitter write this*. A crew or an app
-writing into a crew ledger is a GUEST: it may write only under its own
-``crew:<name>/`` or ``app:<name>/`` prefix, and only into a crew ledger. The
-guest prefix is what makes the registry safe to keep short -- a guest never
-needs a registry entry, because its own name is its permission. Guest types are
-therefore checked by rule 2 *instead of* rule 1, not in addition to it.
+**Namespacing** (rule 2) answers *may this emitter write this*, and it is a rule
+about ``src`` rather than about the spelling of the type. Each kind accepts its
+own emitters (:data:`KIND_FIXED_SOURCES`, :data:`KIND_SOURCE_PREFIXES`): a
+session ledger takes ``gateway`` and ``acp``, a crew ledger takes ``gateway``,
+``dashboard``, ``patrol`` and the two guest forms ``crew:<name>`` and
+``app:<name>``. A ``crew:<name>`` guest writes the crew kind's own built-in
+domains, and its name in ``src`` is the signature -- a type carries the fact,
+never the identity of who wrote it, so one ``crew/report`` type serves every
+child. An ``app:<name>`` guest writes only under its own ``app:<name>/`` type
+prefix, the single guest TYPE namespace this format keeps, for a fact no
+built-in domain covers. That prefix is what makes the registry safe to keep
+short: an app needs no registry entry, because its own name is its permission,
+so an app type is checked by rule 2 *instead of* rule 1.
 
 Caps refuse; they never truncate. An entry over :data:`MAX_ENTRY_BYTES`, or a
 ``ref`` spanning more than :data:`MAX_REF_SPAN` lines, is refused whole. A
@@ -121,26 +128,47 @@ TYPE_OWNERSHIP: dict[str, frozenset[str]] = {
     ),
 }
 
-#: Emitters that name a whole subsystem and carry no instance id.
-FIXED_SOURCES: frozenset[str] = frozenset({"gateway", "acp", "dashboard", "patrol"})
-
 #: Emitter prefixes that DO carry an instance id, spelled ``<prefix>:<name>``.
-SESSION_SOURCE_PREFIX = "session:"
 CREW_SOURCE_PREFIX = "crew:"
 APP_SOURCE_PREFIX = "app:"
 
-#: The two guest prefixes. A guest's own name is its write permission.
-GUEST_PREFIXES: tuple[str, ...] = (CREW_SOURCE_PREFIX, APP_SOURCE_PREFIX)
+#: The fixed emitters each kind accepts. The lists differ because the writers
+#: do: a session's entries come from the gateway and the ACP runtime, while a
+#: crew's come from the dashboard, a patrol and the gateway. One list shared
+#: across kinds accepts ``patrol`` inside a single session's turn history, which
+#: is an authorization hole rather than a convenience, because ``src`` is what a
+#: reader attributes an entry to.
+#:
+#: Adding a source to a kind is ADDITIVE: no reader validates ``src``, so a list
+#: names the emitters that exist rather than a ceiling on the format.
+#: ``session:<id>`` appears in neither, because no emitter writes it.
+KIND_FIXED_SOURCES: dict[str, frozenset[str]] = {
+    KIND_CREW: frozenset({"gateway", "dashboard", "patrol"}),
+    KIND_SESSION: frozenset({"gateway", "acp"}),
+}
+
+#: The guest emitter prefixes each kind accepts. A guest names an instance, so
+#: it is spelled ``<prefix>:<name>`` and only a crew ledger takes one: a session
+#: ledger is one session's own turn history, which no other unit writes into.
+KIND_SOURCE_PREFIXES: dict[str, tuple[str, ...]] = {
+    KIND_CREW: (CREW_SOURCE_PREFIX, APP_SOURCE_PREFIX),
+    KIND_SESSION: (),
+}
+
+#: Every fixed emitter name the format knows, for a caller that wants the
+#: vocabulary rather than the rule. Derived, so it cannot drift from the per-kind
+#: lists above -- which are what :func:`require_src` enforces.
+FIXED_SOURCES: frozenset[str] = frozenset().union(*KIND_FIXED_SOURCES.values())
+
+#: The one guest TYPE namespace: an app's own facts. A crew's facts are built-in
+#: crew domains written under a ``crew:<name>`` ``src``, so the crew kind needs
+#: no type namespace of its own.
+GUEST_TYPE_PREFIX = APP_SOURCE_PREFIX
 
 # A name segment: a domain, an action, a crew name, an app name. No separator,
 # so it can never widen a type into another namespace or a path into another
 # directory.
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-# A session id as it appears after ``session:``. Colons are allowed because a
-# channel session key legitimately carries one (``slack:1712793600.123``), so a
-# colon count cannot classify the tail.
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +223,7 @@ def split_type(entry_type: str) -> tuple[str, str]:
     """``("domain", "action")`` for *entry_type*, or raise ``bad_type``.
 
     Partitioned on the FIRST slash, which is what lets a guest domain keep its
-    colon: ``crew:qa/report`` splits to ``("crew:qa", "report")``. The action
+    colon: ``app:radar/scan`` splits to ``("app:radar", "scan")``. The action
     may not itself contain a slash, so the namespace is exactly one level deep
     and no action can smuggle a second domain behind it.
     """
@@ -214,41 +242,56 @@ def split_type(entry_type: str) -> tuple[str, str]:
             code=CODE_BAD_TYPE,
             field="type",
         )
-    guest = guest_prefix_of(domain)
-    tail = domain[len(guest) :] if guest else domain
+    tail = domain[len(GUEST_TYPE_PREFIX) :] if is_guest_type_domain(domain) else domain
     if not _SEGMENT_RE.match(tail):
         raise LedgerError(
-            f"entry type domain is not a plain name: {entry_type!r}",
+            f"entry type domain must be a plain name or {GUEST_TYPE_PREFIX}<name>: "
+            f"{entry_type!r}",
             code=CODE_BAD_TYPE,
             field="type",
         )
     return domain, action
 
 
-def guest_prefix_of(value: str) -> str | None:
-    """The guest prefix *value* starts with (``crew:`` / ``app:``), else ``None``."""
-    for prefix in GUEST_PREFIXES:
-        if value.startswith(prefix):
+def is_guest_type_domain(domain: str) -> bool:
+    """Whether *domain* is the one guest type namespace, ``app:<name>``."""
+    return domain.startswith(GUEST_TYPE_PREFIX)
+
+
+def guest_source_prefix_of(src: str, kind: str) -> str | None:
+    """The guest prefix *src* carries for *kind*, or ``None``.
+
+    Keyed by kind, so the answer is the one this ledger accepts rather than the
+    union: ``crew:qa`` is a guest of a crew ledger and nothing at all to a
+    session ledger.
+    """
+    for prefix in KIND_SOURCE_PREFIXES.get(kind, ()):
+        if src.startswith(prefix):
             return prefix
     return None
 
 
-def require_src(src: str) -> str:
-    """*src* unchanged, or raise ``bad_src``."""
+def require_src(src: str, *, kind: str) -> str:
+    """*src* unchanged, or raise ``bad_src``.
+
+    Checked against what this KIND of ledger accepts. ``kind`` is keyword-only
+    and required: it selects the rule, so a caller that omits it must fail
+    loudly rather than have its ``src`` measured against some default kind's
+    list.
+    """
+    require_kind(kind)
     if not isinstance(src, str) or not src:
         raise LedgerError("src must be a non-empty string", code=CODE_BAD_SRC, field="src")
-    if src in FIXED_SOURCES:
+    if src in KIND_FIXED_SOURCES[kind]:
         return src
-    if src.startswith(SESSION_SOURCE_PREFIX):
-        if _SESSION_ID_RE.match(src[len(SESSION_SOURCE_PREFIX) :]):
-            return src
-    else:
-        guest = guest_prefix_of(src)
-        if guest and _SEGMENT_RE.match(src[len(guest) :]):
-            return src
+    guest = guest_source_prefix_of(src, kind)
+    if guest is not None and _SEGMENT_RE.match(src[len(guest) :]):
+        return src
+    accepted = sorted(KIND_FIXED_SOURCES[kind]) + [
+        f"{prefix}<name>" for prefix in KIND_SOURCE_PREFIXES[kind]
+    ]
     raise LedgerError(
-        f"src must be one of {sorted(FIXED_SOURCES)} or "
-        f"session:<id> / crew:<name> / app:<name>: {src!r}",
+        f"a {kind} ledger accepts src {accepted}: {src!r}",
         code=CODE_BAD_SRC,
         field="src",
     )
@@ -257,21 +300,21 @@ def require_src(src: str) -> str:
 def check_ownership(kind: str, entry_type: str, src: str) -> None:
     """Enforce rules 1 and 2 for one (*kind*, *entry_type*, *src*) triple.
 
-    Order matters. Whether the TYPE is guest-namespaced is decided first,
-    because that answer selects which rule governs: a guest type is judged by
-    rule 2 alone (its own name is its permission) and never consulted against
-    the ownership registry, which is why the registry needs no guest entries.
+    ``src`` is where authorization lives, so it is settled first: an emitter a
+    kind does not accept is refused whatever it writes, and everything below can
+    then reason about an emitter this ledger already takes. A guest TYPE
+    (``app:<name>/<action>``) is judged by its namespace alone and never against
+    the ownership registry, which is why the registry needs no app entries.
     """
+    require_kind(kind)
     domain, _action = split_type(entry_type)
-    require_src(src)
-    type_guest = guest_prefix_of(domain)
-    src_guest = guest_prefix_of(src)
+    require_src(src, kind=kind)
 
-    if type_guest is not None:
+    if is_guest_type_domain(domain):
         if kind != KIND_CREW:
             raise LedgerError(
                 f"a {kind} ledger does not accept the guest type {entry_type!r}; "
-                "guest namespaces are crew-ledger only",
+                f"the {GUEST_TYPE_PREFIX} namespace is crew-ledger only",
                 code=CODE_NAMESPACE_VIOLATION,
                 field="type",
             )
@@ -283,13 +326,13 @@ def check_ownership(kind: str, entry_type: str, src: str) -> None:
             )
         return
 
-    if src_guest is not None:
+    if src.startswith(APP_SOURCE_PREFIX):
         raise LedgerError(
-            f"guest src {src!r} may only write types under {src}/, not {entry_type!r}",
+            f"app emitter {src!r} may only write types under {src}/, not {entry_type!r}",
             code=CODE_NAMESPACE_VIOLATION,
             field="src",
         )
-    if domain not in TYPE_OWNERSHIP[require_kind(kind)]:
+    if domain not in TYPE_OWNERSHIP[kind]:
         raise LedgerError(
             f"a {kind} ledger does not own the type {entry_type!r}; "
             f"owned domains are {sorted(TYPE_OWNERSHIP[kind])}",

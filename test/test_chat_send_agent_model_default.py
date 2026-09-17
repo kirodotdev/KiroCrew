@@ -32,6 +32,7 @@ from kiro_crew.acp.types import EVENT_TEXT_CHUNK
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn
+from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.providers.base import LLMEvent
 
@@ -63,6 +64,15 @@ def _config(tmp_path: Path, *, crew_model: str = "") -> KiroCrewConfig:
     )
     provision_member_memory(cfg, "researcher")
     return cfg
+
+
+def _grant_researcher(cfg: KiroCrewConfig, slot_key: str = "chat-cov-1") -> None:
+    """Write the member's private session grant, as an owner-gated route would.
+
+    A turn only confirms a grant that already exists; these turns exercise
+    model selection, not admission, so the grant is written up front.
+    """
+    bind_private_session_store(f"dashboard:{slot_key}", cfg.agents["researcher"].memory_store)
 
 
 def _pin_sync_accessors(client) -> None:
@@ -151,7 +161,9 @@ class TestRunChatDefaultModel:
 
     @pytest.mark.asyncio
     async def test_crew_pin_outranks_the_global_default(self, tmp_path, _runner_config):
-        _runner_config(_config(tmp_path, crew_model=CREW_PIN))
+        cfg = _config(tmp_path, crew_model=CREW_PIN)
+        _runner_config(cfg)
+        _grant_researcher(cfg)
         state, _client = _turn_state(tmp_path)
         slot = _slot()
         slot.agent = "researcher"
@@ -163,7 +175,9 @@ class TestRunChatDefaultModel:
 
     @pytest.mark.asyncio
     async def test_explicit_slot_pin_is_untouched(self, tmp_path, _runner_config):
-        _runner_config(_config(tmp_path, crew_model=CREW_PIN))
+        cfg = _config(tmp_path, crew_model=CREW_PIN)
+        _runner_config(cfg)
+        _grant_researcher(cfg)
         state, _client = _turn_state(tmp_path)
         slot = _slot()
         slot.agent = "researcher"

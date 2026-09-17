@@ -233,13 +233,25 @@ A daemon is reclaimed only when all of these hold: a structural cliDaemon argv
 whose following element is a generated `kc-<8hex>` name; that same name in its
 exec-time environ; the `KIROCREW_SPAWNED` marker; no live process outside the
 daemon's own SID still holding that session; and an age past the work-class
-floor. Ownership is therefore proven from kernel facts alone — argv, exec-time
-environ, session id, process liveness — never from filesystem state a same-UID
-agent could write, which is what made earlier reaper attempts unsafe. The probe
-scans the whole process table rather than a manager-local set, so a peer gateway
-sharing this data home sees and protects its own live sessions. An
-operator-named session is structurally excluded and never signalled; the `kc-`
-prefix is reserved so the two populations cannot be confused. The Browser
+floor. The owner scan remains fail-closed for unreadable process data. One
+kernel relationship makes the common systemd case decidable: a process whose
+stable unified cgroup v2 membership differs from the daemon's cannot belong to
+the spawn tree that inherited its generated browser session, so an unreadable
+environ there is ignored. This excludes system stubs such as `(sd-pam)` and
+`sshd-session` without a growing name list. Recognizable agent, gateway, shell,
+and browser-tooling process names remain plausible owners in every cgroup. Only
+a positively named non-owner with proven different cgroup membership is
+ignored. A same-cgroup process, unreadable process name, unreadable cgroup, or
+cgroup that changes during the probe also keeps the daemon. A DEBUG verdict records `decision=keep|sweep` and a closed `reason`,
+with a separate owner-probe line when an unreadable different-cgroup process is
+ignored or an inconclusive owner keeps the daemon. Ownership is therefore
+proven from kernel facts alone -- argv, exec-time environ, session id, cgroup,
+and process liveness -- never from filesystem state a same-UID agent could
+write, which is what made earlier reaper attempts unsafe. The probe scans the
+whole process table rather than a manager-local set, so a peer gateway sharing
+this data home sees and protects its own live sessions. An operator-named
+session is structurally excluded and never signalled; the `kc-` prefix is
+reserved so the two populations cannot be confused. The Browser
 panel's own sessions (`panel-<owner6>-<slot8>`, see [Address bar
 launcher](#address-bar-launcher)) are deliberately in the operator-class
 population: a generated name would have the sweep kill the human's browser the

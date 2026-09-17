@@ -2026,6 +2026,38 @@ class TestEffectiveModelSection:
         assert "out of date" not in out, "report must agree with the resolver"
         assert issues == []
 
+    def test_a_bound_markdown_agent_shows_the_file_that_holds_it(self, capsys) -> None:
+        """The "bound spec" line is the file the resolver read, so for a markdown
+        agent it names ``<name>.md``; a ``.json`` join would point the operator
+        at a file that does not exist."""
+        self._install_spec(None)
+        agents_dir = self._agents_dir()
+        md = agents_dir / "custom-agent.md"
+        md.write_text(
+            "---\nname: custom-agent\nmodel: claude-opus-4.8\n---\nprompt\n", encoding="utf-8"
+        )
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom-agent")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+
+        out = capsys.readouterr().out
+        assert "decided by:  bound agent pin ('custom-agent')" in out
+        assert f"bound spec:  {str(md)!r}" in out
+        assert "custom-agent.json" not in out
+        assert issues == []
+
+    def test_a_bound_agent_with_no_spec_is_reported_as_missing(self, capsys) -> None:
+        self._install_spec(None)
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom-agent")
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+
+        out = capsys.readouterr().out
+        assert "bound spec:  \u26a0\ufe0f  no spec for 'custom-agent' under" in out
+        assert "custom-agent.json" not in out
+
     def test_the_builtin_agent_shows_no_bound_tier(self, capsys) -> None:
         """Tier 2 is skipped for the built-in agent, so the list must not show
         a tier the resolver never consulted."""

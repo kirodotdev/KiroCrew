@@ -56,7 +56,7 @@ import urllib.parse
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.constants import split_trailing_protocol_suffix, strip_control_comments
 from kiro_crew.discord.client import (
     DISCORD_MAX_FILE_BYTES,
     DISCORD_MAX_FILES_PER_MESSAGE,
@@ -692,7 +692,12 @@ class DiscordRenderer(Renderer):
         Extracting once from the canonical buffer ensures only an actual model
         directive becomes controls; generated display text remains content.
         """
-        body, options = _extract_options("".join(self._buf))
+        body, options = _extract_options(strip_control_comments("".join(self._buf)))
+        # Trailing control-tag lines are protocol too, and a message that
+        # carries both puts one of them last -- so strip on both sides of the
+        # trailer. Complete tags only: the seal is the end of the stream, and a
+        # partial tail there is the assistant's own prose.
+        body = strip_control_comments(body)
         self._buf = [body]
         self._delivery_text = None
         return options
@@ -853,8 +858,13 @@ class DiscordRenderer(Renderer):
         visible = self._segment_text()
         canonical = _strip_steering("".join(self._buf))
         canonical_body, _ = _extract_options(canonical)
+        # Same rule for a control-tag line still arriving (``<!-- keep-vis``):
+        # hidden from the live frame like a partial ``[OPTIONS``, and only when
+        # the canonical source owns it.
+        canonical_body = strip_control_comments(canonical_body, hide_partial=True)
         if canonical_body != canonical:
             body, _ = _extract_options(visible)
+            body = strip_control_comments(body, hide_partial=True)
         else:
             body = visible
         if self._uploads_enabled() and self._segment_uploads_safe:

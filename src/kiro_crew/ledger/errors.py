@@ -39,6 +39,14 @@ CODE_BAD_TYPE = "bad_type"
 CODE_BAD_SRC = "bad_src"
 #: ``data`` is not a JSON object, or holds something not JSON-serializable.
 CODE_BAD_DATA = "bad_data"
+#: A ``data`` field of a DECLARED entry type is absent while required, of the
+#: wrong JSON type, not declared at all, or outside a closed set of values. The
+#: envelope is well formed and the type is owned -- the payload is not what that
+#: type carries. Distinct from ``bad_data``, which is about the payload as a
+#: whole; ``field`` names the offending path (``data.tokens.input``) so a caller
+#: can point at it without parsing prose. See
+#: :mod:`kiro_crew.ledger.entry_types` for the declarations.
+CODE_BAD_DATA_FIELD = "bad_data_field"
 #: This ledger kind does not own that ``type`` prefix (rule 1).
 CODE_EVENT_TYPE_NOT_OWNED = "event_type_not_owned"
 #: A guest emitter wrote outside its own namespace, or wrote a guest type into

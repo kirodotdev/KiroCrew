@@ -680,6 +680,18 @@ archived instead of being permanently deleted:
   days; `-1` or `null` disables cleanup so the user manages deletion manually).
   `_cleanup_old_archives()` reads the value from config when called with no
   explicit `retention_days`, and is rate-limited to once per hour.
+- **The same pass expires closed SESSION LEDGERS**, on that same setting and
+  inside that same throttle: `_cleanup_expired_ledgers()` hands the resolved
+  window to `ledger.store.sweep_expired()`. One switch governs both halves
+  because a session's message bodies live in its ledger — expiring the transcript
+  archive while the ledger it points into grew forever would keep the larger half
+  of the same history indefinitely, and a second setting for it would be a second
+  thing to find and turn off. The ledger half is imported lazily and contained: it
+  runs on the ARCHIVE path, where raising would turn "a ledger tree that could not
+  be swept" into "a transcript that could not be archived", trading a disk-space
+  problem for a loss of history. An absent `archive/` directory no longer returns
+  early, since a session holds a ledger long before anything of its transcript is
+  archived.
 - **API**: `GET /api/session/archive` (list), `GET /api/session/archive/{name}` (read with path traversal protection)
 - **Rotated history stays pageable.** `read_messages_chained_full(key)` returns,
   per chain key, that key's `reason="rotate"` archive segments (filename-stamp

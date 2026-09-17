@@ -3,7 +3,7 @@
 // buffer is still the initial '' -- and Save used to be guarded only by the SAVE
 // mutation being in flight, leaving that window open.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import SettingsModal from '../apps/spec-builder/components/SettingsModal'
 import { specApi } from '../apps/spec-builder/api'
@@ -14,13 +14,11 @@ function renderModal() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  const setErr = vi.fn()
   render(
     <QueryClientProvider client={qc}>
-      <SettingsModal onClose={() => {}} setErr={setErr} />
+      <SettingsModal onClose={() => {}} />
     </QueryClientProvider>,
   )
-  return { setErr }
 }
 
 const saveButton = () => screen.getByRole('button', { name: /save/i })
@@ -40,11 +38,13 @@ describe('SettingsModal save guard', () => {
   it('keeps Save disabled after the settings read fails, and reports why', async () => {
     vi.spyOn(specApi, 'getSettings').mockRejectedValue(new Error('settings unavailable'))
     const saveSpy = vi.spyOn(specApi, 'saveSettings')
-    const { setErr } = renderModal()
+    renderModal()
 
     await waitFor(() => expect(saveButton()).toBeDisabled())
-    // The failure is surfaced, so the disabled control is not unexplained.
-    await waitFor(() => expect(setErr).toHaveBeenCalledWith('settings unavailable'))
+    // The failure is surfaced inside the dialog, so the disabled control is
+    // not unexplained.
+    const dialog = screen.getByRole('dialog', { name: 'Settings' })
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('settings unavailable')
     // And the destructive write never becomes reachable.
     expect(saveSpy).not.toHaveBeenCalled()
   })

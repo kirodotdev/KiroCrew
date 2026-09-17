@@ -58,6 +58,7 @@ from kiro_crew.git_divergence import (
 from kiro_crew.history import ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
+from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.memory import MemoryStore
@@ -1707,12 +1708,20 @@ def _update(force: bool = False) -> None:
         print(f"  ❌ git reset failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
-    # Update the optional kiro-cli backend if present.
-    if shutil.which("kiro-cli"):
+    # Update the optional kiro-cli backend if present. Pinned to an absolute
+    # path from the known install directories, with the inherited PATH excluded:
+    # a bare argv0 is re-resolved inside exec against a PATH that can lead with
+    # an agent-writable directory, and a `which` probe's answer is not what exec
+    # would run. No pin -> skip the step; a PATH-only install is reported so the
+    # operator knows why it was skipped and which override puts it back.
+    kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
+    if kiro_cli_bin is None and unpinned_kiro_cli:
+        print(f"  ⚠️  kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
+    if kiro_cli_bin is not None:
         print("  🔄 kiro-cli update")
         try:
             subprocess.run(
-                ["kiro-cli", "update"],
+                [kiro_cli_bin, "update"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=120,

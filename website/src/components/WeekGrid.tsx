@@ -249,7 +249,9 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
                   {cellSlots.map((s, si) => (
                     <button
                       key={si}
-                      className={`w-2.5 h-2.5 rounded-full ${s.color} cursor-pointer hover:scale-150 transition-transform ${!s.job.enabled ? 'opacity-30' : ''} ${selectedId === s.job.id ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
+                      // Hover cue is a fill-brighten, not a border/ring tint: at 2.5px a
+                      // border tint is invisible, so brighten the coloured dot itself.
+                      className={`w-2.5 h-2.5 rounded-full ${s.color} cursor-pointer hover:brightness-125 ${!s.job.enabled ? 'opacity-30' : ''} ${selectedId === s.job.id ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       title={`${s.job.name}${!s.job.enabled ? ' (paused)' : ''} — ${s.hour.toString().padStart(2,'0')}:${s.minute.toString().padStart(2,'0')} ${tz}`}
                       aria-label={`${s.job.name} at ${s.hour.toString().padStart(2,'0')}:${s.minute.toString().padStart(2,'0')} ${tz}`}
                       onClick={() => onSelect(s.job)}

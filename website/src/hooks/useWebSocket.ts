@@ -148,6 +148,21 @@ export function resolvedSince(log: Map<string, number>, watermark: number): stri
   return out
 }
 
+/** Record an identity in a bounded monotonic log without shifting watermark meaning. */
+function recordInBoundedLog(
+  log: Map<string, number>,
+  sequence: { current: number },
+  id: string,
+): void {
+  if (!id) return
+  log.set(id, ++sequence.current)
+  if (log.size > 200) {
+    // Drop the oldest entries; a reconcile only ever consults recent ones.
+    const oldest = [...log.entries()].sort((a, b) => a[1] - b[1]).slice(0, log.size - 200)
+    for (const [retiredId] of oldest) log.delete(retiredId)
+  }
+}
+
 /** sessionStorage key latched when an in-app update reaches its `restarting`
  *  step. The gateway then execs itself and the socket drops; on the next
  *  successful reconnect the latch tells this tab to reload — the signal the
@@ -295,6 +310,15 @@ export function useWebSocket() {
   const queryClient = useQueryClient()
   const wsRef = useRef<WebSocket | null>(null)
   const closingRef = useRef(false)  // true when cleanup intentionally closes WS
+  // Only coordinator-registry approvals enter this map. Chat-runner permission
+  // rows can share an id, so registry provenance is required before a
+  // reconnect reconcile may retire a client-injected row.
+  const coordinatorApprovalsRef = useRef<Map<string, string>>(new Map())
+  // Coordinator ids retired by live frames, keyed by monotonic sequence.
+  // Reconnect snapshots consult this log so an authority response cannot
+  // revive an entry retired while that response was in flight.
+  const retiredApprovalIdsRef = useRef<Map<string, number>>(new Map())
+  const retiredApprovalSeqRef = useRef(0)
   /* Resolutions observed on the wire, ask_id -> monotonic sequence. Needed
      because a `question_card_resolved` can name a card this client never held
      (it exists only inside an in-flight rehydration snapshot), so the dispatch
@@ -306,14 +330,7 @@ export function useWebSocket() {
    *  `card_id`, in one map because the snapshot add side asks the same question
    *  of both: "was this retired while my request was in flight?" */
   const recordRetiredId = useCallback((retiredId: string) => {
-    if (!retiredId) return
-    const log = resolvedAskIdsRef.current
-    log.set(retiredId, ++resolvedSeqRef.current)
-    if (log.size > 200) {
-      // Drop the oldest entries; a reconcile only ever consults recent ones.
-      const oldest = [...log.entries()].sort((a, b) => a[1] - b[1]).slice(0, log.size - 200)
-      for (const [id] of oldest) log.delete(id)
-    }
+    recordInBoundedLog(resolvedAskIdsRef.current, resolvedSeqRef, retiredId)
   }, [])
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>()  // pending reconnect timer
   const logCbRef = useRef<LogCallback>(null)
@@ -661,12 +678,121 @@ export function useWebSocket() {
     startSeed()
   }, [dispatch, queryClient])
 
+  const retireApproval = useCallback((
+    id: string,
+    slot: string | undefined,
+    approved: boolean,
+    decision?: string,
+    slotlessResolution = false,
+  ) => {
+    if (!id) return
+    const coordinatorSlot = coordinatorApprovalsRef.current.get(id)
+    const targetSlot = slot || undefined
+    const chatState = store.getState().chat
+    const targetMessages = targetSlot === chatState.activeSlot
+      ? chatState.messages
+      : targetSlot && Object.prototype.hasOwnProperty.call(chatState.slotMessages, targetSlot)
+        ? chatState.slotMessages[targetSlot] ?? []
+        : []
+    // Settled rows no longer compete for a resolution. A still-pending unmarked
+    // row is a chat-runner collision, so the frame cannot safely claim the
+    // coordinator registry even when its id and slot match the provenance map.
+    const pendingMatches = targetMessages.filter(message =>
+      message.role === 'permission'
+      && message.meta?.approval_id === id
+      && !message.meta?.resolved)
+    const ownsCoordinatorEntry = coordinatorApprovalsRef.current.has(id)
+      && (slotlessResolution || slot === coordinatorSlot)
+      && pendingMatches.some(message => message.meta?.registry === 'coordinator')
+      && !pendingMatches.some(message => message.meta?.registry == null)
+    queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+    if (ownsCoordinatorEntry) {
+      const items = store.getState().notifications.items
+      const match = items.find((n: Notification) => n.approval_id === id)
+      if (match) dispatch(removeNotificationByTs(match.ts))
+    }
+    const displayDecision = decision === 'expired' ? 'stale' : decision
+    dispatch(resolveByApprovalId({
+      id,
+      slot: targetSlot,
+      decision: displayDecision ?? (approved ? 'approved' : 'rejected'),
+      ...(ownsCoordinatorEntry ? { registry: 'coordinator' } : {}),
+    }))
+    // A stale retirement carries no outcome: the approval may have been
+    // answered either way where this client could not see it (another window,
+    // a channel, or auto-approve). An explicit expiry is known to be denied,
+    // but keeps the stale chat vocabulary while terminating a spawn card.
+    const outcomeKnown = decision !== 'stale'
+    // Resolve only in the slot that raised the card. Guessing activeSlot here
+    // writes subagent spawn/done entries into an unrelated conversation.
+    const resolvedType = id.startsWith('spawn:') ? 'spawn' : 'chat'
+    if (targetSlot) {
+      const chatState = store.getState().chat
+      const log = targetSlot === chatState.activeSlot
+        ? chatState.toolLog
+        : chatState.slotActivity[targetSlot]?.toolLog ?? []
+      const hasMatchingApproval = log.some(e => e.approval_id === id && e.type === 'approval')
+      if (hasMatchingApproval || resolvedType === 'spawn') {
+        dispatch(sseActivityEvent({
+          slot: targetSlot,
+          kind: 'approval_resolved',
+          text: '',
+          approval_id: id,
+          approval_type: resolvedType,
+        }))
+      }
+      if (id.startsWith('spawn:') && outcomeKnown) {
+        const agentId = id.replace('spawn:', '')
+        if (approved) {
+          dispatch(sseSubagentSpawn({ slot: targetSlot, id: agentId, task: '', agent: '' }))
+        } else {
+          // The spawn card renders this value verbatim under its error label,
+          // so both denials have to arrive as a sentence: the raw `expired` or
+          // `rejected` token read as a subagent crash when it was a decision.
+          dispatch(sseSubagentDone({
+            slot: targetSlot,
+            id: agentId,
+            elapsed: 0,
+            error: decision === 'expired'
+              ? i18nT('hooks.useWebSocket.approval_wait_expired')
+              : i18nT('hooks.useWebSocket.approval_rejected'),
+          }))
+        }
+      }
+    }
+    recordInBoundedLog(retiredApprovalIdsRef.current, retiredApprovalSeqRef, id)
+    if (ownsCoordinatorEntry) {
+      coordinatorApprovalsRef.current.delete(id)
+    }
+  }, [dispatch, queryClient])
+
   const syncPendingApprovals = useCallback(async () => {
     try {
+      // Only approvals held before this authority read may be retired from its
+      // answer. A live frame can inject another approval while the read is in
+      // flight, and that approval is outside this snapshot's ordering boundary.
+      const before = new Map(coordinatorApprovalsRef.current)
+      const retiredSeen = retiredApprovalSeqRef.current
       const approvals = await api.approvals()
+      const retiredDuringFetch = new Set(resolvedSince(retiredApprovalIdsRef.current, retiredSeen))
+      const pendingIds = new Set(approvals.map(a => a.id))
+      for (const [id, slot] of before) {
+        if (!pendingIds.has(id)) retireApproval(id, slot, false, 'stale')
+      }
       const existing = store.getState().notifications.items
+      const currentChat = store.getState().chat
       for (const a of approvals) {
+        if (retiredDuringFetch.has(a.id)) continue
+        const slot = a.slot || ''
+        const slotMessages = slot === currentChat.activeSlot
+          ? currentChat.messages
+          : slot && Object.prototype.hasOwnProperty.call(currentChat.slotMessages, slot)
+            ? currentChat.slotMessages[slot] ?? []
+            : []
         if (existing.some((n: Notification) => n.approval_id === a.id)) continue
+        if (slotMessages.some(message =>
+          message.role === 'permission' && message.meta?.approval_id === a.id)) continue
+        coordinatorApprovalsRef.current.set(a.id, slot)
         dispatch(addNotification({
           kind: 'approval',
           title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
@@ -674,18 +800,17 @@ export function useWebSocket() {
           ts: String(a.ts || Date.now() / 1000),
           approval_id: a.id,
         } as Notification))
-        const slot = a.slot || ''
         if (slot) {
           dispatch(sseChatMessage({
             slot, role: 'permission',
             content: `[${a.source || 'agent'}] ${a.tool || 'Unknown'}`,
             ts: String(a.ts || Date.now() / 1000),
-            meta: { tool_input: a.tool_input || '', approval_id: a.id, source: a.source, ...(a.tool_call_id ? { tool_call_id: a.tool_call_id } : {}) },
+            meta: { tool_input: a.tool_input || '', approval_id: a.id, source: a.source, registry: 'coordinator', ...(a.tool_call_id ? { tool_call_id: a.tool_call_id } : {}) },
           }))
         }
       }
     } catch { /* ignore */ }
-  }, [dispatch])
+  }, [dispatch, retireApproval])
 
   /** Reconcile question cards against the server's pending set.
    *  `question_card` and `question_card_resolved` are one-shot broadcasts, so a
@@ -1494,6 +1619,12 @@ export function useWebSocket() {
             break
           case 'approval': {
             queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
+            if (typeof data.id === 'string') {
+              coordinatorApprovalsRef.current.set(
+                data.id,
+                typeof data.slot === 'string' ? data.slot : '',
+              )
+            }
             // Approval-blocked chime: the agent is stuck until the user acts.
             // Suppressed during reconnect catch-up (same policy as turn-done).
             if (!reconnectingRef.current) {
@@ -1532,7 +1663,7 @@ export function useWebSocket() {
                 role: 'permission',
                 content: `[${data.source || 'agent'}] ${data.tool || 'Unknown'}`,
                 ts: String(data.ts || Date.now() / 1000),
-                meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
+                meta: { tool_input: data.tool_input || '', approval_id: data.id, source: data.source, registry: 'coordinator', ...(data.tool_call_id ? { tool_call_id: data.tool_call_id } : {}) },
               }))
               // For spawn approvals, create a pending subagent entry instead of a toolLog approval.
               // Require an explicit slot from the event: falling back to activeSlot would
@@ -1551,34 +1682,14 @@ export function useWebSocket() {
             break
           }
           case 'approval_resolved': {
-            queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
-            const items = store.getState().notifications.items
-            const match = items.find((n: Notification) => n.approval_id === data.id)
-            if (match) dispatch(removeNotificationByTs(match.ts))
-            dispatch(resolveByApprovalId({ id: data.id, decision: data.approved ? 'approved' : 'rejected' }))
-            // Resolve only in the slot that raised the card. Guessing
-            // activeSlot here mirrored the raise-path leak: it wrote
-            // subagent spawn/done entries into an unrelated conversation.
-            const targetSlot = data.slot || ''
-            const resolvedType = typeof data.id === 'string' && data.id.startsWith('spawn:') ? 'spawn' : 'chat'
-            if (targetSlot) {
-              const chatState = store.getState().chat
-              const log = targetSlot === chatState.activeSlot
-                ? chatState.toolLog
-                : chatState.slotActivity[targetSlot]?.toolLog ?? []
-              const hasMatchingApproval = log.some(e => e.approval_id === data.id && e.type === 'approval')
-              if (hasMatchingApproval || resolvedType === 'spawn') {
-                dispatch(sseActivityEvent({ slot: targetSlot, kind: 'approval_resolved', text: '', approval_id: data.id, approval_type: resolvedType }))
-              }
-              if (typeof data.id === 'string' && data.id.startsWith('spawn:')) {
-                const agentId = data.id.replace('spawn:', '')
-                if (data.approved) {
-                  dispatch(sseSubagentSpawn({ slot: targetSlot, id: agentId, task: '', agent: '' }))
-                } else {
-                  dispatch(sseSubagentDone({ slot: targetSlot, id: agentId, elapsed: 0, error: 'rejected' }))
-                }
-              }
-            }
+            const id = typeof data.id === 'string' ? data.id : ''
+            const frameSlot = typeof data.slot === 'string' ? data.slot : undefined
+            const targetSlot = frameSlot ?? coordinatorApprovalsRef.current.get(id)
+            // A decided frame carries no decision: approved/rejected derives
+            // from `approved`. An explicit expiry is a known auto-denial, but
+            // retireApproval keeps its chat-row display token as `stale`.
+            const decision = data.decision === 'expired' ? 'expired' : undefined
+            retireApproval(id, targetSlot, !!data.approved, decision, frameSlot === undefined)
             break
           }
           case 'refresh': {
@@ -2494,7 +2605,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, flushBufferedThinking, scheduleChunkFlush, bufferSlotActivity, bufferSubagentChunk, flushSubagentChunks, playNextVoiceChunk, flushVoiceTail, queryClient, stopVoice, getPcmPlayer, syncPendingApprovals, syncPendingQuestions, syncWorkflowRuns, seedAutomations, recordRetiredId])
+  }, [dispatch, flushChunks, flushBufferedThinking, scheduleChunkFlush, bufferSlotActivity, bufferSubagentChunk, flushSubagentChunks, playNextVoiceChunk, flushVoiceTail, queryClient, stopVoice, getPcmPlayer, syncPendingApprovals, syncPendingQuestions, syncWorkflowRuns, seedAutomations, recordRetiredId, retireApproval])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes

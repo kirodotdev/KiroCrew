@@ -1,11 +1,11 @@
 """The Fargate launch engine, and the ownership rule its teardown turns on.
 
 Implements the five-method :class:`~kiro_crew.cloud.launch_job.LaunchEngine`
-Protocol for Fargate. The AWS-touching bodies are deliberately absent for now --
-they call ``cloud/fargate/*``, whose signatures are still moving -- but the two
-things that do NOT depend on those signatures are here and are real: the
-ownership rule teardown finds resources by, and the reason ``begin_signin`` has
-nothing to do.
+Protocol for Fargate. The AWS-touching bodies call ``cloud/fargate/*`` to build
+the ``RegisterTaskDefinition`` and ``RunTask`` request bodies and route every AWS
+call through the single ``aws`` CLI chokepoint in :mod:`kiro_crew.cloud.aws`. The
+two things that do NOT depend on any AWS call are here too: the ownership rule
+teardown finds resources by, and the reason ``begin_signin`` has nothing to do.
 
 **Why ownership is a module of its own rather than a line inside teardown.**
 A resource is ours only if it carries the managed marker, and the marker is a
@@ -42,23 +42,56 @@ than merely unlikely, and it leaves a caller no way to hand in a wrong key.
 from __future__ import annotations
 
 import enum
+import json
+import logging
+import re
 import threading
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping, Optional, Sequence
 
+from kiro_crew.cloud import aws
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
-from kiro_crew.cloud.fargate import LAUNCH_TAG_KEY, MANAGED_TAG_VALUE
+from kiro_crew.cloud.fargate import (
+    CPU_ARCHITECTURES,
+    EPHEMERAL_STORAGE_MAX_GIB,
+    EPHEMERAL_STORAGE_MIN_GIB,
+    FARGATE_MEMORY_FOR_CPU,
+    FINGERPRINT_TAG_KEY,
+    LAUNCH_TAG_KEY,
+    MANAGED_TAG_VALUE,
+    STARTED_BY_MAX,
+    Placement,
+    SecretRef,
+    TaskDefinitionSpec,
+    TaskSize,
+    default_log_spec,
+    revision_fingerprint,
+    run_task_request,
+    spec_binding,
+    task_definition_document,
+    task_family,
+    validated_region,
+)
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MANAGED_TAG_VALUE",
     "Ownership",
     "TaskSighting",
     "TeardownPlan",
+    "FargateLaunchSpec",
     "classify_task",
     "plan_teardown",
     "FargateSigninHandle",
     "FargateLaunchEngine",
 ]
+
+#: Delimiter between the fields of a Fargate size_key vocabulary string
+#: ("<cpu>/<memory>" with an optional "/<gib>"). A data delimiter in this
+#: provisioner own size language, not a filesystem path separator, so
+#: it carries no platform meaning and _parse_size splits on it on every OS.
+FARGATE_SIZE_SEP = "/"
 
 
 class Ownership(enum.Enum):
@@ -329,31 +362,284 @@ class FargateSigninHandle:
         """Nothing to release. No browser, no device-code poller, no session."""
 
 
+#: A ``started_by`` value the engine derives from the launch tag, in the charset
+#: ``RunTask`` accepts. It correlates a task to the launcher that started it, which
+#: is what the ambiguous-teardown branch reads: a running unmarked task whose
+#: ``startedBy`` is this prefix plus the tag is the case that refuses rather than
+#: guessing. ``kirocrew-cloud-`` plus ``kc-`` plus six hex is 24 characters, inside
+#: :data:`STARTED_BY_MAX`.
+_STARTED_BY_PREFIX = "kirocrew-cloud-"
+
+#: The charset ``RunTask`` accepts for ``startedBy`` and a tag. The API rejects
+#: anything else at launch; refusing it here turns that deferred failure into one
+#: the operator reads at the point they can fix it.
+_TAG_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _started_by_for(tag: str) -> str:
+    """The ``startedBy`` a task launched under *tag* carries."""
+    return f"{_STARTED_BY_PREFIX}{tag}"
+
+
+@dataclass(frozen=True)
+class FargateLaunchSpec:
+    """The placement, image and secrets a Fargate launch needs, supplied to the
+    engine at construction rather than invented by :meth:`FargateLaunchEngine.provision`.
+
+    ``LaunchEngine.provision`` carries only ``tag``, ``size_key``, ``profile`` and
+    ``region``, and ``CloudConfig`` holds only ``profile``, ``region`` and
+    ``last_tag`` -- there is no configuration home on this branch for a subnet, a
+    security group, an image or a secret ARN. Guessing any of them is the same
+    class of error as deleting a task on a guess: an unnamed subnet or security
+    group is not a smaller boundary but a different one, and an unpinned image is a
+    different workload. So the engine refuses to run without this, and where an
+    operator writes it down is deliberately a separate change.
+    """
+
+    placement: Placement
+    image: str
+    secrets: tuple[SecretRef, ...]
+    cpu_architecture: str
+
+
+def _parse_size(size_key: str) -> TaskSize:
+    """Map a Fargate ``size_key`` to a :class:`TaskSize`, or raise.
+
+    ``launch_job.py`` states that a non-EC2 provisioner's ``size_key`` is that
+    provisioner's own vocabulary, validated in its own ``provision``; ``sizes.py``
+    is the EC2 ladder and is not widened. The Fargate vocabulary is a cpu/memory
+    pair in Fargate units, ``"<cpu>/<memory>"``, with an optional ephemeral-storage
+    GiB as a third field, ``"<cpu>/<memory>/<gib>"``. The cpu is validated against
+    :data:`FARGATE_MEMORY_FOR_CPU`, the memory against that entry's minimum,
+    maximum and step, and the storage against Fargate's GiB range -- the same
+    checks ``run_task_request`` makes, run here so an unusable key is refused with
+    the legal pairs listed before any AWS call.
+    """
+    parts = size_key.split(FARGATE_SIZE_SEP)
+    legal = (
+        'a Fargate size is "<cpu>/<memory>" in Fargate units, with an optional '
+        '"/<gib>" ephemeral storage; the cpu/memory pairs are '
+        + "; ".join(
+            f"{cpu}/{low}..{high} step {step}"
+            for cpu, (low, high, step) in sorted(
+                FARGATE_MEMORY_FOR_CPU.items(), key=lambda kv: int(kv[0])
+            )
+        )
+    )
+    if len(parts) not in (2, 3) or not all(p.strip() for p in parts):
+        raise ValueError(f"size {size_key!r} is not a Fargate cpu/memory pair; {legal}")
+    cpu, memory = parts[0].strip(), parts[1].strip()
+    if not cpu.isdigit() or not memory.isdigit():
+        raise ValueError(f"size {size_key!r} is not a Fargate cpu/memory pair; {legal}")
+    allowed = FARGATE_MEMORY_FOR_CPU.get(cpu)
+    if allowed is None:
+        raise ValueError(
+            f"size cpu={cpu!r} is not a Fargate CPU size; choose one of "
+            f"{', '.join(sorted(FARGATE_MEMORY_FOR_CPU, key=int))}"
+        )
+    low, high, step = allowed
+    mem = int(memory)
+    if mem < low or mem > high or (mem - low) % step:
+        raise ValueError(
+            f"size memory={memory!r} is not a Fargate memory value for cpu={cpu!r}, which "
+            f"takes {low} to {high} MiB in steps of {step}"
+        )
+    storage: Optional[int] = None
+    if len(parts) == 3:
+        gib = parts[2].strip()
+        if not gib.isdigit():
+            raise ValueError(f"ephemeral storage {gib!r} is not a whole number of GiB; {legal}")
+        storage = int(gib)
+        if not (EPHEMERAL_STORAGE_MIN_GIB <= storage <= EPHEMERAL_STORAGE_MAX_GIB):
+            raise ValueError(
+                f"ephemeral storage {storage} GiB is outside Fargate's "
+                f"{EPHEMERAL_STORAGE_MIN_GIB} to {EPHEMERAL_STORAGE_MAX_GIB} GiB range"
+            )
+    return TaskSize(cpu=cpu, memory=memory, ephemeral_storage_gib=storage)
+
+
 class FargateLaunchEngine:
     """``LaunchEngine`` for Fargate.
 
-    The AWS-touching bodies raise :class:`NotImplementedError` with the reason,
-    because they must call ``cloud/fargate/*`` and that module's public surface is
-    not settled yet. Writing calls against a moving signature produces rework, not
-    progress; the refusals are placeholders with a stated cause, not an abandoned
-    design.
+    Every AWS call goes through the single ``aws`` CLI chokepoint in
+    :mod:`kiro_crew.cloud.aws`; there is no ``boto3`` and no direct subprocess. That
+    chokepoint's agent-session allowlist names no ``ecs`` pair, so every ECS call
+    here is refused inside an agent session by design -- a Fargate launch is a
+    human/installer action, run from a terminal, exactly as the EC2 lane is.
 
-    What is settled and NOT placeholder: the ownership rule in :func:`plan_teardown`,
-    the sign-in step's absence in :class:`FargateSigninHandle`, and the fact that
-    ``register`` does nothing.
+    The engine is given its :class:`FargateLaunchSpec` at construction rather than
+    inventing one in :meth:`provision`, because the launch job hands ``provision``
+    no placement, image or secrets and there is no configuration home for them on
+    this branch. Without a spec, :meth:`preflight` and :meth:`provision` refuse by
+    naming the fields an operator must supply.
+
+    The revision cache maps a spec's :func:`revision_fingerprint` to the task
+    definition revision NUMBER that carries it. A cache hit is confirmed against
+    the account through ``DescribeTaskDefinition`` before it is launched: a
+    remembered number whose ``kirocrew:revision-key`` tag differs from the spec's
+    fingerprint is a stale cache, not a launch.
     """
 
-    def preflight(self, profile: str, region: str) -> None:
-        raise NotImplementedError(
-            "preflight must read the cluster, subnets and the crew's secret before "
-            "a launch; it is unwritten until cloud/fargate's signatures are final."
+    def __init__(self, spec: Optional[FargateLaunchSpec] = None) -> None:
+        self._spec = spec
+        #: fingerprint -> confirmed revision number. Populated on registration and
+        #: on a confirmed cache hit; a per-process memory, never authoritative.
+        self._revisions: dict[str, int] = {}
+
+    def _require_spec(self) -> FargateLaunchSpec:
+        if self._spec is None:
+            raise ValueError(
+                "this Fargate engine was constructed without a launch spec, so it cannot "
+                "launch: it needs a placement (cluster, subnets, security_groups), a "
+                "digest-pinned image, the crew's secret references, and a cpu architecture. "
+                "Supply a FargateLaunchSpec; guessing any of them is the same error as "
+                "deleting a task on a guess."
+            )
+        return self._spec
+
+    def _taskdef_spec(self, spec: FargateLaunchSpec, region: str) -> TaskDefinitionSpec:
+        return TaskDefinitionSpec(
+            image=spec.image,
+            secrets=spec.secrets,
+            cpu_architecture=spec.cpu_architecture,
+            log=default_log_spec(region),
         )
 
+    def preflight(self, profile: str, region: str) -> None:
+        """Validate the region and refuse, by name, what the engine lacks.
+
+        A refusal, not a probe: it makes no ECS call. The region is validated
+        through ``validated_region`` and, when the engine holds no spec, it raises
+        naming every field an operator must supply -- the same fields
+        :meth:`provision` would otherwise have to guess.
+        """
+        validated_region(region, source="region")
+        self._require_spec()
+
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
-        raise NotImplementedError(
-            "provision must register (or reuse) a task definition revision and call "
-            "RunTask; it is unwritten until cloud/fargate's signatures are final."
+        """Register or reuse a task definition revision and ``RunTask`` it.
+
+        Owns the two obligations the ``fargate`` module leaves to its caller. It
+        refuses a ``tag`` or derived ``started_by`` outside the accepted charset
+        (or a ``started_by`` longer than :data:`STARTED_BY_MAX`) here rather than
+        at launch. And on a cache hit it confirms, through
+        ``DescribeTaskDefinition``, that the remembered revision's
+        ``kirocrew:revision-key`` tag still equals :func:`revision_fingerprint` of
+        the spec before launching that number; a mismatch is a stale cache and
+        raises rather than launching the wrong content.
+
+        Returns the task ARN ``RunTask`` reports.
+        """
+        spec = self._require_spec()
+        if not tag or not _TAG_VALUE_RE.match(tag):
+            raise ValueError(
+                f"launch tag {tag!r} is outside the letters, digits, hyphen and underscore a "
+                "correlation value uses; RunTask rejects it at launch"
+            )
+        started_by = _started_by_for(tag)
+        if len(started_by) > STARTED_BY_MAX:
+            raise ValueError(
+                f"startedBy {started_by!r} is {len(started_by)} characters; the API accepts at "
+                f"most {STARTED_BY_MAX}"
+            )
+        if not _TAG_VALUE_RE.match(started_by):
+            raise ValueError(
+                f"startedBy {started_by!r} is outside the letters, digits, hyphen and "
+                "underscore the API accepts"
+            )
+        if spec.cpu_architecture not in CPU_ARCHITECTURES:
+            raise ValueError(
+                f"cpu architecture {spec.cpu_architecture!r} is not one of "
+                f"{', '.join(sorted(CPU_ARCHITECTURES))}"
+            )
+
+        size = _parse_size(size_key)
+        taskdef = self._taskdef_spec(spec, region)
+        revision = self._revision_for(taskdef, profile=profile, region=region)
+
+        request = run_task_request(
+            revision=revision,
+            taskdef=taskdef,
+            placement=spec.placement,
+            size=size,
+            launch_tag=tag,
+            started_by=started_by,
         )
+        result = aws.checked_json(
+            ["ecs", "run-task", "--cli-input-json", _json(request)],
+            profile,
+            region,
+            action="ecs:RunTask",
+        )
+        tasks = (result or {}).get("tasks") or []
+        failures = (result or {}).get("failures") or []
+        if not tasks:
+            detail = (
+                "; ".join(f"{f.get('reason', '?')} ({f.get('arn', '?')})" for f in failures)
+                or "RunTask returned no task"
+            )
+            raise aws.AWSError(f"ecs:RunTask started no task: {detail}", action="ecs:RunTask")
+        arn = str(tasks[0].get("taskArn") or "")
+        if not arn:
+            raise aws.AWSError("ecs:RunTask returned a task with no ARN", action="ecs:RunTask")
+        return arn
+
+    def _revision_for(self, taskdef: TaskDefinitionSpec, *, profile: str, region: str) -> int:
+        """The revision number that carries *taskdef*'s fingerprint, confirmed.
+
+        On a cache hit, confirm the remembered number's ``kirocrew:revision-key``
+        tag through ``DescribeTaskDefinition`` before returning it; a mismatch is a
+        stale cache and raises. On a miss, ``RegisterTaskDefinition`` a fresh
+        revision from :func:`~kiro_crew.cloud.fargate.task_definition_document` and
+        remember it.
+        """
+        fingerprint = revision_fingerprint(taskdef)
+        binding = spec_binding(taskdef)
+        family = task_family(binding)
+        cached = self._revisions.get(fingerprint)
+        if cached is not None:
+            described = aws.checked_json(
+                [
+                    "ecs",
+                    "describe-task-definition",
+                    "--task-definition",
+                    f"{family}:{cached}",
+                    "--include",
+                    "TAGS",
+                ],
+                profile,
+                region,
+                action="ecs:DescribeTaskDefinition",
+            )
+            tags = {
+                str(t.get("key")): str(t.get("value"))
+                for t in ((described or {}).get("tags") or [])
+            }
+            if tags.get(FINGERPRINT_TAG_KEY) != fingerprint:
+                raise aws.AWSError(
+                    f"cached revision {family}:{cached} carries "
+                    f"{FINGERPRINT_TAG_KEY}={tags.get(FINGERPRINT_TAG_KEY)!r}, not the "
+                    f"{fingerprint!r} this spec fingerprints to. A remembered revision whose "
+                    "content changed is a stale cache, not a launch.",
+                    action="ecs:DescribeTaskDefinition",
+                )
+            return cached
+
+        document = task_definition_document(taskdef)
+        registered = aws.checked_json(
+            ["ecs", "register-task-definition", "--cli-input-json", _json(document)],
+            profile,
+            region,
+            action="ecs:RegisterTaskDefinition",
+        )
+        revision = int(((registered or {}).get("taskDefinition") or {}).get("revision") or 0)
+        if revision < 1:
+            raise aws.AWSError(
+                "ecs:RegisterTaskDefinition returned no revision number",
+                action="ecs:RegisterTaskDefinition",
+            )
+        self._revisions[fingerprint] = revision
+        return revision
 
     def begin_signin(self, *, instance_id: str, profile: str, region: str) -> FargateSigninHandle:
         """Return a handle that completes at once. See :class:`FargateSigninHandle`.
@@ -377,10 +663,95 @@ class FargateLaunchEngine:
         """
 
     def teardown(self, *, tag: str, profile: str, region: str) -> bool:
-        raise NotImplementedError(
-            "teardown must list tasks by startedBy, classify them with "
-            "plan_teardown, stop the ones it owns and deregister unused task "
-            "definition revisions; the listing call is unwritten until "
-            "cloud/fargate's signatures are final. The ownership rule it will use "
-            "is already implemented and tested in plan_teardown."
+        """Stop the tasks this launch owns, and confirm only when nothing of ours
+        may remain.
+
+        Discovers the tasks a spec's cluster holds, reads their tags and
+        ``startedBy`` through ``DescribeTasks``, builds a :class:`TaskSighting` for
+        each, and hands the set to :func:`plan_teardown`. It then acts on the
+        verdict: it stops exactly the tasks the plan names and returns the plan's
+        ``confirmed``. A plan that does not confirm -- an unmarked task this
+        launcher plausibly started, which the ownership rule refuses to delete on a
+        ``startedBy`` guess -- returns ``False`` unchanged, which ``launch_job.py``
+        turns into the user-visible "requested but did NOT confirm" warning. A
+        partial teardown is a ``False``, never a ``True``.
+
+        Without a spec there is no cluster to discover in, so teardown reports it
+        did not confirm rather than claiming success it cannot stand behind.
+        """
+        if self._spec is None:
+            return False
+        cluster = self._spec.placement.cluster
+        started_by = _started_by_for(tag)
+
+        listed = aws.checked_json(
+            [
+                "ecs",
+                "list-tasks",
+                "--cluster",
+                cluster,
+                "--started-by",
+                started_by,
+                # startedBy must be the only ListTasks filter (the ECS API rejects
+                # it combined with any other), so no --desired-status here; RUNNING
+                # is the API default and ownership is decided from each task's
+                # lastStatus in classify_task, not from this filter.
+            ],
+            profile,
+            region,
+            action="ecs:ListTasks",
         )
+        arns = [str(a) for a in ((listed or {}).get("taskArns") or [])]
+        sightings: list[TaskSighting] = []
+        if arns:
+            described = aws.checked_json(
+                [
+                    "ecs",
+                    "describe-tasks",
+                    "--cluster",
+                    cluster,
+                    "--tasks",
+                    *arns,
+                    "--include",
+                    "TAGS",
+                ],
+                profile,
+                region,
+                action="ecs:DescribeTasks",
+            )
+            for task in (described or {}).get("tasks") or []:
+                tags = {str(t.get("key")): str(t.get("value")) for t in (task.get("tags") or [])}
+                sightings.append(
+                    TaskSighting(
+                        task_arn=str(task.get("taskArn") or ""),
+                        tags=tags,
+                        started_by=str(task.get("startedBy") or ""),
+                        last_status=str(task.get("lastStatus") or ""),
+                    )
+                )
+
+        plan = plan_teardown(
+            sightings,
+            launch_tag=tag,
+            started_by=started_by,
+        )
+        for arn in plan.delete:
+            aws.checked(
+                ["ecs", "stop-task", "--cluster", cluster, "--task", arn],
+                profile,
+                region,
+                action="ecs:StopTask",
+            )
+        if plan.warning:
+            # The Protocol returns a bool, so this is the only channel the named
+            # refusal has. ``launch_job`` turns False into "it may still be running
+            # and billing", which tells the operator to look but not where: the plan
+            # names the ARNs and says which are unclaimable and which are theirs
+            # and wrongly tagged, and those two need different next steps.
+            logger.warning("fargate teardown %s: %s", tag, plan.warning)
+        return plan.confirmed
+
+
+def _json(payload: object) -> str:
+    """Serialise a request body for an ``aws ... --cli-input-json`` argument."""
+    return json.dumps(payload)

@@ -481,8 +481,16 @@ class TestLessonsGate:
     async def test_learn_add_allowed_for_persistent_session(self, tmp_path, monkeypatch):
         """POST /api/lessons succeeds for persistent sessions."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        # ``api_lessons_create`` lives in handlers/cron.py, which did
+        # ``from ._shared import _get_memory``, so the name it calls is cron.py's
+        # OWN global. Patching the handlers package re-export (or _shared) leaves
+        # that global untouched: the route then builds a real ``MemoryStore`` and
+        # runs ``init()``, and reaches the JSONL branch only by the accident that
+        # a fresh store's ``vector_store`` is also None — which stops being true
+        # the day it isn't, turning the session-acceptance assertion below into a
+        # 500 about something else entirely.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -513,7 +521,7 @@ class TestLessonsGate:
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -585,7 +593,7 @@ class TestLessonsGate:
         """Browser Memory page sends 'dashboard:ui' — allowed even when restricted slots exist."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -963,7 +971,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -986,7 +994,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1010,7 +1018,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1035,7 +1043,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1225,7 +1233,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1293,7 +1301,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1324,7 +1332,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1361,7 +1369,7 @@ class TestSessionSlotRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1505,7 +1513,7 @@ class TestArchivedRestrictedSessionRecovery:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr("kiro_crew.dashboard.handlers._shared.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             MagicMock(return_value=MagicMock(vector_store=None)),
         )
         state = _make_state(tmp_path)
@@ -1785,7 +1793,7 @@ class TestDurableSlackFlagsAtHttpGate:
         state = _make_state(tmp_path)
         state.sessions._session_map = SessionMap()
         with patch(
-            "kiro_crew.dashboard.handlers._get_memory",
+            "kiro_crew.dashboard.handlers.cron._get_memory",
             _MM(return_value=_MM(vector_store=None)),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:

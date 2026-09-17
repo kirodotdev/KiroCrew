@@ -41,6 +41,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.constants import strip_control_comments
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     ExtractLimits,
@@ -337,7 +338,14 @@ class WebexRenderer(Renderer):
         # cutting it would be permanent -- a reply ending ``see the [OPTIONS
         # section`` keeps its last four words. The status frame above trades the
         # other way, because a frame is transient.
-        body, choices = split_options_trailer("".join(self._buf).strip())
+        # Control-tag lines are peeled BEFORE the outer whitespace trim: the trim
+        # would erase the indentation that marks a quoted, 4-space-indented tag
+        # as code, and the tail grammar would then read it as protocol. Both
+        # sides of the trailer (a message carrying both puts one of them last);
+        # complete tags only, for the same reason as the trailer: the answer is
+        # sent once, so a partial tail here is prose and stays.
+        body, choices = split_options_trailer(strip_control_comments("".join(self._buf)))
+        body = strip_control_comments(body).strip()
         # Cap the choices for the widget and degrade the remainder to numbered
         # text through the SHARED helper, so the cap is enforced in one place and
         # a choice past it is still visible rather than silently dropped.
@@ -552,7 +560,12 @@ class WebexRenderer(Renderer):
         raw text -- even for one frame -- is what this hides. Safe here and not on
         the answer path because the next frame re-renders from the same buffer.
         """
-        return split_options_trailer("".join(self._buf).strip(), hide_partial=True)[0]
+        # A control-tag line still arriving is hidden from the frame the same
+        # way -- peeled before the whitespace trim so indentation that marks a
+        # quoted tag as code is still in view when the grammar looks.
+        raw = strip_control_comments("".join(self._buf), hide_partial=True)
+        body = split_options_trailer(raw, hide_partial=True)[0]
+        return strip_control_comments(body, hide_partial=True).strip()
 
     def authorize_upload_root(self, root: str) -> None:
         """Authorize the provider's resolved cwd as the upload root.

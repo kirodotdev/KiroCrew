@@ -189,7 +189,7 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
     staleTime: 30_000,
     retry: false,
   })
-  const mintQr = useMutation({ mutationFn: () => api.tailnetMobileQr(undefined, sessionKey) })
+  const mintQr = useMutation({ mutationFn: () => api.tailnetMobileQr(sessionKey) })
   const [qrCopyFailed, setQrCopyFailed] = useState(false)
 
   const ready = status?.step === 'ready'

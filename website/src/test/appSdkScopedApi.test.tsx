@@ -78,19 +78,19 @@ describe('createScopedApi (via AppApiProvider) — session identity', () => {
   })
 
   it('omits the header when the host has no session to declare', async () => {
-    // A full-page app surface is not session-scoped. Sending an empty or invented
-    // key would be worse than sending none: the guard matches on the value.
+    // Other provider hosts may remain unbound; absence must not select an
+    // arbitrary chat. Routed app pages supply dashboard:ui explicitly.
     const api = getScopedApi(['/api/apps/test-app'])
     await api.get('/api/apps/test-app/thing')
     expect(headerOf(fetchMock.mock.calls[0])).toBeNull()
   })
 
-  it('does not clobber a session key the caller set explicitly', async () => {
+  it('keeps the host session authoritative over a caller-supplied header', async () => {
     const api = getScopedApi(['/api/apps/test-app'], 'dashboard:chat-2')
     await api.get('/api/apps/test-app/thing', {
       headers: { 'X-Session-Key': 'dashboard:explicit' },
     })
-    expect(headerOf(fetchMock.mock.calls[0])).toBe('dashboard:explicit')
+    expect(headerOf(fetchMock.mock.calls[0])).toBe('dashboard:chat-2')
   })
 
   it('keeps the JSON content type the write verbs set', async () => {
@@ -199,5 +199,145 @@ describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () 
     }))
     const api = getScopedApi(['/api/apps/test'])
     await expect(api.get('/api/apps/test/data')).resolves.toEqual({ ok: true, n: 3 })
+  })
+})
+
+
+describe('scoped request options and HTTP errors', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('passes raw request bodies and signals without inventing a JSON content type', async () => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    const body = new FormData()
+    body.append('title', 'Example')
+    const controller = new AbortController()
+    await api.request('/api/apps/test/upload', {
+      method: 'POST', body, signal: controller.signal,
+      headers: new Headers({ 'X-Request-ID': 'sample' }),
+    })
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/apps/test/upload')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(body)
+    expect(init.signal).toBe(controller.signal)
+    const headers = new Headers(init.headers)
+    expect(headers.get('Content-Type')).toBeNull()
+    expect(headers.get('X-Request-ID')).toBe('sample')
+    expect(headers.get('X-Session-Key')).toBe('dashboard:chat-2')
+  })
+
+  it.each(['post', 'put', 'patch'] as const)('keeps %s JSON arguments authoritative while forwarding request options', async method => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    const controller = new AbortController()
+    await api[method]('/api/apps/test/item', { value: 2 }, {
+      method: 'DELETE', body: 'ignored', signal: controller.signal,
+      headers: [['X-Request-ID', 'sample'], ['X-Session-Key', 'dashboard:other']],
+    })
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe(method.toUpperCase())
+    expect(init.body).toBe('{"value":2}')
+    expect(init.signal).toBe(controller.signal)
+    const headers = new Headers(init.headers)
+    expect(headers.get('Content-Type')).toBe('application/json')
+    expect(headers.get('X-Request-ID')).toBe('sample')
+    expect(headers.get('X-Session-Key')).toBe('dashboard:chat-2')
+  })
+
+  it('does not mutate the caller headers when enforcing host identity', async () => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    const headers = new Headers({ 'x-session-key': 'dashboard:other' })
+    await api.request('/api/apps/test/item', { headers })
+    expect(headers.get('X-Session-Key')).toBe('dashboard:other')
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-Session-Key'))
+      .toBe('dashboard:chat-2')
+  })
+
+  it('keeps an explicit JSON media type on a patch', async () => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    await api.patch('/api/apps/test/item', {}, {
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+    })
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Content-Type'))
+      .toBe('application/merge-patch+json')
+  })
+
+  it('forwards DELETE options without letting them change the method', async () => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    await api.del('/api/apps/test/item', {
+      method: 'POST', headers: {
+        'X-Request-ID': 'sample', 'X-Session-Key': 'dashboard:other',
+      },
+    })
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe('DELETE')
+    expect(new Headers(init.headers).get('X-Request-ID')).toBe('sample')
+    expect(new Headers(init.headers).get('X-Session-Key')).toBe('dashboard:chat-2')
+  })
+
+  it('forwards redirect refusal when the caller requires it', async () => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    await api.request('/api/apps/test/item', { redirect: 'error' })
+    expect(fetchMock.mock.calls[0][1].redirect).toBe('error')
+  })
+
+  it.each([
+    '/api/apps/other/item', '/api/apps/test/../../secret',
+    'https://example.com/api/apps/test', '//example.com/api/apps/test',
+    '/\\example.com/api/apps/test',
+  ])('retains the scope checks for generic requests: %s', async path => {
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    await expect(api.request(path, { method: 'POST', body: '{}' })).rejects.toThrow()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not activate wildcard grants through the new request method', async () => {
+    const api = getScopedApi(['/api/apps/test/*'], 'dashboard:chat-2')
+    await expect(api.request('/api/apps/test/item')).rejects.toThrow(/not permitted/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not let a caller invent a session when the host did not bind one', async () => {
+    const api = getScopedApi(['/api/apps/test'])
+    await expect(api.request('/api/apps/test/item', {
+      headers: { 'x-session-key': 'dashboard:other' },
+    })).rejects.toThrow(/host session/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('exposes HTTP status and the unparsed body while retaining the existing message', async () => {
+    const body = '{"duplicates":[7],"error":"conflict"}'
+    fetchMock.mockResolvedValueOnce(new Response(body, { status: 409 }))
+    const api = getScopedApi(['/api/apps/test'], 'dashboard:chat-2')
+    await expect(api.request('/api/apps/test/item', { method: 'POST' })).rejects.toMatchObject({
+      name: 'AppApiError', status: 409, body, message: `API 409: ${body}`,
+    })
+  })
+
+  it('uses statusText if the error body cannot be read', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false, status: 503, statusText: 'Unavailable',
+      text: vi.fn().mockRejectedValue(new Error('body stream closed')),
+    })
+    const api = getScopedApi(['/api/apps/test'])
+    await expect(api.get('/api/apps/test/item')).rejects.toMatchObject({
+      status: 503, body: 'Unavailable', message: 'API 503: Unavailable',
+    })
+  })
+
+  it('preserves network errors rather than presenting them as HTTP errors', async () => {
+    const failure = new TypeError('connection unavailable')
+    fetchMock.mockRejectedValueOnce(failure)
+    const api = getScopedApi(['/api/apps/test'])
+    await expect(api.request('/api/apps/test/item')).rejects.toBe(failure)
   })
 })

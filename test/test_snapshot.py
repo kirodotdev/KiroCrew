@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sqlite3
 import tarfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1127,11 +1129,24 @@ class TestConcurrentSnapshot:
         out = tmp_path / "concurrent_out"
         out.mkdir()
         monkeypatch.setenv("KIROCREW_HOME", str(src))
-        snapshot_main([str(out)] + unpinnable_argv())
-        # Ensure different timestamp by creating a second one
-        import time
+        # The archive name is second-resolution (`snapshot_main` stamps it
+        # `%Y%m%dT%H%M%SZ` and publishes `out / f"{name}.tar.gz"`), so two snapshots
+        # taken inside one second resolve to the same path and the second overwrites
+        # the first. Advance a FAKE clock one second per `now()` rather than sleeping
+        # past a real second: what is under test is NAMING, and a real sleep long
+        # enough to be reliable is 1.1 s charged to every run of the suite to buy a
+        # gap the clock can simply be told to have. Subclassing `datetime` keeps the
+        # rest of its surface intact for the other stamps in the same flow (the
+        # manifest's `created_at`, the audit record), none of which this test reads.
+        ticks = itertools.count()
 
-        time.sleep(1.1)
+        class _OneSecondPerCall(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=next(ticks))
+
+        monkeypatch.setattr(snapshot_mod, "datetime", _OneSecondPerCall)
+        snapshot_main([str(out)] + unpinnable_argv())
         snapshot_main([str(out)] + unpinnable_argv())
         tarballs = list(out.glob("kirocrew-snapshot-*.tar.gz"))
         assert len(tarballs) == 2

@@ -24,7 +24,7 @@ import { orderByReview } from '../../components/appstore/registryOrder'
 import { categoryCounts, mergeCategoryOrder, type Category } from '../../components/appstore/categories'
 import { hasHeroArt } from '../../components/appstore/useHeroArt'
 import {
-  isVerified, normalizeInstalledApp, normalizeRegistryApp,
+  isVerified, normalizeInstalledApp, normalizeRegistryApp, sourceKey,
   type InstalledApp, type RegistryApp,
 } from '../../components/appstore/types'
 import { isBuiltinServerRow } from '../../components/appstore/mergeBuiltinRow'
@@ -604,13 +604,14 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
     // Count built-ins from browseApps so the SOURCES totals describe the same
     // population as the "All apps" count (built-ins are always browsable,
     // enabled or not).
-    const builtinCount = browseApps.filter(a => a.origin === 'builtin').length
+    const builtinCount = browseApps.filter(a => sourceKey(a) === '__builtin__').length
     const counts = new Map<string, number>()
     let coreCount = 0
     for (const a of browseApps) {
-      if (a.origin === 'builtin') continue
-      if (a._registry) counts.set(a._registry, (counts.get(a._registry) || 0) + 1)
-      else coreCount++
+      const key = sourceKey(a)
+      if (key === '__builtin__') continue
+      if (key === '__core__') coreCount++
+      else counts.set(key, (counts.get(key) || 0) + 1)
     }
     const rows: SourceRow[] = []
     if (builtinCount > 0) rows.push({ name: '__builtin__', label: i18nT('pages.appsPage.built_in_kirocrew'), count: builtinCount, builtin: true })
@@ -646,15 +647,19 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
       const key = id.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
-      merged.push({ name: id, label: reg.label || reg.name || reg.repo, count: counts.get(id) || 0, builtin: false, review: reg.review })
-      counts.delete(id)
+      const sourceId = sourceKey({ _registry: id })
+      merged.push({ name: id, label: reg.label || reg.name || reg.repo, count: counts.get(sourceId) || 0, builtin: false, review: reg.review })
+      counts.delete(sourceId)
     }
     // Display order last, through the same helper the External Registries card
     // uses, so the two lists put a community source in the same place. Stable, so
     // unreviewed and operator rows keep the order the backend sent.
     rows.push(...orderByReview(merged))
     // Registries present in entries but no longer configured (stale cache)
-    for (const [name, count] of counts) rows.push({ name, label: name, count, builtin: false })
+    for (const [key, count] of counts) {
+      const name = key.slice('registry:'.length)
+      rows.push({ name, label: name, count, builtin: false })
+    }
     if (coreCount > 0) rows.push({ name: '__core__', label: i18nT('pages.appsPage.kirocrew_registry'), count: coreCount, builtin: true })
     return rows
   }, [browseApps, registriesData])

@@ -301,6 +301,21 @@ class HarnessAdapter(abc.ABC):
         activation is an explicit ``set_mode`` whose response already answers it.
         """
 
+    @property
+    @abc.abstractmethod
+    def reads_markdown_agent_specs(self) -> bool:
+        """The host loads an agent defined as one markdown file (``<name>.md``).
+
+        Crew's roster offers that form to every backend. A host that answers
+        False (kiro-cli discovers ``*.json`` alone) is not gated on it before the
+        spawn: a markdown-only agent selected there fails the existing
+        post-``session/new`` activation guard exactly as a missing JSON spec does,
+        and the runtime reads this answer ONLY on that refusal branch, to explain
+        the markdown file and name the hosts that can run it. Answered from
+        ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS`` by the membership base, so a host
+        that reads markdown joins the set rather than growing a branch here.
+        """
+
     # ── Seam 2: initialize ──
 
     @property

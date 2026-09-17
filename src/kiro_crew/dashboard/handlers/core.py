@@ -1861,6 +1861,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
         "validate_fn": _validate_role_model,
     },
+    # Content-filter (refusal) fallback model. Single value: "" (default)
+    # disables the single-message retry; "auto" retries on the model the
+    # provider's refusal envelope recommends; a concrete id retries on it.
+    # Same grammar + entitlement validation as the role-model pins ("" /
+    # "auto" always allow), so the dropdown and the wire cannot disagree.
+    "agent.refusal_fallback_model": {
+        "type": "str",
+        "max_len": 64,
+        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "validate_fn": _validate_role_model,
+    },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     # Per-role reasoning effort, paired with role_models. Same enum as the chat
     # default; "" = inherit. Applies only on reasoning-capable models.

@@ -45,7 +45,7 @@ export function JumpToBottomButton({ visible, onClick }: {
   return (
     <div className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">
       <button
-        className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
+        className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent active:scale-95 active:duration-75 shadow-md"
         onClick={onClick}
         aria-label={i18nT('pages.chatPage.scroll_to_bottom')}
       ><ArrowDown size={14} strokeWidth={2.5} /></button>

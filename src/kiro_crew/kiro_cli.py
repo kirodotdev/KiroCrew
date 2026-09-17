@@ -303,3 +303,49 @@ def resolve_kiro_cli(
         include_inherited_path=include_inherited_path,
     )
     return candidates[0] if candidates else None
+
+
+#: Fixed wording for the one refusal worth reporting: an install that exists but
+#: only through ``PATH``. Named here so ``kirocrew update`` and the diagnostics
+#: bundle tell the operator the same thing, including the override that fixes it.
+PATH_ONLY_INSTALL_NOTE = (
+    "kiro-cli resolves only through PATH, which this spawn does not trust; "
+    "point KIROCREW_KIRO_BIN at the binary's absolute path to have it used here"
+)
+
+
+def pin_kiro_cli() -> tuple[str | None, bool]:
+    """``(pinned absolute path or None, an unpinned install exists)``.
+
+    The sync pin for a spawn that must not exec a bare argv0. ``argv0`` is
+    re-resolved off the inherited ``PATH`` inside ``exec``, and a gateway's
+    ``PATH`` can lead with an agent-writable directory (a worktree venv's
+    ``bin``), so the candidate set is :func:`resolve_kiro_cli` with
+    ``include_inherited_path=False``: the fixed known install directories plus
+    the operator's own ``KIROCREW_KIRO_BIN``. ``None`` means refuse — callers
+    skip the step rather than fall back to the bare name.
+
+    The second element separates the two ways the pin comes back empty, which
+    a caller reports differently: kiro-cli is not installed at all (nothing to
+    say — the backend is optional), or it IS installed somewhere the pin does
+    not accept, which an operator needs told about, together with
+    :data:`PATH_ONLY_INSTALL_NOTE`. The ``PATH``-inclusive lookup that answers
+    it only ever decides the wording; it never names what gets spawned.
+
+    Absolute or nothing. The one candidate that can come back relative is the
+    override itself (``KIROCREW_KIRO_BIN=kiro-cli``): the existence check would
+    pass against the current directory while ``exec`` re-resolved the bare
+    argv0 off ``PATH`` — the exact divergence this pin exists to remove. A
+    relative pin is therefore refused and reported like a ``PATH``-only
+    install, since the note already names the fix.
+
+    Sync and unbounded: it stats directories under the home directory. The
+    gateway's unattended paths run this in a thread under a timeout
+    (``slack.gateway._pinned_kiro_cli``); a CLI command or a request handler
+    already blocking on the spawn itself has nothing to gain from that.
+    """
+
+    pinned = resolve_kiro_cli(include_inherited_path=False)
+    if pinned is not None and os.path.isabs(pinned):
+        return pinned, False
+    return None, resolve_kiro_cli() is not None

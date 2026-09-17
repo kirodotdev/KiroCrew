@@ -12,6 +12,8 @@ from __future__ import annotations
 import ast
 import inspect
 import itertools
+import json
+import logging
 import threading
 import typing
 from typing import Callable
@@ -19,10 +21,20 @@ from typing import Callable
 import pytest
 
 from kiro_crew.cloud import fargate, fargate_engine
+from kiro_crew.cloud import launch_job as lj
+from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.ec2 import MANAGED_TAG_KEY
+from kiro_crew.cloud.fargate import (
+    Placement,
+    SecretRef,
+    TaskDefinitionSpec,
+    default_log_spec,
+    revision_fingerprint,
+)
 from kiro_crew.cloud.fargate_engine import (
     MANAGED_TAG_VALUE,
     FargateLaunchEngine,
+    FargateLaunchSpec,
     FargateSigninHandle,
     Ownership,
     TaskSighting,
@@ -614,19 +626,425 @@ def test_unconfirmed_teardown_after_failed_provision_reaches_the_user(tmp_path) 
     assert TAG in job.error
 
 
-# ── The AWS-touching methods refuse with a reason, not silently ──────────────
+# ── The AWS-touching methods, driven against a monkeypatched chokepoint ──────
+#
+# Every AWS call goes through cloud/aws.py's checked / checked_json. These tests
+# replace that one chokepoint with a scripted double, so provision and teardown
+# are exercised end to end without a credential and without boto3 — the same
+# testability the fargate module's own tests rely on.
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda e: e.preflight("p", "us-west-2"),
-        lambda e: e.provision(tag=TAG, size_key="balanced", profile="p", region="us-west-2"),
-        lambda e: e.teardown(tag=TAG, profile="p", region="us-west-2"),
-    ],
-)
-def test_unwritten_methods_raise_with_a_stated_cause(call) -> None:
-    """A placeholder must say why it is one, so it cannot be mistaken for done."""
-    with pytest.raises(NotImplementedError) as excinfo:
-        call(FargateLaunchEngine())
-    assert "signatures are final" in str(excinfo.value)
+def _secret() -> SecretRef:
+    return SecretRef(
+        name="kirocrew/crew/demo/KIRO_API_KEY",
+        arn="arn:aws:secretsmanager:us-west-2:111122223333:secret:kirocrew/crew/demo/KIRO_API_KEY-AbCdEf",
+    )
+
+
+def _spec() -> FargateLaunchSpec:
+    return FargateLaunchSpec(
+        placement=Placement(
+            cluster="crews",
+            subnets=("subnet-aaaa",),
+            security_groups=("sg-bbbb",),
+        ),
+        image="123456789012.dkr.ecr.us-west-2.amazonaws.com/crew@sha256:" + "a" * 64,
+        secrets=(_secret(),),
+        cpu_architecture="X86_64",
+    )
+
+
+class _EcsDouble:
+    """A scripted stand-in for the ``cloud/aws.py`` chokepoint.
+
+    ``checked_json`` answers each ECS operation from its second argv token, and
+    ``list_tasks`` is switchable so teardown can be driven over an empty cluster
+    (nothing of ours remains) or a cluster holding this launch's own task.
+    """
+
+    def __init__(self) -> None:
+        self.stops: list[str] = []
+        self.tasks_for_teardown: list[dict] = []
+        self.described_fingerprint: str | None = "USE_REAL"
+        self.run_requests: list[dict] = []
+
+    def checked_json(self, args, profile="", region="", *, action, timeout=60):
+        op = args[1]
+        if op == "register-task-definition":
+            return {"taskDefinition": {"revision": 1}}
+        if op == "run-task":
+            self.run_requests.append(json.loads(args[args.index("--cli-input-json") + 1]))
+            return {"tasks": [{"taskArn": ARN}], "failures": []}
+        if op == "describe-task-definition":
+            fp = self.described_fingerprint
+            if fp == "USE_REAL":
+                fp = revision_fingerprint(_spec_taskdef(region))
+            return {"tags": [{"key": "kirocrew:revision-key", "value": fp}]}
+        if op == "list-tasks":
+            # ListTasks documents startedBy as exclusive: "When you specify
+            # startedBy as the filter, it must be the only filter that you use."
+            # The real API answers a violation with InvalidParameterException, so a
+            # double that accepted one would be no evidence that the request this
+            # engine builds is well formed. --cluster is excluded because it scopes
+            # the search rather than filtering it.
+            if "--started-by" in args:
+                clash = sorted(
+                    f
+                    for f in ("--desired-status", "--family", "--service-name", "--launch-type")
+                    if f in args
+                )
+                if clash:
+                    raise AssertionError(
+                        "ListTasks rejects --started-by combined with "
+                        f"{', '.join(clash)}: startedBy must be the only filter"
+                    )
+            return {"taskArns": [t["taskArn"] for t in self.tasks_for_teardown]}
+        if op == "describe-tasks":
+            return {"tasks": self.tasks_for_teardown}
+        raise AssertionError(f"unexpected checked_json op {op!r}")
+
+    def checked(self, args, profile="", region="", *, action, timeout=60):
+        if args[1] == "stop-task":
+            self.stops.append(args[args.index("--task") + 1])
+            return ""
+        raise AssertionError(f"unexpected checked op {args[1]!r}")
+
+
+def _spec_taskdef(region: str):
+    s = _spec()
+    return TaskDefinitionSpec(
+        image=s.image,
+        secrets=s.secrets,
+        cpu_architecture=s.cpu_architecture,
+        log=default_log_spec(region),
+    )
+
+
+def _patch_aws(monkeypatch, double: _EcsDouble) -> None:
+    from kiro_crew.cloud import aws as aws_mod
+
+    monkeypatch.setattr(aws_mod, "checked_json", double.checked_json)
+    monkeypatch.setattr(aws_mod, "checked", double.checked)
+
+
+def test_preflight_validates_region_and_refuses_without_a_spec() -> None:
+    """A refusal, not a probe: no ECS call, and it names the missing fields."""
+    from kiro_crew.cloud.fargate.identity import DocumentRefused
+
+    engine = FargateLaunchEngine(_spec())
+    engine.preflight("p", "us-west-2")  # a spec present: returns without an AWS call
+
+    with pytest.raises(ValueError, match="launch spec"):
+        FargateLaunchEngine().preflight("p", "us-west-2")
+    with pytest.raises(DocumentRefused, match="region"):
+        FargateLaunchEngine(_spec()).preflight("p", "not a region")
+
+
+def test_provision_registers_runs_and_returns_the_task_arn(monkeypatch) -> None:
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    arn = FargateLaunchEngine(_spec()).provision(
+        tag=TAG, size_key="1024/2048", profile="p", region="us-west-2"
+    )
+    assert arn == ARN
+
+
+def test_provision_refuses_a_tag_outside_the_charset(monkeypatch) -> None:
+    _patch_aws(monkeypatch, _EcsDouble())
+    with pytest.raises(ValueError, match="correlation value"):
+        FargateLaunchEngine(_spec()).provision(
+            tag="kc/slash", size_key="1024/2048", profile="p", region="us-west-2"
+        )
+
+
+def test_provision_refuses_an_unusable_size(monkeypatch) -> None:
+    _patch_aws(monkeypatch, _EcsDouble())
+    with pytest.raises(ValueError, match="Fargate"):
+        FargateLaunchEngine(_spec()).provision(
+            tag=TAG, size_key="999/999", profile="p", region="us-west-2"
+        )
+
+
+def test_provision_confirms_a_cached_revision_fingerprint(monkeypatch) -> None:
+    """A remembered revision number is launched only after DescribeTaskDefinition
+    confirms its fingerprint tag still equals the spec's."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    # Second launch is a cache hit; the double returns the real fingerprint, so it
+    # confirms and launches revision 1 again.
+    assert engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2") == ARN
+
+
+def test_provision_refuses_a_stale_cached_revision(monkeypatch) -> None:
+    """A cached number whose fingerprint tag differs from the spec's is a stale
+    cache, not a launch: it raises rather than running the wrong content."""
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    double.described_fingerprint = "0" * 64  # the account now reports a different key
+    with pytest.raises(AWSError, match="stale cache"):
+        engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+
+def _our_task(status: str = "RUNNING") -> dict:
+    return {
+        "taskArn": ARN,
+        "startedBy": fargate_engine._started_by_for(TAG),
+        "lastStatus": status,
+        "tags": [
+            {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+            {"key": LAUNCH_TAG_KEY, "value": TAG},
+        ],
+    }
+
+
+def test_the_stamp_the_writer_sends_is_the_one_teardown_classifies_by(monkeypatch) -> None:
+    """The value provision stamps is the value teardown hands the classifier, per launch.
+
+    The classifier's `started_by` must identify ONE launch. A launcher-wide value
+    would make two coexisting launches classify each other MISLABELLED, so every
+    teardown would refuse to confirm while a sibling launch is up. This reads the
+    `startedBy` actually sent to RunTask rather than restating the prefix, so a
+    writer that changed the format or dropped the tag from it fails here.
+    """
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    engine = FargateLaunchEngine(_spec())
+    engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+    stamped = double.run_requests[-1]["startedBy"]
+    assert TAG in stamped, "a launcher-wide stamp cannot tell two launches apart"
+
+    other = "kc-zzzzzz"
+    engine.provision(tag=other, size_key="1024/2048", profile="p", region="us-west-2")
+    assert double.run_requests[-1]["startedBy"] != stamped, "the stamp must vary per launch"
+
+    # Teardown of TAG classifies a task carrying the stamp the writer really sent.
+    double.tasks_for_teardown = [
+        {
+            "taskArn": ARN,
+            "startedBy": stamped,
+            "lastStatus": "RUNNING",
+            "tags": [
+                {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+                {"key": LAUNCH_TAG_KEY, "value": TAG},
+            ],
+        }
+    ]
+    assert engine.teardown(tag=TAG, profile="p", region="us-west-2") is True
+    assert double.stops == [ARN]
+
+
+def test_teardown_stops_our_task_and_confirms(monkeypatch) -> None:
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_task()]
+    _patch_aws(monkeypatch, double)
+    confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+    assert confirmed is True
+    assert double.stops == [ARN]
+
+
+def test_teardown_over_an_empty_cluster_confirms_and_stops_nothing(monkeypatch) -> None:
+    double = _EcsDouble()
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is True
+    assert double.stops == []
+
+
+def test_teardown_refuses_an_unmarked_task_we_started(monkeypatch) -> None:
+    """An unmarked task this launcher started returns unconfirmed and stops
+    nothing — the ownership rule refuses to delete on a startedBy guess."""
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": OTHER_ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is False
+    assert double.stops == []
+
+
+def test_teardown_refuses_a_mislabelled_task_and_says_which_one(monkeypatch, caplog) -> None:
+    """A marked task this launcher started whose launch tag names another launch is
+    refused, and the refusal NAMES it.
+
+    ``LaunchEngine.teardown`` returns a bool, so the plan's warning has exactly one
+    way out of the engine. ``launch_job`` turns the False into "it may still be
+    running and billing", which tells the operator to look but not where, and an
+    operator who cannot tell an unclaimable task from one of their own that is
+    wrongly tagged cannot take either next step. This fails if the engine goes back
+    to discarding ``TeardownPlan.warning``.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": OTHER_ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [
+                {"key": MANAGED_TAG_KEY, "value": MANAGED_TAG_VALUE},
+                {"key": LAUNCH_TAG_KEY, "value": "kc-zzzzzz"},  # another launch's tag
+            ],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cloud.fargate_engine"):
+        confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+    assert confirmed is False
+    assert double.stops == [], "a mislabelled task must not be stopped on a startedBy match"
+    emitted = "\n".join(r.getMessage() for r in caplog.records)
+    assert OTHER_ARN in emitted, "the refusal must name the task the operator has to look at"
+
+
+# ── Criterion 4: nothing above LaunchEngine branches on backend ──────────────
+
+
+class _Ec2ShapedEngine:
+    """A conforming engine standing in for the EC2 lane, for the comparison.
+
+    ``RealLaunchEngine`` needs AWS to provision, so a byte-comparison of the two
+    real engines is not what this asserts. The RFC's criterion is that nothing
+    ABOVE the ``LaunchEngine`` boundary branches on backend: the orchestrator and
+    the rollback path must treat any conforming engine identically. So the
+    comparison drives the SAME orchestrator over two engines and asserts the same
+    observable provision and teardown outcomes. Only provision and teardown, per
+    the amended RFC section 8: registry visibility is out of this phase and only
+    the EC2 engine produces a registry record, so register is deliberately not
+    compared.
+    """
+
+    def preflight(self, profile: str, region: str) -> None:
+        return None
+
+    def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
+        return ARN
+
+    def begin_signin(self, *, instance_id: str, profile: str, region: str):
+        return FargateSigninHandle(task_arn=instance_id)
+
+    def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
+        return None
+
+    def teardown(self, *, tag: str, profile: str, region: str) -> bool:
+        self.torn_down = True
+        return True
+
+
+def _run_through_engine(engine, store_root):
+    """Resolve one engine through the real ``_engine`` seam and drive provision +
+    teardown through it, returning the observable outcomes.
+
+    Provision and teardown ONLY, per the amended RFC section 8: signin and
+    register are out of this phase's comparison (only the EC2 engine produces a
+    registry record). The launch job is created through the real store so the
+    ``size_key`` and ``tag`` a provision reads come from the same orchestration
+    state both engines see.
+    """
+    from kiro_crew.dashboard import handlers_cloud
+
+    class _StubState:
+        def __init__(self, e) -> None:
+            self.cloud_launch_engine = e
+
+    # The engine resolves through the same seam segment 1 injects through.
+    resolved = handlers_cloud._engine(_StubState(engine))  # type: ignore[arg-type]
+    assert resolved is engine
+
+    store = lj.LaunchJobStore(root=store_root)
+    job = store.create(
+        profile="p",
+        region="us-west-2",
+        size_key="1024/2048",
+        provider_id="aws_fargate",
+    )
+    job.tag = TAG
+
+    identity = resolved.provision(
+        tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region
+    )
+    teardown_confirmed = resolved.teardown(tag=job.tag, profile=job.profile, region=job.region)
+    return {
+        "provision_identity_present": bool(identity),
+        "teardown_confirmed": teardown_confirmed,
+    }
+
+
+def test_both_engines_are_observably_identical_for_provision_and_teardown(
+    monkeypatch, tmp_path
+) -> None:
+    """The same seam, resolving the EC2-shaped engine and the real Fargate engine,
+    produces identical provision and teardown outcomes.
+
+    The Fargate engine's AWS chokepoint is scripted; the EC2-shaped one returns
+    directly. If anything above ``LaunchEngine`` branched on backend, one of these
+    two observations would differ. Register is not compared: only the EC2 engine
+    produces a registry record and registry visibility is out of this phase.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [_our_task()]
+    _patch_aws(monkeypatch, double)
+
+    ec2_like = _run_through_engine(_Ec2ShapedEngine(), tmp_path / "ec2")
+    fargate = _run_through_engine(FargateLaunchEngine(_spec()), tmp_path / "fargate")
+
+    assert ec2_like == fargate
+    assert fargate["provision_identity_present"] is True
+    assert fargate["teardown_confirmed"] is True
+
+
+# ── Mutation anchors: the two claims that must be a test failure to break ─────
+
+
+def test_mutation_managed_gate_is_value_not_key_presence(monkeypatch) -> None:
+    """Loosening the managed-tag gate from ``== "true"`` to mere key presence must
+    turn a test red.
+
+    A task whose ``kirocrew:managed`` holds anything other than ``"true"`` — here
+    the launch tag written into the marker — is UNMARKED and is never stopped. If
+    the gate degraded to key presence, this task would classify OURS and teardown
+    would stop it, so this assertion fails, which is the point.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [
+                {"key": MANAGED_TAG_KEY, "value": TAG},  # tag in the marker, not "true"
+                {"key": LAUNCH_TAG_KEY, "value": TAG},
+            ],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    confirmed = FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2")
+    assert double.stops == [], "an UNMARKED task must never be stopped"
+    assert confirmed is False, "a running task we started but cannot claim is unconfirmed"
+
+
+def test_mutation_teardown_returns_the_plan_confirmation(monkeypatch) -> None:
+    """Making ``teardown`` return ``True`` on an unconfirmed plan must turn a test
+    red.
+
+    An unmarked running task this launcher started yields ``confirmed=False``, and
+    teardown must return that unchanged. Hard-coding ``True`` here would report
+    billing stopped when a task may still be running; this assertion is what
+    catches that.
+    """
+    double = _EcsDouble()
+    double.tasks_for_teardown = [
+        {
+            "taskArn": OTHER_ARN,
+            "startedBy": fargate_engine._started_by_for(TAG),
+            "lastStatus": "RUNNING",
+            "tags": [],
+        }
+    ]
+    _patch_aws(monkeypatch, double)
+    assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is False

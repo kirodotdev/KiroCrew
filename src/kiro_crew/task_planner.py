@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_DENY
+from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
@@ -322,14 +322,7 @@ async def decompose(
                         event.title,
                         session_key=session_key,
                         agent=agent,
-                        tool_kind=event.tool_kind,
-                        raw_params=event.raw_tool_params,
-                        diff_path=event.diff_path,
-                        command=event.shell_command,
-                        is_shell=event.is_shell,
-                        mcp_server_name=event.mcp_server_name,
-                        mcp_tool_name=event.tool_name,
-                        mcp_identity_trusted=event.mcp_identity_trusted,
+                        **hook_gate_kwargs(event),
                     )
                     if hook_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)

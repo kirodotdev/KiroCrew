@@ -92,6 +92,8 @@ createRoot(document.getElementById('root')!).render(
           selected="all"
           onSelect={() => {}}
           sources={SOURCES}
+          selectedSource={null}
+          onSelectSource={() => {}}
           onAddSource={() => {}}
         />
       </div>

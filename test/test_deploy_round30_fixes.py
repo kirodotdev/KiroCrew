@@ -12,8 +12,6 @@ from pathlib import Path
 
 import yaml
 
-from conftest import requires_symlinks
-
 REPO = Path(__file__).resolve().parents[1]
 TEMPLATES = REPO / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "templates"
 HANDLERS = REPO / "src" / "kiro_crew" / "deploy" / "handlers.py"
@@ -35,18 +33,35 @@ class TestF1NolinkRead:
         f.write_text("hello")
         assert safe_read_file_bytes_nolink(str(f)) == b"hello"
 
-    @requires_symlinks
-    def test_helper_rejects_symlink(self, tmp_path):
+    def test_helper_refuses_a_leaf_swapped_into_a_symlink(self, tmp_path, monkeypatch):
+        # Planting a link and reading THROUGH it cannot observe the refusal:
+        # validate_file_path realpath-collapses the name before the open, so the
+        # no-reparse open lands on the real inode and the helper legitimately
+        # returns its bytes (already pinned by
+        # test_safe_read_file_bytes_descriptor's benign-leaf-link case). The
+        # TOCTOU shape the final-component guard exists for is a link planted AT
+        # the canonical name between validation and open, so inject the refusal
+        # at that seam instead — patching platform_compat rather than os.open
+        # keeps the simulation faithful on Windows, whose arm of that helper
+        # reaches CreateFileW with FILE_FLAG_OPEN_REPARSE_POINT and raises the
+        # same ELOOP. Without this the OSError would escape as a staging
+        # traceback instead of a refusal.
+        import errno
+
+        from kiro_crew import platform_compat
         from kiro_crew.hooks import safe_read_file_bytes_nolink
         target = tmp_path / "real.txt"
         target.write_text("x")
-        sl = tmp_path / "sl.txt"
-        sl.symlink_to(target)
-        # validate_file_path realpath-resolves; O_NOFOLLOW guards the final
-        # component swap. Either way the read must come back from the REAL
-        # inode or be rejected — never follow a swapped-in link blindly.
-        result = safe_read_file_bytes_nolink(str(sl))
-        assert result in (None, b"x")
+        canonical = os.path.realpath(target)
+        real_open = platform_compat.open_file_no_reparse
+
+        def eloop(path, *args, **kwargs):
+            if os.path.realpath(os.fspath(path)) == canonical:
+                raise OSError(errno.ELOOP, "symlink swapped in")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(platform_compat, "open_file_no_reparse", eloop)
+        assert safe_read_file_bytes_nolink(str(target)) is None
 
     def test_staging_uses_nolink_variant(self):
         src = HANDLERS.read_text(encoding="utf-8")

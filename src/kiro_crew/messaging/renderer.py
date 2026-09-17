@@ -316,6 +316,58 @@ def credential_redaction_notice(count: int) -> str:
     )
 
 
+def redaction_notice(cred_count: int, url_count: int) -> str:
+    """The notice a channel sends after delivering text EITHER redactor rewrote.
+
+    Every channel delivery surface runs two body rewriters over the text it
+    ships -- ``security.redact_exfiltration_urls`` then
+    ``security.redact_credentials`` -- so the placeholder a reader sees can come
+    from either. ``cred_count`` is the number of ``CREDENTIAL_REDACTION_TAGS``
+    placeholders in the delivered text; ``url_count`` is the number of
+    ``EXFILTRATION_REDACTION_TAG_PREFIX`` placeholders (that tag interpolates the
+    redacted domain, so callers count it by prefix, never by equality). Like
+    :func:`credential_redaction_notice`, this carries NO secret bytes and no
+    redacted URL: only the counts are used, so the domain the tag names never
+    reaches the sentence.
+
+    Worded BY KIND because the remedies differ: a credential needs the secret
+    re-entered where the command runs; a rewritten URL needs the original link
+    re-checked from a trusted source. Telling a reader whose URL was rewritten to
+    "supply the secret yourself" names a remedy that cannot help them, which is
+    the gap this closes. The credential-only sentence is delegated to
+    :func:`credential_redaction_notice` unchanged, so a surface that adopts this
+    builder ships byte-identical wording for the case it already covered.
+
+    Same delivery contract as the credential notice: plain text, no markup, no
+    emoji, one string for every channel, sent as its own message BELOW the
+    answer. At least one count must be non-zero -- the caller gates on that, and
+    a zero/zero call is a caller bug rather than a silent empty message.
+    """
+    if cred_count < 0 or url_count < 0 or not (cred_count or url_count):
+        raise ValueError("redaction_notice needs at least one placeholder to describe")
+    if not url_count:
+        return credential_redaction_notice(cred_count)
+    subjects: list[str] = []
+    if cred_count:
+        subjects.append("a credential" if cred_count == 1 else f"{cred_count} credentials")
+    subjects.append("a suspicious URL" if url_count == 1 else f"{url_count} suspicious URLs")
+    subject = " and ".join(subjects)
+    subject = subject[0].upper() + subject[1:]
+    verb = "was" if (cred_count + url_count) == 1 else "were"
+    if cred_count:
+        remedy = (
+            "supply the secret yourself on the machine where you run it, and "
+            "re-check any redacted URL against a trusted source."
+        )
+    else:
+        remedy = "re-check the original URL against a trusted source before using it."
+    return (
+        f"Security notice: {subject} in the message above {verb} replaced with a "
+        f"redaction placeholder. Any command or link shown will not work if you "
+        f"paste it as-is; {remedy}"
+    )
+
+
 def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:
     """The choice-label display sink, target-aware when the target is known.
 

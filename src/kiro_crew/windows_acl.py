@@ -40,6 +40,7 @@ install once the walk reaches the drive root.
 from __future__ import annotations
 
 import ctypes as C
+import ntpath
 import os
 import sys
 from dataclasses import dataclass
@@ -102,6 +103,7 @@ __all__ = [
     "owner_only_dacl_matches_parsed",
     "describe",
     "volume_is_local",
+    "volume_is_remote",
 ]
 
 
@@ -423,6 +425,56 @@ def volume_is_local(path: str | os.PathLike) -> bool:
     """
     _advapi32, kernel32 = _load()
     return _volume_is_local(kernel32, Path(os.fspath(path)))
+
+
+def _volume_root(path: str) -> str | None:
+    """The volume ROOT ``GetDriveTypeW`` wants, or None when *path* names none.
+
+    ``ntpath`` rather than ``os.path``: what the root of ``Z:\\x`` or of
+    ``\\\\server\\share\\x`` is, is a question about WINDOWS path grammar, and
+    ``posixpath.splitdrive`` answers it with an empty drive for both shapes, so
+    the flavour is named here instead of inherited from the host. ``splitdrive``
+    gives ``C:`` for a letter path and the whole ``\\\\server\\share`` for a UNC
+    one, so appending a separator produces the root in either case.
+    """
+    drive = ntpath.splitdrive(ntpath.abspath(path))[0]
+    if not drive:
+        return None
+    return drive if drive.endswith("\\") else drive + "\\"
+
+
+def _volume_remote_verdict(kernel32: _DLL, path: Path) -> bool | None:
+    """True when *path*'s volume is a network one, False local, None unclassifiable."""
+    root = _volume_root(str(path))
+    if root is None:
+        return None
+    kind = int(kernel32.GetDriveTypeW(root))
+    if kind == _DRIVE_REMOTE:
+        return True
+    if kind in _LOCAL_DRIVE_TYPES:
+        return False
+    # DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR and any value this build does not know:
+    # the volume was not classified, which is not the same fact as "local".
+    return None
+
+
+def volume_is_remote(path: str | os.PathLike) -> bool | None:
+    """Whether *path* sits on a NETWORK volume: True, False local, None unknown.
+
+    The TRI-STATE sibling of :func:`volume_is_local`, which collapses "not
+    local" and "could not be classified" onto ``False`` because a trust check
+    that cleared nothing must refuse. A caller choosing a SQLite journal mode
+    has a third correct answer for a volume it could not classify -- keep the
+    default -- and cannot get it from a bool.
+
+    Root-only like its sibling: it asks ``GetDriveTypeW`` about the volume root
+    and touches no file, so it is safe for a path that does not exist yet and a
+    disconnected mapped drive costs no SMB round trip. A UNC root and a mapped
+    network drive both report remote. Raises :class:`AclUnavailable` off
+    Windows, where there is no volume to classify.
+    """
+    _advapi32, kernel32 = _load()
+    return _volume_remote_verdict(kernel32, Path(os.fspath(path)))
 
 
 def describe(path: Path) -> ComponentSecurity:

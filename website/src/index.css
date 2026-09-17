@@ -2250,6 +2250,41 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .focus-ring:focus-visible{outline:none;border-color:var(--ring);
   box-shadow:0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
 
+/* ── Colour-swatch hover cue ── */
+/* The colour swatches (session colours, folder/tag colours) carry no built-in
+   hover feedback once the enlarge-on-hover was removed, and they cannot borrow
+   the usual ones: the two darkest swatches set `borderColor` inline so a
+   `hover:border-*` class is dead (an inline style beats a utility), and
+   `brightness` alone cannot lift the near-black fills (multiplicative, so a
+   +56% relative move is only 0.042→0.066 absolute). So the cue is an `outline`,
+   paired with `hover:brightness-125` for the lighter fills.
+   COLOUR — the outline must not speak SELECTION. This family says "selected" in
+   two colours: `--text-strong` (a near-white border on the session swatches)
+   and `--accent` (a border or `ring-1 ring-accent` on the display/folder/tag/
+   library swatches). A cue in either — or a dimmer shade of one — reads as
+   "selected", not "hovered" (a bright/accent mark is read as selection at a
+   glance whatever its exact lightness). So the cue paints in a NEUTRAL
+   structural token that belongs to neither selection colour in every theme; it
+   differs in colour, not merely in strength.
+   `--border-hover` was the first pick but MEASURED too weak: on the darkest
+   swatch fill it is only 2.2:1 (mean luminance moved just 0.021→0.033), below
+   the 3:1 non-text bar and near the illegible floor. `--muted` is the lightest
+   NEUTRAL token that clears it (~4.7:1 on that fill) without being either
+   selection colour, so no new token is needed.
+   GEOMETRY — `outline-offset:-3px` insets the line, so it sits inside the fill,
+   clear of BOTH selection bands: an accent `ring-*` lives OUTSIDE the box (an
+   outset hover outline would overlap and mask it) and an edge selection border
+   lives AT the box, while the inset line is 3px within. This is structural, so
+   it cannot mask a selected swatch's ring at ANY site — unlike an
+   `:not([aria-pressed])` guard, which silently misses the swatches that mark
+   selection with a conditional class and no aria attribute.
+   Gated on `:not(:focus-visible)` because the cue is itself an `outline`, and a
+   hover UTILITY outspecifies the bare global `:focus-visible` rule — so on a
+   swatch that is both keyboard-focused and hovered the neutral line would mask
+   the 2px accent focus ring. Yielding here lets the focus ring win whenever
+   focus is present. */
+.swatch-cue:hover:not(:focus-visible){outline:1px solid var(--muted);outline-offset:-3px}
+
 /* ── Syntax highlighting (highlight.js) ── */
 .hljs{color:var(--text)}
 .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-name,.hljs-tag{color:#c678dd}
@@ -2462,9 +2497,13 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   border: 1.5px solid var(--warn); border-radius: 10px 10px 10px 2px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   cursor: pointer; padding: 0;
-  transition: background-color 0.12s ease, transform 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
-.mc-cmt-bubble:hover { transform: scale(1.1); }
+/* Hover PAINTS (deepens the drop shadow), matching the sibling .mc-cmt-rect:hover
+   idiom, since the removed scale(1.1) was the bubble's only hover cue. Shadow-only:
+   no size or position change, and distinct from .active (which recolours to accent
+   with an accent ring). */
+.mc-cmt-bubble:hover { box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45); }
 .mc-cmt-bubble.unread { background-color: var(--warn); color: var(--warn-fg, #1a1a1a); }
 .mc-cmt-bubble.active { background-color: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 

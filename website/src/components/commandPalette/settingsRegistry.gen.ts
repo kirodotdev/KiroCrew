@@ -874,6 +874,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.content-filter-fallback-model",
+    "label": "Content-filter fallback model",
+    "labelKey": "pages.settings.chatPanel.refusal_fallback_model",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "agent.refusal_fallback_model"
+  },
+  {
     "id": "chat.default-memory-mode",
     "label": "Default Memory Mode",
     "labelKey": "settings.chat.defaultMemoryMode.label",

@@ -147,9 +147,7 @@ class TestWarnIfKiroCliOutdated:
         never happened. The refusal path itself is covered separately by
         :meth:`test_unresolvable_binary_never_spawns`.
         """
-        with patch(
-            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
-        ):
+        with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"):
             yield
 
     @pytest.mark.asyncio
@@ -161,7 +159,7 @@ class TestWarnIfKiroCliOutdated:
         argument is no protection. Nothing to warn about, so nothing runs.
         """
         orch = _make_orchestrator()
-        with patch("kiro_crew.slack.gateway.resolve_kiro_cli", return_value=None):
+        with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value=None):
             with patch("asyncio.create_subprocess_exec") as spawn:
                 await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -177,7 +175,7 @@ class TestWarnIfKiroCliOutdated:
         proc = _probe_proc(_communicate)
         orch = _make_orchestrator()
         with patch(
-            "kiro_crew.slack.gateway.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
+            "kiro_crew.kiro_cli.resolve_kiro_cli", return_value="/opt/pinned/bin/kiro-cli"
         ) as mock_resolve:
             with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn:
                 await orch._warn_if_kiro_cli_outdated()
@@ -200,7 +198,7 @@ class TestWarnIfKiroCliOutdated:
             return None if kwargs.get("include_inherited_path") is False else "/w/venv/bin/kiro-cli"
 
         with caplog.at_level("WARNING"):
-            with patch("kiro_crew.slack.gateway.resolve_kiro_cli", side_effect=_resolve):
+            with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_resolve):
                 with patch("asyncio.create_subprocess_exec") as spawn:
                     await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -211,7 +209,7 @@ class TestWarnIfKiroCliOutdated:
         """No kiro-cli anywhere is not a problem to report — the backend is optional."""
         orch = _make_orchestrator()
         with caplog.at_level("WARNING"):
-            with patch("kiro_crew.slack.gateway.resolve_kiro_cli", return_value=None):
+            with patch("kiro_crew.kiro_cli.resolve_kiro_cli", return_value=None):
                 with patch("asyncio.create_subprocess_exec") as spawn:
                     await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()
@@ -233,7 +231,7 @@ class TestWarnIfKiroCliOutdated:
 
         with caplog.at_level("WARNING"):
             with patch.object(gw, "_KIRO_CLI_RESOLVE_TIMEOUT_SECS", 0.01):
-                with patch("kiro_crew.slack.gateway.resolve_kiro_cli", side_effect=_hang):
+                with patch("kiro_crew.kiro_cli.resolve_kiro_cli", side_effect=_hang):
                     with patch("asyncio.create_subprocess_exec") as spawn:
                         await orch._warn_if_kiro_cli_outdated()
         spawn.assert_not_called()

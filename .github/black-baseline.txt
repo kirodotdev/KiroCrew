@@ -9,7 +9,6 @@
 #   python3 scripts/check_black_formatting.py --update-baseline
 src/kiro_crew/_process_group_supervisor.py
 src/kiro_crew/acp/kas_wire.py
-src/kiro_crew/acp/liveness.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/__init__.py
 src/kiro_crew/apps/app_storage.py
@@ -192,7 +191,6 @@ src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
-src/kiro_crew/dashboard/session_health.py
 src/kiro_crew/dashboard/session_memory.py
 src/kiro_crew/dashboard/slowloris.py
 src/kiro_crew/dashboard/stale_asset_watchdog.py
@@ -286,7 +284,6 @@ src/kiro_crew/pod/provision.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
-src/kiro_crew/security/__init__.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
@@ -513,7 +510,6 @@ test/test_dashboard_cron_concurrent_create.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_no_legacy.py
-test/test_dashboard_reset_sessions.py
 test/test_dashboard_route_table.py
 test/test_dashboard_server_coverage.py
 test/test_dashboard_sessions_memory.py
@@ -619,7 +615,6 @@ test/test_frontend_dist_resolve.py
 test/test_frontend_edition_build.py
 test/test_frontmatter.py
 test/test_gateway_appkit_endpoints.py
-test/test_gateway_pipe_death.py
 test/test_gatewayd_more_coverage.py
 test/test_gatewayd_self_exit.py
 test/test_github_runner.py
@@ -884,7 +879,6 @@ test/test_session_core_audit.py
 test/test_session_coverage.py
 test/test_session_end_interaction.py
 test/test_session_grid.py
-test/test_session_health.py
 test/test_session_keepalive.py
 test/test_session_map_locking.py
 test/test_session_map_migration.py
@@ -902,7 +896,6 @@ test/test_session_summary_extract.py
 test/test_session_summary_generate.py
 test/test_session_thread_map.py
 test/test_session_usage.py
-test/test_sessions_health_cache.py
 test/test_settingref_schema_fixture.py
 test/test_ship_report_issues.py
 test/test_side_context.py

@@ -256,32 +256,33 @@ class TestFloorDenialExplainsItself:
 
     def test_inline_import_is_denied_at_all(self):
         # Guards the premise of every assertion below.
-        assert self._deny('python -c "import kiro_crew"')
+        assert self._deny('python -c "import kiro_crew.cli"')
 
     def test_reported_pattern_cannot_match_the_command(self):
         # The exact trap: the first line requires a `token` word this command
         # does not contain, so the identifier alone reads as a false reason.
-        command = 'python -c "import kiro_crew"'
+        command = 'python -c "import kiro_crew.cli"'
         first_line = self._deny(command).splitlines()[0]
         assert self.MINT_PATTERN_TAIL in first_line
         assert "token" not in command
 
     def test_second_line_says_the_match_was_structural(self):
-        lines = self._deny('python -c "import kiro_crew"').splitlines()
+        lines = self._deny('python -c "import kiro_crew.cli"').splitlines()
         assert len(lines) >= 2, "floor denial must carry an explanation line"
         assert "structurally" in lines[1]
         assert "argv" in lines[1]
 
     def test_explanation_names_the_import_gate(self):
-        # What the agent needs in order to adapt: it is the IMPORT that is
-        # gated, so retrying with a differently-worded command is futile.
-        note = self._deny('python -c "import kiro_crew"').splitlines()[1]
+        # What the agent needs in order to adapt: it is the IMPORT of the mint
+        # surface that is gated, so retrying with a differently-worded command
+        # that still names the CLI is futile.
+        note = self._deny('python -c "import kiro_crew.cli"').splitlines()[1]
         assert "import" in note
 
     def test_first_line_stays_single_line_and_prefixed(self):
         # RecoveryCard.tsx extracts the pattern with a per-line end-anchored
         # regex, so anything appended to line 1 would be read as the pattern.
-        out = self._deny('python -c "import kiro_crew"')
+        out = self._deny('python -c "import kiro_crew.cli"')
         assert out.startswith("Blocked by security policy: ")
         assert "\n" not in out.splitlines()[0]
 
@@ -330,7 +331,6 @@ class TestRecoveryIsNowAFallback:
     def test_confirmed_in_band_delivery_skips_the_extra_turn(self):
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             user_stopped=False,
             notices_sent=1,
@@ -342,7 +342,6 @@ class TestRecoveryIsNowAFallback:
         # any model-inference boundary, so the model was told nothing.
         assert should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             user_stopped=False,
             notices_sent=1,
@@ -353,7 +352,6 @@ class TestRecoveryIsNowAFallback:
         # Two denies, one notice: the uncovered one has no other way to be told.
         assert should_queue_refusal_recovery(
             [("bash", "denied"), ("fs_write", "blocked")],
-            stopping=False,
             needs_reset=False,
             user_stopped=False,
             notices_sent=1,
@@ -363,14 +361,11 @@ class TestRecoveryIsNowAFallback:
     def test_defaults_preserve_pre_existing_behaviour(self):
         # A caller that knows nothing about notices (harness without steer)
         # behaves as if nothing was steered: the extra turn is owed.
-        assert should_queue_refusal_recovery(
-            self.REFUSALS, stopping=False, needs_reset=False, user_stopped=False
-        )
+        assert should_queue_refusal_recovery(self.REFUSALS, needs_reset=False, user_stopped=False)
 
     def test_user_cancel_still_wins_over_in_band_accounting(self):
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
             user_stopped=True,
             notices_sent=0,
@@ -379,7 +374,7 @@ class TestRecoveryIsNowAFallback:
 
     def test_no_refusals_never_queues_even_with_notices(self):
         assert not should_queue_refusal_recovery(
-            [], stopping=False, needs_reset=False, user_stopped=False, notices_sent=3
+            [], needs_reset=False, user_stopped=False, notices_sent=3
         )
 
 
@@ -735,8 +730,11 @@ class TestEveryHostDenyCallSiteIsWired:
         # turn coroutine.
         src = self._src()
         assert src.count("def _stop_pressed() -> bool:") == 1, "the live Stop signal helper moved"
-        body = src.split("def _stop_pressed() -> bool:", 1)[1][:1400]
+        body = src.split("def _stop_pressed() -> bool:", 1)[1][:2000]
         assert "_stop_generation" in body and "_stop_gen_at_entry" in body
+        # ...and the session-scoped count, so a stop issued on a linked channel
+        # surface (which never touches the slot's own state) is seen too.
+        assert "_session_stop_generation()" in body and "_session_stop_gen_at_entry" in body
         # refusal recovery: the gate call, and the re-read after the awaited
         # credential-hint lookup, before the queue write.
         gate = "if should_queue_refusal_recovery("
@@ -751,7 +749,7 @@ class TestEveryHostDenyCallSiteIsWired:
         assert "turn_aborted=(_stop_reason == STOP_REASON_CANCELLED)" in window
         # stop-hook continuation: outer gate and the recheck after the config load.
         hook_calls = re.findall(
-            r"should_queue_hook_continuation\(\s*slot\._stopping, needs_session_reset, user_stopped=_stop_pressed\(\)\s*\)",
+            r"should_queue_hook_continuation\(\s*needs_session_reset, user_stopped=_stop_pressed\(\)\s*\)",
             src,
         )
         assert (

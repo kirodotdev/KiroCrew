@@ -71,7 +71,18 @@ export const CHUNK_BUDGETS = {
   // editor, store picker/card, carve, backups, retired) across all 13 catalogs
   // on top of that: with them the chunk builds at 11,332,186 B (11067 KB), so
   // the 5% headroom is taken over that measurement rather than main's.
-  all: 11620 * KB, // measured 11067 KB on feat/memory-v2-ui 2026-09-10 (~5% headroom)
+  // Re-measured 2026-09-16: main @ a9c1cb253d alone builds the chunk at
+  // 11,880,309 B (11602.8 KB) against the 11620 KB ceiling -- 17.2 KB left, or
+  // 0.15% headroom. Same recurrence as every note above: the ceiling drifted to
+  // under 1% on accumulated catalog copy, so it now fails on the next feature
+  // PR's ordinary strings rather than on the new library or surface it exists to
+  // catch. Attribution measured, not assumed: this branch adds 61 catalog lines
+  // x 13 languages for the tasks-capacity panel (49,821 B, 48.7 KB) and no
+  // module -- the chunk still holds the same 13 catalogs plus the entry, and no
+  // lazy import() boundary can move a catalog string out of `all`, which is why
+  // shrinking is not an option here. Back to the 5% convention over the
+  // measurement that includes this branch (11,930,130 B).
+  all: 12240 * KB, // measured 11650.5 KB on fix/gatewayd-overload-liveness 2026-09-16 (5.1% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

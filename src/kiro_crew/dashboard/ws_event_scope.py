@@ -230,6 +230,7 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
     "subagent_snapshot", "subagent_status", "subagent_queued",
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
+    "subagent_waiting", "subagent_resumed",
     "subagent_injection_failed",
     # Slack-gateway driven, slot-scoped
     "autonudge_state", "batch_finished", "spawn_batch_started",
@@ -241,6 +242,7 @@ _SUBAGENT_EVENTS = frozenset({
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
     "subagent_snapshot", "subagent_status", "subagent_queued",
     "subagent_stalled", "subagent_retrying", "subagent_recovering",
+    "subagent_waiting", "subagent_resumed",
     "subagent_injection_failed",
 })
 

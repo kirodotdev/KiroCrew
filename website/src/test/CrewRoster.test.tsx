@@ -1034,6 +1034,10 @@ describe('crew editor — appearance pack round-trip', () => {
     workspace: 'oncall',
     memory_store: 'oncall-mem',
     model: 'claude-opus-5',
+    // The `sounds` key is a legacy one: a pack ships its own per-state audio, so
+    // the crew record has no cue to hold and nothing in this build reads it. It
+    // still rides back out on a save, because an unrelated edit is not the user
+    // asking to delete a value the previous release let them set.
     avatar: { kind: 'pack', id: 'aurora-fox', sounds: { done: 'chime' } },
   }
 
@@ -1059,7 +1063,9 @@ describe('crew editor — appearance pack round-trip', () => {
       'aurora',
       expect.objectContaining({
         triggers: 'pager',
-        // The id AND the sounds — the reaction layer rides on a pack too.
+        // Verbatim: the id this build reads, and the legacy cue it does not.
+        // The pack's own files are still its art and its audio -- the retired
+        // key plays nothing, it is merely not destroyed by a trigger edit.
         avatar: { kind: 'pack', id: 'aurora-fox', sounds: { done: 'chime' } },
       }),
     )
@@ -1192,6 +1198,108 @@ describe('crew editor — appearance pack round-trip', () => {
     expect(body.avatar).toEqual({
       kind: 'ghost',
       traits: { ...seededTraits('oncall'), eyes: 'wink' },
+    })
+  })
+})
+
+describe('crew editor — ghost reaction round-trip', () => {
+  /* A ghost crew whose reactions were authored in the builder. The editor has to
+     LOAD them: while the reaction layer was not part of the draft, an unrelated
+     save wrote the record back without it. */
+  const REACTING_CREW = {
+    name: 'radar',
+    kiro_agent: 'oncall-agent',
+    workspace: 'oncall',
+    memory_store: 'oncall-mem',
+    model: 'claude-opus-5',
+    avatar: { kind: 'ghost', motions: { done: 'nod' }, sounds: { done: 'chime' } },
+  }
+
+  const saveWithATrigger = async (name: string) => {
+    const sheet = await openEditor(name)
+    gotoPane(sheet, 'routing')
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
+      target: { value: 'pager' },
+    })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    return mockApi.updateKirocrewAgent.mock.calls.at(-1)?.[1] as Record<string, unknown>
+  }
+
+  it('writes the reactions back when an unrelated field is saved', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, REACTING_CREW],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    const body = await saveWithATrigger('radar')
+    expect(body.avatar).toEqual({
+      kind: 'ghost',
+      motions: { done: 'nod' },
+      sounds: { done: 'chime' },
+    })
+  })
+
+  it('reads a freshly opened reacting crew as having nothing pending', async () => {
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [DEFAULT_CREW, REACTING_CREW],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    const sheet = await openEditor('radar')
+    expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+
+  it('carries a legacy record\u2019s retired `expressions` through an unrelated save', async () => {
+    // The retirement is a RENDERING decision: the pickers are gone and nothing
+    // reads the key, but the editor rewrites the whole `avatar` record on any
+    // save -- so dropping it here would make a trigger edit the thing that
+    // deleted a customization from the previous release, with the user never
+    // having opened the avatar builder. It rides back out inert instead.
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [
+        DEFAULT_CREW,
+        {
+          ...REACTING_CREW,
+          avatar: {
+            kind: 'ghost',
+            motions: { done: 'nod' },
+            expressions: { done: { eyes: 'wink', mouth: 'grin' } },
+          },
+        },
+      ],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    const body = await saveWithATrigger('radar')
+    expect(body.avatar).toEqual({
+      kind: 'ghost',
+      motions: { done: 'nod' },
+      expressions: { done: { eyes: 'wink', mouth: 'grin' } },
+    })
+  })
+
+  it('carries a PICTURE crew\u2019s retired preset cue through an unrelated save', async () => {
+    // The case that made this a defect rather than tidiness: a picture crew
+    // saved on the previous release really does carry `sounds` (that release's
+    // builder wrote them), the notice explaining the retirement only appears if
+    // the avatar builder is OPENED, and a model or trigger edit rewrites the
+    // record -- so the loss would be both real and silent.
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [
+        DEFAULT_CREW,
+        {
+          ...REACTING_CREW,
+          avatar: { kind: 'image', v: 3, sounds: { done: 'chime', error: 'pop' } },
+        },
+      ],
+      default_agent: 'kirocrew',
+    })
+    await renderRoster()
+    const body = await saveWithATrigger('radar')
+    expect(body.avatar).toEqual({
+      kind: 'image',
+      sounds: { done: 'chime', error: 'pop' },
     })
   })
 })

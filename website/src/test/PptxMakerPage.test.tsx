@@ -363,6 +363,16 @@ vi.mock('../api/client', () => ({
   api: { createChatSlot: vi.fn(async () => ({ key: 'pptx-1' })), revealPath: vi.fn(async () => ({})) },
 }))
 
+// Keep the real router (MemoryRouter, the route hooks the page relies on) but
+// make `useNavigate` observable, so a test can assert that a failed deck-start
+// does NOT navigate. Everything else resolves to the actual module.
+const navigateSpy = vi.fn()
+vi.mock('react-router-dom', async () => {
+  const actual =
+    await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
+  return { ...actual, useNavigate: () => navigateSpy }
+})
+
 // The animated SVG renderer fetches and mutates real DOM; the page tests care
 // that a slide slot renders, not how the SVG is assembled. The sanitiser helper
 // this module also exports is covered by SlidePreviewSanitize.test.tsx, which does
@@ -570,6 +580,26 @@ describe('PptxMakerPage', () => {
         undefined, 'pptx-maker--pptx-maker-spec', undefined, undefined, 'persistent',
       ),
     )
+  })
+
+  it('surfaces a visible error and does not navigate when the deck-start create fails', async () => {
+    // The reporter of the flash-and-return symptom inferred that a failed
+    // create was swallowed. It is not: a rejected createChatSlot sets the
+    // mutation's error state, which renders an ErrorNotice under the buttons,
+    // and onSuccess (the only navigate site) never runs. This pins that guard so
+    // the visible-error path cannot be quietly removed and reopen the report.
+    const { api } = await import('../api/client')
+    ;(api.createChatSlot as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('deck start blew up'),
+    )
+    await renderPage()
+    await userEvent.click(await screen.findByText('Vibe mode'))
+    // The error is shown to the user (ErrorNotice renders role="alert").
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('deck start blew up')
+    // And the bounce the reporter described (navigate away with nothing shown)
+    // does not happen: the only navigate call is in onSuccess.
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 
   it('switches to the library view and lists styles', async () => {

@@ -1681,14 +1681,16 @@ def test_the_guards_tolerate_a_prefixed_leaf_resolve(monkeypatch):
         real = original_resolve(self, *args, **kwargs)
         text = str(real)
         # Only a drive-absolute spelling can legally carry the prefix; POSIX
-        # paths get a synthetic one through _plain's own contract instead.
+        # paths get a synthetic one through the fold's own contract instead.
         return Path(f"\\\\?\\{text}") if text[1:2] == ":" else real
 
-    # The pure half: _plain must strip both prefix spellings.
-    assert sl._plain(Path("\\\\?\\C:\\store\\bindings\\w.json")) == Path(
+    # The pure half: the shared fold must strip both prefix spellings.
+    assert sl.strip_extended_length_prefix(Path("\\\\?\\C:\\store\\bindings\\w.json")) == Path(
         "C:\\store\\bindings\\w.json"
     )
-    assert sl._plain(Path("\\\\?\\UNC\\host\\share\\x")) == Path("\\\\host\\share\\x")
+    assert sl.strip_extended_length_prefix(Path("\\\\?\\UNC\\host\\share\\x")) == Path(
+        "\\\\host\\share\\x"
+    )
 
     # The integration half: both guards answer a real path, not a refusal,
     # when every resolve is prefixed the way the Windows race spells it.

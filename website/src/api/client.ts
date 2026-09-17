@@ -26,6 +26,7 @@ import type {
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
 import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
+import type { TaskDetailResponse, TasksListResponse, TasksSummary } from './tasks'
 import { ApiError, friendlyErrText } from './apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
@@ -1143,32 +1144,17 @@ export interface TailnetMobileData {
   /** Per-process marker used only to prove a requested restart completed. */
   boot_id: string
   step: TailnetMobileStep
-  /** MagicDNS name as resolved right now; `''` when unresolvable. */
-  host: string
   origin: string
-  installed: boolean
-  reachable: boolean
-  logged_in: boolean
   /** Other devices on this tailnet. `0` means there is nothing to reach this
    *  dashboard FROM — publishing and the QR both still succeed, so this is the
    *  only signal that the scan is going to fail. */
   peer_count: number
   /** How many of those are online right now. */
   peers_online: number
-  /** `dashboard.tailscale.enabled` — the origin-trust config switch. */
-  trusted: boolean
-  /** Whether the RUNNING server trusted this exact name at startup. */
-  startup_trusted: boolean
-  /** `null` when serve state could not be determined — never render as false. */
-  published: boolean | null
   keep_awake: boolean
-  governance_pinned: boolean
   /** Verbatim daemon/serve text. Shown as-is; never rephrased client-side. */
   detail: string
   download_url: string
-  qr_ttl_secs: number
-  serve_port: number
-  dashboard_port: number
 }
 
 /** Result of a publish/unpublish attempt. `detail` carries the daemon's own
@@ -1176,7 +1162,6 @@ export interface TailnetMobileData {
  *  rewords its errors. */
 export interface TailnetMobileMutation {
   ok: boolean
-  code: string
   detail: string
 }
 
@@ -1205,7 +1190,6 @@ export interface TailnetMobileQr {
   /** Window in which the LINK must be opened — much shorter than `ttl_secs`,
    *  and the part that surprises people. */
   link_window_secs: number
-  host: string
 }
 
 /**
@@ -1885,11 +1869,33 @@ export interface CloudLaunchSignin {
   ports?: number[]
 }
 
+/** The Kiro identity a managed crew signs in as. Empty fields = Builder ID.
+ *  `region` is the IAM Identity Center region, NOT the EC2 region. Never a credential. */
+export interface KiroLoginTarget {
+  license: '' | 'free' | 'pro'
+  start_url: string
+  region: string
+}
+
+/** `GET /api/cloud/identity` — the launching machine's own kiro-cli sign-in and
+ *  the launch target it suggests (Identity Center region left empty: whoami
+ *  does not report it, the form asks). A suggestion the user can override.
+ *  `discovery: 'unknown'` means whoami could not answer: both fields are null
+ *  and the form must not present the Builder ID default as a read value. */
+export interface CloudIdentity {
+  identity: { account_type?: string; start_url?: string } | null
+  suggested_target: KiroLoginTarget | null
+  discovery?: 'read' | 'unknown'
+}
+
 export interface LaunchJob {
   id: string
   /** Which provisioner ran this job. A job persisted before the provisioner seam
    *  existed loads as "aws_ec2", so this is always present. */
   provider_id: string
+  /** The identity this launch signs the crew in as; absent on jobs from an
+   *  older gateway, which means Builder ID. */
+  login_target?: KiroLoginTarget
   profile: string
   region: string
   size_key: string
@@ -2781,8 +2787,8 @@ export const api = {
   // render — because the response is a live credential. `sessionKey` carries
   // the caller's REAL slot key so the server's restricted-session guard sees
   // it instead of the shared `dashboard:ui` placeholder.
-  tailnetMobileQr: (ttl?: string, sessionKey?: string) =>
-    post('/api/tailnet/mobile/qr', ttl ? { ttl } : {}, sessionKey).then(j) as Promise<TailnetMobileQr>,
+  tailnetMobileQr: (sessionKey?: string) =>
+    post('/api/tailnet/mobile/qr', {}, sessionKey).then(j) as Promise<TailnetMobileQr>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.
   deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,
@@ -2916,9 +2922,11 @@ export const api = {
   cloudProvisioners: () =>
     get('/api/cloud/provisioners').then(j) as Promise<{ provisioners: RemoteProvisioner[] }>,
   cloudLaunches: () => get('/api/cloud/launch').then(j) as Promise<{ jobs: LaunchJob[] }>,
+  /** The launching machine's own Kiro sign-in — the launch form's inherited default. */
+  cloudIdentity: () => get('/api/cloud/identity').then(j) as Promise<CloudIdentity>,
   // `provider_id` is optional on the wire: the server defaults it to "aws_ec2"
   // and answers 400 `unknown_provisioner` for an id it does not offer.
-  cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string }) =>
+  cloudLaunch: (body: { provider_id?: string; profile: string; region: string; size_key: string; login_target?: KiroLoginTarget }) =>
     post('/api/cloud/launch', body).then(j) as Promise<LaunchJob>,
   cloudLaunchStatus: (id: string) =>
     get('/api/cloud/launch/' + encodeURIComponent(id)).then(j) as Promise<LaunchJob>,
@@ -3835,6 +3843,18 @@ export const api = {
     return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer ? { steer: true } : {}) }), signal }).then(sendResponseAuthRecovery)
   },
   sessionsHealth: () => fetch('/api/sessions/health').then(j),
+  // Durable task queue + capacity view (System > Services "Tasks & capacity").
+  tasksSummary: () => fetch('/api/tasks/summary').then(j) as Promise<TasksSummary>,
+  tasksList: (params: { state?: string; lane?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.state) q.set('state', params.state)
+    if (params.lane) q.set('lane', params.lane)
+    if (params.limit != null) q.set('limit', String(params.limit))
+    const qs = q.toString()
+    return fetch(`/api/tasks${qs ? `?${qs}` : ''}`).then(j) as Promise<TasksListResponse>
+  },
+  taskDetail: (id: string) => fetch(`/api/tasks/${encodeURIComponent(id)}`).then(j) as Promise<TaskDetailResponse>,
+  taskCancel: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`).then(j) as Promise<{ ok: boolean; cancelled: boolean; code?: string }>,
   // Knowledge
   knowledgeSearch: (q: string) => get(`/api/knowledge/search-for-context?q=${encodeURIComponent(q)}`).then(j),
   // Notifications

@@ -66,7 +66,7 @@ def main() -> int:
         # emitter always writes the group as one batch, so the shape the repair
         # has to handle cannot be produced through it -- which is the point.
         handle = Ledger.open(lg.KIND_SESSION, SESSION)
-        handle.append("turn/started", {"turn": 1, "actor": "user"}, src="acp")
+        handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
         handle.append_many(
             [
                 {"type": "message/chunk", "data": {"turn": 1, "delta": "aa"}, "ignorable": True},

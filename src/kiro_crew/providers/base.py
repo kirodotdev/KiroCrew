@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from functools import cached_property
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -31,6 +31,11 @@ from kiro_crew.acp.types import (  # noqa: F401
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.essential_delivery import EssentialDelivery
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Type-only: this module's runtime imports are deliberately just acp.types
+    # and constants, and recovery.ladder pulls in mcp_gateway + metrics.
+    from kiro_crew.recovery.ladder import InfraError
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -195,6 +200,21 @@ class LLMProvider(ABC):
         a compaction that cannot succeed.
         """
         return False
+
+    @property
+    def last_infra_error(self) -> InfraError | None:
+        """The L1 verdict on the LAST tool result, or None for "no verdict".
+
+        Declared here so the session layer never has to probe an adapter for the
+        attribute: the default None is the SAFE value, the same rule as
+        ``last_compaction_transient``. A provider that cannot classify tool
+        results gives up the turn exactly as it did before L1 existed.
+
+        Read-only on purpose — the classifying layer (``AcpSessionHandle``) is
+        the sole writer, so no caller can fabricate a verdict to force a tool
+        re-issue.
+        """
+        return None
 
     def context_window_tokens(self) -> int:
         """Return the real served context window in tokens (0 if unknown).

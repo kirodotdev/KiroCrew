@@ -25,10 +25,18 @@ import { packDetailFrom, type PackDetail } from '../lib/appearancePacks/detail'
 
 const packDetailQueryKey = (id: string) => ['appearance-pack', id] as const
 
-export function usePackDetail(id: string) {
+/**
+ * `id` is NULLABLE so a caller that does not yet know whether the crew wears a
+ * pack can call this unconditionally — a hook cannot be conditional, and the cue
+ * side needs the detail one level above the renderer that already reads it.
+ * Disabled means no request at all, and the key is stable either way, so a crew
+ * that puts a pack on starts sharing the query the roster already warmed.
+ */
+export function usePackDetail(id: string | null | undefined) {
   return useQuery<PackDetail>({
-    queryKey: packDetailQueryKey(id),
-    queryFn: async () => packDetailFrom(await api.appearances.detail(id)),
+    queryKey: packDetailQueryKey(id ?? ''),
+    queryFn: async () => packDetailFrom(await api.appearances.detail(id as string)),
+    enabled: !!id,
     staleTime: Infinity,
   })
 }

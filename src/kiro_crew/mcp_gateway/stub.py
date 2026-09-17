@@ -34,7 +34,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, NoReturn, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.executors import configure_default_executor, subprocess_executor
@@ -49,6 +49,7 @@ from kiro_crew.mcp_gateway.hashing import (
     hash_effective_env,
 )
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
+from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
 
 logger = logging.getLogger(__name__)
@@ -83,39 +84,92 @@ _BRIDGE_KEEPALIVE_TYPE = "keepalive"
 # What the stub spends trying to re-attach after a live gateway connection dies
 # mid-session. The daemon is supervised and respawns itself with its own
 # exponential backoff, so one connect attempt would lose the race against an
-# ordinary restart -- but the budget must be finite, because a gateway that is
-# gone for good has to reach the terminal exit that tells kiro-cli this server
-# is done rather than leave the session hanging on a socket nobody will bind.
+# ordinary restart.
 #
-# It must also cover the supervisor's own recovery, and 60s did not. The owned
-# liveness path takes three 30s cycles, three probe pairs and a 20s SIGTERM wait
-# before it even spawns a replacement -- 91s at its fastest and about 191s at
-# worst -- so a 60s budget guaranteed that an ORDINARY slow recovery cost every
-# attached session its MCP tools for good, which the user sees as
-# ``Transport to MCP server ... is closed`` and cannot fix without a new session.
-# 300s clears that worst case with about 110s to spare. It is deliberately not
-# larger, because the budget also bounds an exposure in the other direction: while
-# the reconnect runs the bridge is down, so a call kiro-cli issues DURING the
-# window waits unanswered until the reattach or the budget ends -- unlike a call
-# already in flight when the connection dropped, which is failed fast with
-# ``-32603`` before any retry begins. Every second of budget is a second such a
-# call can wait, so the number is sized to cover the recovery and no more.
+# The two outcomes are NOT symmetric, and the budget is sized by that asymmetry:
 #
-# It is not a cover for every conceivable recovery: a respawn that keeps failing
-# backs off to 60s per retry with no attempt cap, so a pathological gateway can
-# still outlast this. The trade is deliberate -- past five minutes the honest
-# signal to a waiting session is that its tools are gone, not more silence.
+# * Giving up is IRREVERSIBLE for the session. The terminal exit closes stdout,
+#   kiro-cli logs ``Transport to MCP server ... is closed`` and never re-mounts
+#   a closed server, so every later call to these tools hangs or fails for the
+#   rest of a chat session that may live for hours. The only recovery is a new
+#   session -- the user has to notice and act.
+# * Waiting is RECOVERABLE. While the stub retries, the stdio transport to
+#   kiro-cli stays open and newly arriving requests are buffered (see
+#   ``StubSession.next_line``); a call that waits too long is failed by
+#   kiro-cli's own per-call tool timeout, which costs that one call and nothing
+#   else -- unlike a call already in flight when the connection dropped, which
+#   is failed fast with ``-32603`` before any retry begins. Under overload the
+#   system queues and waits -- it trades time for capacity -- rather than dying.
+#
+# So the budget has to outlast not one supervisor respawn but a short CRASH LOOP
+# of them: a supervisor that kills and respawns gatewayd ten times inside half an
+# hour leaves the endpoint absent for around ten minutes, and a budget of one
+# minute takes the terminal exit there, so every long-lived session loses
+# kirocrew-core for the rest of its life. One kill->respawn cycle, by the
+# supervisor's own constants:
+#
+#   detection   ``manager._LIVENESS_PING_INTERVAL_SECS`` (30)
+#               x ``manager._LIVENESS_MAX_CONSECUTIVE_FAILURES`` (3)  =  90s
+#   shutdown    ``TOTAL_SHUTDOWN_BUDGET_SECS`` (SIGTERM->SIGKILL grace) =  20s
+#   backoff     ``manager._RESPAWN_BACKOFF_MAX_SECS``                  =  60s
+#   start       cold daemon start until the endpoint is bound          ~  10s
+#                                                                        ----
+#                                                                        180s
+#
+# Three such cycles is 540s; the budget is rounded up to 600s. The manager
+# values are MIRRORED here by name rather than imported: ``manager`` pulls in
+# ``config.paths``, ``sandbox`` and ``code_fingerprint``, which is far more than
+# the stub's cold-start import budget allows. ``TOTAL_SHUTDOWN_BUDGET_SECS``
+# lives in a stdlib-only leaf and IS imported. ``test_stub_reconnect_budget.py``
+# pins the mirrors to the manager's real values so they cannot drift silently.
+#
+# The budget is still finite: a gateway that is gone for good must eventually
+# reach the terminal exit rather than leave the session parked on a socket
+# nobody will bind again. It is also not a cover for every conceivable recovery:
+# a respawn that keeps failing backs off to 60s per retry with no attempt cap, so
+# a pathological gateway can still outlast this. The trade is deliberate -- past
+# ten minutes the honest signal to a waiting session is that its tools are gone,
+# not more silence.
 #
 # The deadline bounds when new ATTEMPTS stop, not the exit itself: an attempt
 # already under way when it passes runs to its own end, so the exit can trail the
 # budget by up to the handshake (``_HANDSHAKE_TIMEOUT_SECS``) plus the replay
 # (``_REPLAY_INIT_TIMEOUT_SECS``) plus one backoff step
-# (``_RECONNECT_BACKOFF_MAX_SECS``) -- about 37s today. That is deliberate:
-# abandoning a handshake that is mid-replay would throw away the most likely
-# successful attempt in exchange for meeting a number exactly.
+# (``_RECONNECT_BACKOFF_MAX_SECS``) -- about 43s today; the queue-aware
+# pre-flight in between is clipped to the budget still remaining, so it adds
+# nothing of its own. That is deliberate: abandoning a handshake that is
+# mid-replay would throw away the most likely successful attempt in exchange for
+# meeting a number exactly.
+_SUPERVISOR_LIVENESS_PING_INTERVAL_SECS = 30.0  # manager._LIVENESS_PING_INTERVAL_SECS
+_SUPERVISOR_LIVENESS_MAX_FAILURES = 3  # manager._LIVENESS_MAX_CONSECUTIVE_FAILURES
+_SUPERVISOR_RESPAWN_BACKOFF_MAX_SECS = 60.0  # manager._RESPAWN_BACKOFF_MAX_SECS
+_SUPERVISOR_COLD_START_SECS = 10.0  # daemon exec -> endpoint bound, generous
+_SUPERVISOR_RESPAWN_CYCLE_SECS = (
+    _SUPERVISOR_LIVENESS_PING_INTERVAL_SECS * _SUPERVISOR_LIVENESS_MAX_FAILURES
+    + TOTAL_SHUTDOWN_BUDGET_SECS
+    + _SUPERVISOR_RESPAWN_BACKOFF_MAX_SECS
+    + _SUPERVISOR_COLD_START_SECS
+)
+#: How many back-to-back kill->respawn cycles the reconnect must outlast.
+_RECONNECT_CRASH_LOOP_CYCLES = 3
 _RECONNECT_BACKOFF_START_SECS = 0.5
-_RECONNECT_BACKOFF_MAX_SECS = 4.0
-_RECONNECT_TOTAL_BUDGET_SECS = 300.0
+# Capped at 10s so a ten-minute budget polls the socket ~60 times rather than
+# ~150: enough not to hammer a daemon that is trying to come up, still fast
+# enough that a session re-attaches within seconds of the endpoint binding.
+_RECONNECT_BACKOFF_MAX_SECS = 10.0
+# Coupled to the DEFAULT of ``mcp_gateway.spawn_queue_wait_secs``
+# (``config/sections.py``): the daemon holds a queued stub for about that long
+# before a capacity refusal, and this budget is how long the stub keeps
+# kiro-cli's transport open meanwhile. The stub reads no config, so the coupling
+# is by value; ``test_stub_reconnect_budget.py`` pins the equality, and
+# >= _RECONNECT_CRASH_LOOP_CYCLES * _SUPERVISOR_RESPAWN_CYCLE_SECS. Neither
+# direction of drift costs a refusal, because THIS number is what the daemon
+# waits on: it is sent as ``wait_budget_secs``, the daemon caps it by its own key
+# and then subtracts a margin (``gatewayd._QUEUE_REFUSAL_MARGIN_SECS``) so its
+# wait always ends inside this one. Whatever the key says, the refusal arrives
+# while this stub is still listening -- which is what keeps it from exec'ing a
+# backend on a host the daemon just refused one for.
+_RECONNECT_TOTAL_BUDGET_SECS = 600.0
 # Bounds the replayed ``initialize`` on a fresh connection. The daemon answers
 # it either from its init cache or by driving a real upstream handshake, so this
 # has to cover a cold backend spawn; on timeout the reconnect is abandoned and
@@ -126,6 +180,29 @@ _REPLAY_INIT_TIMEOUT_SECS = 30.0
 # direct per-session exec, so an over-generous value only costs a slower
 # recovery when the gateway is genuinely wedged.
 _ENSURE_BACKEND_TIMEOUT_SECS = 25.0
+# Queue-aware pre-flight (daemon advertised ``spawn_queue``): the same 25 s is
+# a SILENCE window, renewed by every ``queued`` / ``keepalive`` / ``pong``
+# control frame the daemon sends while this stub waits in its spawn gate, and
+# the whole wait is bounded by ``_RECONNECT_TOTAL_BUDGET_SECS`` -- the one
+# figure this stub already promises to hold kiro-cli's transport open for.
+_SPAWN_QUEUE_SILENCE_SECS = _ENSURE_BACKEND_TIMEOUT_SECS
+_SPAWN_QUEUE_WAIT_BUDGET_SECS = _RECONNECT_TOTAL_BUDGET_SECS
+# Daemon->stub control frame while queued behind the spawn gate. Consumed by
+# the pre-flight, the reconnect replay and the bridge; never forwarded.
+_SPAWN_QUEUED_TYPE = "queued"
+# ``rejected`` classes a stub may act on. Only the two target-shaped classes
+# ever lead to ``fallback_exec``; ``capacity`` is answered to kiro-cli as a
+# typed JSON-RPC error with the transport left open (see
+# ``_serve_capacity_refusal``). A frame with no ``class`` came from an older
+# daemon and keeps the pre-class rules.
+_REJECT_CLASS_CAPACITY = "capacity"
+_REJECT_CLASS_COMPAT = "compat"
+_REJECT_CLASS_ISOLATION = "isolation"
+_FALLBACK_CLASSES = frozenset({_REJECT_CLASS_COMPAT, _REJECT_CLASS_ISOLATION})
+#: JSON-RPC error code kiro-cli receives for a request the gateway refused for
+#: capacity. Server-defined range; ``data.class`` carries the rejection class
+#: and ``data.retry_after_secs`` the daemon's hint.
+_CAPACITY_ERROR_CODE = -32001
 # Content-hash cap for ``binary_version``. Every shipped MCP is <1 MiB, so
 # 4 MiB covers them with margin. Larger binaries
 # (npm/Node/Java runtimes) are NOT hashed synchronously on the cold-start
@@ -1094,6 +1171,13 @@ async def run_bridge(
                             # gateway learns what it needs from whether the
                             # write succeeded. Swallow it.
                             _is_control = True
+                        elif _mtype == _SPAWN_QUEUED_TYPE:
+                            # Our backend is being respawned behind the spawn
+                            # gate. The daemon is alive and still holds our
+                            # place, which is exactly what a pong proves, so it
+                            # satisfies the liveness monitor too.
+                            _pong_received.set()
+                            _is_control = True
                         elif "id" in msg and "method" not in msg:
                             # A response (has id, no method) — clear from
                             # outstanding set.
@@ -1352,7 +1436,7 @@ async def _replay_initialize(
                 continue
             if not isinstance(msg, dict):
                 continue
-            if msg.get("type") in (_BRIDGE_PONG_TYPE, _BRIDGE_KEEPALIVE_TYPE):
+            if msg.get("type") in (_BRIDGE_PONG_TYPE, _BRIDGE_KEEPALIVE_TYPE, _SPAWN_QUEUED_TYPE):
                 continue
             if msg.get("id") != init_id or "method" in msg:
                 # Anything else on a connection whose only traffic so far is our
@@ -1389,6 +1473,161 @@ async def _replay_initialize(
         return _REPLAY_RETRY, None, f"replay_read_failed: {exc}"
 
 
+#: Outcomes of :func:`_ensure_backend_admitted`.
+_ADMIT_READY = "ready"
+_ADMIT_REJECTED = "rejected"
+_ADMIT_TIMEOUT = "timeout"
+_ADMIT_CLOSED = "closed"
+
+
+def _admission_control_frame(msg: dict) -> bool:
+    """A daemon->stub control frame that renews the silence window and is never
+    an answer: ``queued`` (position in the spawn gate), ``keepalive`` (transport
+    probe) and ``pong`` (a bridge ping's reply, possible during a respawn)."""
+    return msg.get("type") in (_SPAWN_QUEUED_TYPE, _BRIDGE_KEEPALIVE_TYPE, _BRIDGE_PONG_TYPE)
+
+
+async def _ensure_backend_admitted(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    *,
+    queue_aware: bool,
+    total_budget_secs: float,
+    silence_secs: float = _SPAWN_QUEUE_SILENCE_SECS,
+    now: Callable[[], float] = time.monotonic,
+) -> tuple[str, Optional[dict]]:
+    """Send ``ensure_backend`` and wait for the daemon's verdict.
+
+    ``queue_aware`` is whether the daemon advertised ``spawn_queue``. When it
+    did, the frame carries ``wait_budget_secs`` and the wait is a SILENCE timer:
+    every ``queued`` / ``keepalive`` / ``pong`` frame restarts ``silence_secs``,
+    and the whole wait is capped by ``total_budget_secs``. When it did not, the
+    daemon answers exactly once and the wait is the legacy single
+    ``silence_secs`` read -- an old daemon never sends ``queued`` and must not be
+    waited on any longer than before.
+
+    Returns ``(outcome, frame)``: ``ready`` / ``rejected`` with the frame,
+    ``timeout`` (silence or budget spent) or ``closed`` (the daemon hung up or
+    the transport failed) with ``None``. Never raises for transport reasons; the
+    caller decides between fallback, retry and the terminal exit.
+    """
+    frame: dict = {"type": "ensure_backend"}
+    if queue_aware:
+        frame["wait_budget_secs"] = total_budget_secs
+    try:
+        await _write_frame(writer, frame)
+    except (OSError, ConnectionError):
+        return _ADMIT_CLOSED, None
+    deadline = now() + (total_budget_secs if queue_aware else silence_secs)
+    while True:
+        remaining = deadline - now()
+        if remaining <= 0:
+            return _ADMIT_TIMEOUT, None
+        try:
+            msg = await asyncio.wait_for(_read_frame(reader), timeout=min(silence_secs, remaining))
+        except asyncio.TimeoutError:
+            return _ADMIT_TIMEOUT, None
+        except (OSError, ConnectionError, json.JSONDecodeError):
+            return _ADMIT_CLOSED, None
+        if msg is None:
+            return _ADMIT_CLOSED, None
+        if not isinstance(msg, dict):
+            continue
+        if queue_aware and _admission_control_frame(msg):
+            # Proof the daemon is alive and still holds our place: renew the
+            # silence window, never the total budget.
+            continue
+        mtype = msg.get("type")
+        if mtype == "ready":
+            return _ADMIT_READY, msg
+        if mtype == "rejected":
+            return _ADMIT_REJECTED, msg
+        if not queue_aware:
+            # Legacy contract: the one reply is the verdict, whatever it is.
+            return _ADMIT_REJECTED, msg
+        # An unknown control frame from a newer daemon: ignore, keep waiting.
+
+
+def _rejection_class(frame: dict) -> Optional[str]:
+    """The ``class`` a ``rejected`` frame carries, or ``None`` from an old daemon."""
+    cls = frame.get("class")
+    return cls if isinstance(cls, str) and cls else None
+
+
+def _keep_socket_across_exec(writer: asyncio.StreamWriter) -> None:
+    """Let the daemon see this connection until the exec'd backend EXITS.
+
+    A fallback exec replaces this process with the real MCP server; the daemon
+    charged that server to its host budget when it sent the fallback rejection
+    and releases the charge when this connection reaches EOF. Python opens
+    sockets non-inheritable, so without this the EOF would come at the exec
+    itself and the fallback would be free. The backend inherits one extra
+    descriptor it never touches; the kernel closes it when the process tree
+    exits. Best-effort: a transport without a socket (a Windows pipe, where the
+    stub stays alive as the backend's parent anyway) simply keeps today's shape.
+    """
+    try:
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return
+        os.set_inheritable(sock.fileno(), True)
+    except (OSError, ValueError, AttributeError):
+        logger.debug("could not keep the gateway socket across exec", exc_info=True)
+
+
+async def _serve_capacity_refusal(
+    session: StubSession,
+    stop_event: asyncio.Event,
+    *,
+    reason: str,
+    retry_after_secs: Optional[int],
+    pool_label: str,
+) -> int:
+    """Answer kiro-cli's requests with a typed error until it hangs up.
+
+    The daemon refused this connection for ``capacity`` after the full wait
+    budget. A per-session exec would put one more process on the host that just
+    refused one, so there is no fallback; and dying would make kiro-cli report
+    the server as crashed. Instead the stdio transport stays open and every
+    request gets a JSON-RPC error carrying the class and the daemon's
+    ``retry_after_secs``, so the session -- and the recovery ladder above it --
+    can tell "the gateway is full" from "the server is broken". Notifications
+    are dropped (they have no id to answer). Returns the process exit code.
+    """
+    message = f"MCP gateway at capacity for {pool_label}: {reason}"
+    while not stop_event.is_set():
+        try:
+            line = await session.next_line()
+        except Exception:  # pragma: no cover -- stdin reader died
+            return 1
+        if not line:
+            return 0
+        try:
+            msg = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(msg, dict) or "method" not in msg or "id" not in msg:
+            continue
+        error = {
+            "jsonrpc": "2.0",
+            "id": msg["id"],
+            "error": {
+                "code": _CAPACITY_ERROR_CODE,
+                "message": message,
+                "data": {"class": _REJECT_CLASS_CAPACITY, "retry_after_secs": retry_after_secs},
+            },
+        }
+        payload = (json.dumps(error, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_write_stdout_line, payload),
+                timeout=_ERROR_EMIT_TIMEOUT_SECS,
+            )
+        except (asyncio.TimeoutError, OSError, ValueError):
+            return 1
+    return 0
+
+
 def _split_abandoned_ids(session: StubSession) -> tuple[list, Any]:
     """Which in-flight ids to fail now, and which single one to defer.
 
@@ -1413,6 +1652,28 @@ def _split_abandoned_ids(session: StubSession) -> tuple[list, Any]:
     return [i for i in session.outstanding_ids if i != deferred], deferred
 
 
+def _reconnect_now() -> float:
+    """Monotonic clock the reconnect budget is measured against.
+
+    A module-level seam rather than ``loop.time()`` inline so a test can drive
+    ten simulated minutes of budget without sleeping through them.
+    """
+    return time.monotonic()
+
+
+async def _reconnect_wait(stop_event: asyncio.Event, delay: float) -> bool:
+    """Burn one backoff step. False means a stop arrived; give up.
+
+    Same seam as :func:`_reconnect_now`: the test that proves the budget is
+    actually spent replaces this with a fake that advances the injected clock.
+    """
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+        return False
+    except asyncio.TimeoutError:
+        return True
+
+
 async def _reconnect(
     socket_path: str,
     payload: dict,
@@ -1432,23 +1693,27 @@ async def _reconnect(
     grow the ``poolable_ack`` capability, and a generation that answers the
     handshake differently will keep answering that way, so retrying either only
     delays the terminal exit.
+
+    While this runs the stdio transport to kiro-cli stays open: the stdin reader
+    thread keeps queueing whatever kiro-cli sends (bounded, then backpressured
+    onto the pipe) and the next ``run_bridge`` forwards it to the new
+    connection. Nothing is dropped and nothing is closed until the budget is
+    genuinely spent -- see the ``_RECONNECT_TOTAL_BUDGET_SECS`` comment for why
+    that budget is minutes, not seconds.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _RECONNECT_TOTAL_BUDGET_SECS
+    started = _reconnect_now()
+    deadline = started + _RECONNECT_TOTAL_BUDGET_SECS
     delay = _RECONNECT_BACKOFF_START_SECS
 
     async def _pause() -> bool:
         """Burn one backoff step. False means a stop arrived; give up."""
         nonlocal delay
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+        if not await _reconnect_wait(stop_event, delay):
             return False
-        except asyncio.TimeoutError:
-            pass
         delay = min(delay * 2, _RECONNECT_BACKOFF_MAX_SECS)
         return True
 
-    while not stop_event.is_set() and loop.time() < deadline:
+    while not stop_event.is_set() and _reconnect_now() < deadline:
         # A fresh handle per ATTEMPT, not merely per reconnect. The daemon keys
         # attach, refcount and the private-backend map on this uuid, and an
         # attempt that died mid-replay may leave its registration in place for a
@@ -1462,8 +1727,15 @@ async def _reconnect(
                 handshake(socket_path, payload), timeout=_HANDSHAKE_TIMEOUT_SECS
             )
         except (asyncio.TimeoutError, FallbackRequestedError) as exc:
+            now = _reconnect_now()
             logger.info(
-                "stub reconnect: gateway not back yet (%s) pool=%s", exc, pool_label
+                "stub reconnect: gateway not back yet (%s) elapsed=%.0fs "
+                "remaining=%.0fs next_retry_in=%.1fs pool=%s",
+                exc,
+                now - started,
+                max(0.0, deadline - now),
+                delay,
+                pool_label,
             )
             if not await _pause():
                 return None
@@ -1491,6 +1763,53 @@ async def _reconnect(
                 pool_label,
             )
             return None
+
+        if "ensure_backend" in _caps:
+            # Admission BEFORE the replay, as at cold start. Without it the
+            # replayed ``initialize`` is the daemon's first frame from this
+            # connection and lands on its lazy-spawn path, where a full daemon
+            # answers with a terminal rejection after a silent 20 s wait. Through
+            # the pre-flight a queue-aware daemon holds this stub in its spawn
+            # gate with ``queued`` keepalives for as long as the remaining
+            # reconnect budget allows, and says ``capacity`` when it cannot --
+            # which is retried here, because a daemon that is full now is the
+            # likeliest shape of the restart this loop exists to outlast.
+            outcome, verdict = await _ensure_backend_admitted(
+                reader,
+                writer,
+                queue_aware="spawn_queue" in _caps,
+                total_budget_secs=max(1.0, deadline - _reconnect_now()),
+                now=_reconnect_now,
+            )
+            if outcome != _ADMIT_READY:
+                await _safe_close(writer)
+                cls = _rejection_class(verdict) if verdict is not None else None
+                refuse = outcome == _ADMIT_REJECTED and (
+                    cls in _FALLBACK_CLASSES
+                    or (cls is None and not bool((verdict or {}).get("fallback")))
+                )
+                if refuse:
+                    # ``compat`` / ``isolation`` (or an old daemon's terminal
+                    # rejection): the target, not the moment. ``initialize`` is
+                    # long consumed, so the cold-start exec is not available;
+                    # refuse this generation.
+                    logger.warning(
+                        "stub reconnect: gateway rejected ensure_backend (%s: %s); "
+                        "refusing pool=%s",
+                        cls,
+                        (verdict or {}).get("reason"),
+                        pool_label,
+                    )
+                    return None
+                logger.info(
+                    "stub reconnect: not admitted yet (%s%s); retrying pool=%s",
+                    outcome,
+                    f": {(verdict or {}).get('reason')}" if verdict else "",
+                    pool_label,
+                )
+                if not await _pause():
+                    return None
+                continue
 
         status, forward, detail = await _replay_initialize(reader, writer, session)
         if status == _REPLAY_RETRY:
@@ -2035,33 +2354,69 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # skip the pre-flight and bridge directly (legacy lazy-spawn path, no 25s
     # skew penalty).
     if "ensure_backend" in _caps:
-        try:
-            await _write_frame(writer, {"type": "ensure_backend"})
-            ready = await asyncio.wait_for(
-                _read_frame(reader), timeout=_ENSURE_BACKEND_TIMEOUT_SECS
-            )
-        except (asyncio.TimeoutError, OSError, ConnectionError, json.JSONDecodeError) as exc:
-            # Gateway unreachable / wedged mid-pre-flight — same posture as a
-            # connect failure: fall back to a direct per-session exec.
+        queue_aware = "spawn_queue" in _caps
+        outcome, ready = await _ensure_backend_admitted(
+            reader,
+            writer,
+            queue_aware=queue_aware,
+            total_budget_secs=_SPAWN_QUEUE_WAIT_BUDGET_SECS,
+        )
+        if outcome in (_ADMIT_TIMEOUT, _ADMIT_CLOSED):
+            # Gateway unreachable / wedged mid-pre-flight -- same posture as a
+            # connect failure: fall back to a direct per-session exec. A
+            # queue-aware wait that ran out of budget lands here too: silence
+            # for 25 s from a daemon that promised keepalives, or the whole
+            # budget spent, is a daemon that is not serving, not one that is
+            # full -- a full daemon says so with a ``capacity`` rejection.
             await _safe_close(writer)
             await alog_fallback(
-                f"ensure_backend_io:{type(exc).__name__}",
-                payload["stub_uuid"], pool_label, args,
+                f"ensure_backend_io:{outcome}", payload["stub_uuid"], pool_label, args,
             )
-            logger.warning("ensure_backend io failed (%s); falling back pool=%s", exc, pool_label)
+            logger.warning("ensure_backend %s; falling back pool=%s", outcome, pool_label)
             fallback_exec(args)
             return 1  # unreachable
-        if not (isinstance(ready, dict) and ready.get("type") == "ready"):
-            if (
-                isinstance(ready, dict)
-                and ready.get("type") == "rejected"
-                and not ready.get("fallback")
-                # A legacy daemon cannot send the tag, so an untagged
-                # target-unknown is routed to the fallback-exec path below
-                # rather than killing the server. See
-                # ``must_degrade_unknown_target``.
-                and not must_degrade_unknown_target(str(ready.get("reason") or ""))
-            ):
+        if outcome == _ADMIT_REJECTED:
+            assert ready is not None
+            cls = _rejection_class(ready)
+            reason = str(ready.get("reason") or "ensure_backend_rejected")
+            if cls == _REJECT_CLASS_CAPACITY:
+                # The host is full and the daemon said so after the whole wait
+                # budget. No fallback -- an exec here is one more process on
+                # the host that just refused one -- and no death, which
+                # kiro-cli would read as the server crashing. Keep the stdio
+                # transport open and answer each request with a typed error
+                # the session can tell apart from a broken server.
+                retry_after = ready.get("retry_after_secs")
+                await _safe_close(writer)
+                await alog_fallback(
+                    f"capacity:{reason}", payload["stub_uuid"], pool_label, args, terminal=True,
+                )
+                logger.warning(
+                    "gateway refused ensure_backend for capacity (%s, retry_after=%s); "
+                    "answering requests with a typed error pool=%s",
+                    reason, retry_after, pool_label,
+                )
+                refusal_session = StubSession()
+                return await _serve_capacity_refusal(
+                    refusal_session,
+                    stop_event,
+                    reason=reason,
+                    retry_after_secs=retry_after if isinstance(retry_after, int) else None,
+                    pool_label=pool_label,
+                )
+            fallback_eligible = (
+                cls in _FALLBACK_CLASSES
+                if cls is not None
+                else (
+                    bool(ready.get("fallback"))
+                    # A legacy daemon cannot send the tag, so an untagged
+                    # target-unknown is routed to the fallback-exec path
+                    # rather than killing the server. See
+                    # ``must_degrade_unknown_target``.
+                    or must_degrade_unknown_target(reason)
+                )
+            )
+            if not fallback_eligible:
                 # Terminal rejection (genuine spawn failure): the gateway says
                 # this server cannot run. Surface the failure instead of
                 # exec'ing — matches the lazy path and avoids per-session
@@ -2080,24 +2435,29 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
                 # ``stats`` reply.
                 await _safe_close(writer)
                 await alog_fallback(
-                    f"terminal:{ready.get('reason') or 'ensure_backend_rejected'}",
+                    f"terminal:{reason}",
                     payload["stub_uuid"], pool_label, args,
                     terminal=True,
                 )
                 logger.error(
                     "gateway terminally rejected ensure_backend (%s); not falling back pool=%s",
-                    ready.get("reason"), pool_label,
+                    reason, pool_label,
                 )
                 return 1
-            # Fallback-eligible rejection (``fallback: true``) or a closed /
-            # garbage reply -> exec the real backend directly for this session.
-            reason = (
-                ready.get("reason", "ensure_backend_rejected")
-                if isinstance(ready, dict) else "ensure_backend_closed"
-            )
-            await _safe_close(writer)
+            # Fallback-eligible rejection (``compat`` / ``isolation``, or a
+            # legacy ``fallback: true``) -> exec the real backend directly for
+            # this session. A queue-aware daemon charged that exec to its host
+            # budget and releases it when this connection reaches EOF, so the
+            # socket is kept open across the exec rather than closed here.
+            if queue_aware:
+                _keep_socket_across_exec(writer)
+            else:
+                await _safe_close(writer)
             await alog_fallback(reason, payload["stub_uuid"], pool_label, args)
-            logger.warning("gateway fallback-rejected ensure_backend (%s); falling back pool=%s", reason, pool_label)
+            logger.warning(
+                "gateway fallback-rejected ensure_backend (%s, class=%s); falling back pool=%s",
+                reason, cls or "legacy", pool_label,
+            )
             fallback_exec(args)
             return 1  # unreachable
 
@@ -2152,6 +2512,26 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         # toolset are not. Answer whatever was in flight, exactly once, and hold
         # back only what the replay below can still answer for real -- see
         # _split_abandoned_ids for why each half is treated the way it is.
+        #
+        # What happens to requests across the reconnect that follows:
+        #
+        # * IN-FLIGHT calls (forwarded to the dead daemon, unanswered) are failed
+        #   HERE with a retryable -32603 before the reconnect starts. They are
+        #   not replayed: the stub cannot know whether the daemon forwarded them
+        #   upstream before dying, and replaying could double a side effect. The
+        #   one exception is an unanswered ``initialize``, which the replay can
+        #   still answer for real.
+        # * NEWLY ARRIVING requests are neither dropped nor answered. The stdin
+        #   reader thread (``StubSession._start_reader``) keeps reading fd 0 into
+        #   the session's bounded queue for as long as ``_reconnect`` runs; no
+        #   pump drains it, so they simply wait there (up to 256 lines, after
+        #   which the reader blocks and kiro-cli's pipe applies backpressure).
+        #   The next ``run_bridge`` pulls from the SAME queue and forwards them
+        #   to the new connection in order, tracking their ids as outstanding
+        #   from that point. A request that waits longer than kiro-cli's own
+        #   per-call tool timeout is failed by kiro-cli -- that one call, not the
+        #   session. stdout stays open throughout, so kiro-cli never sees the
+        #   transport close until the budget is genuinely spent.
         _to_fail, deferred_init_id = _split_abandoned_ids(session)
         await _emit_error_frames(
             _to_fail,

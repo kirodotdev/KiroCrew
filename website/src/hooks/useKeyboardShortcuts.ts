@@ -37,6 +37,7 @@ import { i18nT } from '../i18n/t'
 import { canGoBack, canGoForward } from '../lib/routeHistoryPosition'
 import { useGuardedHistoryStep } from '../components/NavigationLeaveGuard'
 import { MOBILE_BREAKPOINT } from './useIsMobile'
+import { isEditableTarget } from '../utils/editableTarget'
 
 /**
  * Group ids + ordering live in the registry (`lib/shortcutRegistry`); re-exported
@@ -784,8 +785,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
   }), [onToggleLeftSidebar, onToggleSessionPanel, onToggleSidePanel, onToggleTerminal])
 
   const handler = useCallback((e: KeyboardEvent) => {
-    const tag = (e.target as HTMLElement)?.tagName
-    const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable
+    const isInput = isEditableTarget(e)
     // Read at keypress time; subscribing re-renders the root on every slots frame.
     const { dashboard: { slots, sidebarOrder }, chat: { activeSlot, slotHistory } } = appStore.getState()
     // Jump/cycle targets in the order the sidebar displays them, so Ctrl/Alt+N

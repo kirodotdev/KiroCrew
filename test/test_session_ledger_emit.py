@@ -3903,7 +3903,7 @@ def test_a_wedged_session_neither_reorders_nor_loses_another_and_both_land():
     def _b_write(index: int):
         def _job() -> None:
             handle = lg.Ledger.open(lg.KIND_SESSION, other)
-            handle.append("turn/started", {"turn": index, "actor": "user"}, src="acp")
+            handle.append("turn/started", {"turn": index, "actor": "user", "depth": 0}, src="acp")
 
         return _job
 

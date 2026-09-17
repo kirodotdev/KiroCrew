@@ -182,6 +182,7 @@ class TestSpawnCwd:
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             info = manager.spawn("t")
         assert info is not None
@@ -200,6 +201,7 @@ class TestSpawnCwd:
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
         mock_cfg.agent.subagent_cwd_allowed_roots = [str(tmp_path)]
@@ -228,6 +230,7 @@ class TestSpawnCwd:
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         running_before = manager._running_count
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
@@ -267,6 +270,7 @@ class TestSpawnCwd:
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
         mock_cfg.agent.subagent_cwd_allowed_roots = []
@@ -297,6 +301,7 @@ class TestSpawnCwd:
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         # Force capacity: running_count already at max
         manager._running_count = manager._max_concurrent
         mock_cfg = MagicMock()
@@ -322,22 +327,27 @@ class TestSpawnCwd:
         assert queued["_preassigned_id"] == info.id
 
     @pytest.mark.asyncio
-    async def test_prevalidated_app_spawn_at_capacity_is_rejected_not_queued(
+    async def test_prevalidated_app_spawn_at_capacity_queues_without_its_prevalidation(
         self,
         tmp_path: Path,
     ) -> None:
-        """A prevalidated app spawn must be REJECTED (not queued) at capacity.
+        """A prevalidated app spawn QUEUES at capacity like any accepted row --
+        but never carries its prevalidation into the queue.
 
-        ``_agent_prevalidated`` skips the drain-time agent-directory ownership
-        scan, so a queued prevalidated spawn could run a same-named FOREIGN agent
-        under the app's auto-approval if the app were disabled and its agent file
-        removed while it waited. Fail closed: reject so the caller revalidates
-        ownership on retry (GPT security finding).
+        ``_agent_prevalidated`` skips the drain-time agent-directory scan, so a
+        queued entry that kept the flag could run a same-named FOREIGN agent
+        under the app's auto-approval if the app were disabled and its agent
+        file removed while it waited. The queue entry therefore drops the flag:
+        the drain re-validates the agent and re-proves app ownership
+        (``_validate_app_agent_ownership``) before starting, and a row that
+        fails that re-check is refused AND failed in the store. Capacity itself
+        is a scheduling fact, not a verdict on the row (write-before-ack).
         """
         manager = SubagentManager(
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         manager._running_count = manager._max_concurrent  # force capacity → queue path
         mock_cfg = MagicMock()
         mock_cfg.agent.spawn_min_memory_gb = 0
@@ -355,10 +365,10 @@ class TestSpawnCwd:
             )
 
         assert info is not None
-        assert info.done is True
-        assert info.queued is not True, "prevalidated spawn must not be queued"
-        assert "revalidate" in (info.error or "")
-        assert manager._queue == [], "prevalidated spawn must not enter the queue"
+        assert info.queued is True and info.done is False
+        entry = next(p for p in manager._queue if p["_preassigned_id"] == info.id)
+        assert entry["_agent_prevalidated"] is False, "the drain must re-validate ownership"
+        assert entry["app"] == "probe"
 
     @pytest.mark.asyncio
     async def test_spawn_fails_closed_when_config_load_raises(
@@ -377,6 +387,7 @@ class TestSpawnCwd:
             sessions=_mock_sessions(),
             ctx_builder=_mock_ctx_builder_auto_spawn(),
         )
+        await manager.wait_taskq_ready()
         load_mock = patch(
             "kiro_crew.subagent.KiroCrewConfig.load",
             side_effect=OSError("config unreadable"),

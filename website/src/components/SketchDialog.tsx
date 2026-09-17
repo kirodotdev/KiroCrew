@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import type { AppState as ExcalidrawAppState } from '@excalidraw/excalidraw/types'
@@ -6,6 +6,7 @@ import type * as ExcalidrawModuleType from '@excalidraw/excalidraw'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog'
 import ErrorBoundary from './ErrorBoundary'
+import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useLanguage } from '../i18n/LanguageProvider'
 
@@ -32,23 +33,56 @@ import { useLanguage } from '../i18n/LanguageProvider'
  *  the UI. `restore()` exists precisely to normalize scenes of any vintage. */
 let excalidrawModule: typeof ExcalidrawModuleType | null = null
 
-const Excalidraw = lazy(() => {
+/** Fetch the Excalidraw chunk (module + stylesheet), at most once in flight.
+ *  Shared by the lazy boundary and by the prefetch the placement gate kicks
+ *  off, so both paths run the asset-path assignment first — an import that
+ *  reached the module without it would leave the fonts pointed at the CDN for
+ *  the rest of the page's life — and so a prefetch already running is JOINED
+ *  rather than raced.
+ *
+ *  A FAILED load is deliberately not cached here: the next `makeLazyExcalidraw`
+ *  call (one per open, see the component) re-enters this function, and a
+ *  memoized rejection would replay the failure forever. */
+let loadInFlight: Promise<typeof ExcalidrawModuleType> | null = null
+
+function loadExcalidraw(): Promise<typeof ExcalidrawModuleType> {
+  if (loadInFlight) return loadInFlight
   // MUST be set before the module executes: Excalidraw's font machinery
   // resolves its lazily-loaded canvas fonts against this base, and without it
   // falls back to a third-party CDN (esm.sh) — which an air-gapped dashboard
   // can't reach and a private one shouldn't. The path is emitted into the
   // built dist (and served in dev) by vite.config's excalidrawFontsPlugin.
   ;(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/vendor/excalidraw/'
-  return Promise.all([
+  loadInFlight = Promise.all([
     import('@excalidraw/excalidraw'),
     // Vite splits the stylesheet into the same lazy chunk group; Excalidraw
     // renders unstyled without it.
     import('@excalidraw/excalidraw/index.css'),
   ]).then(([mod]) => {
     excalidrawModule = mod
-    return { default: mod.Excalidraw }
+    return mod
+  }).catch((err: unknown) => {
+    loadInFlight = null
+    throw err
   })
-})
+  return loadInFlight
+}
+
+/** Build the lazy boundary component. NOT a module-level `lazy(...)`: React
+ *  stores the factory's outcome on the lazy object itself, a REJECTION
+ *  included, so a single shared component would replay an offline first open
+ *  forever no matter how the boundary below it is keyed. The component mints a
+ *  fresh one per open, so reopening re-runs this factory, re-enters
+ *  `loadExcalidraw()` and re-issues the `import()`. Whether a request then goes
+ *  out is the browser's call: Chromium keeps a failed module fetch in its
+ *  module map for the page's life (whatwg/html#6768), so there the re-issued
+ *  import rejects again without touching the network and a reload is still the
+ *  way back. On the happy path this costs nothing — `loadExcalidraw()` hands
+ *  back the already settled promise, so the new lazy resolves in a microtask
+ *  without a refetch. */
+function makeLazyExcalidraw() {
+  return lazy(() => loadExcalidraw().then(mod => ({ default: mod.Excalidraw })))
+}
 
 /** Languages Excalidraw ships translations for, keyed loosely by our tags.
  *  Anything unmapped falls back to English inside Excalidraw itself. */
@@ -119,6 +153,36 @@ function readStoredScene(): StoredScene | null {
   }
 }
 
+/** The pad's load-failure fallback. Through ErrorNotice, not the hand-written
+ *  muted line this replaced: a chunk that would not load is a dead end the user
+ *  cannot clear themselves, and ErrorNotice is the one surface that recovers
+ *  the failed request's structured context and offers it to the agent.
+ *  `askAgent` is ON because this fallback has nothing to lose: it renders only
+ *  when the pad never mounted, so no drawing exists in this subtree, and the
+ *  composer's text draft is persisted by chatDrafts.ts independently of it.
+ *  `onHandoff` closes the dialog first — otherwise the modal sits over the
+ *  chat the hand-off navigates to.
+ *
+ *  `onShown` fires when this mounts, i.e. the moment the boundary has caught
+ *  something: ErrorBoundary exposes no onError, and this is the one place the
+ *  dialog can learn that its "draw something first" hint has nothing to point
+ *  at. Layout effect, not passive, so the hint is gone in the same paint the
+ *  error appears in. */
+function SketchLoadFailed({ onShown, onHandoff }: { onShown: () => void; onHandoff: () => void }) {
+  useLayoutEffect(() => {
+    onShown()
+  }, [onShown])
+  return (
+    <div className="w-full h-full flex items-center justify-center p-6">
+      <ErrorNotice
+        message={i18nT('components.sketchDialog.load_failed')}
+        askAgent
+        onHandoff={onHandoff}
+      />
+    </div>
+  )
+}
+
 export default function SketchDialog({ open, onOpenChange, onInsert, returnFocusRef }: SketchDialogProps) {
   const { resolved: uiLanguage } = useLanguage()
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
@@ -142,6 +206,106 @@ export default function SketchDialog({ open, onOpenChange, onInsert, returnFocus
    *  pad then says the drawing is already on the message instead of offering
    *  to attach it again with no cue. */
   const [attached, setAttached] = useState(false)
+  /** The dialog element, held in STATE rather than a ref: Radix's Portal renders
+   *  `null` on its first render and only mounts its child after a layout effect,
+   *  so a ref read from an effect keyed on `open` alone is still null and the
+   *  gate below would wave the pad straight through. */
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
+  /** False from the moment the dialog opens until it has stopped MOVING — see
+   *  the placement effect below for why the pad must not mount before then. */
+  const [placed, setPlaced] = useState(false)
+  /** The lazy boundary component, minted fresh on every open (see
+   *  `makeLazyExcalidraw`), so a load that failed last time is tried again
+   *  rather than served from React's cached rejection. State, not a memo over
+   *  an open counter: the counter would be a dependency the memo never reads. */
+  const [Excalidraw, setExcalidraw] = useState(makeLazyExcalidraw)
+  /** True while this open's load-failure fallback is showing: the header then
+   *  stops asking the user to "draw something first" on a pad that never
+   *  appeared. Set by the fallback itself when it mounts (ErrorBoundary has no
+   *  onError), so it covers every path that reaches the fallback — a rejected
+   *  chunk import and a throw inside an Excalidraw that did import alike. */
+  const [loadFailed, setLoadFailed] = useState(false)
+  const markLoadFailed = useCallback(() => setLoadFailed(true), [])
+
+  /** Start the ~1MB chunk fetch as soon as the dialog opens, so the placement
+   *  wait below overlaps the download instead of following it. The fresh lazy
+   *  lands before `placed` can — the pad never mounts in the same commit the
+   *  dialog opens in — so the pad always renders through this open's lazy. */
+  useEffect(() => {
+    if (!open) return
+    setExcalidraw(() => makeLazyExcalidraw())
+    // Closing unmounts the boundary subtree, so a failure from the last open
+    // must not keep the hint hidden on a reopen that then loads fine.
+    setLoadFailed(false)
+    void loadExcalidraw().catch(() => {
+      // The lazy boundary owns the failure path (ErrorBoundary below); this
+      // prefetch only warms the cache, so a rejection here is not ours to show.
+    })
+  }, [open])
+
+  /** Hold the pad back until the dialog's enter animation has finished.
+   *
+   *  Excalidraw measures its container's viewport rect ONCE, in
+   *  `componentDidMount`, and refreshes it only on window resize, on scroll, or
+   *  from a ResizeObserver on its own container. `DialogContent` animates in
+   *  with a CSS `transform` (`zoom-in-95` + `slide-in-from-top-[48%]`), which
+   *  changes the RENDERED rect while leaving the layout box untouched — so it
+   *  fires none of those three. A pad that mounts mid-animation keeps the
+   *  mid-flight origin for the rest of the dialog's life, and every pointer
+   *  event is mapped through it: measured at 1512x900, the pad believed its
+   *  origin was 7.1px right and 7.7px below the truth, so a rectangle dragged
+   *  from a point landed 7px up-left of the cursor and every resize handle sat
+   *  7px off the handle the user was aiming at. The same stale read leaves the
+   *  canvas 8px narrower than its container — a dead strip down the right edge
+   *  that never paints.
+   *
+   *  It bites from the SECOND open onwards, which is what makes it read as
+   *  intermittent: the first open's lazy chunk outlasts the 200ms animation, so
+   *  those offsets happen to be captured from a settled dialog.
+   *
+   *  Waiting, rather than correcting afterwards: the public `refresh()` fixes
+   *  the offsets but NOT the stale width/height, so the dead edge strip would
+   *  outlive that fix. */
+  useEffect(() => {
+    if (!open) {
+      // Radix keeps the content mounted through the exit animation, so reset on
+      // the state that actually means closed.
+      setPlaced(false)
+      return
+    }
+    if (!contentEl) return
+    if (typeof contentEl.getAnimations !== 'function') {
+      // No Web Animations API (jsdom) — nothing to wait for.
+      setPlaced(true)
+      return
+    }
+    // `getAnimations()` reads computed style, and this effect can run before the
+    // recalc that creates the enter animation. Force the flush, otherwise an
+    // empty list here would read as "already settled" and reinstate the bug.
+    void contentEl.getBoundingClientRect()
+    // Element-scoped, NOT `{ subtree: true }`: a descendant's infinite animation
+    // (the export spinner's `animate-spin`) would never resolve.
+    const anims = contentEl.getAnimations()
+    if (!anims.length) {
+      setPlaced(true)
+      return
+    }
+    let cancelled = false
+    const settle = () => {
+      if (!cancelled) setPlaced(true)
+    }
+    // allSettled, not all: `finished` REJECTS on an animation cancelled
+    // mid-flight, and a cancelled entrance still means the dialog has stopped
+    // moving.
+    void Promise.allSettled(anims.map(a => a.finished)).then(settle)
+    // Backstop for an animation that neither finishes nor cancels: a pad that
+    // never appears is a worse bug than a few pixels of offset.
+    const timer = setTimeout(settle, 600)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [open, contentEl])
 
   /** The wrapper stays mounted while the dialog is closed, so a failure from
    *  the previous session would otherwise greet the next open as a stale
@@ -255,6 +419,7 @@ export default function SketchDialog({ open, onOpenChange, onInsert, returnFocus
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        ref={setContentEl}
         maxWidth={1100}
         className="w-[min(1100px,94vw)] h-[min(720px,88vh)] p-0 gap-0 flex flex-col overflow-hidden"
         data-testid="sketch-dialog"
@@ -299,10 +464,12 @@ export default function SketchDialog({ open, onOpenChange, onInsert, returnFocus
               {i18nT('components.sketchDialog.export_failed')}
             </span>
           )}
-          {!exportFailed && (
+          {!exportFailed && !loadFailed && (
             // Wraps (no truncate): this is the only place the two-chip outcome
             // is explained, and phone width is where it matters most — the
-            // wrapping header absorbs the extra line.
+            // wrapping header absorbs the extra line. Hidden once the chunk
+            // failed to load: "draw something first" beside an error saying
+            // the pad never loaded is a hint nobody can satisfy.
             <span className="text-[11.5px] text-muted min-w-0">
               {!hasElements
                 ? i18nT('components.sketchDialog.draw_something_first')
@@ -318,7 +485,7 @@ export default function SketchDialog({ open, onOpenChange, onInsert, returnFocus
             className="text-[13px] px-3.5 py-1.5 rounded-lg font-semibold bg-accent text-accent-fg border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed hover:bg-accent-hover transition-colors mr-10 shrink-0"
             onClick={handleInsert}
             disabled={!hasElements || exporting}
-            title={hasElements ? undefined : i18nT('components.sketchDialog.draw_something_first')}
+            title={hasElements || loadFailed ? undefined : i18nT('components.sketchDialog.draw_something_first')}
             aria-label={i18nT('components.sketchDialog.attach_to_message')}
           >
             {exporting
@@ -327,19 +494,25 @@ export default function SketchDialog({ open, onOpenChange, onInsert, returnFocus
           </button>
         </div>
         <div className="flex-1 min-h-0">
-          {open && (
+          {open && !placed && (
+            // The same placeholder the Suspense fallback shows, so the ~200ms
+            // the placement gate waits reads as part of one continuous load
+            // rather than as an empty pane that then flashes a spinner.
+            <div className="w-full h-full flex items-center justify-center gap-2 text-muted text-[13px]">
+              <Loader2 size={16} className="animate-spin lucide-inline" />
+              {i18nT('components.sketchDialog.loading')}
+            </div>
+          )}
+          {open && placed && (
             // A rejected lazy import (offline with an uncached chunk) throws
             // through Suspense at render time — without this boundary it
             // climbs to the chat route's ErrorBoundary and replaces the whole
-            // composer. Keyed by `open` so closing and reopening the dialog
-            // retries the load once the network is back.
+            // composer. Closing unmounts this subtree, so each open gets a
+            // fresh boundary; the retry itself comes from the fresh lazy
+            // component the open effect mints — a boundary reset alone would
+            // re-render the cached rejection.
             <ErrorBoundary
-              key={String(open)}
-              fallback={
-                <div className="w-full h-full flex items-center justify-center gap-2 text-muted text-[13px]">
-                  {i18nT('components.sketchDialog.load_failed')}
-                </div>
-              }
+              fallback={<SketchLoadFailed onShown={markLoadFailed} onHandoff={() => onOpenChange(false)} />}
             >
               <Suspense
               fallback={

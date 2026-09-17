@@ -75,6 +75,11 @@ DENY_CLASS_SECRET_FILE = "secret_file"
 DENY_CLASS_TRUST_ROOT = "trust_root"
 DENY_CLASS_EXFIL_SHAPE = "exfil_shape"
 DENY_CLASS_SELF_PROTECTION = "self_protection"
+#: The sensitive-path gate could not canonicalise the path within its budget and
+#: refused fail-closed WITHOUT matching anything. Its own class because every
+#: other class's remediation presumes a real match, and a refusal that reads as
+#: one sends an agent hunting for a credential in an ordinary project file.
+DENY_CLASS_PATH_UNVERIFIED = "path_unverified"
 
 #: Ordered (class, anchors) rules, matched case-insensitively as substrings of
 #: the refusal text. Order is precedence and is load bearing: a command can
@@ -326,6 +331,18 @@ def _rule_class(reason: str) -> "str | None":
 #: agent, in the present tense, naming the sanctioned path concretely enough to
 #: act on without a further round-trip to the user.
 REMEDIATION: dict[str, str] = {
+    DENY_CLASS_PATH_UNVERIFIED: (
+        "This refusal is NOT a match against anything sensitive. The gate resolves a "
+        "path's symlinks before comparing it to the protected list, that resolution "
+        "has a time budget, and the budget ran out -- so the path was refused "
+        "fail-closed without having been judged either way. The path itself is not "
+        "known to hold a credential, the session has not been locked down, and "
+        "nothing about your spelling caused it, so do not try a different reader or a "
+        "different spelling: they meet the same budget. The condition is transient "
+        "(interpreter contention, or a mount that is not answering); wait roughly "
+        "thirty seconds and retry the identical call. If it keeps happening, tell "
+        "the user the gateway's path resolver is timing out and name the path."
+    ),
     DENY_CLASS_AWS_CREDENTIAL: (
         "You do not need to read AWS credential material, and no reader of it is "
         "allowed — trying head/less/python instead of cat hits the same rule. What "
@@ -497,6 +514,14 @@ def classify_deny(reason: str, subject: str = "") -> str:
     protected-branch push) are self-explanatory, and inventing guidance for them
     would bury the classes where the agent genuinely cannot infer the next step.
     """
+    # Structural, before anything text-based: the stall refusal is the one class
+    # where NOTHING matched, and both it and a real match quote the agent's path
+    # verbatim, so a project path containing ``credentials`` or ``.aws`` in a
+    # directory name -- or one spelled to contain the stall wording -- must not
+    # be able to move a refusal between the two classes. The producer's fixed
+    # prefix precedes any caller-influenced text; that is what is tested here.
+    if security.is_unverifiable_path_refusal(reason or ""):
+        return DENY_CLASS_PATH_UNVERIFIED
     rule_class = _rule_class(reason)
     if rule_class is not None:
         return rule_class

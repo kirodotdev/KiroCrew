@@ -37,7 +37,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.constants import split_trailing_protocol_suffix, strip_control_comments
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
@@ -1106,7 +1106,10 @@ class TelegramRenderer(Renderer):
         # end-of-buffer anchor cannot see it. Extract it here -- BEFORE the
         # seal -- so the choices ship as a keyboard on the sealed message instead of
         # being frozen as literal protocol text the user cannot act on.
-        body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = _extract_options(strip_control_comments("".join(self._buf)))
+        # Trailing control-tag lines are protocol on either side of the trailer;
+        # complete tags only -- a partial tail at the seal is prose.
+        body_raw = strip_control_comments(body_raw)
         body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
         # apply_options_cap may EXPAND the body (numbered overflow lines), and
@@ -1322,6 +1325,8 @@ class TelegramRenderer(Renderer):
         # partial) from live frames — it is an internal directive, extracted
         # into the inline keyboard at finalization.
         seg, _ = _extract_options(self._segment_text())
+        # A control-tag line still arriving is held off the frame the same way.
+        seg = strip_control_comments(seg, hide_partial=True)
         body = await self._safe_body(seg)
         stall = self._stall_mark()
         # The tool footer wins: it names what is happening, which is strictly
@@ -1934,7 +1939,10 @@ class TelegramRenderer(Renderer):
         # Extract the trailing [OPTIONS:] BEFORE length rotation: if the body
         # overflows, rotation would otherwise seal the options text into an
         # earlier message and the keyboard would never attach.
-        body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = _extract_options(strip_control_comments("".join(self._buf)))
+        # Trailing control-tag lines are protocol on either side of the trailer;
+        # complete tags only -- a partial tail at the seal is prose.
+        body_raw = strip_control_comments(body_raw)
         body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
         keyboard = build_inline_keyboard(opts, self._session_key) if opts else None

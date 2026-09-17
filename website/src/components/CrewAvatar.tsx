@@ -18,12 +18,13 @@
  * to the avatars the viewport actually shows. The built-in `kiro-ghost` pack is
  * the seeded ghost itself and is composed locally.
  *
- * On top of that identity sits an optional REACTION layer: `state` picks one of
- * `working` / `done` / `error`, and the record's `expressions` map may give
- * that state its own eyes and mouth. Identity is never part of it — see
+ * On top of that identity sits a REACTION layer, and it belongs to the ghost
+ * alone: `state` picks one of `working` / `done` / `error`, and a ghost plays a
+ * built-in MOTION for `done` and `error` — the record's `motions` map names it,
+ * or the default does. Identity is never part of it — see
  * `lib/crewAvatarState.ts` — so a reacting crew still reads as the same crew.
- * A pack's art has no face to overlay, so a pack keeps its sounds and ignores
- * its expressions; `state` still picks which slot is drawn.
+ * A picture is static, and a pack brings its own per-state art; for both,
+ * `state` only picks which drawing is served.
  *
  * Rendered as an `<img>` carrying a data URI rather than inlined SVG markup.
  * Two reasons, both load-bearing:
@@ -48,12 +49,11 @@ import {
   type WorkingIntensity,
 } from '../lib/kiroGhostAvatar'
 import {
-  applyExpression,
-  expressionFor,
-  expressionsFrom,
+  motionFor,
+  motionsFrom,
   soundsFrom,
-  type AvatarExpressions,
   type AvatarFaceState,
+  type AvatarMotions,
   type AvatarSounds,
 } from '../lib/crewAvatarState'
 import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
@@ -76,12 +76,12 @@ const STYLE = kiroGhost
  * served per state from `GET /api/appearances/{id}/slot/{slot}`. Nothing about
  * the pack is copied into the record — `id` is the whole of it.
  *
- * `traits` is OPTIONAL on the ghost tier: `{kind:'ghost', expressions}` with no
+ * `traits` is OPTIONAL on the ghost tier: `{kind:'ghost', motions}` with no
  * traits is a valid record and means "the name-derived face, plus these
- * reactions". Every tier carries `expressions` / `sounds`, and a picture keeps
- * its sounds even though it has no face to change. */
+ * reactions". The reaction keys are the GHOST's alone — a picture is static and
+ * silent, and a pack carries its own per-state art and audio. */
 export type CrewAvatarOverride =
-  | { kind: 'ghost'; traits?: KiroGhostTraits; expressions?: AvatarExpressions; sounds?: AvatarSounds }
+  | { kind: 'ghost'; traits?: KiroGhostTraits; motions?: AvatarMotions; sounds?: AvatarSounds }
   | {
       kind: 'image'
       v?: number
@@ -89,10 +89,8 @@ export type CrewAvatarOverride =
       pendingData?: string
       promote?: boolean
       token?: string
-      expressions?: AvatarExpressions
-      sounds?: AvatarSounds
     }
-  | { kind: 'pack'; id: string; expressions?: AvatarExpressions; sounds?: AvatarSounds }
+  | { kind: 'pack'; id: string }
 
 const TILE_RE = /^#[0-9a-f]{6}$/
 
@@ -218,12 +216,14 @@ export function unclaimedAvatarFrom(avatar: unknown): Record<string, unknown> | 
   // cannot reproduce, and that is true whether the tier is one a newer client
   // invented (`hologram`) or one of ours carrying a payload we reject (a pack
   // id past the id rule). It has to be decided here rather than left to the
-  // three readers, because `expressionsFrom`/`soundsFrom` are kind-AGNOSTIC:
-  // asked about `{kind:'hologram', sounds:{done:'chime'}}` they answer "mine"
-  // on the strength of the chime, the record reads as understood, and the
-  // hologram is dropped by the next unrelated save — the very wipe the
+  // three readers: a reader asked only whether it can see a reaction map would
+  // answer "mine" about `{kind:'hologram', sounds:{done:'chime'}}` on the
+  // strength of the chime, the record would read as understood, and the
+  // hologram would be dropped by the next unrelated save — the very wipe the
   // passthrough exists to retire, surviving for every unknown tier that
-  // happens to carry a reaction.
+  // happens to carry a reaction. The reaction readers are ghost-gated now, so
+  // they cannot make that mistake either, and the kind check keeps holding the
+  // class shut for a tier that carries no reaction at all.
   //
   // `ghost` is the one named kind that does not count as a tier claim: with no
   // pinned traits it IS the name-derived default every reader agrees on, so
@@ -231,25 +231,25 @@ export function unclaimedAvatarFrom(avatar: unknown): Record<string, unknown> | 
   // record and must keep falling through to the readers below.
   const kind = typeof raw.kind === 'string' ? raw.kind.trim() : ''
   if (kind && kind !== 'ghost' && !hasAvatarOverride(avatar)) return raw
-  if (hasAvatarOverride(avatar) || expressionsFrom(avatar) || soundsFrom(avatar)) return null
+  if (hasAvatarOverride(avatar) || motionsFrom(avatar) || soundsFrom(avatar)) return null
   return raw
 }
 
 /**
  * Generated data URIs for NAME-SEEDED avatars only, keyed by seed + working
- * intensity (NUL-joined so the parts cannot collide with a seed containing
- * the tier word). Module-level rather than per-component so a crew's avatar
- * is generated once per session even though it is rendered in both the
- * roster card and the editor panel; a crew has at most three entries (still,
- * subtle, full). Pinned-trait faces are deliberately NOT cached here: the
- * builder generates a fresh trait combination on every picker click, so a
- * trait-keyed entry would accumulate one encoded SVG per click for the life
- * of the tab. The component's own useMemo covers the pinned path.
+ * intensity + reaction (NUL-joined so the parts cannot collide with a seed
+ * containing the tier word). Module-level rather than per-component so a crew's
+ * avatar is generated once per session even though it is rendered in both the
+ * roster card and the editor panel; a crew has at most five entries (still,
+ * subtle, full, and one reaction per reacting state). Pinned-trait faces are
+ * deliberately NOT cached here: the builder generates a fresh trait combination
+ * on every picker click, so a trait-keyed entry would accumulate one encoded
+ * SVG per click for the life of the tab. The component's own useMemo covers the
+ * pinned path.
  *
- * A state that OVERLAYS an expression bypasses this cache for the same
- * reason: it composes explicit traits, so it belongs on the pinned path.
- * Without an expression, `state` changes nothing this cache does not already
- * key on — the intensity is the whole of the difference.
+ * The reaction is safe to key on for the seeded path because it comes off the
+ * record rather than off a picker: a crew's own motion names are fixed, so the
+ * entry count is bounded by the states, not by clicks.
  */
 const CACHE = new Map<string, string>()
 
@@ -275,8 +275,8 @@ export interface CrewAvatarProps {
   size?: number
   /**
    * Which reaction to render. `idle` (the default) is the resting face.
-   * `working` animates; `done` and `error` are still frames that differ from
-   * idle only when the record gives that state an expression.
+   * `working` animates through the eye-bound working variant; `done` and
+   * `error` play the ghost's built-in motion for that state.
    */
   state?: AvatarFaceState
   /** Animate the ghost as "at work". `subtle` for dense lists, `full` for a
@@ -315,18 +315,21 @@ export default function CrewAvatar({
   // `PackAvatar`, which resolves the same fallback chain the slot route does, so
   // a pack that draws only `idle` still answers every state.
   const packId = pack && pack.id !== BUILTIN_PACK_ID ? pack.id : null
-  // Neither a picture nor a pack's art has a face to change, so expressions are
-  // read only where this component composes the face itself. Sounds are the
-  // other half of the reaction layer and are deliberately NOT this component's
-  // business: they belong to the state hook, which is why a picture and a pack
-  // can still have them.
-  const expressions = useMemo(
-    () => (image || packId ? null : expressionsFrom(avatar)),
+  // A reaction is the ghost's: `motionsFrom` is ghost-gated, and the tier guard
+  // repeats that here so the DEFAULT motion cannot reach a served tier either —
+  // the ghost drawn as a broken picture's fallback is a still face, not a crew
+  // reporting a turn it never ran. Sounds are the other half of the reaction
+  // layer and are deliberately NOT this component's business: they belong to
+  // the state hook.
+  const motions = useMemo(
+    () => (image || packId ? null : motionsFrom(avatar)),
     [avatar, image, packId],
   )
-  // Memo-stable: `expressions` is itself memoized, so indexing it yields the
-  // same object across renders and cannot churn the src memo below.
-  const overlay = useMemo(() => expressionFor(expressions, shownState), [expressions, shownState])
+  // Memo-stable so it cannot churn the src memo below.
+  const reaction = useMemo(
+    () => (image || packId ? null : motionFor(motions, shownState)),
+    [motions, shownState, image, packId],
+  )
   const intensity = shownState === 'working' ? (working ?? 'subtle') : undefined
   // An uploaded picture that fails to load (file deleted out-of-band, stale
   // record) falls back to the name-derived ghost rather than the browser's
@@ -335,27 +338,31 @@ export default function CrewAvatar({
   const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const src = useMemo(() => {
     // Pinned traits render fresh (see the CACHE comment); useMemo already
-    // dedupes re-renders of one mounted instance. The intensity is a render
-    // parameter of the same compose() path, so a customized face animates
-    // exactly like a seeded one — and so does an expression overlaid on the
-    // name-derived face, which resolves the seeded traits and composes them
-    // directly rather than going back through DiceBear.
-    if (traits || overlay) {
-      return ghostDataUri(applyExpression(traits ?? seededTraits(seed), overlay), intensity)
-    }
-    const key = [seed, intensity ?? ''].join('\u0000')
+    // dedupes re-renders of one mounted instance. Intensity and reaction are
+    // render parameters of the same compose() path, so a customized face
+    // animates and reacts exactly like a seeded one.
+    if (traits) return ghostDataUri(traits, intensity, reaction)
+    const key = [seed, intensity ?? '', reaction ? `${reaction.state}:${reaction.name}` : ''].join(
+      '\u0000',
+    )
     const hit = CACHE.get(key)
     if (hit) return hit
+    // A reaction resolves the seeded traits and composes them directly: the
+    // DiceBear style takes the working intensity as an option, and giving it a
+    // motion option too would make a render parameter look like a trait.
+    //
     // The tile color is part of the style rather than a `backgroundColor` list,
     // so that it is drawn from the same seeded stream as every other trait.
-    const uri = createAvatar(STYLE, {
-      seed,
-      radius: GHOST_RADIUS_PCT,
-      working: intensity,
-    }).toDataUri()
+    const uri = reaction
+      ? ghostDataUri(seededTraits(seed), intensity, reaction)
+      : createAvatar(STYLE, {
+          seed,
+          radius: GHOST_RADIUS_PCT,
+          working: intensity,
+        }).toDataUri()
     CACHE.set(key, uri)
     return uri
-  }, [seed, traits, overlay, intensity])
+  }, [seed, traits, reaction, intensity])
 
   // The editor draft's not-yet-uploaded picture previews directly; a saved
   // one is served by the authenticated API (same-origin cookie auth), with

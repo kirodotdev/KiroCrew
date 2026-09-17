@@ -82,6 +82,51 @@ def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     return safe.strip()[-limit:]
 
 
+async def _send_over_ssm(
+    target: str,
+    remote_command: str,
+    profile: str,
+    region: str,
+    run_as: str,
+    timeout_secs: float,
+) -> cloud_ssm.CommandResult:
+    """Run *remote_command* on *target* through the send-command chokepoint.
+
+    Every SSM dispatch in the ``instances`` package goes through here -- both
+    mints below and ``diagnostics._probe_remote_dashboard_ssm`` -- so the two
+    budgets are spelled once. ``total_wait`` bounds what
+    :func:`cloud.ssm.run_command` spends sleeping between
+    ``get-command-invocation`` polls, and the outer ``wait_for`` is that same
+    budget plus a fixed 15s of headroom. One spelling because an outer bound
+    BELOW the inner one abandons an invocation the remote is still running and
+    reports a timeout it never had. Each caller keeps its OWN budget value
+    (mint's tunable, the probe's constant); what is shared is the relationship
+    between the pair, not the number.
+
+    The headroom is not a proof the outer bound fires second: ``run_command``
+    counts only its own sleeps, never the ``aws`` CLI round trip per poll, so a
+    slow host can still exhaust the outer budget first.
+
+    :func:`cloud.ssm.run_command` blocks synchronously while it polls, hence the
+    thread hop -- and because a thread is not interruptible, an outer timeout
+    abandons the result rather than stopping the poll loop. Raises whatever the
+    chokepoint raises, plus :class:`asyncio.TimeoutError` on the outer bound, so
+    each caller keeps its own failure shape.
+    """
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            cloud_ssm.run_command,
+            target,
+            remote_command,
+            profile,
+            region,
+            run_as=run_as,
+            total_wait=int(timeout_secs),
+        ),
+        timeout=timeout_secs + 15,
+    )
+
+
 async def mint_remote_token_ssm(
     ssm_target: str,
     *,
@@ -122,18 +167,7 @@ async def mint_remote_token_ssm(
     # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
     logger.info("Minting token on %s over SSM (ttl=%s)", target, ttl)
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                cloud_ssm.run_command,
-                target,
-                remote_command,
-                profile,
-                region,
-                run_as=run_as,
-                total_wait=int(timeout_secs),
-            ),
-            timeout=timeout_secs + 15,
-        )
+        result = await _send_over_ssm(target, remote_command, profile, region, run_as, timeout_secs)
     except asyncio.TimeoutError as e:
         raise TokenMintError(f"timed out minting token on {target} over SSM") from e
     except SsmValidationError as e:
@@ -188,18 +222,7 @@ async def run_remote_kirocrew_ssm(
     )
     logger.info("Running 'kirocrew %s' on %s over SSM", subcommand, target)
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                cloud_ssm.run_command,
-                target,
-                remote_command,
-                profile,
-                region,
-                run_as=run_as,
-                total_wait=int(timeout_secs),
-            ),
-            timeout=timeout_secs + 15,
-        )
+        result = await _send_over_ssm(target, remote_command, profile, region, run_as, timeout_secs)
     except asyncio.TimeoutError:
         return -1, f"timed out after {timeout_secs}s"
     except Exception as e:

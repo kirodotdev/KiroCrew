@@ -40,7 +40,12 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.hooks import TOOL_DENY, HookManager, hooks_config_from_config_dict
+from kiro_crew.hooks import (
+    TOOL_DENY,
+    HookManager,
+    hook_gate_kwargs,
+    hooks_config_from_config_dict,
+)
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import SIGKILL, kill_process_tree
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
@@ -529,20 +534,24 @@ def _governance_denial(ev: object, *, session_key: str, agent: str) -> str:
             session_key=session_key,
             agent=agent,
             app="auto-improvement",
-            tool_kind=tool_kind,
-            raw_params=getattr(ev, "raw_tool_params", None),
-            diff_path=getattr(ev, "diff_path", "") or "",
-            command=command or None,
-            # From the EVENT, not derived from the command. `HookManager.on_tool_call` denies
-            # when `is_shell and not command` — a shell tool whose command could not be
-            # recovered must not be judged on its LLM-authored title (`acp/types.py` states
-            # that contract). Computing it as `bool(command)` inverted exactly that case: no
-            # command meant is_shell=False, so the request was treated as a non-shell tool and
-            # skipped the branch written for it.
-            is_shell=bool(getattr(ev, "is_shell", False)) or bool(command),
-            mcp_server_name=getattr(ev, "mcp_server_name", "") or "",
-            mcp_tool_name=getattr(ev, "tool_name", "") or "",
-            mcp_identity_trusted=bool(getattr(ev, "mcp_identity_trusted", False)),
+            # The shared extraction threads every enforcement-relevant event field
+            # (params, diff path, trusted MCP identity, and whatever comes next); the
+            # three overrides are this runner's provider-agnostic readings of a stream
+            # that may not be an ``AcpEvent``: ``tool_kind`` falls back to
+            # ``tool_purpose``, ``command`` is recovered by ``_requested_command`` from
+            # the raw params rather than ``AcpEvent.shell_command``, and ``is_shell`` is
+            # taken from the EVENT, not derived from the command. `HookManager.on_tool_call`
+            # denies when `is_shell and not command` — a shell tool whose command could
+            # not be recovered must not be judged on its LLM-authored title
+            # (`acp/types.py` states that contract). Computing it as `bool(command)`
+            # inverted exactly that case: no command meant is_shell=False, so the request
+            # was treated as a non-shell tool and skipped the branch written for it.
+            **hook_gate_kwargs(
+                ev,
+                tool_kind=tool_kind,
+                command=command or None,
+                is_shell=bool(getattr(ev, "is_shell", False)) or bool(command),
+            ),
         )
         if getattr(result, "action", "") == TOOL_DENY:
             return (getattr(result, "reason", "") or "denied by governance policy").strip()

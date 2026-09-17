@@ -230,6 +230,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |
 | `agent.tool_search_min_tokens` | Tool-definition token threshold; `0` with the percentage threshold also `0` always defers | `50000` |
 | `agent.fallback_model` | Model used after the active model exhausts its transient-retry budget. `"auto"` defers to availability-aware routing; `""` disables fallback | `"auto"` |
+| `agent.refusal_fallback_model` | Model one declined message is retried on when the active model's content filter refuses it (single-message; the primary returns on the next turn). `"auto"` uses the model the provider's refusal recommends; `""` disables the retry | `""` |
 | `agent.max_channels` | Max concurrent agent channels (1-5) | `1` |
 | `agent.max_channel_agents` | Max agents per channel (1-10) | `3` |
 | `agent.log_level` | Persistent log level for the `kiro_crew` logger, applied at startup. The `--verbose` CLI flag overrides it | `"WARNING"` |

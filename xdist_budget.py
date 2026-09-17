@@ -46,46 +46,62 @@ _MIB = 1024**2
 # Headroom to reserve per worker.
 #
 # A worker's cost has two parts. The FLOOR is collection: every xdist worker
-# independently collects every testpath -- ~57,000 items -- for ~747 MiB of
+# independently collects every testpath -- 106,491 items -- for ~1,499 MiB of
 # VmHWM before it runs a single test, 99% of it private, so there is no page
-# sharing to exploit. On top of that a worker GROWS by roughly 25 MiB per 1,000
-# tests it runs, and that growth does not saturate.
+# sharing to exploit. On top of that a worker GROWS with the tests it runs, and
+# that growth does not saturate.
 #
-# The consequence is the whole reason this constant is 2 and must stay there:
-# **per-worker footprint is inversely proportional to the worker count.** Fewer
-# workers means more tests each, and the growth is per-test, so the projected
-# peak is 747 + (57,000 / N) * 0.0255 MiB:
+# Both halves are REMEASURED, and the suite roughly doubled underneath the
+# previous numbers (~57,000 items / ~747 MiB), which is why this constant moved
+# from 2 to 3. Measured on a 32-core Linux host, five full runs at -n 12,
+# sampling VmRSS after every test in every worker (60 worker-runs):
 #
-#     N=32 -> 792 MiB     N=8 -> 928 MiB     N=2 -> 1473 MiB     N=1 -> 2198 MiB
+#     collection floor (--collect-only -n0):  1,499 MiB
+#     worker peak at -n 12:  min 1,879  median 2,042  max 2,771 MiB
+#     tests per worker:      7,349 - 10,429
 #
-# Measuring on a wide run therefore makes this reservation look 2x too generous
-# (a real -n8 worker peaks at 921-1154 MiB) while it is in fact slightly TIGHT
-# for the case where the budget actually binds. A divisor sized on the -n8
-# number would grant 6 workers on an 8 GiB laptop; those 6 would then run ~9,500
-# tests each, want ~6 GiB between them, and swap the machine -- which is the
-# incident this budget exists to prevent, reintroduced by "optimizing" it.
+# The max is not noise: the same worker slot hit 2,771 MiB in ALL FIVE runs,
+# because the `tree_scan_*` xdist groups that parse every module under src/
+# land together and one of them alone adds ~1.3 GiB of retained source text.
+# The median-implied growth is ~60 MiB per 1,000 tests, not the ~25 previously
+# recorded.
+#
+# The consequence is the whole reason this constant exists and must not be
+# lowered: **per-worker footprint is inversely proportional to the worker
+# count.** Fewer workers means more tests each, and the growth is per-test, so
+# the projection is 1,499 + (106,491 / N) * 0.060 MiB:
+#
+#     N=32 -> 1,699 MiB   N=12 -> 2,031 MiB   N=8 -> 2,298 MiB   N=2 -> 4,694 MiB
+#
+# The N=12 projection lands within 11 MiB of the measured median, which is what
+# makes the formula worth quoting at all -- but N=2 and N=1 are EXTRAPOLATIONS
+# this measurement does not cover, and they are the cases where the budget
+# actually binds. Treat them as a floor on the answer, not the answer.
 #
 # So: do NOT lower this on the strength of a measurement taken at high
 # parallelism. The number that matters is the footprint at the worker count the
-# budget is about to grant, not the one your dev host runs at.
+# budget is about to grant, not the one your dev host runs at. A divisor sized on
+# the old -n8 figure would grant 4 workers on an 8 GiB laptop; those 4 would then
+# want ~9 GiB between them and swap the machine -- which is the incident this
+# budget exists to prevent, reintroduced by "optimizing" it.
 #
-# Known limit, stated rather than hidden: at N=1 the projection exceeds 2 GiB, so
-# the single-worker floor can outgrow its own reservation. Nothing here can fix
-# that -- one worker is already the minimum -- and it is the case where the run is
-# slow but survivable rather than parallel and fatal.
+# Known limit, stated rather than hidden: at low N the projection exceeds even 3
+# GiB, so the single-worker floor can outgrow its own reservation. Nothing here
+# can fix that -- one worker is already the minimum -- and it is the case where
+# the run is slow but survivable rather than parallel and fatal.
 #
 # This sizes for EXPECTED footprint: it cannot save a host from a genuinely
 # leaking worker (one orphaned run was observed at 4.3 GiB RSS), a separate bug.
-_GIB_PER_WORKER = 2
+_GIB_PER_WORKER = 3
 # Headroom to reserve per worker against the LIVE availability reading.
 #
 # Deliberately the same as the static divisor above, because both describe the
 # same worker. The two readings differ in KIND -- total RAM is a worst-case bound
 # that never moves, availability is already the current headroom -- but that
-# argues about how much margin to add on top, and at 2 GiB there is none: it is
-# ~1x the measured per-worker peak. Anything less admits more workers than the
-# host has memory for at the moment it is asked.
-_GIB_PER_WORKER_AVAILABLE = 2
+# argues about how much margin to add on top, and at 3 GiB there is none: it is
+# ~1.1x the measured worst-case per-worker peak (2,771 MiB). Anything less admits
+# more workers than the host has memory for at the moment it is asked.
+_GIB_PER_WORKER_AVAILABLE = 3
 
 # Lock files this process holds for its whole lifetime -- the fds MUST stay open,
 # because the lock lives exactly as long as the fd does.

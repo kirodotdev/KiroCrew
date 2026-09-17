@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import pytest
 
@@ -23,6 +24,21 @@ from kiro_crew import session_ledger_emit as emit
 from kiro_crew.ledger import Ledger, ledger_path
 
 SESSION = "conc-edge-sess-0001"
+
+#: How long a drain barrier waits for the writer to land something NEW before it
+#: reports the writer stuck. Not a total budget for the drain: every test below
+#: hands the single writer thread 30 to 160 appends and each one costs an ``fsync``,
+#: which measures 0.4 ms on a warm Linux host and over 100 ms on a contended Windows
+#: CI runner -- so a fixed ceiling across a whole batch asserts a WRITE RATE the host
+#: owns rather than anything the emitter does. A writer that stopped still fails
+#: inside this window, which is the failure these barriers exist to catch.
+_NO_PROGRESS_SECONDS = 10.0
+
+#: Total ceiling for one barrier, half of the suite's ``--timeout=120`` in setup.cfg.
+#: A writer that trickles forever must fail as a readable assertion here rather than
+#: reach that mark, because pytest-timeout kills the xdist worker and costs the whole
+#: RUN instead of one test.
+_DRAIN_CEILING_SECONDS = 60.0
 
 
 @pytest.fixture(autouse=True)
@@ -37,9 +53,49 @@ def _isolated_home(tmp_path, monkeypatch):
     emit.reset_caches()
 
 
+def _drained(*sids: str) -> bool:
+    """Wait for the writer to go quiet. False once it stops landing entries.
+
+    What every test below needs is the barrier "the writer finished", and what it
+    must NOT depend on is "the writer finished inside one fixed number of seconds":
+    the work is a batch of fsync-priced appends the test itself queues, so a fixed
+    ceiling over it is a rate assertion the slow host loses while the emitter is
+    working perfectly. So the give-up condition is a writer that landed nothing for a
+    whole :data:`_NO_PROGRESS_SECONDS` window, and the first window is measured from
+    BEFORE the first wait -- a writer that is wedged rather than slow is reported one
+    window in, exactly as promptly as a fixed ceiling of the same size reported it.
+
+    Progress is read as the BYTES on disk under the named sessions, which only grow
+    and need no parse: a size read cannot trip over a line the writer is in the
+    middle of appending, and the buffer count cannot serve here because the writer
+    takes a batch OUT of the buffer before it writes it, so an empty buffer says
+    nothing about how far a claimed batch has got.
+    """
+    watched = sids or (SESSION,)
+    give_up_at = time.monotonic() + _DRAIN_CEILING_SECONDS
+    landed = _bytes_on_disk(watched)
+    while not emit.flush(timeout=_NO_PROGRESS_SECONDS):
+        written = _bytes_on_disk(watched)
+        if written <= landed or time.monotonic() >= give_up_at:
+            return False
+        landed = written
+    return True
+
+
+def _bytes_on_disk(sids: tuple[str, ...]) -> int:
+    """How many bytes the named sessions' logs hold together."""
+    total = 0
+    for sid in sids:
+        try:
+            total += ledger_path("session", sid).stat().st_size
+        except OSError:
+            pass
+    return total
+
+
 def _open(sid: str = SESSION) -> None:
     emit.on_session_opened(sid, agent="kirocrew", slot="test", model="m", owner="default")
-    emit.flush()
+    assert _drained(sid)
 
 
 def _entries(sid: str = SESSION) -> list[dict]:
@@ -64,7 +120,7 @@ def test_many_producers_one_session_all_entries_land():
     land, seq must be contiguous (no gaps, no duplicates)."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    emit.flush()
+    assert _drained()
 
     n_threads = 8
     calls_per_thread = 20
@@ -92,7 +148,7 @@ def test_many_producers_one_session_all_entries_land():
         t.join()
 
     assert not errors, f"producer threads raised: {errors}"
-    assert emit.flush(timeout=10.0), "flush timed out"
+    assert _drained(), "the writer stopped draining"
 
     body = _body()
     # Filter to tool/called entries (skip session/opened, turn/started)
@@ -113,7 +169,7 @@ def test_many_producers_one_session_per_session_order_preserved():
     hold for entries from the SAME producer thread."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    emit.flush()
+    assert _drained()
 
     n_threads = 6
     calls_per_thread = 15
@@ -136,7 +192,7 @@ def test_many_producers_one_session_per_session_order_preserved():
         t.start()
     for t in threads:
         t.join()
-    assert emit.flush(timeout=10.0)
+    assert _drained()
 
     tool_entries = [e for e in _body() if e["type"] == "tool/called"]
 
@@ -161,7 +217,7 @@ def test_call_index_contiguous_under_concurrent_producers():
     contiguous 1..N*M range with no duplicates."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    emit.flush()
+    assert _drained()
 
     n_threads = 8
     calls_per_thread = 10
@@ -183,7 +239,7 @@ def test_call_index_contiguous_under_concurrent_producers():
         t.start()
     for t in threads:
         t.join()
-    assert emit.flush(timeout=10.0)
+    assert _drained()
 
     tool_entries = [e for e in _body() if e["type"] == "tool/called"]
     call_indices = sorted(e["data"]["call_index"] for e in tool_entries)
@@ -209,7 +265,7 @@ def test_many_sessions_no_cross_contamination():
     for sid in sids:
         _open(sid)
         emit.on_turn_started(sid, turn=1)
-    emit.flush()
+    assert _drained(*sids)
 
     barrier = threading.Barrier(n_sessions)
 
@@ -229,7 +285,7 @@ def test_many_sessions_no_cross_contamination():
         t.start()
     for t in threads:
         t.join()
-    assert emit.flush(timeout=10.0)
+    assert _drained(*sids)
 
     for sid in sids:
         body = _body(sid)
@@ -267,7 +323,7 @@ def test_many_sessions_each_file_well_formed():
     for sid in sids:
         _open(sid)
         emit.on_turn_started(sid, turn=1)
-    emit.flush()
+    assert _drained(*sids)
 
     barrier = threading.Barrier(n_sessions)
 
@@ -283,7 +339,7 @@ def test_many_sessions_each_file_well_formed():
         t.start()
     for t in threads:
         t.join()
-    assert emit.flush(timeout=10.0)
+    assert _drained(*sids)
 
     for sid in sids:
         entries = _entries(sid)
@@ -314,7 +370,7 @@ def test_interleaved_sessions_no_entry_lost():
     _open(sid_b)
     emit.on_turn_started(sid_a, turn=1)
     emit.on_turn_started(sid_b, turn=1)
-    emit.flush()
+    assert _drained(sid_a, sid_b)
 
     n_entries = 30
     barrier = threading.Barrier(2)
@@ -335,7 +391,7 @@ def test_interleaved_sessions_no_entry_lost():
     tb.start()
     ta.join()
     tb.join()
-    assert emit.flush(timeout=10.0)
+    assert _drained(sid_a, sid_b)
 
     body_a = [e for e in _body(sid_a) if e["type"] == "tool/called"]
     body_b = [e for e in _body(sid_b) if e["type"] == "tool/called"]
@@ -364,7 +420,7 @@ def test_burst_across_sessions_all_entries_land():
     for sid in sids:
         _open(sid)
         emit.on_turn_started(sid, turn=1)
-    emit.flush()
+    assert _drained(*sids)
 
     barrier = threading.Barrier(n_sessions)
 
@@ -378,7 +434,7 @@ def test_burst_across_sessions_all_entries_land():
         t.start()
     for t in threads:
         t.join()
-    assert emit.flush(timeout=10.0)
+    assert _drained(*sids)
 
     total_tool_entries = 0
     for sid in sids:
@@ -400,7 +456,7 @@ def test_flush_returns_only_when_buffer_empty():
     producers are still active at the moment flush is called."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    emit.flush()
+    assert _drained()
 
     n_entries = 50
     produced = threading.Event()
@@ -416,8 +472,8 @@ def test_flush_returns_only_when_buffer_empty():
     t.join()
 
     # Now flush -- it must wait until the writer has drained everything
-    result = emit.flush(timeout=10.0)
-    assert result, "flush returned False (timed out)"
+    result = _drained()
+    assert result, "flush returned False (the writer stopped draining)"
     assert (
         emit.buffered_writes() == 0
     ), f"flush returned True but {emit.buffered_writes()} writes still buffered"
@@ -433,7 +489,7 @@ def test_flush_under_ongoing_production():
     responsibility, but anything queued before must land.)"""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    emit.flush()
+    assert _drained()
 
     n_pre_flush = 20
     n_post_flush = 10
@@ -452,7 +508,7 @@ def test_flush_under_ongoing_production():
     def _flusher() -> None:
         pre_flush_done.wait()
         flush_started.set()
-        flush_result.append(emit.flush(timeout=10.0))
+        flush_result.append(_drained())
 
     tp = threading.Thread(target=_produce)
     tf = threading.Thread(target=_flusher)
@@ -464,7 +520,7 @@ def test_flush_under_ongoing_production():
     assert flush_result[0], "flush returned False"
 
     # A second flush to ensure everything including post-flush entries has landed
-    assert emit.flush(timeout=5.0)
+    assert _drained()
 
     tool_entries = [e for e in _body() if e["type"] == "tool/called"]
     # At minimum, the pre-flush entries must be there; post-flush may or may not
@@ -501,7 +557,7 @@ def test_mixed_entry_points_concurrent():
     consistent under contention."""
     _open()
     emit.on_turn_started(SESSION, turn=1)
-    emit.flush()
+    assert _drained()
 
     barrier = threading.Barrier(4)
     errors: list[Exception] = []
@@ -556,7 +612,7 @@ def test_mixed_entry_points_concurrent():
         t.join()
 
     assert not errors, f"threads raised: {errors}"
-    assert emit.flush(timeout=10.0)
+    assert _drained()
 
     body = _body()
     seqs = [e["seq"] for e in body]

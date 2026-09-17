@@ -154,6 +154,18 @@ export type InstalledApp = {
   }
 }
 
+/** Filter identity, not a display name: external ids cannot alias host buckets. */
+export function sourceKey(app: Pick<RegistryApp, 'origin' | '_registry'>): string {
+  if (app._registry) return `registry:${app._registry}`
+  if (app.origin === 'builtin') return '__builtin__'
+  return '__core__'
+}
+
+/** The row keeps its raw name for display and metadata lookups. */
+export function sourceRowKey(row: { name: string; builtin: boolean }): string {
+  return row.builtin ? row.name : sourceKey({ _registry: row.name })
+}
+
 /**
  * Human label for the registry an app came from (trust provenance).
  *

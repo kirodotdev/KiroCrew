@@ -17,10 +17,25 @@ logger = logging.getLogger(__name__)
 DEP_ISSUE_JQ = (
     ".[] | {number: .number, title: .title, state: .state, " "is_pr: (.pull_request != null)}"
 )
+# Hard page ceiling for the batched walk: 100 issues/page × 40 = 4000 open
+# issues, far past any repo this app realistically triages. A repo beyond it
+# still gets a graph for its first 4000 — bounded, never unbounded pagination.
 DEPS_GRAPHQL_MAX_PAGES = 40
 
+# Our own lifecycle names -> GraphQL PullRequestState literals. The values are
+# interpolated into the query, so they come from THIS map only — never from
+# caller input — which keeps the query free of injection surface.
 GRAPHQL_PR_STATES = {"open": "OPEN", "closed": "CLOSED, MERGED"}
+
+# How many rollup contexts one GraphQL page carries. A PR with more than this has
+# a TRUNCATED tally, which the row reports so the card can fall back to the
+# aggregate rollup instead of presenting an incomplete count as complete.
 ROLLUP_CONTEXT_PAGE = 100
+
+# One PR's contexts, projected into the SAME row shape the REST check list uses
+# (name / source / status / conclusion / timestamps) so they can go through
+# the client's dedupe and bucketing helpers unchanged, so card and sidebar
+# classification remain structurally identical.
 ROLLUP_CONTEXTS_JQ = (
     "[(.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | "
     '{name: ((.name // .context) // ""), '
@@ -70,8 +85,17 @@ PR_SEARCH_JQ = (
     'body: (.body // "")}'
 )
 PR_SEARCH_MAX = 300
+
+# Hard stop on pages walked, so a pathological `per_page`/`limit` combination can
+# never turn one filter toggle into an unbounded request loop.
 SEARCH_MAX_PAGES = 10
+
+# GitHub logins: alphanumerics and hyphens only. Validated before a login can
+# reach the search query string, so it cannot inject extra qualifiers.
 LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+
+# PR lifecycle -> search qualifiers. ``closed`` means closed WITHOUT being
+# merged, matching the frontend's three-way split (open / merged / closed).
 PR_STATE_QUALIFIERS = {
     "open": ["is:open"],
     "merged": ["is:merged"],

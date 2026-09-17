@@ -1222,24 +1222,37 @@ def test_detect_offers_the_os_appropriate_standalone_installer(
     the URL -- and the dashboard's untranslated-literal gate forbids holding it in
     the component.
     """
-    monkeypatch.setattr(mod.os, "name", "posix")
-    posix = mod._standalone_install_command()
-    assert "playwright-cli.sh" in posix
-    assert "powershell" not in posix
-    # Download-then-run rather than a pipe into a shell: a machine locked down
-    # enough to need this usually forbids piping the network into `sh`.
-    assert "| sh" not in posix
-    assert "curl -fsSL" in posix
+    # Both `os.name` patches live in their OWN throwaway instance, because the
+    # `detect()` call below needs the REAL platform back and `monkeypatch.undo()`
+    # on the shared instance is not a way to get there: it reverts every record on
+    # that instance, including the two module-level autouse fixtures that patched
+    # through it. That would send `_browsers_cache_dir` and `_required_revisions`
+    # back to production for the rest of the test, and `detect()` would iterdir the
+    # developer's real ~/.cache/ms-playwright -- exactly what
+    # `isolated_browser_cache` exists to prevent. Exiting the context restores
+    # `os.name` alone.
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(mod.os, "name", "posix")
+        posix = mod._standalone_install_command()
+        assert "playwright-cli.sh" in posix
+        assert "powershell" not in posix
+        # Download-then-run rather than a pipe into a shell: a machine locked down
+        # enough to need this usually forbids piping the network into `sh`.
+        assert "| sh" not in posix
+        assert "curl -fsSL" in posix
 
-    monkeypatch.setattr(mod.os, "name", "nt")
-    windows = mod._standalone_install_command()
-    assert "playwright-cli.ps1" in windows
-    assert "playwright-cli.sh" not in windows
+        patched.setattr(mod.os, "name", "nt")
+        windows = mod._standalone_install_command()
+        assert "playwright-cli.ps1" in windows
+        assert "playwright-cli.sh" not in windows
 
     # `detect()` is exercised under the REAL platform: with `os.name` patched to
     # "nt", pathlib refuses to build a WindowsPath on Linux and the call dies
     # before the payload exists. The Windows branch above is the helper's job.
-    monkeypatch.undo()
+    # `_wire` for the same reason every other `detect()` call site here uses it --
+    # unwired, `detect()` resolves the real `cli_path()` and spawns the host's own
+    # `playwright-cli --version` and `node --version` with the repo root as cwd.
+    _wire(monkeypatch, {})
     assert mod.detect()["standalone_install"] == mod._standalone_install_command()
 
 

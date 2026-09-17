@@ -171,4 +171,23 @@ describe('useAppsData sources rail', () => {
       name: 'community', label: 'Community apps', review: 'community',
     })
   })
+
+  it('uses the same bucket identity for counts and source filtering', async () => {
+    listApps.mockReset().mockResolvedValue([])
+    const { sourceKey, sourceRowKey } = await import('../../components/appstore/types')
+    listRegistry.mockResolvedValue({ apps: [
+      regApp('alpha', 'team'), regApp('beta', 'Team'),
+      { name: 'builtin', origin: 'builtin' }, { name: 'official' },
+    ] })
+    listRegistries.mockResolvedValue({ registries: [
+      { name: 'team', repo: 'https://example.com/team.git' },
+      { name: 'empty', repo: 'https://example.com/empty.git' },
+    ] })
+    const { result } = renderSources()
+    await waitFor(() => expect(result.current.browseApps).toHaveLength(4))
+    await waitFor(() => expect(result.current.sources).toHaveLength(5))
+    for (const row of result.current.sources) {
+      expect(row.count).toBe(result.current.browseApps.filter(app => sourceKey(app) === sourceRowKey(row)).length)
+    }
+  })
 })

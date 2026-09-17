@@ -180,7 +180,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                       title={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
                       aria-label={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
                       aria-pressed={t.color === value}
-                      className={`w-4 h-4 rounded-full cursor-pointer border transition-transform hover:scale-110 outline-none focus-visible:ring-2 focus-visible:ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
+                      className={`w-4 h-4 rounded-full cursor-pointer border hover:brightness-125 swatch-cue outline-none focus-visible:ring-2 focus-visible:ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                       onClick={() => {
                         updateTagMutation.mutate({ id: t.id, body: { color: value } })

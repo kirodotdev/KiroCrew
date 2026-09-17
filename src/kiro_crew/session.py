@@ -113,6 +113,7 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
@@ -1638,7 +1639,7 @@ class SessionManager:
         self._provider_factory = provider_factory
         # Installed by the dashboard once its state exists (set_subagent_probe);
         # None means "no dashboard, so no children can be attached".
-        self._subagent_probe: Callable[[str], bool] | None = None
+        self._subagent_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
         self._allocation_state = SessionRegistryState(
             start_sem=asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
         )
@@ -2147,10 +2148,11 @@ class SessionManager:
         model = "auto"
         try:
             # Use the SAME directory as the cache stamp and preserve the former
-            # native-order, first-match scan.  This runs on the event-loop
-            # thread, so a match must stop all later spec reads rather than
-            # building a full map on every cache miss / TTL expiry.
-            for agent_file in agents_dir.glob("*.json"):
+            # native-order, first-match scan. The async caller hands this to a
+            # thread (the walk and the reads are filesystem work), and a match
+            # still stops all later spec reads rather than building a full map
+            # on every cache miss / TTL expiry.
+            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
                 data = _read_agent_spec(
                     agent_file,
                     operation="resolve_agent_model",
@@ -2342,7 +2344,7 @@ class SessionManager:
         """Register the lifecycle recycle callback."""
         self._lifecycle_boundary().set_recycle_callback(cb)
 
-    def set_subagent_probe(self, fn: Callable[[str], bool] | None) -> None:
+    def set_subagent_probe(self, fn: "Callable[[str], bool | Awaitable[bool]] | None") -> None:
         """Install the "does *key* have sub-agent work attached?" predicate.
 
         The RSS ceiling consults it before recycling an idle session: with
@@ -2352,8 +2354,14 @@ class SessionManager:
         """
         self._subagent_probe = fn
 
-    def _has_attached_subagents(self, key: str) -> bool:
+    def _has_attached_subagents(self, key: str) -> bool | Awaitable[bool]:
         """Answer the installed sub-agent probe, or False when none is installed.
+
+        The probe's answer is handed back UNCOERCED: the dashboard installs a
+        coroutine probe (its queued half reads the task store, and the sweep
+        that asks is on the gateway loop), and ``bool()`` of a coroutine is True
+        for every session while never running the probe at all. The cleanup
+        boundary awaits an awaitable answer and coerces there.
 
         A raising probe propagates: the cleanup boundary treats that as
         "attached" so the session is kept.
@@ -2361,7 +2369,7 @@ class SessionManager:
         probe = self._subagent_probe
         if probe is None:
             return False
-        return bool(probe(key))
+        return probe(key)
 
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Delegate the ordered compaction gate ladder."""
@@ -2907,6 +2915,10 @@ class SessionManager:
             on_soft=on_soft,
             on_hard=on_hard,
         )
+
+    def stop_generation(self, key: str) -> int:
+        """Monotonic count of :meth:`stop_turn` requests recorded for *key*."""
+        return self._lifecycle_boundary().stop_generation(key)
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None:
         """Best-effort abort gateway work before hard session teardown."""

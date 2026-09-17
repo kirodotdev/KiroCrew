@@ -265,6 +265,42 @@ describe('ChatPanel — optimistic fallback model', () => {
   })
 })
 
+describe('ChatPanel — optimistic refusal fallback model', () => {
+  it('shows the picked model before the PATCH resolves and keeps the refetched value', async () => {
+    seed({ refusal_fallback_model: '' })
+    const { resolve } = deferPatch()
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    const trigger = await pick('Content-filter fallback model', 'claude-opus-4.8')
+
+    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    expect(patchConfigMock).toHaveBeenCalledWith('agent.refusal_fallback_model', 'claude-opus-4.8')
+    expect(kirocrewConfigMock).toHaveBeenCalledTimes(1)
+
+    serverAgent = { refusal_fallback_model: 'claude-opus-4.8' }
+    resolve({})
+    await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
+    expect(trigger).toHaveTextContent('claude-opus-4.8')
+  })
+
+  it('rolls back to Disabled ("") when the PATCH rejects, beside its own error copy', async () => {
+    // '' is the DEFAULT here (feature off), unlike the throttle picker whose
+    // default is 'auto' — the rollback target and the error line are the
+    // refusal picker's own, not shared with the throttle picker.
+    seed({ refusal_fallback_model: '' })
+    const { reject } = deferPatch()
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    const trigger = await pick('Content-filter fallback model', 'Auto (model named in the refusal)')
+    await waitFor(() => expect(trigger).toHaveTextContent('Auto (model named in the refusal)'))
+    expect(patchConfigMock).toHaveBeenCalledWith('agent.refusal_fallback_model', 'auto')
+
+    reject(new Error('boom'))
+    expect(await screen.findByText(/Failed to save content-filter fallback model/)).toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveTextContent('Disabled'))
+  })
+})
+
 describe('ChatPanel — pending ownership and reconciliation edges', () => {
   it('concurrent picks on two pickers never revert each other (error + refetch paths)', async () => {
     // The headline race: with a whole-config snapshot, Y's failure restores a

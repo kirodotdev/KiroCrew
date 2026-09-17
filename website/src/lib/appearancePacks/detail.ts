@@ -33,6 +33,14 @@ export interface PackSlotArt {
 export interface PackDetail {
   animations: Record<string, PackSlotArt>
   sprite?: PackSpriteConfig
+  /**
+   * Which states this pack has a playable cue for — PRESENCE only, which is what
+   * the detail route reports. The audio itself is never inlined here: a roster
+   * fetches this payload to draw a face, and hundreds of KB of base64 audio in
+   * it would make every render pay for a sound it may never play. The bytes come
+   * from `packSoundUrl` one state at a time, on the edge that plays them.
+   */
+  sounds?: Record<string, boolean>
 }
 
 /**
@@ -169,5 +177,21 @@ export function packDetailFrom(payload: unknown): PackDetail {
       }
     }
   }
-  return { animations, sprite: spriteConfigFrom(p.sprite) }
+  return { animations, sprite: spriteConfigFrom(p.sprite), sounds: soundsFrom(p.sounds) }
+}
+
+/**
+ * Which states the pack declares a cue for. `true` ONLY — the route reports
+ * presence, so anything else (a filename a newer server inlined, a number, null)
+ * is not a promise this client can act on, and a cue asked for on a false
+ * promise answers 404 and plays nothing. Absent when the pack declares none, so
+ * a caller can test the whole layer with one check.
+ */
+function soundsFrom(raw: unknown): Record<string, boolean> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, boolean> = {}
+  for (const [state, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === true) out[state] = true
+  }
+  return Object.keys(out).length ? out : undefined
 }

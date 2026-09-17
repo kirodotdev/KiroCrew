@@ -40,6 +40,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts, transcript_sort_key
 
@@ -149,20 +150,27 @@ def find_violations(source: str, path: str = "<source>") -> list[tuple[str, int]
 
 def collect_repo_violations() -> list[tuple[str, int]]:
     """Scan every ``kiro_crew/**/*.py`` for an on-loop turn persist."""
-    root = _src_root()
-    base = root.parent
+    base = _src_root().parent
     out: list[tuple[str, int]] = []
-    for py in sorted(root.rglob("*.py")):
-        try:
-            src = py.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):  # pragma: no cover - defensive
-            continue
+    # ``find_violations`` cannot report a hit unless ``_bound_names`` bound
+    # something, and every binding it recognises -- the ``from ... import
+    # save_conversation_turn`` alias, or the ``<module>.save_conversation_turn``
+    # attribute call itself -- puts the literal in the file's TEXT. So narrowing
+    # to files holding it drops non-matches only, and the shared corpus parses
+    # just those (a handful) instead of ast.parse-ing all ~1550 modules -- ~3.5 s
+    # per run, because find_violations' early return happens AFTER the parse.
+    # Filtering through ``parsed_candidates`` rather than a raw ``in`` test is
+    # deliberate: it matches on NFKC-normalised text, so an identifier spelled
+    # with a Unicode compatibility homoglyph -- which CPython folds at parse time,
+    # making it a real AST match -- cannot slip past the filter and quietly
+    # un-gate itself.
+    for py, text, _tree in parsed_candidates(require_all=(_BANNED_FUNC,)):
         try:
             rel = str(py.relative_to(base))
         except ValueError:  # pragma: no cover - defensive
             rel = str(py)
         try:
-            out.extend(find_violations(src, rel))
+            out.extend(find_violations(text, rel))
         except SyntaxError:  # pragma: no cover - defensive
             continue
     return out

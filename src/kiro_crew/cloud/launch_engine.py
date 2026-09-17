@@ -16,6 +16,7 @@ import threading
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes
 from kiro_crew.cloud.aws import AWSError
+from kiro_crew.cloud.login_target import KiroLoginTarget
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +26,24 @@ _SIGNIN_ATTEMPTS = 30
 
 
 class _RealSigninHandle:
-    """Wraps ``login.start_device_login`` as a launch-job SigninHandle."""
+    """Wraps ``login.start_device_login`` as a launch-job SigninHandle.
 
-    def __init__(self, instance_id: str, profile: str, region: str) -> None:
+    The login *target* is held on the handle so START and RESUME name the same
+    identity: a resume that re-launches the device flow without it would turn
+    an Identity Center sign-in into a Builder ID one the moment the first
+    device code timed out.
+    """
+
+    def __init__(
+        self, instance_id: str, profile: str, region: str, target: KiroLoginTarget | None = None
+    ) -> None:
         self._iid = instance_id
         self._profile = profile
         self._region = region
+        self._target = target or KiroLoginTarget()
         try:
             prompt = login.start_device_login(
-                instance_id, profile, region, open_browser=False
+                instance_id, profile, region, open_browser=False, target=self._target
             )
         except Exception:  # noqa: BLE001 - see below
             # start_device_login shells out to SSM. A transient failure here must not
@@ -49,7 +59,8 @@ class _RealSigninHandle:
             # as an unrelated exception type, and every mode means the same thing here.
             logger.info(
                 "could not start Kiro sign-in for %s; continuing unconfirmed",
-                instance_id, exc_info=True,
+                instance_id,
+                exc_info=True,
             )
             prompt = None
         self._prompt = prompt
@@ -57,6 +68,13 @@ class _RealSigninHandle:
         self.url = str(getattr(prompt, "url", "") or "")
         self.code = str(getattr(prompt, "code", "") or "")
         self.ports = list(getattr(prompt, "ports", []) or [])
+        # A VERIFIED refusal, not a transient: ``start_device_login`` sets this
+        # when the box already holds a session for a DIFFERENT identity than the
+        # pinned target (a re-launch onto a reused stack is the ordinary way to
+        # get there). Without it the orchestrator sees "no URL, not logged in"
+        # and files the step as the benign "sign in from the dashboard" case,
+        # finishing DONE while the crew serves chats under the wrong account.
+        self.error = str(getattr(prompt, "error", "") or "")
 
     def wait(self, cancel: threading.Event) -> bool:
         if cancel.is_set():
@@ -69,7 +87,7 @@ class _RealSigninHandle:
             # crew list. "We could not confirm sign-in" is the honest outcome, and it
             # lets the launch finish registering so the user can see the crew and
             # complete sign-in from the dashboard (the device code is preserved).
-            login.resume_login_daemon(self._iid, self._profile, self._region)
+            login.resume_login_daemon(self._iid, self._profile, self._region, target=self._target)
             # Poll one attempt at a time so a cancel lands within ~5s. Calling
             # wait_until_logged_in() with its default 30 attempts would ignore
             # cancellation for up to ~150s, leaving the UI showing "cancelling"
@@ -78,7 +96,7 @@ class _RealSigninHandle:
                 if cancel.is_set():
                     return False
                 if login.wait_until_logged_in(
-                    self._iid, self._profile, self._region, attempts=1
+                    self._iid, self._profile, self._region, attempts=1, target=self._target
                 ):
                     return True
             return False
@@ -124,8 +142,15 @@ class RealLaunchEngine:
         )
         return result.instance_id
 
-    def begin_signin(self, *, instance_id: str, profile: str, region: str) -> _RealSigninHandle:
-        return _RealSigninHandle(instance_id, profile, region)
+    def begin_signin(
+        self,
+        *,
+        instance_id: str,
+        profile: str,
+        region: str,
+        login_target: KiroLoginTarget | None = None,
+    ) -> _RealSigninHandle:
+        return _RealSigninHandle(instance_id, profile, region, login_target)
 
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
         # remote_port stays at register_instance's own default, which matches

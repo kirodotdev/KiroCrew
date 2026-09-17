@@ -1531,8 +1531,21 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         (tmp_path / "dashboard_reopened.jsonl").touch()
 
         state = _make_state(tmp_path)
-        channel_slots.note_slot_closed(state, "reopened")  # then reopened
-        time.sleep(0.01)
+        # Stamp the tombstone under a pinned, explicitly OLDER clock rather than
+        # separating it from the driver's own ``started = time.time()`` with a
+        # real sleep. On Windows/CPython <= 3.12 (what CI pins) ``time.sleep``
+        # wakes off a high-resolution timer while ``time.time()`` still steps in
+        # ~15.6ms ticks, so a 10ms gap can leave both readings EQUAL; the guard
+        # is the inclusive ``when >= started``, so the older close would then
+        # block the reopen and this negative control would accuse ``>= started``
+        # of the very defect it exists to rule out. 60s is far inside
+        # ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600s) and ``slot_closed_since`` does
+        # not apply the TTL, so the tombstone still EXISTS when the guard runs —
+        # the assertion stays about the comparison, not about aging out.
+        closed_at = time.time() - 60.0
+        with monkeypatch.context() as mp:
+            mp.setattr("time.time", lambda: closed_at)
+            channel_slots.note_slot_closed(state, "reopened")  # then reopened
 
         assert await restore_recent_sessions_async(state, window_minutes=60) == 1
         assert "reopened" in state._slots

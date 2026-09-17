@@ -259,7 +259,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
     "dashboard/chat_orchestrator.py": 1,
-    "dashboard/chat_runner.py": 10,
+    "dashboard/chat_runner.py": 9,
     "dashboard/chat_title.py": 1,
     "dashboard/handlers/discover.py": 3,
     "dashboard/handlers/files.py": 1,
@@ -282,7 +282,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "slack/events.py": 2,
     "slack/gateway.py": 7,
     "slack/handler.py": 3,
-    "subagent_manager/admission.py": 4,
+    "subagent_manager/admission/gate.py": 4,
     "voice_reply.py": 4,
 }
 

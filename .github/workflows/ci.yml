@@ -2581,6 +2581,46 @@ jobs:
             "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
           printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
 
+      # The SkillForm block-scalar parity guard (issue #7763). It runs the REAL
+      # TypeScript mirror (backendReadsValue -> backendFoldsLiteral, transpiled
+      # with the website esbuild) against the Python read path over a generated
+      # corpus, so the editor's simulation of the reader cannot drift from the
+      # reader. It lives HERE because it is the only pull-request lane with BOTH
+      # runtimes present AND usable: the backend is pip-installed above (Python +
+      # kiro_crew) and `npm ci` has populated website/node_modules (node + the
+      # `yaml` package the mirror imports + esbuild). The sharded backend-test job
+      # has Python but no website node deps, and frontend-test has node but no
+      # Python, so in each of those the file skips with a named reason -- which is
+      # why REQUIRE=1 is set only here, turning any skip into a failure so the
+      # guard cannot report green having run nothing. Anchored pass count, the same
+      # canary idiom as the boot matrices above: pytest exits 0 on a fully skipped
+      # module, so the count is what proves the corpus actually ran.
+      - name: SkillForm frontmatter parity (TS mirror vs Python read path)
+        env:
+          KIROCREW_SKILLFORM_PARITY_REQUIRE: "1"
+        run: |
+          set -o pipefail
+          # Order-safe: the harness file lands in a separate PR. Until it exists
+          # this step is a no-op, so merging this workflow change first cannot red
+          # the lane on a tree without the harness. Once the file is present the
+          # REQUIRE variable above turns any skip into a failure.
+          if [ ! -f test/test_skillform_frontmatter_parity.py ]; then
+            echo "::notice::SkillForm parity harness not present yet; step is a no-op until it lands."
+            exit 0
+          fi
+          echo "::remove-matcher owner=python::"
+          python -m pytest -v -n0 --no-cov -p no:cacheprovider --timeout=300 \
+            test/test_skillform_frontmatter_parity.py \
+            | tee skillform-parity.log
+          # 880 = 110 body shapes x (3 bare-| headers + 5 refused headers). Raise
+          # this when the corpus grows; a collapse to a handful of cases (a broken
+          # transpile that skips, a renamed symbol) fails here instead of passing
+          # green. Anchored so "1880 passed" cannot satisfy "880 passed".
+          grep -qE '(^|[^0-9])880 passed' skillform-parity.log || {
+            echo "::error::the SkillForm frontmatter parity corpus did not report 880 passed (skipped, collapsed, or the corpus size changed without updating this canary)"
+            exit 1
+          }
+
       - name: Require real private workflow MCP execution
         env:
           KIROCREW_E2E: "1"

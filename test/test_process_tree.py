@@ -128,7 +128,7 @@ class TestIsOurChild:
 
     def test_rejects_missing_proc(self):
         with (
-            patch("kiro_crew.acp.client._get_start_time", return_value=1),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1),
             patch("kiro_crew.acp.client._read_basename", return_value=None),
         ):
             # recorded basename was "node" but _read_basename returns None (process gone)
@@ -136,26 +136,26 @@ class TestIsOurChild:
 
     def test_rejects_unknown_binary(self):
         with (
-            patch("kiro_crew.acp.client._get_start_time", return_value=1),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1),
             patch("kiro_crew.acp.client._read_basename", return_value=b"postgres"),
         ):
             # recorded basename was "node" but live binary is "postgres" (recycled)
             assert _is_our_child(999, expected_start=1, expected_basename=b"node") is False
 
     def test_rejects_start_time_mismatch(self):
-        with patch("kiro_crew.acp.client._get_start_time", return_value=200):
+        with patch("kiro_crew.platform_compat.get_process_start_id", return_value=200):
             assert _is_our_child(999, expected_start=100) is False
 
     def test_accepts_matching_kiro(self):
         with (
-            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=100),
             patch("kiro_crew.acp.client._read_basename", return_value=b"kiro-cli"),
         ):
             assert _is_our_child(999, expected_start=100, expected_basename=b"kiro-cli") is True
 
     def test_accepts_mcp_in_name(self):
         with (
-            patch("kiro_crew.acp.client._get_start_time", return_value=50),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=50),
             patch("kiro_crew.acp.client._read_basename", return_value=b"builder-mcp"),
         ):
             assert _is_our_child(999, expected_start=50, expected_basename=b"builder-mcp") is True
@@ -199,7 +199,7 @@ class TestSnapshotProcessTree:
 
         with (
             patch("kiro_crew.acp.client._get_child_pids", return_value=[200, 300, 400]),
-            patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
             patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
             patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
             patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: str(p * 10)),
@@ -233,7 +233,7 @@ class TestSnapshotProcessTree:
 
         with (
             patch("kiro_crew.acp.client._get_child_pids", return_value=[200, 300]),
-            patch("kiro_crew.acp.client._get_start_time", side_effect=lambda p: p * 10),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
             patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
             patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
         ):

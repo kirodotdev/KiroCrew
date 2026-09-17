@@ -362,7 +362,7 @@ export function TailnetMobileCard() {
         )
       }
 
-      return api.tailnetMobileQr(undefined, mintSessionKey)
+      return api.tailnetMobileQr(mintSessionKey)
     },
     onMutate: () => setActionError(''),
     onSuccess: (res) => {

@@ -5,6 +5,7 @@ E2E is a separate requirement; these tests do not claim kernel/MCP proof coverag
 """
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -154,31 +155,143 @@ def world(monkeypatch, event_loop, tmp_path):
             release_cached_memory_store(store)
 
 
-async def finished(svc, started):
+#: Wall budget for ONE run awaited through ``finished()``, sized from CI rather
+#: than from a local run. The cost here does not predict the cost there: in run
+#: 35010411010 (windows-latest, 4 vCPU, ``-n auto``) shard 8 measured 6.99 s for
+#: the ``[bob]`` param of ``test_simultaneous_services_never_share_run_identity``
+#: against 1.17 s on a Linux dev host, and 3.13 s for ``[global]`` against
+#: 0.52 s -- ~6x, because a run pays ~600 filesystem thread hops (the
+#: ``WorkflowScope`` binding re-reads plus ``build_message``) and that class is
+#: what a 4-vCPU Windows runner with four xdist workers is slowest at. An
+#: IDENTICAL workload also varied 1.42x inside that one job
+#: (``test_private_execution_keeps_scope_on_every_worker``: 3.31 s .. 4.69 s over
+#: its six params). A healthy run there therefore costs up to ~6x1.42 of its
+#: local cost, which for the two-service test is ~10.2 s. A budget of 10 s
+#: therefore sits BELOW the cost of a working run there, and reports cost as a
+#: hang: the run this measurement comes from had both pending calls inside a
+#: filesystem thread hop, and they completed 1.4 s past that deadline. Sized at
+#: 3x that worst measured cost, and still far under the 180 s per-test
+#: ``pytest-timeout`` whose expiry costs the whole xdist worker.
+WORKFLOW_RUN_BUDGET_SECS = 30.0
+
+#: How often ``finished()`` re-reads the run's own progress while it waits. The
+#: sample is what separates a SLOW run from a wedged one in the failure text:
+#: the last change to the pending-call set is a fact about the run, where the
+#: elapsed budget alone is only a fact about the clock.
+_PROGRESS_POLL_SECS = 0.25
+
+
+def _pending_task_locations():
+    """Code locations of every pending task, deepest frame last.
+
+    Locations only -- never coroutine locals, never a private payload. The
+    ``co_name`` chain is what a search for a frame name matches, and the deepest
+    frame also carries ``file:line``, because a chain of names alone cannot say
+    WHICH of a run's many ``to_thread`` call sites is the parked one.
+    """
+    from pathlib import PurePath
+
+    waits = []
+    for task in asyncio.all_tasks():
+        chain = []
+        deepest = ""
+        awaitable = task.get_coro()
+        while awaitable is not None:
+            code = getattr(awaitable, "cr_code", None)
+            if code is not None:
+                chain.append(code.co_name)
+                frame = getattr(awaitable, "cr_frame", None)
+                line = getattr(frame, "f_lineno", 0) or code.co_firstlineno
+                deepest = f"{PurePath(code.co_filename).name}:{line}"
+            awaitable = getattr(awaitable, "cr_await", None)
+        waits.append(chain + ([f"@{deepest}"] if deepest else []))
+    return waits
+
+
+async def finished(svc, started, *, budget=WORKFLOW_RUN_BUDGET_SECS):
     assert "run_id" in started, started
     handle = svc.registry.get(started["run_id"])
-    done, _ = await asyncio.wait({handle.task}, timeout=10)
-    if not done:
-        # Capture only code locations, never coroutine locals or private payloads.
-        waits = []
-        for task in asyncio.all_tasks():
-            chain = []
-            awaitable = task.get_coro()
-            while awaitable is not None:
-                code = getattr(awaitable, "cr_code", None)
-                if code is not None:
-                    chain.append(code.co_name)
-                awaitable = getattr(awaitable, "cr_await", None)
-            waits.append(chain)
-        from kiro_crew.testing.workflow_memory_scenario import progress_summary
+    from kiro_crew.testing.workflow_memory_scenario import progress_summary
 
-        progress = progress_summary(handle.snapshot(include_events=True))
+    began = asyncio.get_running_loop().time()
+    progress = progress_summary(handle.snapshot(include_events=True, include_result=False))
+    advanced_at = began
+    done = set()
+    while True:
+        remaining = budget - (asyncio.get_running_loop().time() - began)
+        if remaining <= 0:
+            break
+        done, _ = await asyncio.wait({handle.task}, timeout=min(_PROGRESS_POLL_SECS, remaining))
+        if done:
+            break
+        sample = progress_summary(handle.snapshot(include_events=True, include_result=False))
+        if sample != progress:
+            progress, advanced_at = sample, asyncio.get_running_loop().time()
+    if not done:
+        now = asyncio.get_running_loop().time()
+        waits = _pending_task_locations()
         handle.task.cancel()
         await asyncio.gather(handle.task, return_exceptions=True)
-        pytest.fail(f"Workflow exceeded 10s: progress={progress}; waits={waits}")
+        pytest.fail(
+            f"Workflow {handle.run_id} exceeded {budget:g}s (waited {now - began:.1f}s): "
+            f"progress={progress}; that progress last changed {now - advanced_at:.1f}s ago, "
+            f"so the pending calls made no observable progress over the last "
+            f"{100 * (now - advanced_at) / max(now - began, 1e-9):.0f}% of the budget; "
+            f"waits={waits}"
+        )
     await handle.task
     assert handle.status == "finished", handle.error
     return handle
+
+
+@pytest.mark.asyncio
+async def test_the_run_budget_failure_names_the_pending_call_and_whether_it_moved():
+    """The budget message IS the diagnosis, so a slow run never reads as a wedged one.
+
+    A run that blew the budget while still advancing and one parked on a grant
+    that never arrives produce the same ``pending_calls`` and the same frame
+    names; only the instant that set last CHANGED separates them, and that is a
+    fact no post-mortem snapshot carries. Here the run advances mid-budget, so
+    the stall the message reports must be strictly shorter than the wait.
+    """
+    stalled = asyncio.ensure_future(asyncio.Event().wait())
+    events = [
+        {"type": "run_started", "data": {}},
+        {"type": "agent_started", "data": {"call_index": 0}},
+        {"type": "agent_finished", "data": {"agent_id": "a0"}},
+        {"type": "agent_started", "data": {"call_index": 1}},
+    ]
+    advanced = [
+        {"type": "agent_finished", "data": {"agent_id": "a1"}},
+        {"type": "agent_started", "data": {"call_index": 2}},
+    ]
+    polls = []
+
+    def snapshot(**_kwargs):
+        polls.append(1)
+        return {"status": "running", "events": events + (advanced if len(polls) > 2 else [])}
+
+    handle = SimpleNamespace(
+        run_id="wf_000042", task=stalled, status="running", error=None, snapshot=snapshot
+    )
+    svc = SimpleNamespace(registry=SimpleNamespace(get=lambda run_id: handle))
+    try:
+        await finished(svc, {"run_id": "wf_000042"}, budget=1.5)
+    except BaseException as exc:  # pytest.fail's Failed is not an Exception
+        assert type(exc).__name__ == "Failed", exc
+        text = str(exc)
+    else:
+        raise AssertionError("finished() accepted a run that never completed")
+    assert len(polls) > 3, polls  # it sampled the run, not just the clock
+    assert "wf_000042" in text and "exceeded 1.5s" in text
+    assert "'pending_calls': [2]" in text, text
+    waited = float(re.search(r"waited (\d+\.\d)s", text).group(1))
+    stall = float(re.search(r"last changed (\d+\.\d)s ago", text).group(1))
+    assert 0.0 < stall < waited - 0.2, text
+    # Every pending task carries a file:line for its deepest frame, because a
+    # chain of co_names cannot say WHICH `to_thread` call site is parked.
+    assert len(re.findall(r"'@[\w.]+\.py:\d+'", text)) >= 2, text
+    assert stalled.cancelled()
 
 
 @pytest.mark.asyncio

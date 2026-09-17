@@ -1078,6 +1078,77 @@ def test_the_store_directory_is_fenced_from_file_tools():
     assert "work-ledger" in sandbox._CREW_HIDDEN_LEAVES
 
 
+@pytest.mark.asyncio
+async def test_a_worker_edit_of_its_own_item_file_is_refused_and_the_store_still_writes():
+    """The fence, driven end to end through the tool gate on the REAL paths.
+
+    The worker agent is a full-capability agent with ``fs_write``, so the tool
+    layer's writer-ownership rule (a worker owns ``status``/``summary``/
+    ``artifacts``/``pr``, a conductor owns ``acceptance``/``verdict``/``state``/
+    ``decision``) is only as strong as the file fence under it: a prompt-injected
+    worker that could open ``items/it_*.json`` directly would forge
+    ``state: accepted``, gut ``acceptance`` before the conductor's evaluator runs,
+    or read a sibling item past ``read_work_brief``'s scoping, and the conductor
+    would read the forgery as its own writing.
+
+    Three things are pinned here that the spelling test above cannot: the
+    ``KIROCREW_HOME`` override this suite runs under is re-anchored (the store
+    lives OUTSIDE ``~/.kiro/crew``, and it is still fenced); the refusal is what
+    ``hooks.on_tool_call`` answers for an edit AND for a read of the item, the
+    binding file and the conductor record; and the store's own ``atomic_write``
+    path — the gateway process, not the agent tool — is untouched by the fence, so
+    the sanctioned writers keep working on the very file the tool was refused.
+
+    Shell writes (``echo >``, ``python -c``) are deliberately NOT text-matched by
+    the gate (see ``is_sensitive_bash_command``); the OS sandbox mask asserted
+    above is the shell-side control, so this test covers the file-tool plane.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+    ids = await two_by_two()
+    item_file = wl.item_path(CONDUCTOR_A, ids["item_a"])
+    sibling_file = wl.item_path(CONDUCTOR_B, ids["item_b"])
+    binding_file = wl.binding_path(WORKER_A)
+    conductor_file = wl.conductor_dir(CONDUCTOR_A) / wl._CONDUCTOR_FILE
+    for path in (item_file, sibling_file, binding_file, conductor_file):
+        assert path.is_file(), path
+    # The suite's override puts the store outside the default home, which is the
+    # anchoring case a hand-written ``~/.kiro/crew/...`` spelling never exercises.
+    assert Path.home() / ".kiro" / "crew" not in data_home().parents
+    assert data_home() not in (Path.home() / ".kiro" / "crew").parents
+
+    gate = HookManager(HooksConfig.from_dict({}))
+    for kind, path in (
+        ("edit", item_file),
+        ("edit", binding_file),
+        ("edit", conductor_file),
+        ("read", item_file),
+        ("read", sibling_file),
+    ):
+        decision = gate.on_tool_call(
+            f"Editing {path.name}" if kind == "edit" else f"Reading {path.name}",
+            session_key="cli_chat",
+            tool_kind=kind,
+            raw_params={"path": str(path)},
+        )
+        assert decision.action == TOOL_DENY, (kind, path, decision)
+        assert "sensitive path" in (decision.reason or ""), (kind, path, decision)
+
+    # The sanctioned writers reach the same file the tool was refused: the worker's
+    # report through its route, and the conductor's decision through the store.
+    before = item_file.read_bytes()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "still moving"})
+    assert status == 200
+    wl.apply_conductor_action(CONDUCTOR_A, "decide", item_id=ids["item_a"], decision="carry on")
+    after = item_file.read_bytes()
+    assert after != before
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert item.summary == "still moving"
+    assert item.decision == "carry on"
+
+
 def test_the_routes_are_on_the_strict_internal_allowlist():
     """The four tools authenticate with the internal secret; without this entry the
     call falls through to cookie auth and every one fails with 403 before the

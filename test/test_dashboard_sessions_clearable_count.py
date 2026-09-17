@@ -298,11 +298,17 @@ async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     counted, _skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     delete_state, deleted = _fake_state(sessions, slots=slots, metadata=metadata)
+    # Patch the DEFINING module, not the package re-export: ``api_sessions_clear``
+    # resolves this name from ``sessions``'s own globals, so
+    # ``handlers._remove_slot_for_history_key`` rebinds an alias nobody reads and the
+    # production teardown runs against the MagicMock state instead — invisibly, since
+    # the call site gathers with ``return_exceptions=True``. Awaiting the stub for both
+    # cleared keys is what keeps that mistake from coming back silently.
     with (
         patch(
-            "kiro_crew.dashboard.handlers._remove_slot_for_history_key",
-            new=AsyncMock(return_value=None),
-        ),
+            "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
+            new_callable=AsyncMock,
+        ) as remove_slot,
         patch("kiro_crew.dashboard.handlers.sel"),
     ):
         resp = await api_sessions_clear(_request(delete_state))
@@ -311,6 +317,7 @@ async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     assert set(counted) == {"plain-a", "plain-b"}
     assert set(deleted) == {"plain-a", "plain-b"}
     assert set(counted) == set(deleted)
+    assert {call.args[1] for call in remove_slot.await_args_list} == {"plain-a", "plain-b"}
 
 
 # ── the endpoint is read-only, proven by naming the survivors ──

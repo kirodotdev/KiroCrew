@@ -120,7 +120,7 @@ _PLATFORMS = frozenset({"any", "posix", "windows"})
 #: would otherwise reach this file, so the differential would keep passing while
 #: quietly covering less of the product than it says.
 _TIERS: tuple[tuple[str, str], ...] = (
-    ("sensitive-path", "is_sensitive_path"),
+    ("sensitive-path", "sensitive_path_refusal"),
     ("sensitive-bash", "is_sensitive_bash_command"),
     ("exfil", "audit_bash_exfiltration"),
     ("deny-rules", "is_denied"),

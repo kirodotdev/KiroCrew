@@ -33,8 +33,12 @@ def main() -> int:
     handle = Ledger.open(lg.KIND_SESSION, session_id)
     # Two entries the parent can recognize: a turn that is open, and a tool call
     # inside it that has no outcome yet. A repair would close both.
-    handle.append("turn/started", {"turn": 1, "actor": "user"}, src="acp")
-    handle.append("tool/called", {"turn": 1, "call_id": "tc-1", "name": "fs_write"}, src="acp")
+    handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
+    handle.append(
+        "tool/called",
+        {"turn": 1, "call_id": "tc-1", "name": "fs_write", "server": "", "kind": ""},
+        src="acp",
+    )
 
     sys.stdout.write(f"{OWNED}\n")
     sys.stdout.flush()

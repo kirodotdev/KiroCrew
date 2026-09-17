@@ -5,11 +5,18 @@
 // Chrome comes from the shared <Modal>: role="dialog", aria-modal, Escape and
 // backdrop dismissal, scroll lock and the labelled close button are all owned
 // by the host component rather than re-implemented here.
+//
+// Failures render INSIDE the dialog (ErrorNotice below). The page-top banner the
+// caller owns sits behind this modal's dimmed backdrop with focus trapped in
+// here, so routing errors there made a failed save read as the Save button
+// silently reverting, and a failed read left Save disabled for no visible
+// reason.
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { specApi } from '../api'
 import { Btn } from './shared'
 import { Input } from '../../../components/ui'
+import ErrorNotice from '../../../components/ErrorNotice'
 import Modal from '../../../components/Modal'
 import SimpleSelect from '../../../components/SimpleSelect'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
@@ -17,10 +24,9 @@ import { useAvailableModels } from '../../../hooks/useAvailableModels'
 import { i18nT } from '../../../i18n/t'
 export interface SettingsModalProps {
   onClose: () => void
-  setErr: (msg: string) => void
 }
 
-export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
+export default function SettingsModal({ onClose }: SettingsModalProps) {
   const [basePath, setBasePath] = useState('')
   // Explicit model pick for spec generation. '' = inherit whatever the chat
   // session would resolve to — mirrors the Research app's per-campaign picker.
@@ -39,13 +45,6 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
       setModel(settingsQuery.data.model || '')
     }
   }, [settingsQuery.data])
-  // Report a failed read through the page-level error the caller already owns.
-  // Save is disabled in that state (see the footer), and a control that is
-  // disabled for no visible reason is its own defect.
-  useEffect(() => {
-    if (settingsQuery.isError) setErr((settingsQuery.error as Error).message)
-  }, [settingsQuery.isError, settingsQuery.error, setErr])
-
   // A mutation that SEEDS the cache with the saved value. Without this the
   // settings query stayed cached for its stale window, so reopening the modal
   // within ~30s showed the OLD path and made the save look like it had not taken.
@@ -58,7 +57,6 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
       void queryClient.invalidateQueries({ queryKey: ['spec-builder', 'settings'] })
       onClose()
     },
-    onError: (e) => setErr((e as Error).message),
   })
   const busy = saveMutation.isPending
   // basePath/model are seeded from the query, so until the read LANDS the buffers
@@ -66,16 +64,35 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
   // nothing. Guarding on the write alone (`busy`) left exactly that window open.
   const unloaded = settingsQuery.isPending || settingsQuery.isError
   const save = () => saveMutation.mutate({ base_path: basePath.trim(), model })
+  // The page mounts this modal per open, so a failed save belongs to the mount
+  // it happened in and is not carried into the next open. The read is cached
+  // across opens on purpose: a failure stays shown while the refetch runs.
+  const failure = settingsQuery.isError
+    ? {
+      title: i18nT('apps.specBuilder.components.settingsModal.couldn_t_load_these_settings'),
+      message: (settingsQuery.error as Error).message,
+    }
+    : saveMutation.error
+      ? {
+        title: i18nT('apps.specBuilder.components.settingsModal.couldn_t_save_these_settings'),
+        message: (saveMutation.error as Error).message,
+      }
+      : null
 
   return (
     <Modal
       open
       onClose={onClose}
+      // No dismissal while the write is pending: Cancel here, X / Escape /
+      // backdrop via the host. A dismissal mid-write unmounts this modal, and
+      // a rejection settling after that has nowhere to render -- the failure
+      // would be dropped. Holding the modal open keeps every failure on screen.
+      dismissDisabled={busy}
       title={i18nT('apps.specBuilder.components.settingsModal.settings')}
       maxWidth={520}
       footer={
         <>
-          <Btn label={i18nT('apps.specBuilder.components.settingsModal.cancel')} onClick={onClose} />
+          <Btn label={i18nT('apps.specBuilder.components.settingsModal.cancel')} disabled={busy} onClick={onClose} />
           <Btn label={busy ? i18nT('apps.specBuilder.components.settingsModal.saving') : i18nT('apps.specBuilder.components.settingsModal.save')} primary disabled={busy || unloaded} onClick={save} />
         </>
       }
@@ -115,6 +132,15 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
         triggerFallback={model || undefined}
         value={model}
         onChange={setModel}
+      />
+      {/* No hand-off: the agent chat navigation unmounts the whole Spec
+          Builder page under this modal, which is holding the spec chat
+          composer or the new-spec form -- both with unsaved text -- and the
+          edit buffers above. Same decision as the page-level banner. */}
+      <ErrorNotice
+        className="mt-4"
+        title={failure?.title}
+        message={failure?.message}
       />
     </Modal>
   )

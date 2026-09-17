@@ -135,7 +135,6 @@ test/test_pod.py::TestUpVerb::test_up_happy_path_json
 test/test_process_tree.py::TestDirectChildren::test_proc_children_parsed
 test/test_prompts.py::TestApiPrompts::test_detail_unreadable
 test/test_prompts.py::TestExpandPromptMention::test_unreadable_file
-test/test_push_branch_gate.py::TestGitPushEnforcement::test_redos_safe_on_pathological_input
 test/test_refresh_tokens.py::test_tr_u_17_persistence_file_mode_0600
 test/test_review_fixes.py::TestEnvPermissions::test_env_permissions_enforced
 test/test_review_fixes.py::TestLoaderChmodWarning::test_chmod_enforced_on_open_permissions

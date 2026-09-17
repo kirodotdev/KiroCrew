@@ -919,12 +919,11 @@ class CapabilityManager(Protocol):
         discovery search (``mcp_providers.capability``); the browse endpoint
         ``GET /api/capability/mcp/registry`` omits it and still gets the full
         listing. A manager MAY use it to filter server-side, and SHOULD when its
-        registry is large enough that it truncates: the caller consumes at most
-        ``_LIST_LIMIT_GUARD`` rows, so on a big registry every row past that cap
-        is unsearchable unless the filter runs manager-side. Ignoring the hint
-        stays CORRECT — the caller filters again — it only costs reach. Because
-        the hint is feature-detected on the signature, an older zero-arg
-        implementation keeps working unchanged.
+        registry is large: filtering at the source spares it materializing and
+        returning the whole catalog on every search. Ignoring the hint stays
+        CORRECT — the caller filters again. Because the hint is feature-detected
+        on the signature, an older zero-arg implementation keeps working
+        unchanged.
         """
         ...
 

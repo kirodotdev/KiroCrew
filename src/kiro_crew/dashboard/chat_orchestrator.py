@@ -361,7 +361,7 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
         _next_started = await _start_next_queued_turn(state, slot)
     if not _next_started and not slot.running:
         slot.append("done", "", "done")
-        state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+        state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         slot.task = None
     state.push_slots_update()
 
@@ -486,7 +486,7 @@ async def _stage_loop(
                 resources=f"slot={slot.key}",
             )
         )
-        state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+        state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         slot.task = None
         state.push_slots_update()
         return
@@ -1160,7 +1160,7 @@ async def _stage_loop(
         if not _next_started and not _turn_live:
             if not _paused:
                 slot.append("done", "", "done")
-            done_payload = chat_done_payload(state, slot)
+            done_payload = await chat_done_payload(state, slot)
             if _paused:
                 done_payload["needs_input"] = True
             state.broadcast_ws("chat_done", done_payload)
@@ -1234,7 +1234,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
         if not already_cancelled:
             stop_msg = "🛑 Plan cancelled."
             append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
-            state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+            state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         return web.json_response({"ok": True, "cancelled": True})
 
     # Go or Go All — use Python-controlled stage loop

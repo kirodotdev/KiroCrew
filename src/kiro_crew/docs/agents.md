@@ -45,7 +45,7 @@ Kiro Crew owns specs named `kirocrew`, `kirocrew-lite`, `kirocrew-conductor`, `k
 
 ## Custom Agents
 
-Custom agents are JSON files in `~/.kiro/agents/`. They define their own system prompt, tools, MCP servers, and permissions. To delete a template, remove its JSON file from `~/.kiro/agents/`. There is no in-app delete. A crew still bound to the deleted name does not break: kiro-cli cannot resolve the missing spec and falls back to the default agent spec for that session, so the crew keeps running — with the default prompt and tools instead of the deleted template's. Check a template's bindings and repoint them before removing the file so no crew silently changes behavior.
+Custom agents are JSON or markdown files in `~/.kiro/agents/` (or a project's `.kiro/agents/`). They define their own system prompt, tools, MCP servers, and permissions. To delete a template, remove its file from `~/.kiro/agents/`. There is no in-app delete. A crew still bound to the deleted name does not break: kiro-cli cannot resolve the missing spec and falls back to the default agent spec for that session, so the crew keeps running — with the default prompt and tools instead of the deleted template's. Check a template's bindings and repoint them before removing the file so no crew silently changes behavior.
 
 ```json
 {
@@ -58,9 +58,43 @@ Custom agents are JSON files in `~/.kiro/agents/`. They define their own system 
 }
 ```
 
+### Markdown agents
+
+The same agent can be one markdown file, the form kiro-cli v3 (KAS) and Kiro IDE read: YAML frontmatter carries the fields, the body is the system prompt.
+
+```markdown
+---
+name: code-reviewer
+description: Reviews code changes
+tools: ["read"]
+---
+
+# Code reviewer
+
+You review code changes. Keep every answer short.
+```
+
+Rules that decide whether a `.md` file is an agent:
+
+- It must open with `---` on the first line and close the frontmatter with a line that is exactly `---`. A markdown file without that fence (a `README.md`, notes) is not an agent and is never listed.
+- The frontmatter must be a YAML mapping. Nested fields (`mcpServers`, `permissions`) work as in JSON.
+- The body is the prompt. A frontmatter `prompt` field is used only when the body is empty.
+- `<name>.json` and `<name>.md` side by side is the same agent twice. In Kiro Crew the JSON file wins and the markdown file is not read; the gateway log warns which file is shadowed. kiro-cli v3's own on-disk loader resolves the pair the other way round (checked against the loader bundled with kiro-cli 2.21.4: it reads files in name order and the later `.md` overwrites), so keep one file per name to get the same agent everywhere. If you kept a JSON copy as a workaround, delete one of the two.
+- `tools: read, write` (a comma-separated string, which kiro-cli v3 also accepts) is read as the list `["read", "write"]`.
+- The frontmatter must be a JSON-shaped document: YAML anchors and aliases (`&name` / `*name`) are refused (repeat the value instead), an unquoted date stays the text you typed, and a value with no JSON form (`!!binary`, `!!set`, a non-string key, `.inf`) makes the file unreadable as a spec, with the offending key named in the log.
+
+What differs from a JSON agent:
+
+| | JSON | Markdown |
+|---|---|---|
+| Listed in pickers, model resolution, MCP gateway stubs, Connections census | yes | yes |
+| Runs on the `kas` backend | yes | yes |
+| Runs on the `kiro` (kiro-cli) backend | yes | no: kiro-cli loads JSON only, so an agent that has no JSON spec in either the project's `.kiro/agents` or `~/.kiro/agents` does not become the session's active agent, and the session is refused at start with a message naming the markdown file. Switch `agent.acp_backend` to `kas` or add a JSON spec in either scope. |
+| Edited by Kiro Crew (Template pane PATCH, `kirocrew agent reset-model`, bookkeeping migration, fork refresh) | yes | no: the file is read-only to Kiro Crew. Edit the frontmatter yourself. The dashboard answers `409 markdown_spec_readonly`. |
+
 ## Managing Agents
 
-**Agent Capabilities → Agents** shows your agents; select one and open its **Template** pane to see its definition — model, system prompt, skills, tools, and MCP servers. Drop a new JSON file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Agent Capabilities.
+**Agent Capabilities → Agents** shows your agents; select one and open its **Template** pane to see its definition — model, system prompt, skills, tools, and MCP servers. Drop a new JSON or markdown file into `~/.kiro/agents/` and it appears automatically. `/agents` redirects to Agent Capabilities.
 
 ## Mapping Skills to an Agent
 

@@ -126,7 +126,7 @@ class TestResetProcessTreeKill:
         with (
             patch("kiro_crew.session.os.kill", side_effect=ProcessLookupError),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[12347, 12348]),
-            patch("kiro_crew.acp.client._get_start_time", return_value=999),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=999),
             patch("kiro_crew.acp.client._read_basename", return_value=b"node"),
             patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
@@ -212,7 +212,7 @@ class TestSigkillSessionProcessTree:
             patch("kiro_crew.subagent.os.getpgid", return_value=54321),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
-            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=100),
             patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             await mgr._sigkill_session("subagent:test1")
@@ -231,7 +231,7 @@ class TestSigkillSessionProcessTree:
             patch("kiro_crew.subagent.os.getpgid", return_value=54321),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.acp.client._kill_escaped_children"),
-            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=100),
             patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             await mgr._sigkill_session("subagent:test1")
@@ -247,7 +247,7 @@ class TestSigkillSessionProcessTree:
             patch("kiro_crew.subagent.os.killpg"),
             patch("kiro_crew.subagent.os.getpgid", return_value=54321),
             patch("kiro_crew.acp.client._get_child_pids", return_value=[54323]),
-            patch("kiro_crew.acp.client._get_start_time", return_value=200),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=200),
             patch("kiro_crew.acp.client._read_basename", return_value=b"node"),
             patch("kiro_crew.acp.client._is_our_child", return_value=True),
             patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
@@ -267,7 +267,7 @@ class TestSigkillSessionProcessTree:
         with (
             patch("kiro_crew.subagent.os.killpg") as mock_killpg,
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=100),
             patch("kiro_crew.acp.client._is_our_child", return_value=False),
             patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
@@ -285,7 +285,7 @@ class TestSigkillSessionProcessTree:
         with (
             patch("kiro_crew.subagent.os.killpg") as mock_killpg,
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
-            patch("kiro_crew.acp.client._get_start_time", return_value=None),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=None),
             patch("kiro_crew.acp.client._kill_escaped_children") as mock_sweep,
         ):
             await mgr._sigkill_session("subagent:test1")

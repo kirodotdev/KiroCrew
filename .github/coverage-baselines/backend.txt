@@ -75,7 +75,6 @@ src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
 src/kiro_crew/knowledge/llm_pool.py 70.8   # 315/445
 src/kiro_crew/knowledge/readers.py 61.7   # 74/120
 src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
-src/kiro_crew/mcp_gateway/pool.py 68.6   # 286/417
 src/kiro_crew/mcp_gateway/stub.py 66.6   # 353/530
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
 src/kiro_crew/skill_providers/skillsh.py 64.0   # 137/214

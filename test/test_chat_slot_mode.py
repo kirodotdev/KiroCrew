@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -132,8 +132,8 @@ class TestChatSlotMode:
     @pytest.mark.asyncio
     async def test_busy_check_asks_about_the_linked_session(self):
         """Subagents spawn under the slot's LINKED session, and
-        `has_pending_work_for` matches `parent_session_key` exactly. Asking about
-        `dashboard:<tab>` for a channel-linked slot reports idle while that
+        `has_pending_work_for_async` matches `parent_session_key` exactly. Asking
+        about `dashboard:<tab>` for a channel-linked slot reports idle while that
         slot's subagents are still running, flipping the execution model out from
         under them."""
         slot = _ChatSlot("test")
@@ -141,7 +141,7 @@ class TestChatSlotMode:
         state = _mock_state(slot)
         asked: list[str] = []
         state.subagents = MagicMock()
-        state.subagents.has_pending_work_for = MagicMock(
+        state.subagents.has_pending_work_for_async = AsyncMock(
             side_effect=lambda k: bool(asked.append(k)) or k == slot.linked_session_key
         )
         with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop"):

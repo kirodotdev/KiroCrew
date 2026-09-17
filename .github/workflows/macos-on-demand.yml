@@ -113,6 +113,13 @@ jobs:
               - "src/kiro_crew/mcp_gateway/socketsec.py"
               - "src/kiro_crew/peer_resolve.py"
               - "src/kiro_crew/platform_compat.py"
+              # The singleton home lock: its durable anchor is POSIX-only, and
+              # its guard tests skip themselves where a directory cannot be
+              # locked, so a darwin regression would read as green without this
+              # lane.
+              - "src/kiro_crew/gateway_lock.py"
+              - "test/test_gateway_lock.py"
+              - "test/test_gateway_lock_diagnosis.py"
               # The Seatbelt profile the private-memory boundary compiles.
               - "src/kiro_crew/sandbox.py"
               # launchd is the macOS pod backend.

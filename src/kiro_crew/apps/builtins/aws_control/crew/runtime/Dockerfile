@@ -5,6 +5,42 @@
 # owner included: the owner's control plane stays on the owner's own machine and
 # no part of it is in this image.
 #
+# AWS CLI v2 is NOT in Debian apt, so it is fetched and unpacked in a throwaway
+# builder stage and only the installed tree is carried into the final image with
+# a COPY --from below. The builder's installer (the unzip step, the ./aws/install
+# scaffolding, the downloaded zip) never reaches the final image this way.
+#
+# Same pinning discipline as kiro-cli, for the same reason: the version is pinned
+# and the per-arch sha256 is recorded HERE so the build fails if the published
+# artifact ever differs from what was reviewed. AWS publishes a detached GPG
+# signature but no .sha256, so these were hand-computed from the downloaded zips
+# and cross-checked across two fetches while adding this. Bumping AWSCLI_VERSION
+# means updating BOTH checksums in the same change. Architecture is resolved from
+# the builder (TARGETARCH) and NEVER pinned, exactly as for kiro-cli. ARG
+# defaults are overridable, so never pass these as --build-arg: an override
+# silently defeats the pin.
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS awscli-builder
+
+ARG TARGETARCH
+ARG AWSCLI_VERSION=2.34.0
+ARG AWSCLI_SHA256_X86_64=f7137e1c4d6d5cae31fbdcfd1fe03784b71e46aead36ba046674a694e1623aa6
+ARG AWSCLI_SHA256_AARCH64=d1abb2e8fcbc9e7ac3b6acf92bf886af67dfb4d30d77b766cc8a56bd00009aeb
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) AWS_ARCH=x86_64;  AWS_SHA256="${AWSCLI_SHA256_X86_64}" ;; \
+      arm64) AWS_ARCH=aarch64; AWS_SHA256="${AWSCLI_SHA256_AARCH64}" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/awscliv2.zip \
+      "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${AWSCLI_VERSION}.zip"; \
+    echo "${AWS_SHA256}  /tmp/awscliv2.zip" | sha256sum -c -; \
+    unzip -q /tmp/awscliv2.zip -d /tmp; \
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
+    /usr/local/bin/aws --version
+
 # Base image: bookworm ships glibc 2.36. The floor for the kiro-cli gnu builds is
 # 2.30, not the 2.39 the installer claims, so slim is new enough.
 #
@@ -43,9 +79,61 @@ ARG KIRO_VERSION=2.20.2
 ARG KIRO_SHA256_X86_64=232ca9498ba7640ec205b1e2ad02553448c897e63e0a89cb01f60056ae255a59
 ARG KIRO_SHA256_AARCH64=49395d0491e6d9e46ce9b900f5e819573bd313751a5b0b6906899a92b438ee3a
 
+# GitHub CLI. A crew can clone a repo with git, but cannot open a pull request
+# without gh, so it belongs in a base whose whole point is real crew work. It is
+# not in Debian apt, and it ships per-arch tarballs with a PUBLISHED
+# checksums.txt, so it follows the identical pinning discipline as kiro-cli:
+# version pinned, per-arch sha256 recorded here, arch resolved from TARGETARCH
+# and never pinned. The checksums below are the linux_amd64 / linux_arm64
+# entries from gh_${GH_VERSION}_checksums.txt on the cli/cli release; bumping
+# GH_VERSION means replacing both in the same change. ARG defaults are
+# overridable, so never pass these as --build-arg.
+ARG GH_VERSION=2.101.0
+ARG GH_SHA256_X86_64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+ARG GH_SHA256_AARCH64=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
+
+# The real CLI toolchain an agent needs to do work: version control (git),
+# JSON handling (jq), archive tools (unzip, xz-utils), a pager and process
+# listing for interactive-shaped tools (less, procps -> ps), patch/file
+# utilities, and an SSH client for git-over-ssh remotes.
+#
+# curl and xz-utils are KEPT in the final image, which REVERSES the earlier
+# design where they were installed only to fetch kiro-cli and then purged (the
+# purge is removed below). That reversal is deliberate: an agent doing real work
+# routinely needs curl, and there is no separate download-only-then-drop tool to
+# protect any more. Everything installed here is meant to stay in the final
+# image; nothing in this layer is build-time-only, so there is no purge to keep.
+# --no-install-recommends holds the size delta down.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        file \
+        git \
+        jq \
+        less \
+        openssh-client \
+        patch \
+        procps \
+        unzip \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# The installed AWS CLI v2 tree, carried over from the throwaway builder stage so
+# the installer tooling (the zip, unzip, ./aws/install scaffolding) never enters
+# the final image. The install is fully self-contained under /usr/local/aws-cli
+# (it bundles its own Python runtime, e.g. dist/libpython3.13.so.1.0), and the
+# two entry points are RELATIVE symlinks into that tree:
+#   /usr/local/bin/aws -> /usr/local/aws-cli/v2/current/bin/aws -> ../dist/aws
+# Copying those symlinks as files would dereference them and sever the relative
+# path to dist/, so `aws` would fail to load its bundled libpython. The tree is
+# copied whole (COPY preserves its internal symlinks) and the two PATH entries
+# are recreated here as symlinks pointing back into it.
+COPY --from=awscli-builder /usr/local/aws-cli /usr/local/aws-cli
+RUN set -eux; \
+    ln -s /usr/local/aws-cli/v2/current/bin/aws           /usr/local/bin/aws; \
+    ln -s /usr/local/aws-cli/v2/current/bin/aws_completer /usr/local/bin/aws_completer; \
+    aws --version
 
 # `kiro-cli acp` is a thin launcher that dispatches to a SIBLING `kiro-cli-chat`,
 # resolved relative to its own path and through PATH. Shipping only the launcher
@@ -72,8 +160,30 @@ RUN set -eux; \
     command -v kiro-cli-chat; \
     kiro-cli --version
 
-# The running crew has no reason to hold a download tool.
-RUN apt-get purge -y curl xz-utils && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+# GitHub CLI, unpacked from its pinned per-arch tarball. Uses the curl and tar
+# already in the image (curl is now kept, tar ships in the base). Only the gh
+# binary is installed; the rest of the tarball (man pages, completions) is
+# dropped with the temp dir.
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) GH_ARCH=amd64; GH_SHA256="${GH_SHA256_X86_64}" ;; \
+      arm64) GH_ARCH=arm64; GH_SHA256="${GH_SHA256_AARCH64}" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /tmp/gh; \
+    curl -fsSL -o /tmp/gh/gh.tar.gz \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz"; \
+    echo "${GH_SHA256}  /tmp/gh/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gh/gh.tar.gz -C /tmp/gh; \
+    install -m 0755 "/tmp/gh/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh; \
+    test -x /usr/local/bin/gh; \
+    gh --version
+
+# No download tool is purged here on purpose: curl and xz-utils are now part of
+# the toolchain the running crew is expected to use (see the apt layer above),
+# not build-time-only artifacts. The earlier revision purged them because they
+# existed solely to fetch kiro-cli.
 
 WORKDIR /app
 

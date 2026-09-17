@@ -319,6 +319,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens all of it directly rather than through this gate, so spooling and
     # the notice pass keep working.
     "inbound-spool",
+    # The durable task queue (taskq/store.py): ``tasks/tasks.db`` plus its WAL
+    # and journal siblings. Every row is another session's accepted work --
+    # the task prompt, its parameters, its lease and generation -- and the
+    # store is the scheduler's authority: an agent that could write it could
+    # cancel or re-dispatch another session's task, or forge a claim. Whole
+    # DIRECTORY (SQLite writes ``-wal`` / ``-journal`` / ``-shm`` siblings).
+    # Every legitimate reader and writer is the GATEWAY process (the subagent
+    # manager, the runner adapters, ``/api/tasks``), which opens the path
+    # directly; the MCP tools reach the queue through ``/api/spawn``.
+    "tasks",
     # Per-session work ledgers (session_ledger.py). Not credentials, but each
     # directory is one session's private work state, and the ledger's whole
     # authorization model is "a session reaches only its OWN ledger" (the HTTP
@@ -458,6 +468,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Recovery is a re-import, but a prompt-injected agent corrupting user data
     # is the mainline threat these leaves exist for.
     "appearance-library",
+    # The chat_tag authorization store. Grant rows decide which tags an agent
+    # may self-apply, so agent file tools must neither read nor write them;
+    # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
+    # gateway opens the path.
+    "tag-grants",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -2273,7 +2288,13 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     return targets
 
 
-def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None = None) -> bool:
+def _path_in_home_dirs(
+    path_str: str,
+    home_dirs: list[str],
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
     Shared matching core for :func:`is_sensitive_path` (read+write gate,
@@ -2314,7 +2335,11 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
-        # credential store for the length of the stall.
+        # credential store for the length of the stall.  A *strict* caller
+        # (``sensitive_path_refusal``) wants to REPORT that as what it is rather
+        # than as a match, so it gets the exception; the refusal is the same.
+        if strict:
+            raise
         return True
 
     # Case-fold both sides for the membership test.  On a case-insensitive
@@ -2333,7 +2358,9 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     return False
 
 
-def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) -> bool:
+def _is_keystone_publish_artifact(
+    path_str: str, base_dir: str | None = None, *, strict: bool = False
+) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
     Closes the gap between a keystone leaf's FINAL name, which
@@ -2360,6 +2387,8 @@ def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) ->
         artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS)
         candidates = _candidate_forms(path_str, base_dir)
     except PathResolutionStalled:
+        if strict:
+            raise
         return True  # fail closed: see _path_in_home_dirs
     for cand in candidates:
         cand_cf = cand.casefold()
@@ -2399,10 +2428,70 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     the leaf holds the leaf's full payload, so READ is blocked alongside write -- a
     write-only fence there would still disclose ``.env`` or ``token_signing.key`` to a
     reader that wins the race.
+
+    The decision is :func:`sensitive_path_refusal`'s -- this is its boolean
+    spelling, so the two cannot diverge. A stall is refused there (a string) and is
+    therefore ``True`` here: the callers that only hold this boolean keep refusing
+    fail-closed; what they lose is the distinct WORDING, which is the gate
+    consumers' business.
     """
-    return _path_in_home_dirs(
-        path_str, _SENSITIVE_HOME_DIRS, base_dir
-    ) or _is_keystone_publish_artifact(path_str, base_dir)
+    return sensitive_path_refusal(path_str, base_dir) is not None
+
+
+#: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a
+#: match with :func:`is_unverifiable_path_refusal`, a prefix test, and never by
+#: searching the text: both refusals embed the caller-chosen path, and a prefix is
+#: the one place that path cannot reach -- a substring test would let a path
+#: spelled to contain the phrase pass itself off as a stall.
+UNVERIFIABLE_PATH_PREFIX = (
+    "Blocked: the path could not be verified against the sensitive-path list within "
+    "the resolver budget"
+)
+
+
+def is_unverifiable_path_refusal(reason: str) -> bool:
+    """True when *reason* is the stall refusal :func:`sensitive_path_refusal` produces.
+
+    Structural, by the fixed prefix that precedes any caller-influenced text. The
+    match refusal opens ``Blocked: access to sensitive path:`` instead, so no path
+    spelling can move one refusal into the other's class.
+    """
+    return reason.startswith(UNVERIFIABLE_PATH_PREFIX)
+
+
+def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | None:
+    """The path tier of the tool gate: the refusal for *path_str*, or ``None``.
+
+    Reason-or-``None`` like the other tiers (``is_sensitive_bash_command``,
+    ``audit_bash_exfiltration``, ``is_denied``), so ``hooks.on_tool_call`` applies
+    it the same way.
+
+    The ONE decision: :func:`is_sensitive_path` is ``refusal is not None``. A path
+    whose canonical form (or whose anchors) could not be established within the
+    resolve budget is refused exactly as a match is, fail-closed, and this function
+    is never a way to let one through -- but the two refusals get different WORDS.
+    A match is ``Blocked: access to sensitive path: <path>``. A stall opens with
+    :data:`UNVERIFIABLE_PATH_PREFIX`, says the path is NOT a match, and quotes the
+    path LAST: a stall reported as a match leads the agent reading it to conclude,
+    reasonably and wrongly, that an ordinary project file holds a credential, that
+    the session has been locked down, or that a different spelling might pass, and
+    each of those costs a wasted round where "could not verify within budget, retry
+    shortly" costs one wait.
+    """
+    try:
+        matched = _path_in_home_dirs(
+            path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True
+        ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+    except PathResolutionStalled:
+        return (
+            f"{UNVERIFIABLE_PATH_PREFIX} (symlink resolution did not complete in time), "
+            "so it is refused fail-closed. This is NOT a match: the path is not known to "
+            "be sensitive. Retry the same call after a short wait; do not re-spell it. "
+            f"Path: {path_str!r}"
+        )
+    if matched:
+        return f"Blocked: access to sensitive path: {path_str}"
+    return None
 
 
 def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:

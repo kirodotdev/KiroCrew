@@ -16,11 +16,13 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes, ssm, ui
 from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.validation import ValidationError
 
 _TOTAL_STEPS = 6
@@ -205,40 +207,66 @@ def aws_start_instance(instance_id: str, profile: str, region: str) -> None:
 
 
 def _verify_operational(
-    instance_id: str, profile: str, region: str, *, assume_yes: bool = False
-) -> bool:
-    """Confirm the box is FULLY operational: kiro-cli signed in so chats work.
+    instance_id: str,
+    profile: str,
+    region: str,
+    *,
+    assume_yes: bool = False,
+    login_target: Optional[KiroLoginTarget] = None,
+) -> str:
+    """Confirm the box is FULLY operational: kiro-cli signed in AS THE RIGHT IDENTITY so chats work.
 
     A gateway that serves HTTP still errors on every new chat if the kiro-cli
     backend is logged out (the ACP session exits with 'not logged in'). This
     checks that state and, when logged out, drives one interactive re-login so
     the user finishes with a box where chat actually works — not just a page
-    that loads.
+    that loads. With an Identity Center *login_target*, a valid session for the
+    WRONG identity is reported as a mismatch rather than as success.
+
+    Returns one of ``"ok"`` (signed in as the target), ``"mismatch"`` (a valid
+    session for a DIFFERENT identity — only ``cloud logout`` fixes it, so the
+    launch must not report success), or ``"unsigned"`` (no session, or the
+    check itself failed). The three are distinct because the caller's exit code
+    depends on it: a mismatch is a failed launch, an unsigned box is a warning.
     """
-    ui.info("Verifying the Kiro backend is signed in (so new chats work)…")
+    target = login_target or KiroLoginTarget()
+    ui.info(f"Verifying the Kiro backend is signed in as {target.describe()} (so new chats work)…")
     try:
-        if login.is_logged_in(instance_id, profile, region):
+        if login.is_logged_in(instance_id, profile, region, target=target):
             ui.ok("Kiro backend signed in — new chats will work.")
-            return True
+            return "ok"
+        # EVERY target is checked for a wrong-identity session, the Builder ID
+        # default included: a reused instance holding an Identity Center session
+        # is not "signed in" for a Builder ID launch, and declining the re-login
+        # below must not turn that into an exit-0 warning.
+        state = login.remote_identity_state(instance_id, profile, region, target=target)
+        if state == "mismatch":
+            ui.warn(
+                f"The instance is signed in to a DIFFERENT Kiro identity than {target.describe()}."
+            )
+            ui.detail(f"Sign the wrong account out first, then re-run: {target.recovery_command()}")
+            return "mismatch"
     except AWSError as exc:
         # Transient SSM/API failure — we could not *check*, which is not the
         # same as "not signed in". Say so instead of a misleading warning.
         ui.warn("Could not verify sign-in state (transient AWS/SSM error).")
         ui.detail(f"{exc} — check later with: kirocrew cloud login")
-        return False
+        return "unsigned"
 
     ui.warn("Kiro backend is NOT signed in — a new chat would error.")
     if not assume_yes and not ui.confirm("Sign in to Kiro now?", default=True):
-        return False
+        return "unsigned"
 
     try:
-        prompt = login.start_device_login(instance_id, profile, region, open_browser=True)
+        prompt = login.start_device_login(
+            instance_id, profile, region, open_browser=True, target=target
+        )
     except AWSError as exc:
         ui.fail(str(exc))
-        return False
+        return "unsigned"
     if prompt.already_logged_in:
         ui.ok("Signed in.")
-        return True
+        return "ok"
     if not prompt.url:
         # A social-login prompt can come back with a LIVE port-forward tunnel
         # (prompt.port_forward) but no URL to show. Returning here without
@@ -246,23 +274,25 @@ def _verify_operational(
         # launch() no-url branch already closes it — mirror that). close() is a
         # no-op when there's no tunnel, so it's safe on the device-code path too.
         prompt.close()
-        ui.detail(login.social_login_hint(prompt))
-        return False
+        ui.detail(prompt.error or login.social_login_hint(prompt))
+        # kiro-cli's "already logged in" over a WRONG identity surfaces here as a
+        # verified mismatch with no URL -- a refusal, not the social-login case.
+        return "mismatch" if prompt.identity_mismatch else "unsigned"
     if prompt.browser_opened:
         ui.note(f"Opened {ui.CYAN}{prompt.url}{ui.RESET} — approve the code to finish.")
     else:
         ui.note(f"Open {ui.CYAN}{prompt.url}{ui.RESET} and approve the code.")
     if prompt.code:
         ui.detail(f"Verification code: {prompt.code}")
-    login.resume_login_daemon(instance_id, profile, region)
+    login.resume_login_daemon(instance_id, profile, region, target=target)
     try:
         with ui.Spinner("Waiting for sign-in approval…"):
-            signed = login.wait_until_logged_in(instance_id, profile, region)
+            signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
     finally:
         prompt.close()
     if signed:
         ui.ok("Signed in — new chats will work now.")
-    return signed
+    return "ok" if signed else "unsigned"
 
 
 def _fetch_bootstrap_log(
@@ -312,8 +342,16 @@ def launch(
     force_new: bool = False,
     keep_on_failure: bool = False,
     hold_tunnel: bool = True,
+    login_target: Optional[KiroLoginTarget] = None,
 ) -> int:
     """Run the full interactive launch flow. Returns a process exit code.
+
+    ``login_target`` is the Kiro identity the crew signs in as (see
+    :mod:`kiro_crew.cloud.login_target`); ``None`` is Builder ID. An Identity
+    Center target that arrived without its region (inherited from the local
+    ``whoami``, which does not report one) is completed here — asked for
+    interactively, or refused under ``assume_yes`` with the flag to pass —
+    never quietly downgraded to Builder ID.
 
     ``subnet_id`` (``--subnet``) pins the launch to an explicit subnet instead
     of network auto-discovery — for dedicated-VPC / private-subnet setups the
@@ -325,6 +363,36 @@ def launch(
     cfg = CloudConfig.load()
     profile = profile or cfg.profile
     region = region or cfg.region or DEFAULT_REGION
+    target = login_target or KiroLoginTarget()
+    if target.is_identity_center and not target.region:
+        # Inherited from the local whoami, which names the start URL but not the
+        # Identity Center region. Decide BEFORE provisioning: nothing is billed
+        # yet, and a launch that later cannot sign in is the expensive outcome.
+        if assume_yes:
+            ui.fail(
+                f"This machine is signed in to {target.start_url}; pass "
+                "--idp-region <identity-center-region> (or --no-inherit-identity) "
+                "to launch non-interactively."
+            )
+            return 2
+        ui.info(f"This machine's Kiro identity is IAM Identity Center at {target.start_url}.")
+        while True:
+            raw = ui.prompt(
+                "Identity Center region for the crew's sign-in (e.g. us-east-1)", default=""
+            )
+            try:
+                target = KiroLoginTarget.from_fields(
+                    license="pro", start_url=target.start_url, region=raw
+                )
+                break
+            except LoginTargetError as exc:
+                ui.warn(str(exc))
+    if target.is_identity_center:
+        ui.info(f"The crew will sign in as {target.describe()}.")
+    else:
+        ui.detail(
+            "The crew will sign in with Builder ID (pass --identity-provider for Identity Center)."
+        )
     if subnet_id:
         try:
             subnet_id = ec2.validate_subnet_id(subnet_id)
@@ -495,11 +563,26 @@ def launch(
     # ── 5. Sign in to Kiro ────────────────────────────────────────────────
     steps.step("Sign in to Kiro")
     instance_id = result.instance_id
-    if login.is_logged_in(instance_id, profile, region):
-        ui.ok("kiro-cli is already signed in on the instance.")
+    # A mismatch verified here is a verdict on the launch, not a transient
+    # condition: it holds through the operational recheck below unless that
+    # recheck positively confirms the right identity.
+    mismatch_seen = False
+    if login.is_logged_in(instance_id, profile, region, target=target):
+        ui.ok(f"kiro-cli is already signed in on the instance as {target.describe()}.")
+    elif login.remote_identity_state(instance_id, profile, region, target=target) == "mismatch":
+        # A resumed instance can carry a valid session for the WRONG account --
+        # for any target, the Builder ID default included (an Identity Center
+        # session is the wrong license and models for a Builder ID launch).
+        # That is a mismatch, not "already signed in", and switching requires a
+        # logout first (kiro-cli ignores a login over a live session).
+        mismatch_seen = True
+        ui.warn(f"The instance is signed in to a different Kiro identity than {target.describe()}.")
+        ui.detail(f"To switch: {target.recovery_command()}")
     else:
-        ui.info("Starting kiro-cli sign-in on the instance…")
-        prompt = login.start_device_login(instance_id, profile, region, open_browser=True)
+        ui.info(f"Starting kiro-cli sign-in on the instance as {target.describe()}…")
+        prompt = login.start_device_login(
+            instance_id, profile, region, open_browser=True, target=target
+        )
         if prompt.already_logged_in:
             ui.ok("Signed in.")
         elif prompt.url:
@@ -515,7 +598,7 @@ def launch(
             ui.info("Approve in the browser to finish sign-in…")
             try:
                 with ui.Spinner("Waiting for sign-in approval…"):
-                    signed = login.wait_until_logged_in(instance_id, profile, region)
+                    signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
             finally:
                 prompt.close()
             if signed:
@@ -525,14 +608,36 @@ def launch(
                 ui.detail("Re-run: kirocrew cloud connect (then sign in from the dashboard/SSM).")
         else:
             prompt.close()
-            ui.warn("Could not start Kiro sign-in automatically.")
-            ui.detail(login.social_login_hint(prompt))
+            if prompt.identity_mismatch:
+                # kiro-cli refused to sign in over a live session for the WRONG
+                # identity. Verified the same as the probe above, recorded the
+                # same: the recheck below must not read it down to "unsigned".
+                mismatch_seen = True
+                ui.warn(
+                    f"The instance is signed in to a different Kiro identity than {target.describe()}."
+                )
+                ui.detail(f"To switch: {target.recovery_command()}")
+            else:
+                ui.warn("Could not start Kiro sign-in automatically.")
+                ui.detail(prompt.error or login.social_login_hint(prompt))
 
     # Verify the box is FULLY operational — not just that the gateway serves
     # HTTP, but that a new chat will actually work (kiro-cli logged in so the
     # ACP backend can start a session). If it's not, re-login before finishing,
-    # so the user never lands on a dashboard where every chat errors.
-    if not _verify_operational(instance_id, profile, region, assume_yes=assume_yes):
+    # so the user never lands on a dashboard where every chat errors. A verified
+    # identity MISMATCH is carried to the exit code below: the dashboard is still
+    # opened and the crew registered (the named recovery needs both), but the
+    # launch did not deliver the identity it was asked for and must not exit 0.
+    signin_state = _verify_operational(
+        instance_id, profile, region, assume_yes=assume_yes, login_target=target
+    )
+    if mismatch_seen and signin_state != "ok":
+        # The recheck did not confirm the right identity (it failed transiently,
+        # or found no session it could act on). The mismatch verified a moment
+        # ago stands; "unsigned" would let this launch exit 0 under the wrong
+        # identity.
+        signin_state = "mismatch"
+    if signin_state == "unsigned":
         ui.warn(
             "Kiro backend is not signed in — new chats will error until you "
             "sign in. Run: kirocrew cloud login"
@@ -569,7 +674,13 @@ def launch(
     # ── Done ──────────────────────────────────────────────────────────────
     print()
     dashboard_ready = bool(conn and conn.ready and conn.url)
-    if dashboard_ready:
+    if signin_state == "mismatch":
+        ui.fail(
+            f"Kiro Crew is running on AWS, but signed in to a DIFFERENT Kiro identity than "
+            f"{target.describe()} — this launch did not deliver the identity it was asked for."
+        )
+        ui.detail(f"Fix: {target.recovery_command()}")
+    elif dashboard_ready:
         ui.note(f"{ui.GREEN}{ui.BOLD}KiroCrew is live on AWS.{ui.RESET}")
     else:
         ui.warn("KiroCrew is running on AWS, but the dashboard tunnel is not open.")
@@ -601,6 +712,8 @@ def launch(
             except KeyboardInterrupt:
                 conn.close()
                 ui.info("Tunnel closed. KiroCrew keeps running on AWS.")
+    if signin_state == "mismatch":
+        return 1
     return 0 if dashboard_ready else 1
 
 

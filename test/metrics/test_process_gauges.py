@@ -22,6 +22,17 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from kiro_crew.metrics import process_gauges as pg
 from kiro_crew.metrics.schema import validate_name
 
+# Linux's current and peak RSS use different accounting paths whose per-CPU
+# counters are approximate and can be sampled at different instants. Probes on
+# Linux 6.12 measured current 288-568 KiB above peak near 2 GB; CI saw the same
+# class at 245/320/450 KB:
+#   1968263168 >= 1968508928
+#   1990189056 >= 1990516736
+#   1984233472 >= 1984684032
+# Four MiB covers that drift while still failing >4 MiB inversions and the
+# 1000x unit/scale mistakes this invariant is meant to catch.
+RSS_ACCOUNTING_SLACK = 4 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -188,25 +199,48 @@ def test_collection_includes_os_views_on_linux():
 
 
 def test_peak_rss_at_least_current_rss():
-    """The high-water mark can never sit below the live reading it bounds.
+    """Compare exported RSS gauges within Linux's accounting precision.
 
-    The two readings come from different kernel accounting sources on Linux
-    (``/proc/self/statm`` resident pages vs ``getrusage`` ``ru_maxrss``), and
-    the kernel folds per-thread RSS deltas into the high-water mark lazily —
-    a freshly grown process can read current a few MB above peak. Force a
-    transient spike that dwarfs that lag, release it, and the invariant must
-    hold: the spike lives on in the high-water mark while the live reading
-    has already fallen back.
+    Current and peak use different approximate per-CPU accounting paths. Keep
+    the spike and fold-in reads because they encourage the kernel to expose a
+    real high-water mark, but do not require RSS growth: a long-lived allocator
+    may satisfy the spike from already-resident memory. The final bounds retain
+    the measured growth in their failure messages and allow only the observed
+    kernel slack.
     """
-    spike = bytearray(32 * 1024 * 1024)
+    spike_size = 32 * 1024 * 1024
+    growth_floor = spike_size // 2
+    baseline_current = pg.platform_compat.proc_rss_bytes()
+    baseline_peak = pg.platform_compat.proc_peak_rss_bytes()
+
+    spike = bytearray(spike_size)
     for i in range(0, len(spike), 4096):  # touch every page so it is resident
         spike[i] = 1
+    held_current = pg.platform_compat.proc_rss_bytes()
+    folded_peak = max(
+        pg.platform_compat.proc_peak_rss_bytes(),
+        pg.platform_compat.proc_peak_rss_bytes(),
+    )
+    held_growth = held_current - baseline_current
+    folded_growth = folded_peak - baseline_peak
+    growth_context = (
+        f"spike growth: current={held_growth} bytes, peak={folded_growth} bytes; "
+        f"floor={growth_floor} bytes; allocator may reuse resident memory"
+    )
+
     del spike
     gc.collect()
     metrics = _collect()
     (cur,) = metrics[pg.GAUGE_RSS]
     (peak,) = metrics[pg.GAUGE_PEAK_RSS]
-    assert peak.value >= cur.value
+    assert peak.value + RSS_ACCOUNTING_SLACK >= folded_peak, (
+        f"peak={peak.value} fell below folded_peak={folded_peak} beyond "
+        f"slack={RSS_ACCOUNTING_SLACK}; {growth_context}"
+    )
+    assert peak.value + RSS_ACCOUNTING_SLACK >= cur.value, (
+        f"peak={peak.value} fell below current={cur.value} beyond "
+        f"slack={RSS_ACCOUNTING_SLACK}; {growth_context}"
+    )
 
 
 def test_raising_reader_yields_gap_not_failure():

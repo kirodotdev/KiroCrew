@@ -124,14 +124,14 @@ def test_processes_reserve_distinct_ids_without_publishing_authority(tmp_path, d
 def test_windows_resolved_prefix_is_only_a_spelling(unc):
     from pathlib import PureWindowsPath
 
-    from kiro_crew.workflow_memory import _plain_path
+    from kiro_crew.platform_compat import strip_extended_length_prefix
 
     root = r"\\server\share\Crew" if unc else r"C:\Users\Runner\Crew"
     plain = PureWindowsPath(root) / "workflows" / ".reserved" / "digest"
     extended = PureWindowsPath(("\\\\?\\UNC\\" + str(plain)[2:]) if unc else "\\\\?\\" + str(plain))
     assert extended != plain
-    assert _plain_path(extended) == plain
-    assert _plain_path(extended.parent / "foreign") != plain
+    assert strip_extended_length_prefix(extended) == plain
+    assert strip_extended_length_prefix(extended.parent / "foreign") != plain
 
 
 @pytest.mark.parametrize("component", ["legacy", "lock", "counter"])

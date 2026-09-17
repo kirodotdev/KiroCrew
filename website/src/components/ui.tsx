@@ -176,7 +176,9 @@ export function Badge({ variant, children, className, ...rest }: { variant: 'ok'
     : variant === 'muted' ? 'bg-[var(--bg-hover)] text-[var(--muted)]'
     : 'bg-warn-subtle text-warn'
   return (
-    <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap hover:scale-105 transition-transform ${cls}`, className)} {...rest}>
+    // No hover transform: a Badge is a non-interactive status label, so growing
+    // it under the cursor announced an affordance that isn't there.
+    <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap ${cls}`, className)} {...rest}>
       {children}
     </span>
   )
@@ -206,7 +208,7 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
     // the conditional role, hence the scoped disables.
     /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:-translate-y-0.5 hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
+      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
       style={delay ? { animationDelay: `${delay}ms` } : undefined}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
@@ -683,9 +685,15 @@ export function Slider({
             the value; the inner circle owns press/drag scale + focus ring. */}
         <motion.div aria-hidden className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: motionPos }}>
           <motion.div
-            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
+            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 group-hover:border-black/30 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
             animate={{ scale: reduceMotion ? 1 : (dragging ? 1.15 : 1), boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
-            whileHover={disabled || reduceMotion ? undefined : { scale: 1.12 }}
+            // The knob is the visual grab target, so pointing at the slider has to
+            // say so — the removed `whileHover` scale was its only cue. It darkens
+            // its BORDER via `group-hover` rather than deepening its shadow, because
+            // `animate` above owns `boxShadow` as an INLINE style and an inline style
+            // beats any class, so a shadow cue would simply never paint. Nothing
+            // animates borderColor, so the two cannot fight, and no geometry changes.
+            // `group` is the same one the focus ring already keys on.
             whileTap={disabled || reduceMotion ? undefined : { scale: 1.2 }}
             transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 26 }}
           />

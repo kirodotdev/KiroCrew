@@ -1955,22 +1955,63 @@ describe('permission cls parsing and approval resolution', () => {
   it('resolveByApprovalId marks permission as approved', () => {
     const cls = JSON.stringify({ request_id: 'req-1' })
     let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ id: 'req-1', decision: 'approved' }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-1', decision: 'approved' }))
     expect(state.messages[0].meta?.resolved).toBe('approved')
   })
 
   it('resolveByApprovalId marks permission as rejected', () => {
     const cls = JSON.stringify({ request_id: 'req-2' })
     let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ id: 'req-2', decision: 'rejected' }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-2', decision: 'rejected' }))
     expect(state.messages[0].meta?.resolved).toBe('rejected')
   })
 
   it('resolveByApprovalId is no-op for unknown id', () => {
     const cls = JSON.stringify({ request_id: 'req-3' })
     let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
-    state = reducer(state, resolveByApprovalId({ id: 'req-unknown' }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-unknown' }))
     expect(state.messages[0].meta?.resolved).toBeUndefined()
+  })
+
+  it('resolveByApprovalId does not downgrade a decided row to stale', () => {
+    // A stale retirement carries no outcome (expired wait, 404, or a reconcile
+    // snapshot that no longer lists the id). Arriving after a real decision it
+    // is old news, not a new fact, and must leave the decision in place.
+    const cls = JSON.stringify({ request_id: 'req-decided' })
+    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-decided', decision: 'approved' }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-decided', decision: 'stale' }))
+    expect(state.messages[0].meta?.resolved).toBe('approved')
+  })
+
+  it('resolveByApprovalId lets a real decision overwrite stale on the selected registry', () => {
+    // The guard is directional: a decision that lands after a stale marker is
+    // the outcome the card was waiting for, so that direction stays open. A
+    // registry-qualified resolution must update the matching collision row.
+    let state = reducer(mkState(), sseChatMessage({
+      slot, role: 'permission', content: 'runner?', meta: { approval_id: 'req-late' },
+    }))
+    state = reducer(state, sseChatMessage({
+      slot, role: 'permission', content: 'coordinator?',
+      meta: { approval_id: 'req-late', registry: 'coordinator' },
+    }))
+    state = reducer(state, resolveByApprovalId({
+      slot, id: 'req-late', decision: 'stale', registry: 'coordinator',
+    }))
+    expect(state.messages[0].meta?.resolved).toBeUndefined()
+    expect(state.messages[1].meta?.resolved).toBe('stale')
+    state = reducer(state, resolveByApprovalId({
+      slot, id: 'req-late', decision: 'rejected', registry: 'coordinator',
+    }))
+    expect(state.messages[0].meta?.resolved).toBeUndefined()
+    expect(state.messages[1].meta?.resolved).toBe('rejected')
+  })
+
+  it('resolveByApprovalId still marks a pending row stale', () => {
+    const cls = JSON.stringify({ request_id: 'req-pending' })
+    let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'approve?', cls }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-pending', decision: 'stale' }))
+    expect(state.messages[0].meta?.resolved).toBe('stale')
   })
 
   it('resolved permission is filterable by meta.resolved', () => {
@@ -1978,7 +2019,7 @@ describe('permission cls parsing and approval resolution', () => {
     const cls2 = JSON.stringify({ request_id: 'req-b' })
     let state = reducer(mkState(), sseChatMessage({ slot, role: 'permission', content: 'tool1', cls: cls1 }))
     state = reducer(state, sseChatMessage({ slot, role: 'permission', content: 'tool2', cls: cls2 }))
-    state = reducer(state, resolveByApprovalId({ id: 'req-a', decision: 'approved' }))
+    state = reducer(state, resolveByApprovalId({ slot, id: 'req-a', decision: 'approved' }))
     const pending = state.messages.filter(m => m.role === 'permission' && !m.meta?.resolved)
     expect(pending).toHaveLength(1)
     expect(pending[0].meta?.approval_id).toBe('req-b')
