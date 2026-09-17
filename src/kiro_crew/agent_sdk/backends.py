@@ -73,6 +73,10 @@ with no row here.
      - disposition
    * - ``ACP_BACKENDS_KNOWN``
      - pre-session registry query (membership gate on the ``acp_backend`` kwarg)
+   * - ``ACP_BACKENDS_SELF_SERVED_ACP``
+     - driver-internal (whether this harness's whole launch is a value
+       :data:`ACP_BACKEND_LAUNCH` already holds, so the spawn path, the install
+       probe and the driver seams resolve it from that row)
    * - ``ACP_BACKENDS_SESSION_MCP_ARRAY``
      - driver-internal (which channel carries the MCP server list)
    * - ``ACP_BACKENDS_META_IDENTITY``
@@ -159,6 +163,7 @@ seam). Both already existed; neither gained a member here.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from enum import Enum
 from typing import FrozenSet, Mapping, Set
 
@@ -1651,6 +1656,116 @@ ACP_BACKEND_PERMISSION_SETTING: dict = {
 ACP_BACKEND_GATE_PROBE_COMMAND: dict = {
     ACP_BACKEND_PI: "kiro-crew-gate",
 }
+
+
+@dataclass(frozen=True)
+class SelfServedLaunch:
+    """The launch facts of one harness that serves ACP from its own binary.
+
+    ``binary`` is the name searched for on PATH, ``acp_args`` is what follows it on
+    the argv, ``bin_env_var`` is the operator override read before the search,
+    ``install_command`` is what an absent verdict tells the operator to run, ``label``
+    is the harness's display name, and ``protocol_version`` is the handshake dialect.
+
+    ``missing_hint`` is the one field that is prose rather than a value, and it earns
+    its place: what an operator would OTHERWISE try to install differs per harness (an
+    npm adapter that does not exist; a plugin package that is not the host), and that
+    sentence is what stops the wrong install. It is appended to the shared not-found
+    message rather than replacing it.
+
+    Frozen because the table is module state every spawn reads: a mutation from one
+    session would follow every session after it.
+    """
+
+    label: str
+    binary: str
+    acp_args: tuple
+    bin_env_var: str
+    install_command: str
+    protocol_version: int
+    missing_hint: str
+
+    @property
+    def spawn_label(self) -> str:
+        """What the spawn is logged under: the binary name and its own args."""
+        return " ".join((self.binary, *self.acp_args)).strip()
+
+
+#: Harness id -> the fixed facts of LAUNCHING it, for the harnesses whose own binary
+#: serves ACP.
+#:
+#: One row replaces what was a separate site per harness in six places: the binary
+#: name, the argv tail, the override variable, the install command, the protocol
+#: version and its row in the version table (all ``acp/client.py``), plus the three
+#: resolver seams in ``agent_sdk/drivers/acp.py``, the install probe in
+#: ``agent_sdk/backend_install.py`` and the display label in
+#: ``agent_sdk/tool_gate.py``. Every field is the SAME KIND of thing for all members;
+#: a harness whose launch needs a decision rather than a value is not one.
+#:
+#: It lives in this leaf, beside the routing and permission tables, because H8 keeps
+#: harness vocabulary in one module and because the install probe reads it without
+#: importing ``kiro_crew.acp``.
+#:
+#: Membership is deliberately narrow. claude-agent-acp, codex-acp and pi-acp are Node
+#: adapters resolved through a different ladder -- ``node_modules`` rungs, a vendored
+#: entry, and two independently-absent components for pi -- and kiro-cli's argv
+#: carries the agent spec, so none of the four is a member and none of their spawn
+#: arms reads this table. What a member's arm still owns for itself is its ROUTING:
+#: opencode's config read-back, goose's mode seed and deepseek's absence of either
+#: are not launch facts and are not here.
+ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
+    ACP_BACKEND_OPENCODE: SelfServedLaunch(
+        label="OpenCode",
+        binary="opencode",
+        acp_args=("acp",),
+        bin_env_var="OPENCODE_BIN",
+        install_command="npm i -g opencode-ai",
+        protocol_version=1,
+        missing_hint="No adapter package is needed: this harness serves ACP itself.",
+    ),
+    ACP_BACKEND_GOOSE: SelfServedLaunch(
+        label="goose",
+        binary="goose",
+        acp_args=("acp",),
+        bin_env_var="GOOSE_BIN",
+        install_command=(
+            "curl -fsSL https://raw.githubusercontent.com/block/goose/main/"
+            "download_cli.sh | bash"
+        ),
+        protocol_version=1,
+        missing_hint="No adapter package is needed: this harness serves ACP itself.",
+    ),
+    ACP_BACKEND_DEEPSEEK: SelfServedLaunch(
+        label="DeepSeek Harness",
+        binary="dsh",
+        acp_args=("--profile", "acp"),
+        bin_env_var="DSH_BIN",
+        install_command="npm i -g @deepseek-ai/dsh",
+        protocol_version=1,
+        missing_hint=(
+            "The ACP plugin package alone does not serve ACP: it is a plugin, and "
+            "this binary is the host that boots the profile it lives in."
+        ),
+    ),
+}
+
+#: The harnesses whose whole launch is described by :data:`ACP_BACKEND_LAUNCH`.
+#:
+#: A driver-internal membership, not a consumer-facing capability: it answers "is this
+#: harness's argv a value the table already holds?", which only the spawn path, the
+#: install probe and the driver seams ask. Derived from the table's keys rather than
+#: written a second time, so the two cannot disagree.
+ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
+
+
+def launch_for(backend: str) -> SelfServedLaunch:
+    """The launch record for *backend*, raising ``KeyError`` when it has none.
+
+    Raising rather than answering a default is the point: a caller that reaches here
+    for a Node adapter or for kiro-cli has taken the wrong arm, and a stand-in record
+    would spawn the wrong binary instead of saying so.
+    """
+    return ACP_BACKEND_LAUNCH[backend]
 
 
 def routing_for(backend: str) -> "Routing":

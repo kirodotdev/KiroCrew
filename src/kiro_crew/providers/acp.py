@@ -40,14 +40,9 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SESSION_SHARING,
     EVENT_COMPACTION_STATUS,
+    PROVIDER_LABEL_BY_BACKEND,
     PROVIDER_LABEL_CLAUDE,
-    PROVIDER_LABEL_CODEX,
-    PROVIDER_LABEL_DEEPSEEK,
     PROVIDER_LABEL_DEFAULT,
-    PROVIDER_LABEL_GOOSE,
-    PROVIDER_LABEL_KAS,
-    PROVIDER_LABEL_OPENCODE,
-    PROVIDER_LABEL_PI,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
     acp_runtime_backends,
@@ -2071,18 +2066,9 @@ def provider_label(provider: Any) -> str:
         backend = getattr(getattr(provider, "client", None), "backend", "")
     else:
         return PROVIDER_LABEL_DEFAULT
+    # The claude test stays a NAME check ahead of the mapping rather than folding
+    # into it: ``is_claude_backend_name`` accepts every spelling this build treats
+    # as that harness, which is more than one mapping key can hold.
     if is_claude_backend_name(backend):
         return PROVIDER_LABEL_CLAUDE
-    if backend == ACP_BACKEND_KAS:
-        return PROVIDER_LABEL_KAS
-    if backend == ACP_BACKEND_CODEX:
-        return PROVIDER_LABEL_CODEX
-    if backend == ACP_BACKEND_OPENCODE:
-        return PROVIDER_LABEL_OPENCODE
-    if backend == ACP_BACKEND_PI:
-        return PROVIDER_LABEL_PI
-    if backend == ACP_BACKEND_GOOSE:
-        return PROVIDER_LABEL_GOOSE
-    if backend == ACP_BACKEND_DEEPSEEK:
-        return PROVIDER_LABEL_DEEPSEEK
-    return PROVIDER_LABEL_DEFAULT
+    return PROVIDER_LABEL_BY_BACKEND.get(backend, PROVIDER_LABEL_DEFAULT)

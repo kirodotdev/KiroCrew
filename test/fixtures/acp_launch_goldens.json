@@ -1,0 +1,126 @@
+{
+  "claude": {
+    "argv": [
+      "/opt/bin/node",
+      "/opt/lib/claude-agent-acp/index.js"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "claude-agent-acp via /opt/lib/claude-agent-acp/index.js",
+    "stderr_label": "claude-acp via /opt/lib/claude-agent-acp/index.js"
+  },
+  "codex": {
+    "argv": [
+      "/opt/bin/node",
+      "/opt/lib/codex-acp/index.js"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "codex-acp via /opt/lib/codex-acp/index.js",
+    "stderr_label": "codex-acp via /opt/lib/codex-acp/index.js"
+  },
+  "deepseek": {
+    "argv": [
+      "/opt/bin/dsh",
+      "--profile",
+      "acp"
+    ],
+    "env_added": {
+      "DSH_PERMISSION_MODE": "workspace-write",
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "dsh --profile acp",
+    "stderr_label": "dsh"
+  },
+  "goose": {
+    "argv": [
+      "/opt/bin/goose",
+      "acp",
+      "--with-builtin",
+      "developer"
+    ],
+    "env_added": {
+      "GOOSE_MODE": "approve",
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "goose acp",
+    "stderr_label": "goose"
+  },
+  "kas": {
+    "argv": [
+      "/opt/bin/kiro-cli",
+      "acp",
+      "--agent",
+      "kirocrew"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "kiro-cli acp",
+    "stderr_label": "kiro-cli"
+  },
+  "kiro": {
+    "argv": [
+      "/opt/bin/kiro-cli",
+      "acp",
+      "--agent",
+      "kirocrew"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "kiro-cli acp",
+    "stderr_label": "kiro-cli"
+  },
+  "opencode": {
+    "argv": [
+      "/opt/bin/opencode",
+      "acp"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"ask\"}",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "opencode acp",
+    "stderr_label": "opencode"
+  },
+  "pi": {
+    "argv": [
+      "/opt/bin/node",
+      "/opt/lib/pi-acp/index.js"
+    ],
+    "env_added": {
+      "KIROCREW_PI_GATE_SESSION": "<nonce>",
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "PATH": "<augmented-path>",
+      "PI_ACP_PI_COMMAND": "/opt/run/pi-launcher.sh"
+    },
+    "spawn_label": "pi-acp via /opt/lib/pi-acp/index.js",
+    "stderr_label": "pi-acp via /opt/lib/pi-acp/index.js"
+  }
+}

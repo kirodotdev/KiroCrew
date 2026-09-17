@@ -347,94 +347,52 @@ def codex_adapter_install_command() -> str:
     return f"npm i -g {CODEX_ACP_NPM_PKG}"
 
 
-def opencode_resolves() -> bool:
-    """Whether the OpenCode binary resolves on this host right now.
+def self_served_resolves(backend: str) -> bool:
+    """Whether *backend*'s own binary resolves on this host right now.
 
-    One seam, not the adapters' two: this harness serves ACP itself, so the thing
-    that resolves IS the thing that runs, and there is no second executable whose
-    absence would be a different verdict.
+    ONE seam for every harness in ``ACP_BACKEND_LAUNCH``, not the adapters' two: for
+    those harnesses the thing that resolves IS the thing that runs, so there is no
+    second executable whose absence would be a different verdict -- which is what
+    makes one function correct for all of them rather than three that read alike.
     """
-    from kiro_crew.acp.client import _resolve_opencode_bin
+    from kiro_crew.acp.client import _resolve_self_served_bin
 
-    binary, _searched_path = _resolve_opencode_bin()
+    binary, _searched_path = _resolve_self_served_bin(backend)
     return bool(binary)
 
 
-def opencode_cached_negative() -> bool:
-    """Has the RUNNING gateway already resolved the opencode binary as absent?
+def self_served_cached_negative(backend: str) -> bool:
+    """Has the RUNNING gateway already resolved *backend*'s binary as absent?
 
-    Same hazard and same resolution as the two adapter seams above: the path is
-    resolved once per process behind an ``_UNRESOLVED`` sentinel and never
-    invalidated, so a probe reporting "installed" after an install would disagree
-    with every spawn until a restart. Consulted, never invalidated -- a dashboard
-    GET must not mutate a global on the spawn path.
+    Same hazard and same resolution as the adapter seams above: the path is resolved
+    once per process and never invalidated, so a probe reporting "installed" after an
+    install would disagree with every spawn until a restart. Consulted, never
+    invalidated -- a dashboard GET must not mutate state on the spawn path.
+
+    An absent key means this process has not looked yet, which is not a negative.
     """
     from kiro_crew.acp import client as _client
 
-    cached = getattr(_client, "_opencode_bin_cache", None)
-    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+    caches = getattr(_client, "_self_served_bin_caches", None)
+    if not isinstance(caches, dict) or backend not in caches:
         return False
     try:
-        binary, _searched = cached  # type: ignore[misc]
+        binary, _searched = caches[backend]
     except Exception:
         return False
     return not binary
 
 
-def opencode_install_command() -> str:
-    """The harness's own installer, read from the spawn path's constant.
+def self_served_install_command(backend: str) -> str:
+    """The harness's own installer, read from its launch record.
 
-    Imported rather than restated for the same reason as the two above: the command
-    an operator is told to run and the binary the ladder searches for must not be
-    able to drift apart.
+    Read rather than restated for the same reason the adapters' commands are imported
+    from the spawn path: the command an operator is told to run and the binary the
+    ladder searches for must not be able to drift apart.
     """
-    from kiro_crew.acp.client import OPENCODE_INSTALL_COMMAND
+    from kiro_crew.agent_sdk.backends import launch_for
 
-    return OPENCODE_INSTALL_COMMAND
-
-
-def goose_resolves() -> bool:
-    """Whether the goose binary resolves on this host right now.
-
-    One seam, like opencode's and unlike the adapters' two: this harness serves ACP
-    itself, so the thing that resolves IS the thing that runs.
-    """
-    from kiro_crew.acp.client import _resolve_goose_bin
-
-    binary, _searched_path = _resolve_goose_bin()
-    return bool(binary)
-
-
-def goose_cached_negative() -> bool:
-    """Has the RUNNING gateway already resolved the goose binary as absent?
-
-    Same hazard and same resolution as the seams above: the path is resolved once per
-    process behind an ``_UNRESOLVED`` sentinel and never invalidated, so a probe
-    reporting "installed" after an install would disagree with every spawn until a
-    restart. Consulted, never invalidated -- a dashboard GET must not mutate a global
-    on the spawn path.
-    """
-    from kiro_crew.acp import client as _client
-
-    cached = getattr(_client, "_goose_bin_cache", None)
-    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
-        return False
-    try:
-        binary, _searched = cached  # type: ignore[misc]
-    except Exception:
-        return False
-    return not binary
-
-
-def goose_install_command() -> str:
-    """The harness's own installer, read from the spawn path's constant.
-
-    Imported rather than restated so the command an operator is told to run and the
-    binary the ladder searches for cannot drift apart.
-    """
-    from kiro_crew.acp.client import GOOSE_INSTALL_COMMAND
-
-    return GOOSE_INSTALL_COMMAND
+    return launch_for(backend).install_command
 
 
 def pi_components_resolve() -> tuple[bool, bool]:
@@ -481,53 +439,6 @@ def pi_install_command() -> str:
     from kiro_crew.acp.client import PI_INSTALL_COMMAND
 
     return PI_INSTALL_COMMAND
-
-
-def deepseek_resolves() -> bool:
-    """Whether the DeepSeek Harness binary resolves on this host right now.
-
-    One seam, like the sibling harness's: what resolves IS what runs. The ACP plugin
-    package has no executable of its own -- it is a plugin with peer dependencies on
-    the harness core -- so the host binary that boots its profile is the only thing
-    whose absence is a verdict.
-    """
-    from kiro_crew.acp.client import _resolve_deepseek_bin
-
-    binary, _searched_path = _resolve_deepseek_bin()
-    return bool(binary)
-
-
-def deepseek_cached_negative() -> bool:
-    """Has the RUNNING gateway already resolved the DeepSeek binary as absent?
-
-    Same hazard and same resolution as every seam above: the path is resolved once
-    per process behind an ``_UNRESOLVED`` sentinel and never invalidated, so a probe
-    reporting "installed" after an install would disagree with every spawn until a
-    restart. Consulted, never invalidated -- a dashboard GET must not mutate a global
-    on the spawn path.
-    """
-    from kiro_crew.acp import client as _client
-
-    cached = getattr(_client, "_deepseek_bin_cache", None)
-    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
-        return False
-    try:
-        binary, _searched = cached  # type: ignore[misc]
-    except Exception:
-        return False
-    return not binary
-
-
-def deepseek_install_command() -> str:
-    """The harness's own installer, read from the spawn path's constant.
-
-    Imported rather than restated, for the reason every sibling states: the command
-    an operator is told to run and the binary the ladder searches for must not be
-    able to drift apart.
-    """
-    from kiro_crew.acp.client import DEEPSEEK_INSTALL_COMMAND
-
-    return DEEPSEEK_INSTALL_COMMAND
 
 
 def claude_adapter_install_command() -> str:

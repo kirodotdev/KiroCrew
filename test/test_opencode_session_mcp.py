@@ -908,13 +908,13 @@ def _run_driver_reaping_group(
 def _opencode_bin() -> str | None:
     """The installed harness, through the SPAWN's own resolver.
 
-    Asking ``_resolve_opencode_bin`` rather than ``shutil.which`` is deliberate:
+    Asking ``_resolve_self_served_bin`` rather than ``shutil.which`` is deliberate:
     what this test must exercise is the binary a real session would spawn, on the
     same ladder (``OPENCODE_BIN``, mise, PATH).
     """
-    from kiro_crew.acp.client import _resolve_opencode_bin
+    from kiro_crew.acp.client import _resolve_self_served_bin
 
-    resolved, _search = _resolve_opencode_bin()
+    resolved, _search = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
     return resolved or None
 
 
@@ -1060,9 +1060,9 @@ def test_the_real_adapter_guard_is_reachable_at_all():
     the RESOLVER the guard skips on is the spawn's own, so a rename there turns the
     guard permanently green without anyone seeing it.
     """
-    from kiro_crew.acp.client import _resolve_opencode_bin
+    from kiro_crew.acp.client import _resolve_self_served_bin
 
-    resolved, search = _resolve_opencode_bin()
+    resolved, search = _resolve_self_served_bin(ACP_BACKEND_OPENCODE)
     assert resolved is None or isinstance(resolved, str)
     assert isinstance(search, str)
     assert os.environ.get("OPENCODE_BIN") is None or _BIN is not None

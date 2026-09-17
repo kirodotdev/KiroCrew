@@ -110,7 +110,30 @@ largest single piece: `acp/client.py` grew between +194 and +806 lines per
 harness. It is not reducible by refactoring, because it is the part that is
 genuinely different.
 
-What a harness needs, using the Codex adapter as the shape:
+**Ask first whether your harness serves ACP from its own binary.** If it does,
+most of this stage is already written. `ACP_BACKEND_LAUNCH` in
+`agent_sdk/backends.py` holds one record per such harness — the display label, the
+binary, the ACP args, the override variable, the install command, the protocol
+version, and one prose hint for what an operator might otherwise try to install.
+Add a row and the shared paths resolve you from it: one resolver
+(`_resolve_self_served_bin`), one cache keyed by backend, the `_spawn` prologue
+(`_resolve_self_served_launch`, which answers binary, argv, spawn label and stderr
+label), the handshake dialect table, the install probe and the tool-gate label.
+
+Membership is `ACP_BACKENDS_SELF_SERVED_ACP`, derived from the table's own keys.
+There is nothing else to register.
+
+What stays yours in that case is only your ROUTING — a config read-back, an
+environment seed, a gate extension — because those are decisions rather than
+values. The three harnesses in the table each keep exactly that and nothing more.
+
+A harness that is **not** a member — a Node adapter, two independently-absent
+components, an argv that carries an agent spec — writes this stage by hand, and the
+list below is the shape. Do not add a row for it: a record whose fields do not
+describe the launch is worse than no record, because the shared resolver would spawn
+the wrong thing rather than say so.
+
+What a hand-written harness needs, using the Codex adapter as the shape:
 
 - **The adapter, and whether one is needed at all.** `codex-acp` exists because
   the `codex` CLI does not serve ACP — it reads `acp` as a prompt. The adapter is
@@ -229,10 +252,18 @@ fences.
 ## Stage 6 — the install probe
 
 `agent_sdk/backend_install.py` answers a question selectability does not: *is
-this harness installed on this machine, and if not, what installs it?* It holds
-one `_probe_<name>` per harness in `_PROBES`, each returning a
-`BackendInstallState` naming the missing component and the command that fixes
-it.
+this harness installed on this machine, and if not, what installs it?* `_PROBES`
+maps each id to a probe returning a `BackendInstallState` that names the missing
+component and the command that fixes it.
+
+**A harness in `ACP_BACKEND_LAUNCH` needs no probe and no row.** `_PROBES` binds
+`_probe_self_served` to every member of `ACP_BACKENDS_SELF_SERVED_ACP`, and that
+probe reads the component name and the install command out of the record. This is
+the whole of Stage 6 for a member: the row you added in Stage 3 is what answers.
+
+A harness outside the table writes its own `_probe_<name>` and its own `_PROBES`
+row, because its install shape is a decision — the two Node adapters and Pi each
+have two components, and which half is absent changes the remedy.
 
 **This stage is the gate between dormant and selectable**, and it is the one
 that is easy to skip because nothing fails without it. Nothing fails; the
@@ -319,6 +350,18 @@ Beyond the ordinary suite:
 - **`./scripts/docs-lint.sh`** requires every doc to be reachable from its
   directory index, and checks that line citations still point at what they
   claim.
+- **`test_acp_launch_goldens.py`** compares what every known harness is LAUNCHED
+  as — the argv handed to the process factory, the label the spawn is logged under,
+  the label stderr is drained under, and the environment variables the spawn adds —
+  against `test/fixtures/acp_launch_goldens.json`. A new id fails it until the
+  fixture carries a row for it, which is deliberate: the fixture is what says a
+  change to a shared path left every other harness alone.
+
+  The test is read-only. Regenerate with `python3 scripts/update_acp_launch_goldens.py`
+  and **commit the rewritten fixture in the same commit as the change**, because the
+  fixture diff is what shows a reviewer which harness moved. Never regenerate one to
+  turn a red green without saying in the review why the launch moved, and never to
+  clear a kiro-cli row — that row is what harness-parity H13 protects.
 
 Never relax a check to make a red invariant green. If a harness genuinely cannot
 be adapted within these invariants, the correct outcome is that it does not land
@@ -358,7 +401,7 @@ the one to read for what the stages cost when nothing can be skipped:
 | 3 spawn path | Done — one binary, `opencode acp`, resolved override → mise → PATH. No adapter package and no Node floor, so the ladder is the plain-binary one rather than the entry-script one. |
 | 4 handshake | Done — `PROTOCOL_VERSION_OPENCODE`, its own literal, integer `1`, captured off its own wire. |
 | 5 auth declaration | Done — `own_credential_file`, `~/.local/share/opencode/auth.json` on the floor with `XDG_DATA_HOME` re-anchored, that leaf spared for its own child, not retired by a host logout, and a remedy that names an action without asserting a state (a locally served model needs no sign-in at all). |
-| 6 install probe | Done — `_probe_opencode` names `opencode` and the command that installs it. One component, and here that is not a simplification: the thing that would be missing is the thing that serves ACP. `restart_required` is read from the spawn path's own cache (`opencode_cached_negative()`): the binary resolves now, but this process already cached its absence, so a session started right now still fails until the gateway restarts. |
+| 6 install probe | Done — no probe of its own. This harness is a member of `ACP_BACKEND_LAUNCH`, so `_PROBES` binds `_probe_self_served` to it and the component name and install command come from its record. One component, and here that is not a simplification: the thing that would be missing is the thing that serves ACP. `restart_required` is read from the spawn path's own cache (`self_served_cached_negative()`): the binary resolves now, but this process already cached its absence, so a session started right now still fails until the gateway restarts. |
 | 7 selectability | Selectable. `NOT_SHIPPED_SELECTABLE` stays empty. |
 | routing | Done, by a NEW mechanism — `VERIFIED_SEEDED_SETTINGS`. The setting travels as inline config in the child's environment, which resolves above the project's own config file, and the harness's own resolved configuration is read back before the first prompt; the session is refused when the required value is not in force. |
 | residual | The read-back establishes the PRECONDITION, not that the harness honours it per tool call — no client-side read can prove that. And ACP v1 still cannot require a prompt for a passive READ, so the OS-boundary credential mask is the compensating control, as it is for Codex. |
@@ -384,7 +427,7 @@ fails the one that matters. It is `ACP_BACKENDS_KNOWN` and it is NOT selectable.
 | 3 spawn path | Done — one binary plus a profile selector, `dsh --profile acp`, resolved override → mise → PATH. The ACP package is a plugin with no executable, so what resolves is the HOST that boots the profile it lives in. |
 | 4 handshake | Done — `PROTOCOL_VERSION_DEEPSEEK`, its own literal, integer `1`, captured off its own wire. |
 | 5 auth declaration | Done — `own_credential_file`, and less auth than any harness so far: `authMethods: []` and an `authenticate` that returns immediate success, so the ACP layer authenticates nothing and the secret it needs is a PROVIDER key. Two leaves on the floor, `~/.dsh/.credentials.yaml` and the `~/.dsh/.env` fallback, `DSH_HOME` re-anchored, `adapter_own_leaves` EMPTY. |
-| 6 install probe | Done — `_probe_deepseek` names `dsh` and `npm i -g @deepseek-ai/dsh`, with `restart_required` from the spawn path's own cache. |
+| 6 install probe | Done — no probe of its own; `_probe_self_served` reads this harness's record, which names `dsh` and `npm i -g @deepseek-ai/dsh`, with `restart_required` from the spawn path's own cache. Naming the HOST binary rather than the ACP package is why the command is data in the record: that package is a plugin with no executable, so advice naming it would not produce a runnable harness. |
 | 7 selectability | **Not selectable.** Named in `NOT_SHIPPED_SELECTABLE` with its reason. |
 | routing | `UNVERIFIED`, on observation rather than for want of looking. |
 | residual | The whole of it. Crew's PreToolUse gate does not run for what a session does, and there is no compensating mask either, because the mask is gated on `ENFORCED_ROUTINGS`. |
@@ -512,7 +555,7 @@ It is in `ACP_BACKENDS_KNOWN` and it IS selectable.
 | 3 spawn path | Done — one binary and one subcommand, `goose acp`, resolved override → mise → PATH. No adapter package and no Node floor. The argv also names `--with-builtin developer`, because supplying `mcpServers` REPLACES this harness's configured extensions. |
 | 4 handshake | Done — integer `1`, captured off its own wire. |
 | 5 auth declaration | Done — `own_credential_file`, one leaf (`~/.config/goose/secrets.yaml`), `XDG_CONFIG_HOME` re-anchored, `adapter_own_leaves` non-empty. The CONFIG home rather than the data home, which is the inverse of the sibling single-binary harness's choice and the same rule applied: name the home the secret lives under, and no other. |
-| 6 install probe | Done — `_probe_goose` names `goose` and the harness's own installer, with `restart_required` from the spawn path's own cache. |
+| 6 install probe | Done — no probe of its own; `_probe_self_served` reads this harness's record, which names `goose` and the harness's own installer, with `restart_required` from the spawn path's own cache. |
 | 7 selectability | **Selectable**, on a routing that is verified rather than declared. |
 | routing | `VERIFIED_SEEDED_SETTINGS`, and the cheapest instance of it: the seed is one environment variable and the read-back is a field on the response that opens the session. |
 | 8 live spill | Reached. A live turn, and a corpus live for ALL SEVEN required classes — the first onboarding here to synthesize nothing, because this harness emitted a `session/request_permission` frame for both a builtin tool and one of Crew's own MCP tools. |

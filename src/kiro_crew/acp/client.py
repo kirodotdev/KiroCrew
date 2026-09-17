@@ -177,6 +177,7 @@ from kiro_crew.agent import (
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_LAUNCH, launch_for
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -252,18 +253,18 @@ PROTOCOL_VERSION_CODEX = 1
 # own wire, and its own literal for the same reason codex has one (harness-parity
 # H10): a divergence should be a one-line edit here, not a silent downgrade of
 # whichever harness moved first.
-PROTOCOL_VERSION_OPENCODE = 1
+PROTOCOL_VERSION_OPENCODE = launch_for(ACP_BACKEND_OPENCODE).protocol_version
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
 # goose answers ``initialize`` with an integer ``protocolVersion`` of 1, captured off
 # goose 1.50.1's own wire (``test/fixtures/acp_frames/goose/handshake-live.jsonl``);
 # its own literal for the same H10 reason.
-PROTOCOL_VERSION_GOOSE = 1
+PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
 # DeepSeek Harness answers ``initialize`` with an integer ``protocolVersion`` of 1,
 # so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
 # for the same reason the two above have one (harness-parity H10).
-PROTOCOL_VERSION_DEEPSEEK = 1
+PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -271,10 +272,12 @@ PROTOCOL_VERSION_DEEPSEEK = 1
 _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
     ACP_BACKEND_CODEX: PROTOCOL_VERSION_CODEX,
-    ACP_BACKEND_OPENCODE: PROTOCOL_VERSION_OPENCODE,
     ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
-    ACP_BACKEND_GOOSE: PROTOCOL_VERSION_GOOSE,
-    ACP_BACKEND_DEEPSEEK: PROTOCOL_VERSION_DEEPSEEK,
+    # Every harness whose own binary serves ACP declares its dialect in its
+    # ``ACP_BACKEND_LAUNCH`` row, so those rows are read rather than restated here.
+    # The three adapters above keep explicit rows: each is a separate package with
+    # its own release cadence, and none has a launch record to read.
+    **{backend: record.protocol_version for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
 DEFAULT_MODEL = "auto"
 
@@ -344,10 +347,13 @@ _ENV_CODEX_ACP_BIN = "CODEX_ACP_BIN"
 # executable -- so the resolution ladder here is the plain-binary one
 # (``_resolve_claude_code_executable``'s shape), not the Node-entry-script one the
 # two adapters above need.
-OPENCODE_BIN = "opencode"
-OPENCODE_ACP_SUBCMD = "acp"
-# Explicit override, spelled the way this harness's own documentation spells it.
-_ENV_OPENCODE_BIN = "OPENCODE_BIN"
+# The launch facts live in this harness's ``ACP_BACKEND_LAUNCH`` row, and every
+# shared path reads them from there: the resolver, the spawn arm, the install probe
+# and the driver seams. Only the two names a reader in THIS module still needs are
+# bound here, for ``_opencode_readback_remedy`` below -- the routing remedy names the
+# binary and its installer in prose. A harness added later needs neither.
+_OPENCODE_LAUNCH = launch_for(ACP_BACKEND_OPENCODE)
+OPENCODE_BIN = _OPENCODE_LAUNCH.binary
 # The channel Crew's permission routing travels down: inline config JSON in the
 # child's environment. It is what makes the routing seed session-scoped -- nothing
 # is written into a checked-out repository -- and it resolves ABOVE the project's
@@ -355,9 +361,7 @@ _ENV_OPENCODE_BIN = "OPENCODE_BIN"
 # ``permission: "allow"`` and reading ``ask`` back out. The read-back is still what
 # establishes the guarantee; this is only how the value gets there.
 _ENV_OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
-# The harness's own installer. Not an ``npm i -g`` of an adapter, because there is
-# no adapter: this installs the binary that serves ACP.
-OPENCODE_INSTALL_COMMAND = "npm i -g opencode-ai"
+OPENCODE_INSTALL_COMMAND = _OPENCODE_LAUNCH.install_command
 # The subcommand that prints the RESOLVED configuration -- every source merged, the
 # way the ACP server itself resolves it. Reading it back is what separates this
 # harness's routing from a declared-but-unverified seed.
@@ -368,21 +372,12 @@ _OPENCODE_READBACK_TIMEOUT_S = 30.0
 
 # goose serves ACP from its own binary too, so the same plain-binary ladder applies
 # and there is no adapter package and no Node floor.
-GOOSE_BIN = "goose"
-GOOSE_ACP_SUBCMD = "acp"
-# Explicit override, spelled like the sibling harnesses' overrides.
-_ENV_GOOSE_BIN = "GOOSE_BIN"
 # The channel Crew's permission routing travels down on this harness: goose resolves
 # its mode from a PLAIN ENVIRONMENT VARIABLE, above its own config file, so the seed
 # needs neither a file nor a JSON document. Verified on this harness by resolving a
 # config that declares ``GOOSE_MODE: auto`` and reading ``approve`` back off the
 # session.
 _ENV_GOOSE_MODE = "GOOSE_MODE"
-# The harness's own installer. Not an ``npm i -g`` of an adapter, because there is no
-# adapter: this installs the binary that serves ACP.
-GOOSE_INSTALL_COMMAND = (
-    "curl -fsSL https://raw.githubusercontent.com/block/goose/main/download_cli.sh | bash"
-)
 # The builtin extension Crew asks goose to load. goose REPLACES its configured
 # extensions with the client's ``mcpServers`` array, so a session handed Crew's
 # servers and nothing else carries no shell and no file tools at all. Naming it on
@@ -496,10 +491,6 @@ PI_GATE_EXTENSION_SHA256 = "33caa696e70e3b0c0793a705b0c6e06c372c52478e3ac4abf75f
 # profile is shipped: it is created on first use, and both of its bundles are inside
 # the installed package's own dependency closure, so a global install needs no
 # workspace checkout and no per-profile dependency step.
-DEEPSEEK_BIN = "dsh"
-DEEPSEEK_ACP_PROFILE_ARGS = ("--profile", "acp")
-# Explicit override, spelled the way this harness's own environment variables are.
-_ENV_DEEPSEEK_BIN = "DSH_BIN"
 # The one variable the shipped ACP profile composes its whole permission posture
 # from: it selects a sandbox mode AND an approval policy together. Pinned so the
 # posture never depends on an ambient value. A config layer can set the composed rows
@@ -510,10 +501,6 @@ _ENV_DEEPSEEK_PERMISSION_MODE = "DSH_PERMISSION_MODE"
 # in depth and nothing more, because it does not make this harness's tool calls reach
 # Crew's gate.
 DEEPSEEK_PERMISSION_MODE = "workspace-write"
-# The harness's own installer. The ACP plugin package itself has no executable --
-# it is a plugin with peer dependencies on the harness core -- so what is installed
-# is the host binary that boots the profile it lives in.
-DEEPSEEK_INSTALL_COMMAND = "npm i -g @deepseek-ai/dsh"
 
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
@@ -930,88 +917,41 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
     )
 
 
-_opencode_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
-_goose_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
+#: Resolved binary per self-served harness, keyed by backend id. ONE mapping rather
+#: than one module global each: the resolution is the same three rungs for every
+#: member, so a per-harness global would be three copies of one cache. Read and
+#: written only through :func:`_resolve_self_served_bin` and the driver's
+#: cached-negative seam, which is why an absent key means "not looked at yet" and a
+#: ``(None, path)`` value means "looked, and it is not here".
+_self_served_bin_caches: dict[str, tuple[str | None, str]] = {}
 
 
-def _resolve_opencode_bin() -> tuple[str | None, str]:
-    """Find the opencode executable and the PATH searched for it.
+def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
+    """Find *backend*'s own executable and the PATH searched for it.
 
     Three rungs, the plain-binary ladder: explicit override, then mise, then the
-    augmented PATH. No ``node_modules`` rung and no node resolution, because this
-    harness is not a Node script -- it is a binary that serves ACP itself.
+    augmented PATH. No ``node_modules`` rung and no node resolution, because every
+    harness this serves is a binary that speaks ACP itself rather than a Node entry
+    script -- which is exactly what membership in ``ACP_BACKEND_LAUNCH`` asserts.
 
-    Returns ``(None, search_path)`` when it is absent, so the caller reports what
-    was searched rather than raising from inside the resolver.
-    """
-    search_path = augmented_path(os.environ.get("PATH", ""))
-
-    override = os.environ.get(_ENV_OPENCODE_BIN)
-    if override and platform_compat.is_executable_file(override):
-        return _normalize_exe_casing(override) or override, search_path
-
-    mise_resolved = _mise_which(OPENCODE_BIN)
-    if mise_resolved:
-        return mise_resolved, search_path
-
-    on_path = shutil.which(OPENCODE_BIN, path=search_path)
-    if on_path:
-        return _normalize_exe_casing(on_path) or on_path, search_path
-
-    return None, search_path
-
-
-def _resolve_goose_bin() -> tuple[str | None, str]:
-    """Find the goose executable and the PATH searched for it.
-
-    The same three-rung plain-binary ladder ``_resolve_opencode_bin`` walks, for the
-    same reason: this harness is a binary that serves ACP itself, not a Node entry
-    script, so there is no ``node_modules`` rung and no node to resolve.
+    The binary name and the override variable come from that record, so a harness is
+    resolved by its row rather than by a function of its own.
 
     Returns ``(None, search_path)`` when it is absent, so the caller reports what was
     searched rather than raising from inside the resolver.
     """
+    launch = launch_for(backend)
     search_path = augmented_path(os.environ.get("PATH", ""))
 
-    override = os.environ.get(_ENV_GOOSE_BIN)
+    override = os.environ.get(launch.bin_env_var)
     if override and platform_compat.is_executable_file(override):
         return _normalize_exe_casing(override) or override, search_path
 
-    mise_resolved = _mise_which(GOOSE_BIN)
+    mise_resolved = _mise_which(launch.binary)
     if mise_resolved:
         return mise_resolved, search_path
 
-    on_path = shutil.which(GOOSE_BIN, path=search_path)
-    if on_path:
-        return _normalize_exe_casing(on_path) or on_path, search_path
-
-    return None, search_path
-
-
-_deepseek_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
-
-
-def _resolve_deepseek_bin() -> tuple[str | None, str]:
-    """Find the ``dsh`` executable and the PATH searched for it.
-
-    The same three-rung plain-binary ladder the sibling harness takes -- explicit
-    override, then mise, then the augmented PATH -- because this harness is a
-    binary that boots a profile, not a Node script to resolve.
-
-    Returns ``(None, search_path)`` when it is absent, so the caller reports what
-    was searched rather than raising from inside the resolver.
-    """
-    search_path = augmented_path(os.environ.get("PATH", ""))
-
-    override = os.environ.get(_ENV_DEEPSEEK_BIN)
-    if override and platform_compat.is_executable_file(override):
-        return _normalize_exe_casing(override) or override, search_path
-
-    mise_resolved = _mise_which(DEEPSEEK_BIN)
-    if mise_resolved:
-        return mise_resolved, search_path
-
-    on_path = shutil.which(DEEPSEEK_BIN, path=search_path)
+    on_path = shutil.which(launch.binary, path=search_path)
     if on_path:
         return _normalize_exe_casing(on_path) or on_path, search_path
 
@@ -1048,7 +988,7 @@ def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
 def _resolve_pi_bin() -> tuple[str | None, str]:
     """Find the ``pi`` agent executable and the PATH searched for it.
 
-    The plain-binary ladder (``_resolve_opencode_bin``'s shape). The override rung
+    The plain-binary ladder (``_resolve_self_served_bin``'s shape). The override rung
     is the ADAPTER'S variable: an operator who told pi-acp which ``pi`` to run has
     made the choice this resolver exists to honour, and the gate launcher execs
     exactly that binary -- so setting the variable on the child to the launcher
@@ -6837,6 +6777,39 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
 
+    async def _resolve_self_served_launch(self) -> tuple[str, list[str], str, str]:
+        """The binary, argv, spawn label and stderr label for a self-served harness.
+
+        ONE resolution for every member of ``ACP_BACKEND_LAUNCH``, because for those
+        harnesses all four answers are values their row already holds: the binary that
+        serves ACP, the args that follow it, and the two labels derived from the same
+        pair. A harness whose argv needs a decision is not a member and does not call
+        this.
+
+        Off-loop, like the per-harness resolutions it replaces: the ladder reads the
+        environment and stats candidate paths. Cached per backend for the gateway's
+        life, which is the contract the install probe's ``restart_required`` answer
+        reports on.
+
+        Kiro-cli does not reach here and neither do the three Node adapters, so this
+        adds no step and no conditional to their construction paths (harness-parity
+        H13).
+        """
+        launch = launch_for(self.backend)
+        if self.backend not in _self_served_bin_caches:
+            _self_served_bin_caches[self.backend] = await asyncio.to_thread(
+                _resolve_self_served_bin, self.backend
+            )
+        binary, search_path = _self_served_bin_caches[self.backend]
+        if not binary:
+            raise AcpError(
+                f"{launch.binary} not found "
+                f"({describe_search_path(search_path)}). Install it with "
+                f"'{launch.install_command}', or set {launch.bin_env_var} to the "
+                f"executable. {launch.missing_hint}"
+            )
+        return binary, [binary, *launch.acp_args], launch.spawn_label, launch.binary
+
     async def _spawn(self) -> None:
         """Start the ACP backend subprocess with stdio pipes.
 
@@ -6996,25 +6969,9 @@ class AcpClient:
         elif self._is_opencode:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
-            # npm package to resolve.
-            global _opencode_bin_cache  # noqa: PLW0603
-            if _opencode_bin_cache is _UNRESOLVED:
-                _opencode_bin_cache = await asyncio.to_thread(_resolve_opencode_bin)
-            cached_opencode_resolution = _opencode_bin_cache
-            opencode_bin, opencode_search_path = (
-                cached_opencode_resolution
-                if isinstance(cached_opencode_resolution, tuple)
-                else (None, "")
-            )
-            if not isinstance(opencode_bin, str) or not opencode_bin:
-                raise AcpError(
-                    f"{OPENCODE_BIN} not found "
-                    f"({describe_search_path(opencode_search_path)}). Install it with "
-                    f"'{OPENCODE_INSTALL_COMMAND}', or set {_ENV_OPENCODE_BIN} to the "
-                    f"executable. No adapter package is needed: this harness serves ACP "
-                    f"itself."
-                )
-            argv = [opencode_bin, OPENCODE_ACP_SUBCMD]
+            # npm package to resolve. All four values come from its
+            # ``ACP_BACKEND_LAUNCH`` row.
+            opencode_bin, argv, spawn_label, stderr_label = await self._resolve_self_served_launch()
             # Translate the agent spec into this session's MCP array HERE, on
             # opencode's own arm, for exactly the reason the claude and codex arms
             # do it on theirs: the translation reads disk, and doing it at the
@@ -7029,8 +6986,6 @@ class AcpClient:
             # resolves a cold cache itself; the warm is what keeps the read off the
             # loop.
             self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = f"{OPENCODE_BIN} {OPENCODE_ACP_SUBCMD}"
-            stderr_label = OPENCODE_BIN
             # The same refuse-then-mask preflight the codex arm runs, keyed on the
             # same routing question rather than on this harness's identity: it is
             # ENFORCED, so the OS credential mask is the compensating control for the
@@ -7101,35 +7056,17 @@ class AcpClient:
         elif self._is_goose:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
-            # npm package to resolve.
-            global _goose_bin_cache  # noqa: PLW0603
-            if _goose_bin_cache is _UNRESOLVED:
-                _goose_bin_cache = await asyncio.to_thread(_resolve_goose_bin)
-            cached_goose_resolution = _goose_bin_cache
-            goose_bin, goose_search_path = (
-                cached_goose_resolution
-                if isinstance(cached_goose_resolution, tuple)
-                else (None, "")
-            )
-            if not isinstance(goose_bin, str) or not goose_bin:
-                raise AcpError(
-                    f"{GOOSE_BIN} not found "
-                    f"({describe_search_path(goose_search_path)}). Install it with "
-                    f"'{GOOSE_INSTALL_COMMAND}', or set {_ENV_GOOSE_BIN} to the "
-                    f"executable. No adapter package is needed: this harness serves ACP "
-                    f"itself."
-                )
+            # npm package to resolve. All four values come from its
+            # ``ACP_BACKEND_LAUNCH`` row.
+            _goose_bin, argv, spawn_label, stderr_label = await self._resolve_self_served_launch()
             # The builtin extension travels on the ARGV rather than in the session
             # array, because it is not one of Crew's servers: it is the harness's own
             # shell and file tools, which this harness drops when a client supplies
             # ``mcpServers``. Restoring them here keeps a session that has Crew's
-            # tools from having nothing else.
-            argv = [
-                goose_bin,
-                GOOSE_ACP_SUBCMD,
-                _GOOSE_BUILTIN_ARG,
-                _GOOSE_BUILTIN_DEVELOPER,
-            ]
+            # tools from having nothing else. Appended AFTER the shared resolution, so
+            # the label above stays the harness plus its ACP subcommand and does not
+            # grow a builtin an operator did not name.
+            argv = [*argv, _GOOSE_BUILTIN_ARG, _GOOSE_BUILTIN_DEVELOPER]
             # Translate the agent spec into this session's MCP array HERE, on goose's
             # own arm, for the reason the claude, codex and opencode arms do it on
             # theirs: the translation reads disk, and doing it at the shared
@@ -7139,8 +7076,6 @@ class AcpClient:
             # resolves a cold cache itself -- the warm is what keeps the read off the
             # loop.
             self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
-            spawn_label = f"{GOOSE_BIN} {GOOSE_ACP_SUBCMD}"
-            stderr_label = GOOSE_BIN
             # The same refuse-then-mask preflight the codex, opencode and pi arms run,
             # keyed on the same routing question rather than on this harness's
             # identity: it is ENFORCED, so the OS credential mask is the compensating
@@ -7246,25 +7181,11 @@ class AcpClient:
         elif self._is_deepseek:
             # This harness is a plugin host and ACP is one of the profiles it boots,
             # so the argv is its own binary plus the profile selector: no adapter
-            # entry script, no node, and no npm package to resolve at spawn time.
-            global _deepseek_bin_cache  # noqa: PLW0603
-            if _deepseek_bin_cache is _UNRESOLVED:
-                _deepseek_bin_cache = await asyncio.to_thread(_resolve_deepseek_bin)
-            cached_deepseek_resolution = _deepseek_bin_cache
-            deepseek_bin, deepseek_search_path = (
-                cached_deepseek_resolution
-                if isinstance(cached_deepseek_resolution, tuple)
-                else (None, "")
+            # entry script, no node, and no npm package to resolve at spawn time. All
+            # four values come from its ``ACP_BACKEND_LAUNCH`` row.
+            _deepseek_bin, argv, spawn_label, stderr_label = (
+                await self._resolve_self_served_launch()
             )
-            if not isinstance(deepseek_bin, str) or not deepseek_bin:
-                raise AcpError(
-                    f"{DEEPSEEK_BIN} not found "
-                    f"({describe_search_path(deepseek_search_path)}). Install it with "
-                    f"'{DEEPSEEK_INSTALL_COMMAND}', or set {_ENV_DEEPSEEK_BIN} to the "
-                    f"executable. The ACP plugin package alone does not serve ACP: it "
-                    f"is a plugin, and this binary is the host that boots the profile "
-                    f"it lives in."
-                )
             # No spec translation is warmed here, and its absence is the declared
             # state rather than an omission: this harness has no mirror, so
             # ``_resolve_session_mcp_servers`` would answer with an empty list, and
@@ -7294,9 +7215,6 @@ class AcpClient:
             # it is absent from ``BASELINE_SELECTABLE_BACKENDS``. A read-back would
             # confirm a setting that governs escalations alone and read as a
             # guarantee nothing performs.
-            argv = [deepseek_bin, *DEEPSEEK_ACP_PROFILE_ARGS]
-            spawn_label = f"{DEEPSEEK_BIN} {' '.join(DEEPSEEK_ACP_PROFILE_ARGS)}"
-            stderr_label = DEEPSEEK_BIN
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live

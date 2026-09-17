@@ -152,6 +152,19 @@ class AgentAuthDeclaration:
     #: subset of :attr:`credential_leaves`: excluding a leaf the declaration
     #: never put on the floor is either a no-op or an attempt to open something
     #: the host fenced for another reason.
+    #:
+    #: ACCEPTED RISK, stated so a reader meets it here rather than deducing it. The
+    #: leaf named is the harness's OWN provider credential, and the model already
+    #: holds its USE-power through the harness: every turn it takes is already spent
+    #: against that credential. What the exclusion adds is the possibility of
+    #: EXFILTRATION -- a shell the model spawns inside the harness can read the file
+    #: and send the secret somewhere. That is a real residual risk and it is carried
+    #: knowingly, because the alternative is a harness that cannot sign in at all.
+    #: Four harnesses carry it today, and the maintainer weighed and accepted this
+    #: exact trade rather than it being an oversight. What bounds it is the
+    #: subset rule above: the exclusion can only re-open a file this same
+    #: declaration put on the floor, so no harness can reach another harness's
+    #: credential or anything the floor fences for a different reason.
     adapter_own_leaves: Tuple[str, ...]
 
     #: What an operator DOES to sign this harness in. Rendered VERBATIM.

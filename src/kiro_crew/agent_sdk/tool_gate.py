@@ -61,8 +61,7 @@ from pathlib import PurePosixPath
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
-    ACP_BACKEND_DEEPSEEK,
-    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_LAUNCH,
     ACP_BACKEND_PI,
     Routing,
     gate_probe_command_for,
@@ -109,14 +108,20 @@ UNENFORCED_CONTROLS = (
     "the bundled denied-command rules, the sensitive-path block and the governance ceiling"
 )
 
-#: Operator-facing harness labels. Local rather than imported: the refusal text is
-#: the only consumer, and a Codex host must never be told to run ``kiro-cli
-#: login``-style advice aimed at a different harness.
+#: Operator-facing harness labels. The refusal text is the only consumer, and a
+#: Codex host must never be told to run ``kiro-cli login``-style advice aimed at a
+#: different harness.
+#:
+#: Rows for the harnesses that serve ACP from their own binary come from their
+#: ``ACP_BACKEND_LAUNCH`` records, which already carry the display name for the
+#: install panel -- so a harness of that shape has one name, in one place, rather
+#: than one here and one there that can disagree. The two Node adapters keep rows of
+#: their own: neither has a launch record, and the name an operator knows the harness
+#: by is not its adapter's package name.
 _LABELS: dict = {
     ACP_BACKEND_CODEX: "OpenAI Codex",
-    ACP_BACKEND_OPENCODE: "OpenCode",
     ACP_BACKEND_PI: "Pi",
-    ACP_BACKEND_DEEPSEEK: "DeepSeek Harness",
+    **{backend: record.label for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
 
 #: The credential store each enforced harness must still be able to read.

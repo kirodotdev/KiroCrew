@@ -20,6 +20,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_LAUNCH,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -228,6 +229,26 @@ PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
 PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
+
+#: Backend id -> its label. The mapping is what ``provider_label`` resolves
+#: through, so a harness's label and the answer a session persists under are one
+#: fact rather than a constant here and a branch in ``providers.acp``. Closed on
+#: purpose: an id absent from it persists as a kiro session, which is why
+#: ``test_harness_parity`` asserts the keys are exactly ``ACP_BACKENDS_KNOWN``.
+#:
+#: kiro-cli's own id is the empty string and its label is the DEFAULT, so it is a
+#: row here like every other harness rather than the value a missing row falls
+#: back to -- the fallback exists for an id this build does not know at all.
+PROVIDER_LABEL_BY_BACKEND: dict = {
+    ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
+    ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
+    ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
+    ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
+    ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
+    ACP_BACKEND_PI: PROVIDER_LABEL_PI,
+    ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
+    ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
+}
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under

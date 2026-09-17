@@ -32,6 +32,11 @@ from kiro_crew.agent_sdk import tool_gate as gate
 
 GOOSE = acp_backends.ACP_BACKEND_GOOSE
 
+#: This harness's launch record. The override variable, the binary and the argv
+#: tail are read from here rather than from module constants, because the record is
+#: where they are declared and a second spelling could drift from it.
+_GOOSE_LAUNCH = sdk_backends.launch_for(sdk_backends.ACP_BACKEND_GOOSE)
+
 
 # ── Vocabulary ──
 
@@ -1133,12 +1138,18 @@ def test_the_codex_rawinput_channel_still_answers_first() -> None:
 
 
 def test_the_install_command_and_the_resolved_binary_cannot_drift() -> None:
-    """The driver seam imports both from the spawn path rather than restating them."""
+    """The driver seam reads the record rather than restating what it holds."""
+    from kiro_crew.agent_sdk.backends import launch_for
     from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
-    assert acp_driver.goose_install_command() == acp_client.GOOSE_INSTALL_COMMAND
-    assert acp_client.GOOSE_BIN == "goose"
-    assert acp_client.GOOSE_ACP_SUBCMD == "acp"
+    record = launch_for(sdk_backends.ACP_BACKEND_GOOSE)
+    assert (
+        acp_driver.self_served_install_command(sdk_backends.ACP_BACKEND_GOOSE)
+        == record.install_command
+    )
+    assert record.binary == "goose"
+    assert record.acp_args == ("acp",)
+    assert record.spawn_label == "goose acp"
 
 
 def test_the_argv_names_the_builtin_extension() -> None:
@@ -1167,8 +1178,8 @@ def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_pa
     fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     monkeypatch.setattr(acp_client.platform_compat, "is_executable_file", lambda _p: True)
     monkeypatch.setattr(acp_client, "_mise_which", lambda _name: "/never/reached")
-    monkeypatch.setenv(acp_client._ENV_GOOSE_BIN, str(fake))
-    resolved, _searched = acp_client._resolve_goose_bin()
+    monkeypatch.setenv(_GOOSE_LAUNCH.bin_env_var, str(fake))
+    resolved, _searched = acp_client._resolve_self_served_bin(sdk_backends.ACP_BACKEND_GOOSE)
     assert resolved == (acp_client._normalize_exe_casing(str(fake)) or str(fake))
 
 
@@ -1183,8 +1194,8 @@ def test_a_non_runnable_override_falls_through_to_mise(monkeypatch, tmp_path) ->
     notes.write_text("hello", encoding="utf-8")
     monkeypatch.setattr(acp_client.platform_compat, "is_executable_file", lambda _p: False)
     monkeypatch.setattr(acp_client, "_mise_which", lambda _name: "/opt/mise/goose")
-    monkeypatch.setenv(acp_client._ENV_GOOSE_BIN, str(notes))
-    resolved, _searched = acp_client._resolve_goose_bin()
+    monkeypatch.setenv(_GOOSE_LAUNCH.bin_env_var, str(notes))
+    resolved, _searched = acp_client._resolve_self_served_bin(sdk_backends.ACP_BACKEND_GOOSE)
     assert resolved == "/opt/mise/goose"
 
 
@@ -1196,10 +1207,10 @@ def test_an_absent_binary_reports_what_was_searched(monkeypatch, tmp_path) -> No
     holds, so a host that has the harness installed would resolve it through one of
     those and this test would pass or fail on the recording machine's contents.
     """
-    monkeypatch.delenv(acp_client._ENV_GOOSE_BIN, raising=False)
+    monkeypatch.delenv(_GOOSE_LAUNCH.bin_env_var, raising=False)
     monkeypatch.setattr(acp_client, "_mise_which", lambda _name: None)
     monkeypatch.setattr(acp_client, "augmented_path", lambda _p: str(tmp_path))
-    resolved, searched = acp_client._resolve_goose_bin()
+    resolved, searched = acp_client._resolve_self_served_bin(sdk_backends.ACP_BACKEND_GOOSE)
     assert resolved is None
     assert searched == str(tmp_path)
 

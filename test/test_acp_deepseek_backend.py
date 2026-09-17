@@ -475,18 +475,20 @@ def test_the_handshake_is_the_spec_dialect() -> None:
 
 def test_the_argv_is_the_host_binary_plus_the_shipped_profile() -> None:
     """The ACP package is a plugin with no executable; the host binary boots it."""
-    from kiro_crew.acp.client import (
-        DEEPSEEK_ACP_PROFILE_ARGS,
-        DEEPSEEK_BIN,
-        DEEPSEEK_INSTALL_COMMAND,
-    )
+    from kiro_crew.agent_sdk.backends import launch_for
 
-    assert DEEPSEEK_BIN == "dsh"
-    assert DEEPSEEK_ACP_PROFILE_ARGS == ("--profile", "acp")
-    assert DEEPSEEK_INSTALL_COMMAND == "npm i -g @deepseek-ai/dsh"
-
-    body = inspect.getsource(AcpClient._spawn)
-    assert "argv = [deepseek_bin, *DEEPSEEK_ACP_PROFILE_ARGS]" in body
+    # The RECORD is what is pinned, not a line of source: the spawn arm reads
+    # ``_resolve_self_served_launch``, which is shared with the sibling harnesses, so
+    # a source-text assertion there would pin their spelling as well as this one's.
+    record = launch_for(ACP_BACKEND_DEEPSEEK)
+    assert record.binary == "dsh"
+    assert record.acp_args == ("--profile", "acp")
+    assert record.spawn_label == "dsh --profile acp"
+    # The installer names the HOST binary. The ACP package is a plugin with no
+    # executable of its own, so advice naming it would not produce a runnable
+    # harness -- which is the whole reason this fact is data rather than prose.
+    assert record.install_command == "npm i -g @deepseek-ai/dsh"
+    assert "dsh" in record.missing_hint or "plugin" in record.missing_hint
 
 
 def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_path) -> None:
@@ -511,7 +513,7 @@ def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(client_module, "_mise_which", lambda _name: "/never/reached")
 
-    resolved, _searched = client_module._resolve_deepseek_bin()
+    resolved, _searched = client_module._resolve_self_served_bin(ACP_BACKEND_DEEPSEEK)
     assert resolved == str(binary)
 
 
@@ -523,7 +525,7 @@ def test_an_absent_binary_reports_what_was_searched(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "_mise_which", lambda _name: None)
     monkeypatch.setattr(client_module.shutil, "which", lambda *_a, **_kw: None)
 
-    resolved, searched = client_module._resolve_deepseek_bin()
+    resolved, searched = client_module._resolve_self_served_bin(ACP_BACKEND_DEEPSEEK)
     assert resolved is None
     assert searched
 

@@ -48,6 +48,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
+    PROVIDER_LABEL_BY_BACKEND,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEEPSEEK,
@@ -447,23 +448,54 @@ def test_every_known_backend_has_a_label() -> None:
     The label indexes resume compatibility, session-map persistence, and
     session-file cleanup routing. A harness with no label of its own persists as
     a Kiro session, and the map then prunes its id for want of a Kiro transcript.
+
+    Read from the PRODUCTION mapping rather than a copy of it here. A copy asked a
+    weaker question -- whether this file had been updated -- and answered it with a
+    list that had to be edited for every harness; the mapping being closed over
+    ``ACP_BACKENDS_KNOWN``, and every label being distinct, are the properties that
+    actually carry the routing.
     """
-    labels = {
-        ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
-        ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
-        ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
-        ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
-        ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
-        ACP_BACKEND_PI: PROVIDER_LABEL_PI,
-        ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
-        ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
-    }
+    labels = dict(PROVIDER_LABEL_BY_BACKEND)
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
-        "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "
-        "under the kiro label — add one in acp/types.py and a branch in "
-        "providers.acp.provider_label"
+        "a known backend has no label in PROVIDER_LABEL_BY_BACKEND, so it would "
+        "persist under the kiro label — add a row in acp/types.py"
     )
     assert len(set(labels.values())) == len(labels), "two backends share a label"
+    assert labels[ACP_BACKEND_KIRO] == PROVIDER_LABEL_DEFAULT, (
+        "kiro-cli's own row must be the default label, or a kiro session persists "
+        "under a name the cleanup routing does not recognise"
+    )
+    # The named constants are the vocabulary the rest of the tree spells these with,
+    # so the mapping must agree with them rather than carry its own strings.
+    for backend, label in (
+        (ACP_BACKEND_CLAUDE, PROVIDER_LABEL_CLAUDE),
+        (ACP_BACKEND_KAS, PROVIDER_LABEL_KAS),
+        (ACP_BACKEND_CODEX, PROVIDER_LABEL_CODEX),
+        (ACP_BACKEND_OPENCODE, PROVIDER_LABEL_OPENCODE),
+        (ACP_BACKEND_PI, PROVIDER_LABEL_PI),
+        (ACP_BACKEND_GOOSE, PROVIDER_LABEL_GOOSE),
+        (ACP_BACKEND_DEEPSEEK, PROVIDER_LABEL_DEEPSEEK),
+    ):
+        assert labels[backend] == label
+
+
+def test_provider_label_resolves_every_known_backend_through_the_mapping() -> None:
+    """H11: the function and the mapping cannot disagree.
+
+    The branch chain this replaced could answer for a harness the mapping had no row
+    for, and the other way round. Driving the real function over every known id is
+    what closes that: a row missing from the mapping shows up as the DEFAULT label
+    here, which is the failure mode the ratchet above describes.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    for backend in sorted(ACP_BACKENDS_KNOWN):
+        runtime = MagicMock()
+        runtime.acp_backend = backend
+        provider = AcpSessionProvider(MagicMock(), runtime)
+        assert providers_acp.provider_label(provider) == PROVIDER_LABEL_BY_BACKEND[backend]
 
 
 def test_opencode_is_selectable_and_answerable() -> None:
