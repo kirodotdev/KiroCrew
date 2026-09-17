@@ -14,9 +14,11 @@ import { i18nT } from '../i18n/t'
  * This dialog is the themed, non-blocking replacement: the confirm button
  * restates the action instead of "OK", and the caller awaits a boolean.
  *
- * The confirm button is always styled destructively and the cancel label is
- * always the shared one: every current caller confirms a destructive act, so
- * the knobs would ship without a consumer. Add them when a caller needs them.
+ * The confirm button is styled destructively by default and the cancel label
+ * is always the shared one. `confirmVariant: 'primary'` is the one knob for a
+ * caller whose confirmed action is NOT destructive (e.g. promoting an
+ * ephemeral session to persistent) — a red button on a positive, reversible
+ * action reads as a warning the action does not deserve.
  */
 export interface ConfirmOptions {
   /** Short dialog title. A question restating the stakes reads best. */
@@ -25,6 +27,10 @@ export interface ConfirmOptions {
   body?: ReactNode
   /** Restates the action ("Discard changes", "Destroy site") — never "OK". */
   confirmLabel: string
+  /** Button style for the confirm action. Default `'danger'` — every caller
+   *  before this knob existed confirmed a destructive act. `'primary'` is for
+   *  a non-destructive confirmation that still needs an explicit yes. */
+  confirmVariant?: 'danger' | 'primary'
 }
 
 interface PendingConfirm {
@@ -94,7 +100,11 @@ export function useConfirm(): {
           <Btn onClick={() => settle(false)}>
             {i18nT('components.confirmDialog.cancel')}
           </Btn>
-          <Btn danger onClick={() => settle(true)}>
+          <Btn
+            danger={(opts.confirmVariant ?? 'danger') === 'danger'}
+            primary={opts.confirmVariant === 'primary'}
+            onClick={() => settle(true)}
+          >
             {opts.confirmLabel}
           </Btn>
         </>
