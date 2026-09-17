@@ -1,13 +1,17 @@
 import { useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { store, useAppDispatch } from '../store'
+import { store, useAppDispatch, useAppStore } from '../store'
+import { useConnected } from '../hooks/useConnected'
 import { sseSlotColor } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { colorName } from '../utils/sessionColors'
+import { offlineProps } from '../utils/offline'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { reportActionFailure } from '../utils/actionFailure'
+import { findReport } from '../utils/errorReport'
 
 /** Mirrors the backend contract in chat_persistence.COLOR_HEX_RE. */
 const HEX_RE = /^#[0-9a-fA-F]{6}$/
@@ -56,6 +60,11 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   const writeGenRef = useRef(0)
   if (HEX_RE.test(draft)) lastValidRef.current = draft
 
+  // Both writes are PATCHes, so the row carries the same affordance as its
+  // dimmed menu siblings rather than accepting a click that cannot land.
+  const connected = useConnected()
+  const boundStore = useAppStore()
+
   const readSlot = () => store.getState().dashboard.slots.find(s => s.key === slotKey)
 
   const colorMutation = useMutation({
@@ -71,7 +80,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
         : sseSlotColor({ key: slotKey, color_index: idx }))
       return { prev, gen }
     },
-    onError: (_err, idx, ctx) => {
+    onError: (err, idx, ctx) => {
       if (!ctx) return
       // A superseded write never rolls back: a later pick (even one targeting
       // the same value, which the checks below cannot distinguish) owns the
@@ -81,17 +90,24 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
       // pick set — a superseding pick (rapid clicks) must not be clobbered
       // (same guard as useMoveSlotToFolder).
       const s = readSlot()
+      let reverted = false
       if (idx === null) {
         // Clear rollback: a later custom-hex pick also leaves color_index
         // null, so checking the index alone would clobber it — require BOTH
         // fields to still be null (i.e. the clear is still the latest state).
         if ((s?.color_index ?? null) === null && (s?.color_hex ?? null) === null) {
           dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+          reverted = true
         }
-        return
+      } else if ((s?.color_index ?? null) === idx) {
+        dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+        reverted = true
       }
-      const current = s?.color_index ?? null
-      if (current === idx) dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+      // Only a real revert may say "was undone"; if the superseding write also
+      // failed, ITS onError reports.
+      if (reverted) {
+        reportActionFailure(i18nT('components.sessionColorSwatches.color_change_failed'), readSlot()?.title ?? '', findReport(err.message))
+      }
     },
   })
 
@@ -104,11 +120,13 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
       dispatch(sseSlotColor({ key: slotKey, color_hex: hex }))
       return { prev, gen }
     },
-    onError: (_err, hex, ctx) => {
+    onError: (err, hex, ctx) => {
       if (!ctx) return
       if (ctx.gen !== writeGenRef.current) return
       const current = readSlot()?.color_hex ?? null
-      if (current === hex) dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+      if (current !== hex) return
+      dispatch(sseSlotColor({ key: slotKey, ...ctx.prev }))
+      reportActionFailure(i18nT('components.sessionColorSwatches.color_change_failed'), readSlot()?.title ?? '', findReport(err.message))
     },
   })
 
@@ -122,6 +140,15 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   }
 
   const commitHex = (value: string) => {
+    // Live store, not the render closure: the debounce timer holds the commitHex
+    // from the drag's render, whose `connected` predates the drop it must catch.
+    if (!boundStore.getState().dashboard.connected) {
+      reportActionFailure(
+        i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.recolor_sessions') }),
+        readSlot()?.title ?? '',
+      )
+      return
+    }
     if (!HEX_RE.test(value)) return
     // A direct commit (Enter/blur) supersedes a pending wheel commit too.
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
@@ -144,10 +171,10 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
     // Every affordance inside is a real <button> or <input>.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given
     <div onKeyDown={e => e.stopPropagation()}>
-      <div className="flex items-center gap-1.5 px-3 py-1.5">
-        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
+      <div className={`flex items-center gap-1.5 px-3 py-1.5 ${connected ? '' : 'opacity-40'}`} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'))}>
+        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue disabled:cursor-not-allowed disabled:hover:scale-100 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} disabled={!connected} title={i18nT('components.sessionColorSwatches.no_color')} />
         {paletteColors.map((c, i) => (
-          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue disabled:cursor-not-allowed disabled:hover:scale-100 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} disabled={!connected} title={colorName(c)} />
         ))}
         <button
           type="button"
@@ -160,6 +187,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
           // color; the actual hex shows in the tooltip and on the row itself.
           style={{ background: 'conic-gradient(from 0deg, #f66 0deg, #fc6 60deg, #6d6 120deg, #6cc 180deg, #66f 240deg, #c6f 300deg, #f66 360deg)' }}
           onClick={() => setCustomOpen(o => !o)}
+          disabled={!connected}
         />
       </div>
       {customOpen && (
@@ -168,7 +196,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             type="color"
             value={lastValidRef.current}
             onChange={e => onWheelChange(e.target.value)}
-            aria-label={i18nT('components.sessionColorSwatches.custom_color')}
+            aria-label={i18nT('components.sessionColorSwatches.custom_color_picker')}
+            disabled={!connected}
             className="w-6 h-6 rounded cursor-pointer border border-border bg-transparent p-0"
           />
           <input
@@ -187,6 +216,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             }}
             {...ime.bindComposition({ onBlur: () => { if (dirtyRef.current) commitHex(draft) } })}
             aria-label={i18nT('components.sessionColorSwatches.hex_color_code')}
+            disabled={!connected}
             placeholder="#4f8ef7"
             className="w-[76px] bg-bg-accent border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text outline-none focus-visible:border-accent"
           />

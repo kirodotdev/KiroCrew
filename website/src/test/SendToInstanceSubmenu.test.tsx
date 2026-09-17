@@ -11,6 +11,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { store } from '../store'
+import { sseConnected } from '../store/dashboardSlice'
 import type { InstanceView } from '../api/client'
 
 const mocks = vi.hoisted(() => ({
@@ -69,13 +72,16 @@ function StubItem({ title, disabled, onSelect, children }: {
 
 function renderWrapper() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  store.dispatch(sseConnected())
   return render(
     <QueryClientProvider client={qc}>
+      <Provider store={store}>
       <DropdownMenu open>
         <DropdownMenuContent forceMount>
           <SendToInstanceSubmenu slotKey="slot-1" variant="dropdown" />
         </DropdownMenuContent>
       </DropdownMenu>
+      </Provider>
     </QueryClientProvider>,
   )
 }
@@ -185,17 +191,17 @@ describe('InstanceSendItems', () => {
     expect(screen.getByText('Sent')).toBeTruthy()
   })
 
-  it('reports failure with the peer message as the row tooltip', () => {
+  it('leaves no error surface on the row, which the page notice owns', () => {
     render(
       <InstanceSendItems
         instances={[inst({ id: 'devdesk' })]}
-        states={{ devdesk: { kind: 'error', message: 'peer refused the transfer' } }}
+        states={{ devdesk: { kind: 'idle' } }}
         onSend={vi.fn()}
         Item={StubItem}
       />,
     )
-    expect(screen.getByText('Failed')).toBeTruthy()
-    expect(screen.getByTitle('peer refused the transfer')).toBeTruthy()
+    expect(screen.queryByText('Failed')).toBeNull()
+    expect(screen.queryByText('Sent')).toBeNull()
   })
 
   it('a repeat send stays available after success (copy semantics)', () => {

@@ -7395,9 +7395,9 @@
       "quote_hint": "把选中内容引用到本对话的输入框——你的回复会发到主聊天"
     },
     "sendToInstanceSubmenu": {
-      "failed": "失败",
       "not_connected": "未连接",
       "send_a_copy_to": "发送副本到",
+      "send_failed": "无法向该实例发送副本。",
       "sent": "已发送",
       "sent_transcript_only": "已发送（仅对话记录）",
       "transcript_only_hint": "该实例无法恢复完整的对话上下文，因此此副本仅从对话记录继续。",
@@ -7411,6 +7411,7 @@
       "mark_as_read": "标记为已读",
       "mark_as_unread": "标记为未读",
       "move_to_folder": "移动到文件夹…",
+      "offline_reason": "网关离线 — 变暗的操作需要连接",
       "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
@@ -7426,7 +7427,9 @@
       "unpin": "取消置顶"
     },
     "sessionColorSwatches": {
+      "color_change_failed": "颜色更改已撤销。",
       "custom_color": "自定义颜色",
+      "custom_color_picker": "自定义颜色选择器",
       "hex_color_code": "十六进制颜色代码",
       "no_color": "无颜色"
     },
@@ -8538,7 +8541,11 @@
     },
     "useSessionActions": {
       "close_this_session": "关闭此会话？",
-      "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
+      "fork_failed": "无法复制此会话，未创建任何内容。",
+      "mode_change_failed": "模式更改已撤销。",
+      "pin_change_failed": "固定更改已撤销。",
+      "reload_failed": "会话重新加载失败：网关不可达。请重新连接后重试。",
+      "reload_failed_busy": "会话重新加载失败：代理可能正在执行中。请在会话空闲时重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",
       "switch_to_autopilot_mode_future_messages_will_us": "切换到自动驾驶模式？后续消息将采用自动驾驶行为（规划 → 审批 → 执行）。",
       "switch_to_normal_chat_mode_future_messages_will": "切换到普通聊天模式？后续消息将采用标准聊天行为。"
@@ -8562,6 +8569,9 @@
       "approval_wait_expired": "审批等待已超时，因此该请求已被拒绝。",
       "approval_rejected": "审批已被拒绝，因此该请求未获批准。",
       "unknown": "未知"
+    },
+    "useMoveSlotToFolder": {
+      "move_failed": "移动已撤销。"
     }
   },
   "lib": {
@@ -9954,6 +9964,7 @@
       }
     },
     "chatPage": {
+      "could_not_update": "无法更新“{{name}}”",
       "turn_minimap": "在对话轮次间导航",
       "turn_minimap_active": "第 {{current}} / {{count}} 轮：{{prompt}}",
       "turn_minimap_active_windowed": "已加载 {{count}} 个轮次中的第 {{current}} 个：{{prompt}}",
@@ -15079,6 +15090,8 @@
     "offline": {
       "disabled_gateway_offline": "{{label}} 已禁用 — 网关离线",
       "gateway_offline_reconnect": "网关离线 — 重新连接后才能 {{action}}",
+      "recolor_sessions": "更改会话颜色",
+      "send_to_instances": "发送到实例",
       "submit_comments": "提交评论"
     },
     "popoutController": {

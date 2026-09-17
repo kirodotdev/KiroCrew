@@ -1,8 +1,10 @@
-import { screen, fireEvent, waitFor } from '@testing-library/react'
-import { renderWithProviders } from '../test/helpers'
+import { screen, fireEvent, waitFor, renderHook } from '@testing-library/react'
+import { renderWithProviders, createTestStore } from '../test/helpers'
+import { sseConnected } from '../store/dashboardSlice'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import { api } from '../api/client'
 import type { InstanceView } from '../api/client'
+import { __resetActionFailureForTests, useActionFailure } from '../utils/actionFailure'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -19,17 +21,19 @@ vi.mock('../api/client', async importOriginal => {
  * family switch — is reachable.
  */
 function stubMenu(prefix: string) {
-  const Item = ({ children, disabled, onSelect, title }: {
+  const Item = ({ children, disabled, onSelect, title, ...rest }: {
     children?: React.ReactNode
     disabled?: boolean
     onSelect?: (e: Event) => void
     title?: string
+    'aria-describedby'?: string
   }) => (
     <button
       type="button"
       title={title}
       disabled={disabled}
       onClick={() => onSelect?.(new Event('select', { cancelable: true }))}
+      {...rest}
     >
       {children}
     </button>
@@ -66,11 +70,16 @@ function instance(over: Partial<InstanceView> = {}): InstanceView {
 
 function mount(instances: InstanceView[], variant: 'dropdown' | 'context' = 'dropdown') {
   listInstances.mockResolvedValue({ instances } as never)
-  return renderWithProviders(<SendToInstanceSubmenu slotKey="zzq-slot" variant={variant} />)
+  // Seeded, not inherited: createTestStore models a DISCONNECTED dashboard, which
+  // the offline sink guard would refuse every send here asserts.
+  const store = createTestStore()
+  store.dispatch(sseConnected())
+  return renderWithProviders(<SendToInstanceSubmenu slotKey="zzq-slot" variant={variant} />, { store })
 }
 
 describe('SendToInstanceSubmenu', () => {
   beforeEach(() => {
+    __resetActionFailureForTests()
     listInstances.mockReset()
     sendSessionToInstance.mockReset()
     sendSessionToInstance.mockResolvedValue({ resume_mode: 'session_load' } as never)
@@ -120,20 +129,49 @@ describe('SendToInstanceSubmenu', () => {
     expect(await screen.findByText('Sent')).toBeInTheDocument()
   })
 
-  it("a refused transfer surfaces the peer's own message", async () => {
+  it('a refused transfer keeps the peer\'s own words on the row AND reports to the page notice', async () => {
     sendSessionToInstance.mockRejectedValue(new Error('zzq-peer-refused'))
     mount([instance()])
     fireEvent.click(await screen.findByTitle('zzq-peer'))
-    const failed = await screen.findByText('Failed')
-    expect(failed.closest('[title]')!.getAttribute('title')).toBe('zzq-peer-refused')
+    await waitFor(() => expect(sendSessionToInstance).toHaveBeenCalled())
+    const { result } = renderHook(() => useActionFailure())
+    await waitFor(() => expect(result.current.failure?.message)
+      .toBe("Couldn't send a copy to that instance."))
+    const peerWords = await screen.findByText('zzq-peer-refused')
+    expect(peerWords).toBeInTheDocument()
+    expect(screen.queryByText('Sent')).toBeNull()
   })
 
-  it('a non-Error rejection falls back to the generic reason', async () => {
+  it('the refusal is a readable alert, not a hover-only title a touch user never reaches', async () => {
+    sendSessionToInstance.mockRejectedValue(new Error('zzq-peer-refused'))
+    mount([instance()])
+    fireEvent.click(await screen.findByTitle('zzq-peer'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('zzq-peer-refused')
+    expect(screen.queryByTitle('zzq-peer-refused')).toBeNull()
+  })
+
+  it('the hand-off is a sibling menu item describing the alert, never nested inside it', async () => {
+    sendSessionToInstance.mockRejectedValue(new Error('zzq-peer-refused'))
+    mount([instance()])
+    fireEvent.click(await screen.findByTitle('zzq-peer'))
+    const alert = await screen.findByRole('alert')
+    const handoff = await screen.findByText('Ask the agent')
+    expect(alert.contains(handoff)).toBe(false)
+    const described = document.querySelector(`[aria-describedby="${alert.id}"]`)
+    expect(described).not.toBeNull()
+    expect(described!.contains(handoff)).toBe(true)
+  })
+
+  it('a non-Error rejection still reports rather than throwing', async () => {
     sendSessionToInstance.mockRejectedValue('zzq-not-an-error')
     mount([instance()])
     fireEvent.click(await screen.findByTitle('zzq-peer'))
-    const failed = await screen.findByText('Failed')
-    expect(failed.closest('[title]')!.getAttribute('title')).toBe('Unknown error')
+    await waitFor(() => expect(sendSessionToInstance).toHaveBeenCalled())
+    const { result } = renderHook(() => useActionFailure())
+    await waitFor(() => expect(result.current.failure?.message)
+      .toBe("Couldn't send a copy to that instance."))
+    expect(screen.queryByText('Failed')).toBeNull()
   })
 
   it('a disconnected peer renders disabled with a hint instead of vanishing', async () => {
