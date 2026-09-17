@@ -6337,7 +6337,7 @@ async def _run_app_build(
                 "pip not available in the gateway interpreter — skipping Python build step"
             )
         else:
-            pip_cmd = [sys.executable, "-m", "pip"]
+            pip_cmd = platform_compat.isolated_python_argv("-m", "pip")
             if (build_dir / "requirements.txt").is_file() and not (
                 (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
             ):

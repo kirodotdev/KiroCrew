@@ -22,6 +22,7 @@ import pathlib
 import platform
 import shutil
 import signal
+import site
 import stat
 import struct
 import subprocess
@@ -101,7 +102,9 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     _ensure_utf8_process_environment()
     resolved = executable or sys.executable
     argv0 = ntpath.basename(resolved) if IS_WINDOWS else resolved
-    os.execv(resolved, [argv0, "-m", module, *args])
+    argv = isolated_python_argv("-m", module, *args, executable=resolved)
+    argv[0] = argv0
+    os.execv(resolved, argv)
 
 
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory
@@ -300,6 +303,44 @@ def is_bundled_interpreter() -> bool:
     at runtime; never re-inline the sentinel at a call site.
     """
     return BUNDLED_BACKEND_DIST_DIRNAME in Path(sys.executable).resolve().parts
+
+
+_PYTHON_OPTIONS_WITH_VALUES: frozenset[str] = frozenset({"-W", "-X", "--check-hash-based-pycs"})
+
+
+def isolated_python_argv(
+    *args: str,
+    executable: str | os.PathLike[str] | None = None,
+    force_isolation: bool = False,
+) -> list[str]:
+    """Argv for a Kiro Crew-owned Python child with bundle-safe user-site policy.
+
+    ``-s`` is the narrow control: it removes the user site while preserving
+    ``PYTHONPATH``, the working-directory import path, and every other
+    environment setting internal app and MCP launchers rely on. A caller that
+    already chose ``-I`` keeps that stronger contract unchanged. Non-bundled
+    parents that currently allow the user site preserve that policy because
+    Kiro Crew itself may have been installed there. Only callers that supply
+    the child's import path through ``PYTHONPATH`` or a script/entry path may
+    set ``force_isolation``. This helper is for Kiro Crew-owned processes and
+    installers, not user scripts or project tools.
+    """
+    resolved = os.fspath(executable or sys.executable)
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--" or arg.startswith(("-m", "-c")) or not arg.startswith("-"):
+            break
+        if arg in ("-s", "-I") or (
+            arg.startswith("-")
+            and not arg.startswith(("--", "-W", "-X"))
+            and ("s" in arg[1:] or "I" in arg[1:])
+        ):
+            return [resolved, *args]
+        i += 2 if arg in _PYTHON_OPTIONS_WITH_VALUES else 1
+    if not force_isolation and not is_bundled_interpreter() and site.ENABLE_USER_SITE is True:
+        return [resolved, *args]
+    return [resolved, "-s", *args]
 
 
 # ── macOS TCC-protected home subdirectories ──

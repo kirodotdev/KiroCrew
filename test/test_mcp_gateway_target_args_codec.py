@@ -34,6 +34,15 @@ PERCENT = f"%{PROBE}%"
 
 # base64url payload plus the flag spelling and its ``=`` joiner.
 SHELL_INERT = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
+_STUB_PYTHON_PREFIX = ["-s", "-m", rewriter._STUB_MODULE]
+
+
+def _stub_flags_argv(entry: dict) -> list[str]:
+    args = entry["args"]
+    if args[:3] == _STUB_PYTHON_PREFIX:
+        return args[3:]
+    assert args[:2] == ["-m", rewriter._STUB_MODULE]
+    return args[2:]
 
 
 def _entry(
@@ -64,7 +73,7 @@ def _entry(
 
 
 def _parsed(entry: dict):
-    return stub._parse_args(entry["args"][2:])
+    return stub._parse_args(_stub_flags_argv(entry))
 
 
 def _percent_entry(tmp_path: Path, identity: bool = True) -> dict:
@@ -109,13 +118,13 @@ def test_bad_payload_rejected_without_echo(payload):
     }
 
 
-def test_generated_metadata_tokens_are_shell_inert(tmp_path):
+def test_generated_metadata_tokens_are_shell_inert(tmp_path, nonbundled_python_without_user_site):
     entry = _percent_entry(tmp_path)
-    assert entry["args"][:2] == ["-m", rewriter._STUB_MODULE]
-    for token in entry["args"][2:]:
+    assert entry["args"][:3] == _STUB_PYTHON_PREFIX
+    for token in _stub_flags_argv(entry):
         assert set(token) <= SHELL_INERT, token
     # The envelope is the only carrier; nothing raw rides beside it.
-    flags = hashing.expand_stub_flags(entry["args"][2:])
+    flags = hashing.expand_stub_flags(_stub_flags_argv(entry))
     assert any(PERCENT in tok for tok in flags)
     assert "--auto-approve" in flags and "--env-file" in flags
 
@@ -123,7 +132,7 @@ def test_generated_metadata_tokens_are_shell_inert(tmp_path):
 def test_percent_metadata_survives_modelled_expansion(tmp_path):
     entry = _percent_entry(tmp_path)
     direct = _parsed(entry)
-    parsed = stub._parse_args(_modelled_cmd_expansion(entry["args"][2:], PROBE_ENV))
+    parsed = stub._parse_args(_modelled_cmd_expansion(_stub_flags_argv(entry), PROBE_ENV))
     assert vars(parsed) == vars(direct)
     for field in ("server", "agent", "target_command", "work_dir", "socket", "env_file"):
         assert PERCENT in getattr(parsed, field), field
@@ -141,10 +150,12 @@ def test_percent_metadata_survives_modelled_expansion(tmp_path):
     )
 
 
-def test_plain_flag_overlay_parses_to_identical_payload(tmp_path):
+def test_plain_flag_overlay_parses_to_identical_payload(
+    tmp_path, nonbundled_python_without_user_site
+):
     """An overlay written before the envelope keeps its meaning and its hashes."""
     entry = _percent_entry(tmp_path)
-    plain = dict(entry, args=entry["args"][:2] + hashing.expand_stub_flags(entry["args"][2:]))
+    plain = dict(entry, args=entry["args"][:3] + hashing.expand_stub_flags(_stub_flags_argv(entry)))
     assert not any(t.startswith(hashing.STUB_FLAGS_FLAG) for t in plain["args"])
     assert vars(_parsed(plain)) == vars(_parsed(entry))
     from_plain = stub.build_register_payload(_parsed(plain))
@@ -195,9 +206,9 @@ def test_session_channel_id_rides_the_envelope(tmp_path):
     entry = _percent_entry(tmp_path)
     shaped = session_servers._acp_server_entry("probe", entry, f"C{PERCENT}")
     assert shaped is not None
-    for token in shaped["args"][2:]:
+    for token in _stub_flags_argv(shaped):
         assert set(token) <= SHELL_INERT, token
-    parsed = stub._parse_args(_modelled_cmd_expansion(shaped["args"][2:], PROBE_ENV))
+    parsed = stub._parse_args(_modelled_cmd_expansion(_stub_flags_argv(shaped), PROBE_ENV))
     assert parsed.channel_id == f"C{PERCENT}"
     assert vars(parsed) == dict(vars(_parsed(entry)), channel_id=f"C{PERCENT}")
     # A second shaping of an entry that already names its channel adds nothing.
@@ -211,7 +222,7 @@ def test_session_skips_a_stub_with_an_unreadable_envelope(tmp_path, caplog, chan
     """An overlay entry whose envelope cannot be decoded is left out of the
     session, like a command-less one; the session itself still starts."""
     entry = _percent_entry(tmp_path)
-    broken = dict(entry, args=entry["args"][:2] + [f"{hashing.STUB_FLAGS_FLAG}=!!!!"])
+    broken = dict(entry, args=entry["args"][:3] + [f"{hashing.STUB_FLAGS_FLAG}=!!!!"])
     assert session_servers._acp_server_entry("probe", broken, channel_id) is None
     assert any("unreadable flag envelope" in r.message for r in caplog.records)
     overlay = tmp_path / "overlay"
@@ -272,7 +283,7 @@ def test_legacy_separator_and_flag_spelling(tmp_path, sep, equals):
 
 def _plain_flags(entry: dict) -> list[str]:
     """Rewrite an emitted entry into the pre-envelope plain-flag overlay shape."""
-    return entry["args"][:2] + hashing.expand_stub_flags(entry["args"][2:])
+    return entry["args"][:3] + hashing.expand_stub_flags(_stub_flags_argv(entry))
 
 
 @pytest.mark.parametrize("equals", [True, False])
@@ -304,7 +315,7 @@ def test_pool_identity_names_and_hash(tmp_path):
     entry = _entry(tmp_path, [], identity=True)
     parsed = _parsed(entry)
     assert stub._resolve_pool_identity_env(parsed) == frozenset({"ALPHA", "BETA"})
-    flags = hashing.expand_stub_flags(entry["args"][2:])
+    flags = hashing.expand_stub_flags(_stub_flags_argv(entry))
     assert "|" not in flags[flags.index("--pool-identity-env-b64") + 1]
     encoded = stub.build_register_payload(parsed)
     parsed.pool_identity_env_b64 = None
@@ -340,7 +351,7 @@ def _through_cmd(tmp_path: Path, entry: dict, extra_env: dict[str, str] | None =
         "print(json.dumps({'payload': build_register_payload(ns), 'args': vars(ns)}))\n",
         encoding="utf-8",
     )
-    inner = subprocess.list2cmdline([sys.executable, str(receiver), *entry["args"][2:]])
+    inner = subprocess.list2cmdline([sys.executable, str(receiver), *_stub_flags_argv(entry)])
     env = dict(
         os.environ,
         PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),

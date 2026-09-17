@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import shutil
+import site
 import socket
 import struct
 import sys
@@ -149,6 +150,27 @@ def posix_test_shell() -> str:
 # expected to stay short or empty, and a file exists so a whole-file exclusion has
 # one documented home instead of an inline literal.
 from kiro_crew import platform_compat  # noqa: E402
+
+
+@pytest.fixture
+def nonbundled_python_without_user_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model a non-bundled venv whose user site is already unavailable."""
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+    monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
+
+
+@pytest.fixture
+def nonbundled_python_with_user_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model a hosted interpreter whose user site is enabled."""
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", True)
+    monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
+
+
+@pytest.fixture
+def bundled_python_with_user_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the bundled interpreter with an otherwise enabled user site."""
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", True)
+    monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: True)
 
 
 def _collect_ignore_from(listname: str) -> list:

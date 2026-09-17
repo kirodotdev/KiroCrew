@@ -12,6 +12,7 @@ import sys
 import uuid
 from functools import lru_cache
 
+from kiro_crew import platform_compat
 from kiro_crew.piper_worker import (
     MAX_AUDIO_BYTES,
     MAX_FRAME_BYTES,
@@ -98,19 +99,18 @@ class PiperRuntime:
         from kiro_crew.voice_reply import VoiceSynthesisError
 
         await self._stop()
-        cmd = [
-            sys.executable,
+        cmd = platform_compat.isolated_python_argv(
             "-E",  # Ignore PYTHONPATH but retain legitimate --user installations.
             "-P",  # Do not import a shadow package from a chat/repository cwd.
             "-u",
-            *(["-s"] if sys.flags.no_user_site else []),
             "-m",
             "kiro_crew.piper_worker",
             "--model",
             model,
             "--config",
             config,
-        ]
+            executable=sys.executable,
+        )
         # Model paths remain configurable: this is NOT a first-party fixed argv
         # exception. Preserve standard sandbox refusal and resource ceilings.
         cmd, self._cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)

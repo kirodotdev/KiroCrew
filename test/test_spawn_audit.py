@@ -2462,8 +2462,9 @@ def test_harness_preflight_seed_is_fixed_argv():
     ]
     assert len(calls) == 1
     expected = ast.parse(
-        "subprocess.run([sys.executable, '-c', "
-        "'from kiro_crew.seed import seed; import sys; seed(sys.argv[1])', fixture], "
+        "subprocess.run(platform_compat.isolated_python_argv('-c', "
+        "'from kiro_crew.seed import seed; import sys; seed(sys.argv[1])', fixture, "
+        "force_isolation=True), "
         "cwd=str(spawn_cwd), env=env, capture_output=True, text=True, "
         "encoding='utf-8', errors='replace', timeout=30)",
         mode="eval",

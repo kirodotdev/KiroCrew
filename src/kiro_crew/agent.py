@@ -952,7 +952,7 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     MCP server (``kirocrew-cron`` / ``kirocrew-core``).
 
     Prefers a standalone ``kirocrew`` binary when one resolves. Falls back
-    to ``<interpreter> -m kiro_crew <subcommand>`` when
+    to ``<interpreter> [-s] -m kiro_crew <subcommand>`` when
     :func:`_resolve_kirocrew_bin` cannot find a usable standalone binary --
     e.g. an install whose launcher is not on the service PATH (the gateway
     running as a systemd user service is the common case): there
@@ -979,7 +979,8 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
     """
     bin_path = _resolve_kirocrew_bin()
     if bin_path == "kirocrew":  # unresolved sentinel from _resolve_kirocrew_bin
-        return sys.executable, ["-m", "kiro_crew", subcommand]
+        argv = platform_compat.isolated_python_argv("-m", "kiro_crew", subcommand)
+        return argv[0], argv[1:]
     if bin_path.endswith(".cmd"):
         interpreter = Path(bin_path).parent.parent / "python.exe"
         if _interpreter_runnable(interpreter):
@@ -992,8 +993,12 @@ def _kirocrew_mcp_invocation(subcommand: str) -> tuple[str, list[str]]:
             # generic ``sys.executable`` fallbacks below and above stay
             # ``-P``-free because the project still supports Python 3.10,
             # which lacks the flag.
-            return str(interpreter), ["-P", "-s", "-m", "kiro_crew", subcommand]
-        return sys.executable, ["-m", "kiro_crew", subcommand]
+            argv = platform_compat.isolated_python_argv(
+                "-P", "-s", "-m", "kiro_crew", subcommand, executable=interpreter
+            )
+            return argv[0], argv[1:]
+        argv = platform_compat.isolated_python_argv("-m", "kiro_crew", subcommand)
+        return argv[0], argv[1:]
     return bin_path, [subcommand]
 
 

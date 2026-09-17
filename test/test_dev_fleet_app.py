@@ -6006,13 +6006,13 @@ async def test_upstream_remote_rejects_option_injection(monkeypatch):
     monkeypatch.setattr(repository_mod, "_UPSTREAM_REMOTE", None)
 
 
-def test_find_cli_is_module_invocation_only():
+def test_find_cli_is_module_invocation_only(nonbundled_python_without_user_site):
     """No filesystem resolution: a planted `kirocrew` shim must never become
     the pod CLI. Always our interpreter + the RUNNABLE ``kiro_crew`` package
     entry (its __main__), never ``kiro_crew.cli`` (no __main__ guard -> #220)."""
     import sys as _sys
 
-    assert mod._find_cli() == [_sys.executable, "-m", "kiro_crew"]
+    assert mod._find_cli() == [_sys.executable, "-s", "-m", "kiro_crew"]
 
     import subprocess as _sp
 
@@ -6936,12 +6936,12 @@ async def test_main_checkout_build_state_is_probed(tmp_path):
 # =============================================================================
 # Regression: _find_cli must target a RUNNABLE entry point
 # =============================================================================
-def test_find_cli_targets_kiro_crew_package():
+def test_find_cli_targets_kiro_crew_package(nonbundled_python_without_user_site):
     """_find_cli must invoke the ``kiro_crew`` package (its __main__), not
     ``kiro_crew.cli`` — the latter has no __main__ guard and no-ops silently."""
     import sys
 
-    assert mod._find_cli() == [sys.executable, "-m", "kiro_crew"]
+    assert mod._find_cli() == [sys.executable, "-s", "-m", "kiro_crew"]
 
 
 def test_kiro_crew_module_entry_actually_runs():

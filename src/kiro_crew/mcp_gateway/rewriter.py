@@ -604,11 +604,15 @@ def _build_stub_entry(
         if k not in ("command", "args", "env", "poolable", "autoApprove",
                      _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY)
     }
+    stub_argv = platform_compat.isolated_python_argv(
+        "-m", _STUB_MODULE, f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}"
+    )
     wrapped.update({
         _WRAPPER_MARKER: True,
-        "command": sys.executable,
-        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow
-        # as ONE encoded envelope. Every value above is raw operator or
+        "command": stub_argv[0],
+        # The helper's optional ``-s`` precedes ``-m kiro_crew.mcp_gateway.stub``;
+        # the stub's own flags follow as ONE encoded envelope.
+        # Every value above is raw operator or
         # filesystem text -- the executable path, the work dir, the socket, the
         # sidecar path, the server and agent names, the autoApprove
         # identifiers -- and a CLI that launches this entry through cmd.exe
@@ -627,7 +631,7 @@ def _build_stub_entry(
         # session-agnostic, so it is appended per session by
         # ``session_servers.pooled_session_servers`` at ACP injection time,
         # where the value is in scope.
-        "args": ["-m", _STUB_MODULE, f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}"],
+        "args": stub_argv[1:],
         # autoApprove must stay on the wrapper — kiro-cli reads it at the
         # permission-prompt UI layer, separately from the backend.
         "autoApprove": auto_approve,
@@ -1279,8 +1283,10 @@ def _rewrite_inputs_fingerprint(
     * ``socket_path`` / ``work_dir`` — baked into stub argv and the PoolKey.
     * ``sandbox_mode`` / ``approval_mode`` / ``stub_servers`` /
       ``pooling_enabled`` — decide stub flags and which entries are shareable.
-    * ``python`` — ``sys.executable`` is baked into every overlay ``command``,
-      so a moved/upgraded interpreter must regenerate the overlays.
+    * ``python`` records ``sys.executable``, which is baked into every overlay
+      ``command``. ``python_isolation_flags`` records the effective option prefix
+      derived by :func:`platform_compat.isolated_python_argv`, so either an
+      interpreter move or a user-site policy change regenerates the overlays.
     * ``path_env`` / ``pathext`` / ``path_augment`` — feed the
       ``shutil.which`` resolution of bare command names (``path_augment`` is
       :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH — the
@@ -1310,6 +1316,7 @@ def _rewrite_inputs_fingerprint(
         "schema": _FINGERPRINT_SCHEMA,
         "package": __version__,
         "python": sys.executable,
+        "python_isolation_flags": platform_compat.isolated_python_argv()[1:],
         "path_env": os.environ.get("PATH", ""),
         "pathext": os.environ.get("PATHEXT", ""),
         "path_augment": mcp_search_path(""),

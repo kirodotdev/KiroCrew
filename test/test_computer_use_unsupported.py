@@ -133,8 +133,8 @@ class TestImportSafety:
         process: AppKit needs a main-thread run loop and the gateway's main thread is
         the asyncio loop. The spawn is pinned by
         ``test_overlay_spawn_is_a_fixed_module_launch`` below to a fixed
-        ``sys.executable -m <module>`` argv with no shell, no agent-supplied argument,
-        and no PATH lookup.
+        ``platform_compat.isolated_python_argv("-m", <module>)`` with no shell,
+        no agent-supplied argument, and no PATH lookup.
 
         ``launch_windows.py`` / ``launch_macos.py`` are ``computer_launch_app``'s
         whole purpose: opening an application IS creating a process, so the verb
@@ -190,11 +190,12 @@ class TestImportSafety:
     def test_overlay_spawn_is_a_fixed_module_launch(self):
         """The one permitted spawn carries nothing agent-supplied.
 
-        Asserted structurally: the argv list literal must be exactly
-        ``[sys.executable, "-m", OVERLAY_MODULE]``. The only agent-influenced values
-        in the whole overlay subsystem are numeric coordinates, and they travel as
-        JSON on the child's stdin — a spawn that started interpolating anything into
-        its argv would be a new, unreviewed injection surface.
+        Asserted structurally: the argv builder must be exactly
+        ``platform_compat.isolated_python_argv("-m", OVERLAY_MODULE)``. The only
+        agent-influenced values in the whole overlay subsystem are numeric
+        coordinates, and they travel as JSON on the child's stdin — a spawn that
+        started interpolating anything into its argv would be a new, unreviewed
+        injection surface.
         """
         tree = ast.parse((_PACKAGE_ROOT / "overlay.py").read_text(encoding="utf-8"))
         argvs = [
@@ -203,7 +204,7 @@ class TestImportSafety:
             if isinstance(node, ast.Assign)
             and any(getattr(t, "id", None) == "argv" for t in node.targets)
         ]
-        assert argvs == ["[sys.executable, '-m', OVERLAY_MODULE]"], argvs
+        assert argvs == ["platform_compat.isolated_python_argv('-m', OVERLAY_MODULE)"], argvs
 
 
 # ──────────────────────────────────────────────────────────────────────────

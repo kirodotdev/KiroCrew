@@ -904,7 +904,11 @@ class TestRespawnExecutable:
 
 
 class TestReexecExecutableParameter:
-    def test_reexec_uses_supplied_executable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_reexec_uses_supplied_executable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        nonbundled_python_without_user_site,
+    ) -> None:
         from kiro_crew import platform_compat
 
         # The real call mutates os.environ (UTF-8 pinning) before exec; with
@@ -924,8 +928,8 @@ class TestReexecExecutableParameter:
         assert captured["path"] == "/x/bin/python3"
         argv = captured["argv"]
         assert isinstance(argv, list)
-        assert argv[1:3] == ["-m", "kiro_crew"]
-        assert argv[3:] == ["--flag"]
+        assert argv[1:4] == ["-s", "-m", "kiro_crew"]
+        assert argv[4:] == ["--flag"]
 
     def test_reexec_defaults_to_sys_executable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew import platform_compat

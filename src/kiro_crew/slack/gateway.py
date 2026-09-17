@@ -2997,12 +2997,13 @@ class GatewayOrchestrator:
         logger.warning("Missing deps %s — installing directly", missing)
         print(f"👻 Installing missing dependencies: {', '.join(missing)}")
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            *missing,
+            *platform_compat.isolated_python_argv(
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                *missing,
+            ),
             cwd=proj,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -3099,13 +3100,13 @@ class GatewayOrchestrator:
         # carve-out outside the sealed runtime parent would be refused anyway.
         try:
             argv, env, cleanup = await sandboxed_spawn_argv_async(
-                [
-                    sys.executable,
+                platform_compat.isolated_python_argv(
                     str(Path(dep_sync_file).resolve()),
                     "--repair-missing-package",
                     str(proj),
                     str(venv_py),
-                ],
+                    force_isolation=True,
+                ),
                 mode="strict",
                 env=os.environ.copy(),
                 strip_python_env=True,
@@ -12660,12 +12661,13 @@ class GatewayOrchestrator:
                 # internal-index dependency.
                 core_deps = [pip for _mod, pip in self._REQUIRED_DEPS]
                 fallback = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--quiet",
-                    *core_deps,
+                    *platform_compat.isolated_python_argv(
+                        "-m",
+                        "pip",
+                        "install",
+                        "--quiet",
+                        *core_deps,
+                    ),
                     cwd=proj,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,

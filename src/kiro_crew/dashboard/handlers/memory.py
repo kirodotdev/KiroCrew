@@ -8,7 +8,6 @@ import importlib
 import json
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -57,7 +56,7 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.memory import normalize_projects_document
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.platform.context import redact_log_via_context
-from kiro_crew.platform_compat import kill_and_reap
+from kiro_crew.platform_compat import isolated_python_argv, kill_and_reap
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -1579,7 +1578,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         pass
     try:
         sandboxed_argv, cleanup = await wrap_argv_async(
-            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            isolated_python_argv("-m", "ensurepip", "--upgrade"),
             mode="standard",
             _prepare=wrap_argv,
         )
@@ -1705,15 +1704,14 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                 )
             try:
                 sandboxed_argv, cleanup = await wrap_argv_async(
-                    [
-                        sys.executable,
+                    isolated_python_argv(
                         "-m",
                         "pip",
                         "install",
                         "-q",
                         "faiss-cpu",
                         "--only-binary=:all:",
-                    ],
+                    ),
                     mode="standard",
                     _prepare=wrap_argv,
                 )

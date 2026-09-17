@@ -134,7 +134,7 @@ def _child_argv() -> "list[str]":
     exe = _resolve_kirocrew_bin()
     if exe != "kirocrew":  # a resolved, validated absolute path
         return [exe, *sys.argv[1:]]
-    return [sys.executable, "-m", "kiro_crew", *sys.argv[1:]]
+    return platform_compat.isolated_python_argv("-m", "kiro_crew", *sys.argv[1:])
 
 
 def _refuse_unjailed(command: str, reason: str) -> NoReturn:

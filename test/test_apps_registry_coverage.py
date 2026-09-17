@@ -64,6 +64,12 @@ def pip_importable(monkeypatch):
     stdlib venv. Tests asserting the planned command take this fixture; the
     soft-skip contract is pinned separately with the opposite answer.
     """
+    import site
+
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+    monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
     real_find_spec = importlib.util.find_spec
 
     def _with_pip(name, *args, **kwargs):
@@ -2018,7 +2024,7 @@ class TestRunAppBuild:
         (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         assert await registry._run_app_build(tmp_path, "demo", []) == {"ok": True}
-        assert spawned == [[sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]]
+        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "-r", "requirements.txt"]]
 
     @pytest.mark.asyncio
     async def test_pyproject_installs_the_project(
@@ -2028,7 +2034,7 @@ class TestRunAppBuild:
         (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         assert await registry._run_app_build(tmp_path, "demo", []) == {"ok": True}
-        assert spawned == [[sys.executable, "-m", "pip", "install", "."]]
+        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "."]]
 
     @pytest.mark.asyncio
     async def test_setup_py_installs_the_project(
@@ -2037,7 +2043,7 @@ class TestRunAppBuild:
         (tmp_path / "setup.py").write_text("from setuptools import setup\n", encoding="utf-8")
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         assert await registry._run_app_build(tmp_path, "demo", []) == {"ok": True}
-        assert spawned == [[sys.executable, "-m", "pip", "install", "."]]
+        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "."]]
 
     @pytest.mark.asyncio
     async def test_missing_path_pip_does_not_skip_the_python_build(
@@ -2049,7 +2055,7 @@ class TestRunAppBuild:
         monkeypatch.setattr(registry.shutil, "which", lambda name: None)
         spawned = _fake_sandbox(monkeypatch, [_FakeProc(returncode=0)])
         assert await registry._run_app_build(tmp_path, "demo", []) == {"ok": True}
-        assert spawned == [[sys.executable, "-m", "pip", "install", "."]]
+        assert spawned == [[sys.executable, "-s", "-m", "pip", "install", "."]]
 
     @pytest.mark.asyncio
     async def test_desktop_bundled_interpreter_never_runs_pip(self, tmp_path, monkeypatch):

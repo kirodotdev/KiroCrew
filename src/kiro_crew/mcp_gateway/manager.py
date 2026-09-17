@@ -24,7 +24,6 @@ import logging
 import os
 import random
 import signal
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -682,8 +681,7 @@ class GatewayManager:
         extra_dirs = [p for p in (local_bin,) if p and p not in existing_path.split(os.pathsep)]
         if extra_dirs:
             env["PATH"] = os.pathsep.join([*extra_dirs, existing_path]) if existing_path else os.pathsep.join(extra_dirs)
-        argv = [
-            sys.executable,
+        argv = platform_compat.isolated_python_argv(
             "-m", _GATEWAYD_MODULE,
             "--socket", str(self._spec.socket_path),
             # This process is the daemon's one owner: it exits when we are
@@ -692,7 +690,7 @@ class GatewayManager:
             "--owner-pid", str(os.getpid()),
             "--idle-timeout-secs", str(self._spec.idle_timeout_secs),
             "--max-backends", str(self._spec.max_backends),
-        ]
+        )
         # Only pass --prewarm-count when enabled so the daemon command line
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:

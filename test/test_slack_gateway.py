@@ -1269,7 +1269,9 @@ class TestBrazilInstallAndDeps:
                 asyncio.run(orch._check_console_script())
         spawn.assert_not_awaited()
 
-    def test_check_console_script_reinstalls_when_missing(self, tmp_path):
+    def test_check_console_script_reinstalls_when_missing(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         (tmp_path / ".install-method").write_text("pip")
         venv_py = gw.dep_sync.project_venv_python(tmp_path)
         # The interpreter directory exists but the entry point is absent.
@@ -1297,6 +1299,7 @@ class TestBrazilInstallAndDeps:
         # where it is now composed.
         assert seen["argv"] == [
             sys.executable,
+            "-s",
             str(Path(gw.dep_sync.__file__).resolve()),
             "--repair-missing-package",
             str(tmp_path),
@@ -6871,7 +6874,7 @@ class TestBgSessionDashboardBranch:
 class TestCheckMissingDepsPip:
     """Dep repair via pip install."""
 
-    def test_pip_install_on_missing_dep(self):
+    def test_pip_install_on_missing_dep(self, nonbundled_python_without_user_site):
         orch = _make_orchestrator()
         with patch("importlib.util.find_spec", return_value=None):
             with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/proj"}):
@@ -6881,11 +6884,17 @@ class TestCheckMissingDepsPip:
                         asyncio.run(orch._check_missing_deps())
                     mock_exec.assert_awaited_once()
                     # Pin the command shape so a refactor cannot silently stop
-                    # installing (sys.executable -m pip install ...).
+                    # installing through this interpreter with user site disabled.
                     import sys as _sys
 
                     args = mock_exec.await_args.args
-                    assert args[:4] == (_sys.executable, "-m", "pip", "install")
+                    assert args[:5] == (
+                        _sys.executable,
+                        "-s",
+                        "-m",
+                        "pip",
+                        "install",
+                    )
 
     def test_pip_install_failure(self):
         orch = _make_orchestrator()

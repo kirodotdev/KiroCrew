@@ -181,6 +181,10 @@ class TestInstallDeps:
     def test_a_successful_install_uses_this_interpreters_pip_only(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        import site
+
+        monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+        monkeypatch.setattr(deps.platform_compat, "is_bundled_interpreter", lambda: False)
         seen: dict[str, Any] = {}
 
         def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -193,7 +197,15 @@ class TestInstallDeps:
             "installed": ["ruff"],
             "detail": "ruff installed",
         }
-        assert seen["cmd"] == [sys.executable, "-m", "pip", "install", "--quiet", "ruff"]
+        assert seen["cmd"] == [
+            sys.executable,
+            "-s",
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "ruff",
+        ]
 
     def test_a_pip_failure_reports_the_last_stderr_line(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch

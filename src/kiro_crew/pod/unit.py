@@ -25,10 +25,9 @@ import errno
 import os
 import shlex
 import shutil
-import sys
 from pathlib import Path
 
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod.config import TERMINAL_BOOT_EXIT_CODES, PodConfig, environment_vars
 from kiro_crew.service.common import systemd_quote
@@ -85,7 +84,8 @@ def _kirocrew_argv() -> tuple[str, ...]:
       1. ``KIROCREW_POD_BIN`` — explicit override (used when installing a unit that
          must boot a specific build, e.g. a worktree's own ``.venv``).
       2. the console-script on PATH.
-      3. ``<this python> -m kiro_crew`` so it works from a bare checkout.
+      3. ``<this python> [-s] -m kiro_crew`` so it works from a bare checkout
+         under the parent interpreter's effective user-site policy.
     """
     override = os.environ.get("KIROCREW_POD_BIN")
     if override:
@@ -93,7 +93,7 @@ def _kirocrew_argv() -> tuple[str, ...]:
     found = shutil.which("kirocrew")
     if found:
         return (found,)
-    return (sys.executable, "-m", "kiro_crew")
+    return tuple(platform_compat.isolated_python_argv("-m", "kiro_crew"))
 
 
 def _environment_block(cfg: PodConfig) -> str:

@@ -907,7 +907,13 @@ def _launch_gateway(
     home: Path, env: dict[str, str], *, fixture: str | None, approval: str, crons: bool
 ) -> subprocess.Popen:
     """Launch only our test gateway; no caller-supplied executable or argv."""
-    cmd = [sys.executable, "-m", "kiro_crew", "gateway", "--test-mode"]
+    cmd = platform_compat.isolated_python_argv(
+        "-m",
+        "kiro_crew",
+        "gateway",
+        "--test-mode",
+        force_isolation=True,
+    )
     if fixture is not None:
         cmd.extend(["--seed", fixture])
     cmd.extend(["--approval", approval])
@@ -1081,12 +1087,12 @@ def spawn_feature_gateway(
             # Seed the empty owned tree FIRST, retaining seed's ordinary guards.
             # Use a child so seed's environment lookup never changes our parent.
             seeded = subprocess.run(
-                [
-                    sys.executable,
+                platform_compat.isolated_python_argv(
                     "-c",
                     "from kiro_crew.seed import seed; import sys; seed(sys.argv[1])",
                     fixture,
-                ],
+                    force_isolation=True,
+                ),
                 cwd=str(spawn_cwd),
                 env=env,
                 capture_output=True,

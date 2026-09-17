@@ -1390,7 +1390,9 @@ def test_terminate_preserves_home_after_root_exits() -> None:
         proc.wait(timeout=10)
 
 
-def test_preflight_runs_after_seed_and_preserves_its_files(tmp_path, monkeypatch):
+def test_preflight_runs_after_seed_and_preserves_its_files(
+    tmp_path, monkeypatch, nonbundled_python_with_user_site
+):
     """A native whoami/config preflight may legitimately populate private state."""
     from kiro_crew.seed import seed
 
@@ -1398,8 +1400,10 @@ def test_preflight_runs_after_seed_and_preserves_its_files(tmp_path, monkeypatch
     proc = _make_fake_proc_with_ready('{"port": 51234, "token": "synthetic"}')
 
     def seed_child(argv, **kwargs):
+        assert argv[1:3] == ["-s", "-c"]
         assert argv[-1] == "minimal"
-        assert "replace" not in argv[2]
+        seed_source = argv[argv.index("-c") + 1]
+        assert "replace" not in seed_source
         home = Path(kwargs["env"]["KIROCREW_HOME"])
         assert not any(home.iterdir())
         with monkeypatch.context() as child:
@@ -1467,7 +1471,9 @@ def test_gateway_launcher_rejects_command_input(tmp_path, monkeypatch, field):
         spawn.assert_not_called()
 
 
-def test_gateway_launcher_fixed_command_and_restart_seed(tmp_path):
+def test_gateway_launcher_fixed_command_and_restart_seed(
+    tmp_path, nonbundled_python_with_user_site
+):
     from kiro_crew.testing import harness
 
     env = {"KIROCREW_HOME": str(tmp_path)}
@@ -1475,7 +1481,14 @@ def test_gateway_launcher_fixed_command_and_restart_seed(tmp_path):
         for fixture in ("minimal", None):
             harness._launch_gateway(tmp_path, env, fixture=fixture, approval="reads", crons=False)
             cmd = spawn.call_args.args[0]
-            expected = [sys.executable, "-m", "kiro_crew", "gateway", "--test-mode"]
+            expected = [
+                sys.executable,
+                "-s",
+                "-m",
+                "kiro_crew",
+                "gateway",
+                "--test-mode",
+            ]
             if fixture is not None:
                 expected += ["--seed", fixture]
             assert cmd == expected + ["--approval", "reads", "--no-crons"]

@@ -3612,7 +3612,7 @@ class TestFixStaleManagedCommand:
         assert spec["args"] == ["mcp-core"]
 
     def test_applies_python_dash_m_fallback_with_args(self):
-        """When no standalone binary resolves, the python -m kiro_crew fallback
+        """When no standalone binary resolves, the python -s -m kiro_crew fallback
         (command + its args) is applied. On Windows, rewriting the command alone
         would leave a bare 'kirocrew' that isn't on PATH."""
         from kiro_crew.mcp_discovery import _fix_stale_managed_command
@@ -3620,11 +3620,11 @@ class TestFixStaleManagedCommand:
         spec = {"command": "kirocrew", "args": []}
         with patch(
             "kiro_crew.agent._kirocrew_mcp_invocation",
-            return_value=("/venv/Scripts/python.exe", ["-m", "kiro_crew", "mcp-cron"]),
+            return_value=("/venv/Scripts/python.exe", ["-s", "-m", "kiro_crew", "mcp-cron"]),
         ):
             _fix_stale_managed_command("kirocrew-cron", spec)
         assert spec["command"] == "/venv/Scripts/python.exe"
-        assert spec["args"] == ["-m", "kiro_crew", "mcp-cron"]
+        assert spec["args"] == ["-s", "-m", "kiro_crew", "mcp-cron"]
 
     def test_maps_each_managed_server_to_its_subcommand(self):
         from kiro_crew.mcp_discovery import _fix_stale_managed_command
@@ -4779,14 +4779,15 @@ class TestFirstPartyManagedArgv:
         )
 
     def test_the_interpreter_fallback_is_never_first_party(self, monkeypatch) -> None:
-        """`python -m kiro_crew` prepends the child's CWD to sys.path (3.10 has
-        no -P), so a planted `kiro_crew/` tree in an untrusted cwd would shadow
-        the install — only a resolved console-script binary qualifies."""
+        """`python -s -m kiro_crew` still prepends the child's CWD to sys.path
+        (3.10 has no -P), so a planted `kiro_crew/` tree in an untrusted cwd
+        would shadow the install — only a resolved console-script binary
+        qualifies."""
         import sys
 
         import kiro_crew.mcp_discovery as md
 
-        fallback = (sys.executable, ["-m", "kiro_crew", "mcp-core"])
+        fallback = (sys.executable, ["-s", "-m", "kiro_crew", "mcp-core"])
         monkeypatch.setattr(md, "_resolved_managed_invocation", {"kirocrew-core": fallback})
         monkeypatch.setattr("kiro_crew.agent._managed_mcp_env", lambda: {})
         assert not md._is_first_party_managed_argv(

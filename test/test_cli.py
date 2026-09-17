@@ -3301,10 +3301,12 @@ class TestRestart:
         assert spawned.is_absolute()
         assert spawned.resolve() == own.resolve()
 
-    def test_spawn_detached_gateway_falls_back_to_python_m(self, tmp_path, monkeypatch):
+    def test_spawn_detached_gateway_falls_back_to_python_m(
+        self, tmp_path, monkeypatch, nonbundled_python_without_user_site
+    ):
         # Dev/Brazil-workspace installs may not have ``kirocrew`` on
-        # PATH globally. Fall back to ``python -m kiro_crew`` so the
-        # command works regardless of install layout.
+        # PATH globally. Fall back to ``python -s -m kiro_crew`` so the
+        # command works regardless of install layout without loading user site.
         from kiro_crew.cli_server import _spawn_detached_gateway
 
         monkeypatch.setattr("kiro_crew.cli_server.config_dir", lambda: tmp_path)
@@ -3317,7 +3319,7 @@ class TestRestart:
         argv = mock_popen.call_args.args[0]
         # First arg is sys.executable (path to current Python). Just check
         # the invocation form, not the absolute path.
-        assert argv[1:] == ["-m", "kiro_crew", "gateway"]
+        assert argv[1:] == ["-s", "-m", "kiro_crew", "gateway"]
 
     def test_explicit_port_bypasses_service_short_circuit(self, capsys):
         # When cli_port is not None, bypass systemd: the service unit is not

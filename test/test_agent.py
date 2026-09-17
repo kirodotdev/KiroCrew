@@ -1868,14 +1868,16 @@ class TestKirocrewMcpInvocation:
         assert cmd == "/opt/bin/kirocrew"
         assert args == ["mcp-cron"]
 
-    def test_falls_back_to_interpreter_module_when_unresolved(self):
+    def test_falls_back_to_interpreter_module_when_unresolved(
+        self, nonbundled_python_without_user_site
+    ):
         from kiro_crew.agent import _kirocrew_mcp_invocation
 
         # Bare "kirocrew" is the unresolved sentinel from _resolve_kirocrew_bin.
         with patch("kiro_crew.agent._resolve_kirocrew_bin", return_value="kirocrew"):
             cmd, args = _kirocrew_mcp_invocation("mcp-core")
         assert cmd == sys.executable
-        assert args == ["-m", "kiro_crew", "mcp-core"]
+        assert args == ["-s", "-m", "kiro_crew", "mcp-core"]
 
     def test_unwraps_cmd_shim_to_sibling_interpreter(self, tmp_path: Path):
         """A resolved bin/kirocrew.cmd is never emitted verbatim.
@@ -1901,7 +1903,9 @@ class TestKirocrewMcpInvocation:
         # pinned 3.12, so the 3.11+ flag is safe); -s drops user site-packages.
         assert args == ["-P", "-s", "-m", "kiro_crew", "mcp-cron"]
 
-    def test_cmd_shim_without_interpreter_falls_back_to_sys_executable(self, tmp_path: Path):
+    def test_cmd_shim_without_interpreter_falls_back_to_sys_executable(
+        self, tmp_path: Path, nonbundled_python_without_user_site
+    ):
         """Corrupted bundle: shim present but python.exe missing -> sys.executable."""
         from kiro_crew.agent import _kirocrew_mcp_invocation
 
@@ -1913,7 +1917,7 @@ class TestKirocrewMcpInvocation:
         with patch("kiro_crew.agent._resolve_kirocrew_bin", return_value=str(shim)):
             cmd, args = _kirocrew_mcp_invocation("mcp-core")
         assert cmd == sys.executable
-        assert args == ["-m", "kiro_crew", "mcp-core"]
+        assert args == ["-s", "-m", "kiro_crew", "mcp-core"]
 
 
 class TestKiroHooksMerge:

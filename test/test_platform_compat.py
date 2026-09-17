@@ -145,7 +145,7 @@ class TestPlatformFlags:
 
 
 class TestReexecPythonModule:
-    def test_windows_uses_space_free_argv0(self, monkeypatch):
+    def test_windows_uses_space_free_argv0(self, monkeypatch, nonbundled_python_without_user_site):
         executable = (
             r"C:\Users\alice\AppData\Local\Programs\KiroCrew Nightly"
             r"\resources\backend-dist\kirocrew-backend\python.exe"
@@ -162,13 +162,15 @@ class TestReexecPythonModule:
         assert calls == [
             (
                 executable,
-                ["python.exe", "-m", "kiro_crew", "gateway", "--port", "5476"],
+                ["python.exe", "-s", "-m", "kiro_crew", "gateway", "--port", "5476"],
             )
         ]
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
-    def test_posix_preserves_full_argv0_and_pins_utf8(self, monkeypatch):
+    def test_posix_preserves_full_argv0_and_pins_utf8(
+        self, monkeypatch, nonbundled_python_without_user_site
+    ):
         executable = "/opt/Kiro Crew/bin/python3"
         calls = []
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
@@ -179,7 +181,7 @@ class TestReexecPythonModule:
 
         pc.reexec_python_module("kiro_crew", ["gateway"])
 
-        assert calls == [(executable, [executable, "-m", "kiro_crew", "gateway"])]
+        assert calls == [(executable, [executable, "-s", "-m", "kiro_crew", "gateway"])]
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 

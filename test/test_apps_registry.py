@@ -3205,6 +3205,10 @@ def _pin_pip_importable(monkeypatch) -> None:
     test passes on a stdlib venv. The soft-skip branch has its own test that
     pins the opposite answer.
     """
+    import site
+
+    monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+    monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
     real_find_spec = importlib.util.find_spec
 
     def _with_pip(name, *args, **kwargs):
@@ -3244,7 +3248,7 @@ async def test_python_build_uses_the_running_interpreter_not_path_pip(tmp_path, 
     assert captured, "a pyproject.toml must produce a build command"
     argv = captured[0]
     assert argv[0] == sys.executable, f"build must use the running interpreter, got {argv[0]!r}"
-    assert argv[1:3] == ["-m", "pip"], f"expected `-m pip`, got {argv[1:3]!r}"
+    assert argv[1:4] == ["-s", "-m", "pip"], f"expected `-s -m pip`, got {argv[1:4]!r}"
 
 
 @pytest.mark.asyncio

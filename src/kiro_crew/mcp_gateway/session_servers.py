@@ -116,13 +116,15 @@ def _acp_server_entry(
 
     ``channel_id`` is APPENDED as an encoded ``--channel-id <value>`` pair
     rather than prepended: the overlay entry runs the interpreter, so ``args``
-    opens with ``-m kiro_crew.mcp_gateway.stub`` and anything inserted ahead of
-    that would be eaten by the interpreter instead of the stub. argparse does
-    not care about order. It rides its own ``--stub-flags-b64`` envelope for
-    the same reason the rewriter's flags do: a channel identifier is external
-    text, and a plain token crossing cmd.exe has its ``%NAME%`` spans expanded. The channel value is known here, at the one place that runs
-    per session, so the stub does not need to recover it by walking its
-    ancestors' ``/proc/<pid>/environ`` from a bash launcher.
+    opens with the helper's optional ``-s`` followed by
+    ``-m kiro_crew.mcp_gateway.stub``. Anything inserted ahead
+    of the module target would be eaten by the interpreter instead of the stub.
+    argparse does not care about the order of the appended stub flags. The value
+    rides its own ``--stub-flags-b64`` envelope for the same reason the rewriter's
+    flags do: a channel identifier is external text, and a plain token crossing
+    cmd.exe has its ``%NAME%`` spans expanded. The channel value is known here,
+    at the one place that runs per session, so the stub does not need to recover
+    it by walking its ancestors' ``/proc/<pid>/environ`` from a bash launcher.
     """
     command = entry.get("command")
     if not isinstance(command, str) or not command:

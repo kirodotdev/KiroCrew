@@ -43,6 +43,12 @@ from kiro_crew.apps.manifest import AppManifest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _isolated_python_args(cfg: dict) -> list[str]:
+    args = cfg["args"]
+    assert args and args[0] == "-s", cfg
+    return args[1:]
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1329,7 +1335,9 @@ class TestStdioInterpreterResolution:
         data = json.loads(mcp_path.read_text(encoding="utf-8"))
         return data["mcpServers"]["test-app:srv"]
 
-    def test_bare_python_resolves_to_the_app_venv_interpreter(self, tmp_path, app_env, monkeypatch):
+    def test_bare_python_resolves_to_the_app_venv_interpreter(
+        self, tmp_path, app_env, monkeypatch, nonbundled_python_without_user_site
+    ):
         import sys
 
         created: list[Path] = []
@@ -1340,8 +1348,8 @@ class TestStdioInterpreterResolution:
         )
         assert entry["command"] == str(created[0])
         assert entry["command"] != sys.executable
-        # args survive untouched — the module path is what makes it the app's server.
-        assert entry["args"] == ["-m", "myapp.server"]
+        # The module path survives after the shared user-site isolation flag.
+        assert entry["args"] == ["-s", "-m", "myapp.server"]
 
     def test_bare_python_falls_back_to_sys_executable_without_a_venv(
         self, tmp_path, app_env, monkeypatch
@@ -1474,6 +1482,29 @@ class TestStdioInterpreterResolution:
             setup=_fake_venv_python,
         )
         assert entry["command"] == sys.executable
+
+    def test_manifest_pythonpath_keeps_user_site_for_gateway_module(
+        self,
+        tmp_path,
+        app_env,
+        monkeypatch,
+        nonbundled_python_with_user_site,
+    ):
+        import sys
+
+        entry = self._register_stdio(
+            tmp_path,
+            app_env,
+            monkeypatch,
+            {
+                "command": "python3",
+                "args": ["-m", "kiro_crew.apps.builtins.x.server"],
+                "env": {"PYTHONPATH": "/manifest/own"},
+            },
+        )
+        assert entry["command"] == sys.executable
+        assert entry["args"] == ["-m", "kiro_crew.apps.builtins.x.server"]
+        assert entry["env"]["PYTHONPATH"] == "/manifest/own"
 
     def test_a_windows_exe_spelling_of_python_gets_the_interpreter_policy(
         self, tmp_path, app_env, monkeypatch
@@ -1616,9 +1647,14 @@ class TestStdioInterpreterResolution:
         assert entry["command"] == "D:missing"
         assert "resolves to no existing executable" in caplog.text
 
-    def test_the_host_cli_pin_still_wins(self, tmp_path, app_env, monkeypatch):
+    def test_nonbundled_host_cli_pin_forces_isolation_with_pythonpath(
+        self, tmp_path, app_env, monkeypatch, nonbundled_python_with_user_site
+    ):
         import sys
 
+        # This path supplies the package root through PYTHONPATH, so it keeps
+        # its unconditional `-s` guard even when the host interpreter normally
+        # allows user-site packages.
         # `kirocrew` is pinned to `sys.executable -m kiro_crew` by
         # _pin_host_cli_command BEFORE stdio resolution; the venv must not
         # override that (the host CLI is gateway code, not app code).
@@ -1830,7 +1866,7 @@ class TestAbiMatchedShebangPathScript:
         reason="shebang launch semantics are POSIX-only",
     )
     def test_a_path_script_with_gateway_shebang_shims_through_deps_boot(
-        self, tmp_path
+        self, tmp_path, nonbundled_python_with_user_site
     ):
         """An absolute-path launcher whose shebang names an ABI-matched
         interpreter is a python launch: it must reach its provisioned deps
@@ -1851,10 +1887,10 @@ class TestAbiMatchedShebangPathScript:
             {"command": str(launcher), "args": ["--flag"]}, app_root=tmp_path
         )
         assert cfg["command"] == _sys.executable, cfg
-        assert cfg["args"][0].endswith("deps_boot.py"), cfg
-        assert cfg["args"][1] == str(app_deps_dir(tmp_path)), cfg
-        assert cfg["args"][2] == str(launcher), cfg
-        assert cfg["args"][3] == "--flag", cfg
+        assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+        assert _isolated_python_args(cfg)[1] == str(app_deps_dir(tmp_path)), cfg
+        assert _isolated_python_args(cfg)[2] == str(launcher), cfg
+        assert _isolated_python_args(cfg)[3] == "--flag", cfg
 
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -1952,7 +1988,9 @@ class TestShebangReaderGates:
 
 
 class TestSkipFirstLineFlagUnshimmable:
-    def test_dash_x_falls_back_to_the_pythonpath_transport(self, tmp_path):
+    def test_dash_x_falls_back_to_the_pythonpath_transport(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         """-x skips the launched script's FIRST LINE; shimming would make
         deps_boot that script and the interpreter dies with SyntaxError on
         its severed docstring. Unshimmable: direct launch + PYTHONPATH."""
@@ -1967,7 +2005,7 @@ class TestSkipFirstLineFlagUnshimmable:
             {"command": "python3", "args": ["-x", "server.py"]}, app_root=tmp_path
         )
         assert "deps_boot" not in " ".join(cfg.get("args") or []), cfg
-        assert cfg["args"] == ["-x", "server.py"]
+        assert cfg["args"] == ["-s", "-x", "server.py"]
         # the transport still serves the deps
         assert str(app_deps_dir(tmp_path)) in (cfg.get("env") or {}).get(
             "PYTHONPATH", ""
@@ -1992,7 +2030,9 @@ class TestStdioDepsDirExposure:
     carries no interpreter, so the env is the only bridge - without it a
     python-launcher server or a deps-provided console script dies on import."""
 
-    def test_the_deps_dir_is_prepended_to_a_stdio_server_pythonpath(self, tmp_path):
+    def test_the_deps_dir_is_prepended_to_a_stdio_server_pythonpath(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         from kiro_crew.apps.bridges import resolve_stdio_command
         from kiro_crew.apps.interpreter import app_deps_dir
 
@@ -2017,9 +2057,9 @@ class TestStdioDepsDirExposure:
         assert cfg["command"] == _sys.executable, cfg
         # PATH spelling, not -m: an ABI-matched path python can be the
         # app's own venv interpreter, which cannot import kiro_crew
-        assert cfg["args"][0].endswith("deps_boot.py"), cfg
-        assert cfg["args"][1] == str(app_deps_dir(tmp_path)), cfg
-        assert cfg["args"][2] == "server.py", cfg
+        assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+        assert _isolated_python_args(cfg)[1] == str(app_deps_dir(tmp_path)), cfg
+        assert _isolated_python_args(cfg)[2] == "server.py", cfg
         parts = cfg["env"]["PYTHONPATH"].split(os.pathsep)
         assert str(app_deps_dir(tmp_path)) not in parts, cfg
         assert "/manifest/own" in parts, cfg
@@ -2028,7 +2068,9 @@ class TestStdioDepsDirExposure:
         sys.platform == "win32",
         reason="shebang launch semantics are POSIX-only; Windows uses the launcher pair",
     )
-    def test_a_deps_console_script_routes_through_the_shim(self, tmp_path):
+    def test_a_deps_console_script_routes_through_the_shim(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         """A deps-dir console script is a pip-generated Python script; run
         direct, its editable/.pth-dependent imports die (PYTHONPATH never
         processes .pth). It launches through deps_boot on the gateway
@@ -2050,8 +2092,8 @@ class TestStdioDepsDirExposure:
             {"command": "mytool", "args": ["--serve"]}, app_root=tmp_path
         )
         assert cfg["command"] == _sys.executable, cfg
-        assert cfg["args"][0].endswith("deps_boot.py"), cfg
-        assert cfg["args"][1:] == [
+        assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+        assert _isolated_python_args(cfg)[1:] == [
             str(app_deps_dir(tmp_path)),
             str(script),
             "--serve",
@@ -2063,7 +2105,9 @@ class TestStdioDepsDirExposure:
         sys.platform == "win32",
         reason="shebang launch semantics are POSIX-only; Windows uses the launcher pair",
     )
-    def test_a_pip_shell_trampoline_script_is_recognized_as_python(self, tmp_path):
+    def test_a_pip_shell_trampoline_script_is_recognized_as_python(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         """pip emits a /bin/sh trampoline when the interpreter path is long
         or space-bearing; the script is still python and must route through
         the shim, or its .pth-dependent imports silently die."""
@@ -2091,8 +2135,8 @@ class TestStdioDepsDirExposure:
         _plant_deps_stamp(tmp_path, b"requests\n")
         cfg = resolve_stdio_command({"command": "tramptool"}, app_root=tmp_path)
         assert cfg["command"] == _sys.executable, cfg
-        assert cfg["args"][0].endswith("deps_boot.py"), cfg
-        assert cfg["args"][1] == str(app_deps_dir(tmp_path)), cfg
+        assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+        assert _isolated_python_args(cfg)[1] == str(app_deps_dir(tmp_path)), cfg
 
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -2121,7 +2165,9 @@ class TestStdioDepsDirExposure:
         assert cfg["command"] == str(script), cfg
         assert "deps_boot" not in " ".join(cfg.get("args") or []), cfg
 
-    def test_a_windows_launcher_pair_shims_via_the_companion_script(self, tmp_path):
+    def test_a_windows_launcher_pair_shims_via_the_companion_script(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         """pip's classic Windows launcher is a native .exe (no shebang) with
         a `<name>-script.py` companion holding the python entry - the
         companion shims through deps_boot. An embedded-script .exe with no
@@ -2143,9 +2189,9 @@ class TestStdioDepsDirExposure:
         cfg = resolve_stdio_command({"command": "wintool.exe"}, app_root=tmp_path)
         if cfg["command"] == _sys.executable:
             # resolver found the exe (Windows probe layout): companion shims
-            assert cfg["args"][0].endswith("deps_boot.py"), cfg
-            assert cfg["args"][1] == str(app_deps_dir(tmp_path)), cfg
-            assert cfg["args"][2] == str(companion), cfg
+            assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+            assert _isolated_python_args(cfg)[1] == str(app_deps_dir(tmp_path)), cfg
+            assert _isolated_python_args(cfg)[2] == str(companion), cfg
         else:
             # POSIX probe does not resolve .exe names from deps bin - the
             # command passes through untouched (nothing to shim here)
@@ -2282,7 +2328,9 @@ class TestStdioDepsDirExposure:
         )
         assert "env" not in cfg, cfg
 
-    def test_a_python_launcher_with_deps_routes_through_the_shim(self, tmp_path):
+    def test_a_python_launcher_with_deps_routes_through_the_shim(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         """PYTHONPATH never processes .pth files, so a python-launcher stdio
         server with provisioned deps launches via deps_boot (addsitedir).
         An interpreter OPTION first-token is left unshimmed (it would be
@@ -2299,25 +2347,25 @@ class TestStdioDepsDirExposure:
             {"command": "python3", "args": ["server.py"]}, app_root=tmp_path
         )
         assert cfg["command"] == _sys.executable
-        assert cfg["args"][0].endswith("deps_boot.py"), cfg
-        assert cfg["args"][1] == str(app_deps_dir(tmp_path)), cfg
-        assert cfg["args"][2] == "server.py", cfg
+        assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+        assert _isolated_python_args(cfg)[1] == str(app_deps_dir(tmp_path)), cfg
+        assert _isolated_python_args(cfg)[2] == "server.py", cfg
         # interpreter options are WALKED: -u stays consumed by the
         # interpreter, the shim triple lands at the target token
         cfg2 = resolve_stdio_command(
             {"command": "python3", "args": ["-u", "server.py"]}, app_root=tmp_path
         )
-        assert cfg2["args"][0] == "-u", cfg2
-        assert cfg2["args"][1].endswith("deps_boot.py"), cfg2
-        assert cfg2["args"][2] == str(app_deps_dir(tmp_path)), cfg2
-        assert cfg2["args"][3] == "server.py", cfg2
+        assert _isolated_python_args(cfg2)[0] == "-u", cfg2
+        assert _isolated_python_args(cfg2)[1].endswith("deps_boot.py"), cfg2
+        assert _isolated_python_args(cfg2)[2] == str(app_deps_dir(tmp_path)), cfg2
+        assert _isolated_python_args(cfg2)[3] == "server.py", cfg2
         # -c launches shim too (deps_boot has a -c arm): raw PYTHONPATH
         # would skip .pth hooks and an editable import would die
         cfg3 = resolve_stdio_command(
             {"command": "python3", "args": ["-c", "import server"]}, app_root=tmp_path
         )
-        assert cfg3["args"][0].endswith("deps_boot.py"), cfg3
-        assert cfg3["args"][1:] == [
+        assert _isolated_python_args(cfg3)[0].endswith("deps_boot.py"), cfg3
+        assert _isolated_python_args(cfg3)[1:] == [
             str(app_deps_dir(tmp_path)),
             "-c",
             "import server",
@@ -2330,8 +2378,8 @@ class TestStdioDepsDirExposure:
         cfg_dd = resolve_stdio_command(
             {"command": "python3", "args": ["--", "server.py"]}, app_root=tmp_path
         )
-        assert cfg_dd["args"][0].endswith("deps_boot.py"), cfg_dd
-        assert cfg_dd["args"][1:] == [
+        assert _isolated_python_args(cfg_dd)[0].endswith("deps_boot.py"), cfg_dd
+        assert _isolated_python_args(cfg_dd)[1:] == [
             str(app_deps_dir(tmp_path)),
             "server.py",
         ], cfg_dd
@@ -2343,7 +2391,7 @@ class TestStdioDepsDirExposure:
         cfg3b = resolve_stdio_command(
             {"command": "python3", "args": ["-cimport server"]}, app_root=tmp_path
         )
-        assert cfg3b["args"][2:] == ["-c", "import server"], cfg3b
+        assert _isolated_python_args(cfg3b)[2:] == ["-c", "import server"], cfg3b
         # -S skips site initialization, so the shim itself could never
         # import (kiro_crew lives in site-packages) - unshimmable, keep the
         # PYTHONPATH transport; same for -E/-I and combined spellings
@@ -2353,18 +2401,19 @@ class TestStdioDepsDirExposure:
             {"command": "python3", "args": ["-Wignore::ImportWarning", "server.py"]},
             app_root=tmp_path,
         )
-        assert cfg6["args"][1].endswith("deps_boot.py"), cfg6
-        assert cfg6["args"][2] == str(app_deps_dir(tmp_path)), cfg6
+        assert _isolated_python_args(cfg6)[1].endswith("deps_boot.py"), cfg6
+        assert _isolated_python_args(cfg6)[2] == str(app_deps_dir(tmp_path)), cfg6
         # -S/-E/-I make BOTH the -m spelling and PYTHONPATH inert, so those
         # forms shim via the stdlib-only deps_boot launched BY ABSOLUTE PATH
         for flags in (["-S"], ["-E"], ["-I"], ["-s"], ["-uS"], ["-us"]):
             cfg5 = resolve_stdio_command(
                 {"command": "python3", "args": [*flags, "server.py"]}, app_root=tmp_path
             )
-            assert cfg5["args"][: len(flags)] == flags, cfg5
-            assert cfg5["args"][len(flags)].endswith("deps_boot.py"), cfg5
-            assert cfg5["args"][len(flags) + 1] == str(app_deps_dir(tmp_path)), cfg5
-            assert cfg5["args"][len(flags) + 2] == "server.py", cfg5
+            prefix = flags if flags in (["-I"], ["-s"], ["-us"]) else ["-s", *flags]
+            assert cfg5["args"][: len(prefix)] == prefix, cfg5
+            assert cfg5["args"][len(prefix)].endswith("deps_boot.py"), cfg5
+            assert cfg5["args"][len(prefix) + 1] == str(app_deps_dir(tmp_path)), cfg5
+            assert cfg5["args"][len(prefix) + 2] == "server.py", cfg5
             pp5 = (cfg5.get("env") or {}).get("PYTHONPATH", "")
             assert str(app_deps_dir(tmp_path)) not in pp5.split(os.pathsep), cfg5
         # attached -mMODULE is CPython-equivalent to the separate form and is
@@ -2372,8 +2421,8 @@ class TestStdioDepsDirExposure:
         cfg4 = resolve_stdio_command(
             {"command": "python3", "args": ["-mserver"]}, app_root=tmp_path
         )
-        assert cfg4["args"][0].endswith("deps_boot.py"), cfg4
-        assert cfg4["args"][1:] == [
+        assert _isolated_python_args(cfg4)[0].endswith("deps_boot.py"), cfg4
+        assert _isolated_python_args(cfg4)[1:] == [
             str(app_deps_dir(tmp_path)),
             "-m",
             "server",
@@ -2393,7 +2442,9 @@ class TestStdioDepsDirExposure:
         assert "env" not in cfg, cfg
         assert "deps_boot" not in " ".join(cfg.get("args") or []), cfg
 
-    def test_expected_provisioning_emits_the_deps_path_before_the_dir_exists(self, tmp_path):
+    def test_expected_provisioning_emits_the_deps_path_before_the_dir_exists(
+        self, tmp_path, nonbundled_python_with_user_site
+    ):
         """First enable registers the MCP config BEFORE the backend spawn
         provisions the deps dir, and no reconciliation pass is guaranteed to
         rewrite it. A requirements.txt makes provisioning expected, so the
@@ -2410,8 +2461,8 @@ class TestStdioDepsDirExposure:
         )
         # the shim triple carries the deps path; addsitedir on the
         # not-yet-existing dir is inert until provisioning fills it
-        assert cfg["args"][0].endswith("deps_boot.py"), cfg
-        assert cfg["args"][1] == str(app_deps_dir(tmp_path)), cfg
+        assert _isolated_python_args(cfg)[0].endswith("deps_boot.py"), cfg
+        assert _isolated_python_args(cfg)[1] == str(app_deps_dir(tmp_path)), cfg
 
     def test_a_symlinked_venv_python_is_abi_matched(self, tmp_path, monkeypatch):
         """A venv python is normally a SYMLINK to the base interpreter;

@@ -922,7 +922,7 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         # Source-tree/editable-install fallback: run the module directly.
         # This also covers the case where the wrapper script is not on PATH
         # (e.g. running from an unactivated checkout).
-        argv = [sys.executable, "-m", "kiro_crew", "gateway"]
+        argv = platform_compat.isolated_python_argv("-m", "kiro_crew", "gateway")
     if port is not None:
         argv += ["--port", str(int(port))]
 
@@ -1787,7 +1787,7 @@ def _refresh_agent_config(proj: str) -> None:
     print("  🔒 Refreshing agent config…")
     try:
         r = subprocess.run(
-            [sys.executable, "-m", "kiro_crew", "setup", "--agent-only"],
+            platform_compat.isolated_python_argv("-m", "kiro_crew", "setup", "--agent-only"),
             cwd=proj,
             stdin=subprocess.DEVNULL,
             capture_output=True,

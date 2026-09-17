@@ -6667,12 +6667,19 @@ class TestTheMcpServerLaunchesOnEveryPlatform:
     review; the stronger fix comes from the repo's own precedent.
     """
 
-    def test_the_manifest_command_is_resolved_to_a_real_interpreter(self) -> None:
+    def test_the_manifest_command_is_resolved_to_a_real_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import json
+        import site
         import sys
         from pathlib import Path
 
+        from kiro_crew import platform_compat
         from kiro_crew.apps import bridges
+
+        monkeypatch.setattr(site, "ENABLE_USER_SITE", False)
+        monkeypatch.setattr(platform_compat, "is_bundled_interpreter", lambda: False)
 
         manifest = json.loads(
             (
@@ -6687,8 +6694,8 @@ class TestTheMcpServerLaunchesOnEveryPlatform:
         assert resolved["command"] == sys.executable, (
             f"the MCP command was not resolved to the running interpreter: {resolved['command']!r}"
         )
-        # The args must survive untouched — the module path is what makes it our server.
-        assert resolved["args"] == entry["args"]
+        # The module argv survives after the shared user-site isolation prefix.
+        assert resolved["args"] == ["-s", *entry["args"]]
 
     def test_a_non_python_command_is_left_alone(self) -> None:
         """Only a bare python launcher is substituted. An app that names `node` or an absolute
