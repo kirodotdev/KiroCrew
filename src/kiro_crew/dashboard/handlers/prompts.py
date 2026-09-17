@@ -2645,45 +2645,9 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid slug"}, status=400)
 
-    def _approve_and_bound() -> str | None:
-        # Route on candidate kind: an UPDATE candidate rewrites an existing live
-        # skill (approve_pending_update); a NEW candidate is promoted fresh
-        # (approve_pending_skill). kind is read from the candidate detail
-        # (top-level or nested ``meta``), defaulting to the new path.
-        kind = None
-        try:
-            _detail = skills.get_pending_skill(slug)
-        except Exception:
-            _detail = None
-        if isinstance(_detail, dict):
-            _meta_raw = _detail.get("meta")
-            _meta: dict = _meta_raw if isinstance(_meta_raw, dict) else {}
-            kind = _detail.get("kind") or _meta.get("kind")
-        if kind == "update":
-            nm = skills.approve_pending_update(slug)
-        else:
-            nm = skills.approve_pending_skill(slug)
-        if nm:
-            # Approving consumes a slot — enforce the bound (archive, never
-            # delete). Best-effort; runs in the same off-loop executor job.
-            # Exempt the just-approved skill so a full-cap pass can't archive the
-            # very skill this request promoted (brand-new + zero-hit, it would
-            # otherwise rank lowest in the max-N backstop).
-            try:
-                cfg = KiroCrewConfig.load().skills
-                skills.run_skill_lifecycle(
-                    max_auto_skills=cfg.max_auto_skills,
-                    stale_after_days=cfg.stale_after_days,
-                    archive_after_days=cfg.archive_after_days,
-                    exempt={nm},
-                )
-            except Exception:
-                pass
-        return nm
-
     try:
-        name = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), _approve_and_bound
+        name, reason = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.approve_pending_candidate, slug
         )
     except Exception:
         _sel().log_tool_invocation(
@@ -2696,7 +2660,7 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             metadata={"slug": slug},
         )
         return web.json_response({"error": "internal error"}, status=500)
-    outcome = "ok" if name else "not_found"
+    outcome = "ok" if name else reason or "approval_refused"
     _sel().log_tool_invocation(
         session_key="",
         agent="api",
@@ -2704,11 +2668,21 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
         tool_name="api_skill_pending_approve",
         tool_kind="skill",
         outcome=outcome,
-        metadata={"slug": slug, "name": name or ""},
+        metadata={"slug": slug, "name": name or "", "reason": reason},
     )
     if not name:
+        messages = {
+            "not_found": "not found",
+            "invalid_skill_encoding": "the pending SKILL.md is not valid UTF-8",
+            "script_validation_failed": "script validation failed",
+            "invalid_target": "the pending update target is invalid",
+            "stale_base": "the live skill changed after this update was staged",
+            "candidate_unreadable": "the pending candidate could not be read safely",
+            "approval_refused": "a live skill already exists or a loader safety check refused approval",
+        }
+        reason_key = reason or "approval_refused"
         return web.json_response(
-            {"error": "not found, a live skill already exists, or script validation failed"},
+            {"error": messages.get(reason_key, messages["approval_refused"])},
             status=409,
         )
     return web.json_response({"approved": name})

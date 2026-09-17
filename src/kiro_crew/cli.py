@@ -12,6 +12,7 @@ Commands:
     kirocrew spawn run "task"     Spawn a background subagent
     kirocrew spawn list           List subagents
     kirocrew learn add|list|remove Save and manage learned corrections
+    kirocrew skills list|show|approve|dismiss Review skill candidates
     kirocrew setup                Interactive setup wizard
     kirocrew doctor               Verify setup
 """
@@ -2522,6 +2523,38 @@ Examples:
         ),
     )
 
+    # skills
+    skills_parser = cli_help.add_command(
+        sub,
+        "skills",
+        epilog="""
+Examples:
+  kirocrew skills list
+  kirocrew skills list --all --json
+  kirocrew skills show candidate-slug
+  kirocrew skills approve candidate-slug
+  kirocrew skills dismiss candidate-slug
+""",
+        formatter_class=_fmt,
+    )
+    skills_sub = skills_parser.add_subparsers(dest="skills_action")
+    skills_list = skills_sub.add_parser("list", help="List pending or live skills")
+    skills_scope = skills_list.add_mutually_exclusive_group()
+    skills_scope.add_argument(
+        "--pending",
+        action="store_true",
+        help="List pending candidates (default)",
+    )
+    skills_scope.add_argument("--live", action="store_true", help="List live skills")
+    skills_scope.add_argument("--all", action="store_true", help="List pending and live skills")
+    skills_list.add_argument("--json", action="store_true", help="Print JSON")
+    skills_show = skills_sub.add_parser("show", help="Show a pending candidate")
+    skills_show.add_argument("slug", help="Pending candidate slug")
+    skills_approve = skills_sub.add_parser("approve", help="Approve a pending candidate")
+    skills_approve.add_argument("slug", help="Pending candidate slug")
+    skills_dismiss = skills_sub.add_parser("dismiss", help="Dismiss a pending candidate")
+    skills_dismiss.add_argument("slug", help="Pending candidate slug")
+
     # artifact
     art_parser = cli_help.add_command(
         sub,
@@ -3119,6 +3152,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.cli_commands import _learn
 
         _learn(args)
+    elif args.command == "skills":
+        importlib.import_module("kiro_crew.cli_commands")._skills(args)
     elif args.command == "artifact":
         from kiro_crew.cli_commands import _artifact
 

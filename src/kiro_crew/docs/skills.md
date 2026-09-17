@@ -51,6 +51,25 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
 
+## Reviewing Pending Skill Candidates
+
+Use the CLI to inspect and act on candidates without opening the dashboard:
+
+```bash
+kirocrew skills list                         # pending candidates (default)
+kirocrew skills list --live                  # active skills
+kirocrew skills list --all --json            # both sets as JSON
+kirocrew skills show <slug>                  # body, metadata, validation status
+kirocrew skills approve <slug>               # promote a new or update candidate
+kirocrew skills dismiss <slug>               # remove a candidate
+```
+
+This command group is for a human operator; it is not advertised to agents because it
+has no MCP twin. Approval uses the same loader checks as the dashboard, including
+script validation, redaction, collision checks, executable-bit handling, and update
+versioning. A refused approval or dismissal exits non-zero and prints a machine-readable
+reason code.
+
 ## Creating Skills
 
 ### Via Dashboard

@@ -222,7 +222,8 @@ def test_consumed_hook_fires_on_ttl_prune(loader):
 def test_consumed_hook_not_fired_when_nothing_consumed(loader):
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
-    assert loader.approve_pending_skill("no-such-slug") is None
+    with pytest.raises(S.PendingSkillApprovalRefused):
+        loader.approve_pending_skill("no-such-slug")
     assert loader.dismiss_pending_skill("no-such-slug") is False
     assert seen == []
 
