@@ -242,3 +242,48 @@ async def test_identity_retirement_preserves_map_and_drops_transient_state(
     manager._session_map.clear_sid.assert_not_called()
     manager._session_map.delete.assert_not_called()
     provider.shutdown.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("clear_conversation", "seed_session", "suppressed"),
+    [
+        (True, True, True),
+        (False, True, False),
+        (True, False, False),
+    ],
+    ids=("clearing-reset-suppresses", "plain-reset-replays", "missing-key-does-not-arm"),
+)
+async def test_conversation_clearing_reset_suppresses_the_successor_replay(
+    cfg: KiroCrewConfig,
+    clear_conversation: bool,
+    seed_session: bool,
+    suppressed: bool,
+) -> None:
+    """A reset that throws the conversation away must not let replay put it back.
+
+    ``clear_conversation=True`` has exactly one caller -- the critical-context
+    escalation in ``CompactionCoordinator._reset_still_critical`` -- and the
+    successor's session replay re-injects the ENTIRE conversation log as a single
+    prompt.  ``/compact`` cannot shrink one prompt, so the post-compaction reading
+    stays above the reset threshold and escalates again; the same reset also drops
+    the cooldown that would have damped it, so the cycle is unbounded.  Suppressing
+    replay on this one path is what terminates it.
+
+    The two negative rows are the blast radius: every other reset keeps the
+    conversation and must still replay it, and a reset on a key with no live
+    session has no conversation to throw away, so it must not arm the flag for
+    whatever cold-starts under that key next.
+    """
+    manager = SessionManager(cfg, provider_factory=lambda **_: _provider())
+    manager._session_map.clear_sid = MagicMock()  # type: ignore[method-assign]
+    manager.release_subagent_runtime = AsyncMock()  # type: ignore[method-assign]
+    if seed_session:
+        manager._sessions["key"] = _Session(
+            provider=_provider(),
+            first_turn=FirstTurnState.NOTHING_ARMED,
+        )
+
+    await manager.reset("key", clear_conversation=clear_conversation)
+
+    assert manager.consume_replay_suppression("key") is suppressed

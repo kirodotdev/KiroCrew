@@ -481,7 +481,29 @@ class SessionLifecycleService:
             session = owner._sessions.pop(key, None)
             owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
-            self._suppress_replay.discard(key)
+            # ``clear_conversation`` means the conversation is being THROWN AWAY,
+            # and the successor's replay is the one thing that can put it back.
+            # Arming suppression here is what stops the reset that critical
+            # context escalates to (``_reset_still_critical``, this flag's only
+            # ``clear_conversation=True`` caller) from becoming a loop: the
+            # successor cold-starts, ``build_session_replay`` re-injects the whole
+            # conversation log as ONE prompt, a single prompt is not something
+            # ``/compact`` can shrink, so the reading stays above
+            # ``_POST_COMPACT_RESET_PCT`` and escalates again -- forever, since
+            # the pop above also takes the cooldown that would have damped it.
+            # A discard here is right for every OTHER reset (an idle expiry, a
+            # provider switch, the watchdog): those keep the conversation, so
+            # replaying it is the behaviour that preserves it. The manual
+            # ``discard_conversation(replay=False)`` path already arms the flag
+            # for exactly this reason; this branch is the one clear that forgot.
+            # Gated on ``session is not None`` for the same reason the
+            # ``clear_sid`` call below is: with nothing to clear there is no
+            # conversation to throw away, so arming the flag would only make the
+            # next cold start on an unrelated key amnesiac.
+            if clear_conversation and session is not None:
+                self._suppress_replay.add(key)
+            else:
+                self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
             if session is not None:
