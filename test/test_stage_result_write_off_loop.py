@@ -55,6 +55,7 @@ def _stage_texts(monkeypatch, texts):
         box["n"] += 1
         if idx < len(texts):
             slot.append("assistant", texts[idx], "msg msg-a")
+        slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
 
@@ -63,8 +64,10 @@ async def _run_plan(monkeypatch, titles, texts):
     from kiro_crew.dashboard.chat import _stage_loop
 
     slot = _make_slot(titles)
+    state = _make_state()
+    state._slots = {slot.key: slot}
     _stage_texts(monkeypatch, texts)
-    await _stage_loop(_make_state(), slot, auto_run=True)
+    await _stage_loop(state, slot, auto_run=True)
     return slot
 
 

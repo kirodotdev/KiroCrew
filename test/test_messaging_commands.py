@@ -91,6 +91,7 @@ class _Sessions:
         self._provider = provider
         self._queue = queue
         self.cleared: list[str] = []
+        self.recorded_stops: list[str] = []
         #: Whether the receipt lock was held while the queue was cleared.
         self.locked_during_clear: list[bool] = []
 
@@ -99,6 +100,10 @@ class _Sessions:
 
     def get_provider(self, key: str) -> Any:
         return self._provider
+
+    def record_stop(self, key: str) -> int:
+        self.recorded_stops.append(key)
+        return len(self.recorded_stops)
 
     def clear_queue(self, key: str) -> None:
         self.cleared.append(key)
@@ -130,6 +135,34 @@ class TestStopRunningTurn:
         sessions = _Sessions(busy=True, provider=provider, queue=queue)
         assert _stop(sessions, queue, surface) == STOP_REPLY_CANCELLED
         assert provider.calls == [{"wait_ack_timeout": 0}]
+        assert sessions.recorded_stops == ["s"]
+
+    def test_recovery_is_revoked_before_the_provider_cancel_is_awaited(self) -> None:
+        sessions: _Sessions
+
+        class _OrderingProvider(_Provider):
+            async def cancel(self, **kw: Any) -> None:
+                assert sessions.recorded_stops == ["s"]
+                await super().cancel(**kw)
+
+        provider = _OrderingProvider()
+        queue, surface = ReceiptQueue(), _Surface()
+        sessions = _Sessions(busy=True, provider=provider, queue=queue)
+
+        assert _stop(sessions, queue, surface) == STOP_REPLY_CANCELLED
+        assert sessions.recorded_stops == ["s"]
+
+    def test_recovery_is_revoked_before_the_idle_busy_decision(self) -> None:
+        class _OrderingSessions(_Sessions):
+            def is_busy(self, key: str) -> bool:
+                assert self.recorded_stops == [key]
+                return super().is_busy(key)
+
+        queue, surface = ReceiptQueue(), _Surface()
+        sessions = _OrderingSessions(busy=False, provider=_Provider(), queue=queue)
+
+        assert _stop(sessions, queue, surface) == STOP_REPLY_IDLE
+        assert sessions.recorded_stops == ["s"]
 
     def test_the_queue_is_dropped_and_the_receipt_finalized_in_place(self) -> None:
         # The receipt is the durable record that a held message was accepted, so
@@ -156,6 +189,7 @@ class TestStopRunningTurn:
         queue, surface = ReceiptQueue(), _Surface()
         sessions = _Sessions(busy=False, provider=_Provider(), queue=queue)
         assert _stop(sessions, queue, surface) == STOP_REPLY_IDLE
+        assert sessions.recorded_stops == ["s"]
         assert sessions.cleared == ["s"]
 
     def test_a_provider_with_no_cancel_degrades_instead_of_raising(self) -> None:

@@ -63,6 +63,7 @@ class _Sessions:
         self.mirror_links: dict = {}
         self.opt_outs: dict = {}
         self.cleared: list[str] = []
+        self.recorded_stops: list[str] = []
         self.queues: dict[str, list] = {}
         self.released: list[str] = []
 
@@ -81,6 +82,10 @@ class _Sessions:
 
     def get_provider(self, key):
         return None
+
+    def record_stop(self, key: str) -> int:
+        self.recorded_stops.append(key)
+        return len(self.recorded_stops)
 
     def max_generation(self, bucket: str) -> int:
         return -1

@@ -63,6 +63,7 @@ class _SegmentSlotStub:
         self.key = "prop1"
         self.messages: list[dict] = []
         self._pending_variants: list[dict] = []
+        self._pending_variant_recovery: object | None = None
         self.pending_chunks_released = False
 
     def append(

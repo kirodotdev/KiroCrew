@@ -152,6 +152,7 @@ async def test_plan_handoff_notifies_only_completion_or_manual_approval(
 
     async def run_stage(state, slot, message, **kwargs):
         slot.append("assistant", "Stage result", "msg msg-a")
+        slot._last_turn_stage_answer = True
         await cr._finish_queue_cycle(state, slot)
 
     monkeypatch.setattr(orchestrator, "_run_chat", run_stage)

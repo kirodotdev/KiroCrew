@@ -145,6 +145,22 @@ class TestStopTurnRecordsASessionScopedStop:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_bare_slack_thread_revokes_the_canonical_linked_session(self, cfg):
+        """Slack commands address a bare thread while dashboard stages use its
+        canonical ``slack:`` key; both spellings must share one generation."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        provider, _, _ = await mgr.get_or_create(LINKED_KEY)
+        mgr.release(LINKED_KEY)
+        provider.cancel = AsyncMock(return_value="acked")
+
+        outcome = await mgr.stop_turn(LINKED_KEY.removeprefix("slack:"))
+
+        assert outcome == "soft"
+        assert mgr.stop_generation(LINKED_KEY) == 1
+        assert mgr.stop_generation("dashboard:chat-2") == 0
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_the_count_is_per_session_key(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_provider_factory())
         await mgr.get_or_create(LINKED_KEY)
@@ -278,7 +294,7 @@ class TestChannelStopPurgesAQueuedContinuationAtDrain:
             meta=containment_meta(state, slot),
         )
         # Snapshots taken at enqueue: no stop on either counter yet.
-        slot._promise_only_stop_gen = slot._stop_generation
+        slot._synthetic_continue_stop_gen = slot._stop_generation
         slot._promise_only_session_stop_gen = 0
         return state, slot
 

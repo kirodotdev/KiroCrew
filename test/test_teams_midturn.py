@@ -78,6 +78,7 @@ class _Sessions:
         self._busy = busy
         self.queues: dict[str, list] = {}
         self.cleared: list[str] = []
+        self.recorded_stops: list[str] = []
         self.mirror_links: dict = {}
         self.opt_outs: dict = {}
 
@@ -112,6 +113,10 @@ class _Sessions:
     def dequeue(self, key):
         queue = self.queues.get(key) or []
         return queue.pop(0) if queue else None
+
+    def record_stop(self, key: str) -> int:
+        self.recorded_stops.append(key)
+        return len(self.recorded_stops)
 
     def clear_queue(self, key) -> None:
         self.cleared.append(key)
@@ -176,6 +181,7 @@ class TestStop:
         # point. Waiting here would stall the reply.
         assert provider.cancelled == [0]
         assert sessions.cleared == [key]
+        assert sessions.recorded_stops == [key]
         assert "Stopped" in client.sent[-1][1]
 
     @pytest.mark.asyncio

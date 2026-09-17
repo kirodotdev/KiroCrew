@@ -31,12 +31,13 @@ def _isolate_config_dir(tmp_path, monkeypatch):
         monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
 
 
-def _make_state():
+def _make_state(slot=None):
     state = MagicMock()
     state.broadcast_ws = MagicMock()
     state.push_slots_update = MagicMock()
     state.subagents = MagicMock()
     state.subagents.running_agents_for = MagicMock(return_value=[])
+    state._slots = {slot.key: slot} if slot is not None else {}
     return state
 
 
@@ -62,6 +63,8 @@ def _stage_turns(monkeypatch, *, age_plan_by=0.0):
     async def _mock_run_chat(state, slot, message, **kwargs):
         box["n"] += 1
         slot.append("assistant", f"stage {box['n']} output", "msg msg-a")
+        # This stub models a landed raw end_turn with semantic model text.
+        slot._last_turn_stage_answer = True
         if age_plan_by:
             slot._orch_tracker._plan_start -= age_plan_by
 
@@ -157,7 +160,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot = _make_slot(plan_budget=100)
         box = _stage_turns(monkeypatch, age_plan_by=200)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert box["n"] == 1, "the plan advanced past its total budget"
         text = _assistant_text(slot)
@@ -172,7 +175,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot = _make_slot(plan_budget=100)
         _stage_turns(monkeypatch, age_plan_by=200)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         text = _assistant_text(slot)
         assert "1m40s" in text  # the 100s budget
@@ -186,7 +189,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot = _make_slot(plan_budget=100)
         _stage_turns(monkeypatch, age_plan_by=200)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert (tmp_path / "sessions" / slot.key / "stage_1_result.md").exists()
         assert slot._orch_tracker._stage_results.get(1)
@@ -199,7 +202,7 @@ class TestPlanWatchdogStopsTheLoop:
         # 80s of a 100s budget after stage 1: past 75%, under the ceiling.
         box = _stage_turns(monkeypatch, age_plan_by=40)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         text = _assistant_text(slot)
         warnings = [line for line in text.splitlines() if "total budget. It will stop" in line]
@@ -226,6 +229,7 @@ class TestPlanWatchdogStopsTheLoop:
 
         state = _make_state()
         slot = _make_slot(titles=("One", "Two"), plan_budget=100)
+        state._slots[slot.key] = slot
         box = _stage_turns(monkeypatch, age_plan_by=200)
 
         # First Go: stage 1 runs, the plan clock ages past the budget while the
@@ -250,7 +254,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot = _make_slot(plan_budget=100)
         box = _stage_turns(monkeypatch, age_plan_by=200)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert box["n"] == 1
         assert "exceeded its total budget" in _assistant_text(slot)
@@ -263,7 +267,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot = _make_slot(plan_budget=DEFAULT_MAX_PLAN_DURATION)
         box = _stage_turns(monkeypatch)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         text = _assistant_text(slot)
         assert box["n"] == 3
@@ -277,7 +281,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot = _make_slot(plan_budget=0)
         box = _stage_turns(monkeypatch, age_plan_by=100_000)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert box["n"] == 3
         assert "total budget" not in _assistant_text(slot)
@@ -312,7 +316,7 @@ class TestPlanWatchdogStopsTheLoop:
         assert slot._orch_tracker.budgets_unset is True
         _stage_turns(monkeypatch)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert slot._orch_tracker.max_plan_duration_seconds == 66
         assert slot._orch_tracker.stage_timeout_seconds == 55
@@ -343,7 +347,7 @@ class TestPlanWatchdogStopsTheLoop:
         assert slot._orch_tracker.budgets_unset is False
         _stage_turns(monkeypatch)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert loads == [], "a tracker that already carries its budgets must not reload"
         assert slot._orch_tracker.max_plan_duration_seconds == 999
@@ -368,7 +372,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot._orch_tracker = None
         _stage_turns(monkeypatch)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert slot._orch_tracker.max_plan_duration_seconds == DEFAULT_MAX_PLAN_DURATION
         assert slot._orch_tracker.stage_timeout_seconds == 1800
@@ -390,12 +394,12 @@ class TestPlanWatchdogStopsTheLoop:
         slot._orch_tracker = None
         _stage_turns(monkeypatch)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
         assert loads == [1]
         assert slot._orch_tracker.budgets_unset is False
 
         # A second entry (the user's next Go) re-uses the same tracker.
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert loads == [1], "the failed load was re-attempted on a later entry"
 
@@ -419,7 +423,7 @@ class TestPlanWatchdogStopsTheLoop:
         slot._orch_tracker = None  # force the bootstrap path that loads config
         _stage_turns(monkeypatch)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert slot._orch_tracker.stage_timeout_seconds == 55
         assert slot._orch_tracker.max_plan_duration_seconds == 66

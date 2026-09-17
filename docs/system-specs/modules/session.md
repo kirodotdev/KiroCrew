@@ -391,11 +391,11 @@ send time.
 
   Recovery rungs 1–2 skip persistence/consolidation/success-recording (the
   empty turn is never saved) and preserve all other retry budgets. Synthetic
-  recovery messages (`_SYNTHETIC_RECOVERY_MSGS`: the post-transient CONTINUE
-  instruction and the empty-response nudge) are excluded from the
-  genuine-new-turn allowance reset, so a recovery turn can never refresh its
-  own budget; on the queue-drain path they classify as **recovery**
-  STRUCTURALLY — ``queue_insert`` tags the entry ``kind="synthetic_recovery"``
+  runner-authored continuation entries (including the post-transient CONTINUE
+  instruction and the empty-response nudge) are excluded from the genuine-new-
+  turn allowance reset, so a recovery turn can never refresh its own budget; on
+  the queue-drain path they classify as **recovery** STRUCTURALLY —
+  ``queue_insert`` tags the entry ``kind="synthetic_recovery"``
   and every queue consumer (merge predicate, sub-agent hold, drain-role
   assignment, reset-notice consumption) dispatches on that metadata, never on
   content equality, so classification survives queue transformations and a
@@ -711,11 +711,14 @@ applier — a raised turn budget is in force on the next prompt.
 
 `stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:
 
-1. Record the Stop: `stop_requests[key] += 1` (per folded key, on
+1. Record the Stop through `record_stop(key)` (per folded key, on
    `SessionLifecycleState`). This runs BEFORE anything is awaited so the
    dashboard runner's end-of-turn gates -- which may run the moment the
    provider's cancel lands -- already see it; `prev_turn_cancelled` is set only
-   after the ack and is too late for them.
+   after the ack and is too late for them. Channel paths that cooperatively
+   cancel a provider directly call the same synchronous primitive against their
+   already-resolved effective session before checking whether it is busy, so a
+   Stop in the stage idle gap still revokes the old recovery lease.
 2. `clear_queue(key)` — queue drop is unconditional on first press (skipped
    with `preserve_queue=True`).
 3. If `force=True`: skip cancel, go straight to hard kill (step 5).
@@ -737,6 +740,17 @@ signal (`_stop_pressed()`) treats any later change as a user Stop, next to the
 slot's in-flight state and the slot's own `_stop_generation`; every
 end-of-turn continuation gate (refusal recovery, Stop-hook continuation,
 promise-only recovery, post-compaction continuation) reads that one signal.
+The stage controller separately captures the slot's effective session key and
+that key's generation when it enters a stage. Dispatch gates, turn-return gates, the
+post-subagent-poll boundary, and the post-result-write boundary require that the
+slot still resolves to that exact effective session and compare both the slot
+generation and that session's captured Stop generation. The final comparison runs
+before tracker mutation, attended pause, round-cap handling, or auto-run advance,
+with no suspension before those decisions. A slot rebind therefore revokes the old
+controller lease even when both sessions have the same Stop generation. A
+linked-channel Stop can neither restart provider recovery nor settle a stage after
+its cancel releases the provider turn; an unrelated session generation remains
+outside the lease.
 
 Lifetime: the record is keyed by session key rather than stored on the
 `_Session` object, so it survives the `reset()` a hard stop performs (a flag on
@@ -757,6 +771,78 @@ success. The next prompt handler (dashboard `_run_chat`, Slack
 re-inject the cancelled user prompt and partial assistant output. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
+
+Dashboard regeneration recovery has one terminal ownership rule. While the
+banner-recovery continuation owns a selector row, every terminal exit — success,
+cancellation, or provider exception — settles through the same commit-once owner.
+Buffered tool-boundary segments and the live tail replace only the active variant;
+earlier variants and their file-change snapshots stay byte-for-byte intact. If the
+owned selector vanished, settlement appends exactly one fallback assistant row
+instead. An empty terminal marks the owner committed without changing the earlier
+variant. The committed owner remains attached through file-change flush and turn
+teardown, then retires in the same event-loop turn. A mid-turn steer is an earlier
+boundary: it settles and file-flushes the owner before its user row is persisted,
+emits the recovered pre-steer text once to the append-only ledger as interrupted,
+then retires the owner so later output is ordinary post-steer history and cannot
+target that older selector. Selector replacement changes transcript ownership, not
+the fact that the steer cut the current turn's segment. A later terminal or unrelated
+turn therefore cannot duplicate or overwrite the recovered answer. Ordinary chat
+keeps its normal per-segment terminal history. File-change flushes also carry the
+turn's starting message boundary. An ordinary success, cancellation, or provider
+error may attach files only to an assistant row created by that turn; an error-only
+turn gets a synthetic stopped row instead of walking backward into an earlier
+selector. That host row cannot set `_last_turn_stage_answer`. The runner sets that
+boolean only for normalized model text with a landed raw `end_turn`, no provider
+refusal or runner-recorded permission denial, and no synthetic terminal. The stage
+controller consumes this predicate without parsing refusal sentiment, so visible
+refusal/deny prose, host rows, cancellation, and errors cannot complete a stage.
+The explicit recovery owner is the sole exception, because that turn is intentionally
+completing its older active variant (or its one fallback row).
+New variants store `meta.file_changes: []` for a known no-file answer. A missing
+legacy snapshot stays unknown through both switching and regeneration. Switching
+from another selector index to that legacy answer removes any top-level
+`file_changes` left by the previously selected variant instead of borrowing its
+attribution; reselecting the already-active legacy index preserves its visible
+top-level attribution. Only an explicit list may populate or replace a variant
+snapshot. Observed no-file output therefore remains known-empty without converting
+legacy unknown attribution to `[]`. A legacy message with no `variant_idx` backfills
+one unique content match on first regenerate, while modern equal-content variants
+remain index-identified only.
+
+Ordinary interactive chat recognizes only the exact leading provider-budget
+grammar, then classifies it separately from content matching. Typed provider
+recovery supplies artifact-specific host provenance. An ordinary turn may also
+remove a line-separated prefix before real answer text, or a banner-only final
+tail after that turn already delivered visible model output. A banner-only
+answer with no independent provenance is ambiguous and stays visible, including
+a host-driven stage answer and an ordinary regenerated answer. A capitalized
+suffix with no separator also stays visible because no structural boundary
+proves where provider metadata ends and model-authored content begins. Stage
+lifecycle and pending variant context are not evidence about who authored model
+text. Quoted, embedded, suffixed, and near-miss prose also stays visible. Explicit model-capacity/token-
+budget prompts fail open even when other ordinary-turn evidence exists. Typed
+transient recovery remains distinct and preserves a repeated answer.
+
+Ordinary provider-banner recovery is allowed only while tool approval remains
+interactive. YOLO, session trust, and scoped unattended trust downgrade a
+banner-only turn to a notice requiring an explicit Continue; the same check is
+re-applied when a queued recovery drains so a trust grant racing the enqueue
+cannot authorize it. Provider-budget and ordinary post-token transient queue
+entries carry distinct typed recovery provenance. Queue drain copies that tag to
+the persisted inject row, and `_run_chat` reads the current row as the sole
+recovery owner: only provider-budget provenance may strip banner text or settle a
+parked regeneration selector. A transient retry with byte-identical continuation
+or answer text preserves its model answer, file attribution, and queue position.
+Both owners remain independently subject to the same monotonic Stop-generation
+lease and user-intervention purge, so structural separation does not weaken queue
+safety. The provider-budget value is shared with the structural stop reason so
+producer and consumer cannot drift. The stage controller may react to the
+artifact-specific stop reason with its own bounded synchronous continuation. Its
+initial stage turn remains unprivileged; the controller passes typed provider-
+budget provenance only to the second turn, where a repeated artifact is suppressed
+and cannot complete the stage. Stage context and pending variant state never mint
+that stop reason or provenance, and model output cannot infer or create provider-
+recovery ownership.
 
 ### Edit rewind context boundary
 

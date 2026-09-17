@@ -20,11 +20,11 @@ the promise, and inconsistent between the two. That is what
 ``test_two_waves_per_stage_is_still_under_the_cap`` guards.
 
 ``MAX_STAGE_ESCALATIONS`` is deliberately NOT enforced on this path, and there is
-nothing here to test for it. An escalation is only recorded by
-``reset_after_guidance``, which zeroes that stage's rounds while KEEPING its key —
-so ``current_stage`` does not move, the loop's next entry starts at the stage after
-it, and an escalated stage is never re-entered. It stays enforced in the Slack
-gateway, where the tracker is not driven by a stage loop.
+nothing here to test for it. An escalation is recorded only after the post-wave
+cap gate, which runs after the completed stage result is captured and recorded.
+Resetting round counts keeps that result, so the next loop entry starts at the
+following stage. It stays enforced in the Slack gateway, where the tracker is not
+driven by a stage loop.
 """
 
 from __future__ import annotations
@@ -44,12 +44,13 @@ def _isolate_config_dir(tmp_path, monkeypatch):
         monkeypatch.setattr(f"kiro_crew.dashboard.{module}.config_dir", lambda: tmp_path)
 
 
-def _make_state():
+def _make_state(slot=None):
     state = MagicMock()
     state.broadcast_ws = MagicMock()
     state.push_slots_update = MagicMock()
     state.subagents = MagicMock()
     state.subagents.running_agents_for = MagicMock(return_value=[])
+    state._slots = {slot.key: slot} if slot is not None else {}
     return state
 
 
@@ -78,6 +79,8 @@ def _stage_turns(monkeypatch, *, extra_rounds_per_stage=0, texts=None):
         box["n"] += 1
         body = (texts or [])[idx] if texts and idx < len(texts) else f"stage {idx + 1} output"
         slot.append("assistant", body, "msg msg-a")
+        # This stub models a landed raw end_turn with semantic model text.
+        slot._last_turn_stage_answer = True
         tracker = slot._orch_tracker
         for _ in range(extra_rounds_per_stage):
             tracker.record_round(tracker.current_stage)
@@ -107,7 +110,7 @@ class TestRoundCapStopsThePlan:
         # Entry spends nothing, so the cap takes a full MAX_STAGE_ROUNDS waves.
         box = _stage_turns(monkeypatch, extra_rounds_per_stage=MAX_STAGE_ROUNDS)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert _stages_run(box) == 1, "the plan advanced past a round-capped stage"
         assert "all 3 of its spawn rounds" in _assistant_text(slot)
@@ -121,7 +124,7 @@ class TestRoundCapStopsThePlan:
         slot = _make_slot()
         box = _stage_turns(monkeypatch, extra_rounds_per_stage=MAX_STAGE_ROUNDS)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert slot._auto_run is False
         # Paired with the halt: a plan that ran to completion also clears the
@@ -141,7 +144,7 @@ class TestRoundCapStopsThePlan:
         slot = _make_slot()
         box = _stage_turns(monkeypatch, extra_rounds_per_stage=MAX_STAGE_ROUNDS)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert box["n"] == 1, "the plan did not halt, so this proves nothing"
         result = tmp_path / "sessions" / slot.key / "stage_1_result.md"
@@ -162,7 +165,7 @@ class TestRoundCapStopsThePlan:
         slot = _make_slot()
         _stage_turns(monkeypatch, extra_rounds_per_stage=MAX_STAGE_ROUNDS)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert "stage_round_cap" in events
 
@@ -174,7 +177,7 @@ class TestRoundCapStopsThePlan:
         slot = _make_slot()
         box = _stage_turns(monkeypatch, extra_rounds_per_stage=0)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert _stages_run(box) == 3
         assert "✅ All 3 stages complete." in _assistant_text(slot)
@@ -195,7 +198,7 @@ class TestRoundCapStopsThePlan:
         slot = _make_slot()
         box = _stage_turns(monkeypatch, extra_rounds_per_stage=MAX_STAGE_ROUNDS - 1)
 
-        await _stage_loop(_make_state(), slot, auto_run=True)
+        await _stage_loop(_make_state(slot), slot, auto_run=True)
 
         assert _stages_run(box) == 3, (
             "a stage was cut one wave early: something is spending a round that "
@@ -216,7 +219,7 @@ class TestAttendedPlansAreNotHalted:
         slot._auto_run = False
         box = _stage_turns(monkeypatch, extra_rounds_per_stage=MAX_STAGE_ROUNDS)
 
-        await _stage_loop(_make_state(), slot, auto_run=False)
+        await _stage_loop(_make_state(slot), slot, auto_run=False)
 
         assert _stages_run(box) == 1, "an attended Go runs exactly one stage"
         text = _assistant_text(slot)

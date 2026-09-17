@@ -269,6 +269,19 @@ class SessionLifecycleService:
     def _identity_sweep_lock(self, lock: asyncio.Lock) -> None:
         self.state.identity_sweep_lock = lock
 
+    def record_stop(self, key: str) -> int:
+        """Revoke recovery leases for one user-addressed session.
+
+        Callers invoke this synchronously before any idle/busy decision or
+        cooperative cancel. Recording an addressed Stop during an idle gap is
+        intentional: the new generation revokes queued recovery and lets tests
+        and future callers bind follow-up work to that exact user action.
+        """
+        key = self._owner._fold_key(key)
+        generation = self.state.stop_requests.get(key, 0) + 1
+        self.state.stop_requests[key] = generation
+        return generation
+
     def stop_generation(self, key: str) -> int:
         """How many Stop requests :meth:`stop_turn` has recorded for *key*.
 
@@ -1314,7 +1327,7 @@ class SessionLifecycleService:
         # the runner's end-of-turn gates may run as soon as the provider's
         # cancel lands, and `prev_turn_cancelled` (set only after the ack) is
         # too late for them.
-        self.state.stop_requests[key] = self.state.stop_requests.get(key, 0) + 1
+        self.record_stop(key)
         if not preserve_queue:
             owner.clear_queue(key)
         budget: float = owner._cfg.agent.soft_stop_budget_secs

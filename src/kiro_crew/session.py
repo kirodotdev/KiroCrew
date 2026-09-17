@@ -2916,6 +2916,10 @@ class SessionManager:
             on_hard=on_hard,
         )
 
+    def record_stop(self, key: str) -> int:
+        """Synchronously revoke recovery leases for a user-addressed session."""
+        return self._lifecycle_boundary().record_stop(key)
+
     def stop_generation(self, key: str) -> int:
         """Monotonic count of :meth:`stop_turn` requests recorded for *key*."""
         return self._lifecycle_boundary().stop_generation(key)

@@ -95,6 +95,7 @@ class FakeSessions:
         self.last_agent = None
         self.queued: list = []
         self.cleared: list = []
+        self.recorded_stops: list[str] = []
         self.origin_links: dict = {}
         self.mirror_links: dict = {}
         self.opt_out: dict = {}
@@ -171,6 +172,10 @@ class FakeSessions:
 
     def dequeue(self, key):
         return self.queued.pop(0) if self.queued else None
+
+    def record_stop(self, key: str) -> int:
+        self.recorded_stops.append(key)
+        return len(self.recorded_stops)
 
     def clear_queue(self, key) -> None:
         self.cleared.append(key)
@@ -864,6 +869,7 @@ class TestStop:
 
         assert provider.cancelled == [0]
         assert sessions.cleared == [d._session_key(_EMAIL)]
+        assert sessions.recorded_stops == [d._session_key(_EMAIL)]
         assert "🛑 Stopped." in client.sent[-1][1]
 
     @pytest.mark.asyncio
@@ -875,6 +881,7 @@ class TestStop:
         await d.handle_message(_inbound("/cancel"))
 
         assert sessions.cleared == [d._session_key(_EMAIL)]
+        assert sessions.recorded_stops == [d._session_key(_EMAIL)]
         assert "Nothing was running" in client.sent[-1][1]
 
     @pytest.mark.asyncio
