@@ -1388,6 +1388,14 @@ No row is selected automatically. This is selective copying, not V1 migration.
 V1 retains its existing fresh-session context: bounded preferences/projects,
 decayed daily history, semantic and query-ranked episodic memory, plus
 query-ranked project-scoped lessons. Warm follow-ups do not repeat that recall.
+One five-second prompt-build deadline covers V1 semantic, episodic and lesson
+query embeddings in the shared model queue. Expiry removes queued work; each
+retrieval path falls back to its existing lexical score and stable ordering, so
+saved context is still injected. A native inference already claimed by the
+single model worker is not interruptible and may finish before the build
+returns. Sharing one budget bounds queue amplification from concurrent
+first-turn builds; the whole synchronous `ContextBuilder.build_message` call
+remains off the event loop in the bounded `mc-embed` pool.
 V2 context includes essential preference/project anchors and query-free,
 project-scoped lessons. V2 prompt construction performs no embedding search or
 episodic/semantic retrieval. Its runtime tells the agent to call `memory_recall`

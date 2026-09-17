@@ -13,7 +13,8 @@ import threading
 import time
 import unicodedata
 from collections import defaultdict, deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -1092,6 +1093,44 @@ _PER_MESSAGE_CAP = 8_000  # truncate individual messages on fallback path
 # (build_message). Bounds the top-8 episodic fragments; scaled down with the
 # window at its call site but never exceeds this reference value.
 _EPISODIC_INJECT_CAP = 3_000
+# A fresh V1 prompt can query semantic, episodic, and lesson memory in order.
+# All three share one model and must share one deadline: resetting the budget per
+# section would let concurrent starts pay the queue wait repeatedly and approach
+# the gateway's 25-second loop-stall hard-exit budget. A missed vector degrades
+# to each retrieval path's existing lexical fallback.
+_PROMPT_BUILD_EMBED_TIMEOUT_SECS = 5.0
+
+
+@contextmanager
+def _prompt_build_embedding_deadline(enabled: bool) -> Iterator[None]:
+    """Carry one bounded embedding budget through a fresh prompt build."""
+    if not enabled:
+        yield
+        return
+
+    # Lazy on purpose: context.py already keeps the embedding backend behind
+    # call-time seams so imports that only inspect context do not initialize it.
+    from kiro_crew.embeddings import (
+        PRIORITY_INTERACTIVE,
+        EmbeddingWork,
+        embedding_work,
+    )
+
+    inherited_work = embedding_work.get()
+    deadline = time.monotonic() + _PROMPT_BUILD_EMBED_TIMEOUT_SECS
+    if inherited_work is not None:
+        deadline = min(deadline, inherited_work.deadline)
+    work = EmbeddingWork(
+        deadline=deadline,
+        cancelled=(inherited_work.cancelled if inherited_work is not None else threading.Event()),
+        priority=PRIORITY_INTERACTIVE,
+    )
+    token = embedding_work.set(work)
+    try:
+        yield
+    finally:
+        embedding_work.reset(token)
+
 
 # Strip Mode Identity blocks from injected context so cross-tab or history
 # content from a different mode doesn't override the current prompt's identity.
@@ -4294,26 +4333,27 @@ class ContextBuilder:
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )
-            session_ctx = self.build_session_context(
-                session_key,
-                agent=agent,
-                resumed=resumed,
-                workspace=workspace,
-                memory_store=memory_store,
-                compressed_history="" if compressed_history is not None else None,
-                mode=mode,
-                blocks_reads=blocks_reads,
-                provider_type=provider_type,
-                minimal_context=minimal_context or slim_resume,
-                runtime_source=runtime_source,
-                exclude_last_n=exclude_last_n,
-                model_window=model_window,
-                context_groups=context_groups,
-                query_text=text,
-                project=project,
-                member=member,
-                _v2_essentials=_essentials,
-            )
+            with _prompt_build_embedding_deadline(bool(text)):
+                session_ctx = self.build_session_context(
+                    session_key,
+                    agent=agent,
+                    resumed=resumed,
+                    workspace=workspace,
+                    memory_store=memory_store,
+                    compressed_history="" if compressed_history is not None else None,
+                    mode=mode,
+                    blocks_reads=blocks_reads,
+                    provider_type=provider_type,
+                    minimal_context=minimal_context or slim_resume,
+                    runtime_source=runtime_source,
+                    exclude_last_n=exclude_last_n,
+                    model_window=model_window,
+                    context_groups=context_groups,
+                    query_text=text,
+                    project=project,
+                    member=member,
+                    _v2_essentials=_essentials,
+                )
             if session_ctx:
                 # Scrub forgeable boundary markers from the UNTRUSTED content in
                 # session context (memory / lessons / prior-session history /
