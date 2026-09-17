@@ -31,7 +31,7 @@ import type {
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
-import type { AutoNudgeListResponse } from '../components/autoNudgeLoop'
+import type { AutoNudgeListResponse, AutoNudgeLoop } from '../components/autoNudgeLoop'
 import type { TaskDetailResponse, TasksListResponse, TasksSummary } from './tasks'
 import { ApiError, friendlyErrText, toApiError } from './apiError'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
@@ -2881,6 +2881,11 @@ export interface MemberRosterRow {
   slot_key: string
   /** O(1) liveness: the bound slot is mid-turn right now. */
   running: boolean
+  /** Perpetual mode, read from the live loop registry: `on` while a loop on
+   *  the crewmate's own thread is active, `off` while a record exists and is
+   *  paused (the reason lives on the detail page), `none` when nothing was
+   *  ever armed. The roster badge and the team view's status strip read it. */
+  perpetual?: 'on' | 'off' | 'none'
   /** Epoch seconds of the DM transcript's last write; 0 = never talked. */
   last_active_ts?: number
   last_message?: string
@@ -3929,6 +3934,17 @@ export const api = {
        *  truncation marker instead of the tail; the panel says so above the
        *  notes. */
       truncated: boolean
+    }>,
+  // The owner's Perpetual mode switch for one member's own thread. `member` is
+  // the exact crew name (slug-match is re-checked server-side); the slot key is
+  // derived on the server from the slug's binding, never sent. ON arms (or
+  // resumes) the member's nudge loop with no cycle or time cap; OFF pauses it,
+  // keeping the record and its stop reason. The returned `loop` is the
+  // backend's record after the change (null when OFF found nothing to pause).
+  memberPerpetualSet: (slug: string, member: string, enabled: boolean) =>
+    post('/api/members/' + encodeURIComponent(slug) + '/perpetual', { member, enabled }).then(j) as Promise<{
+      ok: boolean
+      loop: AutoNudgeLoop | null
     }>,
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),

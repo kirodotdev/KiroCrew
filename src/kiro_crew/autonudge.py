@@ -59,6 +59,7 @@ from kiro_crew.monitoring.decision import (
 # the probe set, and a reason code belongs to the kind that emits it.
 from kiro_crew.monitoring.github_provider_errors import is_unattempted_probe
 from kiro_crew.monitoring.models import (
+    MAX_MONITOR_STOP_REASON_CHARS,
     MONITOR_BUSY_RETRY_SECS,
     MONITOR_COMPLETION_EVIDENCE_TIMEOUT_SECS,
     MONITOR_STATE_VERSION,
@@ -91,7 +92,12 @@ from kiro_crew.platform import (
     redact_via_context,
 )
 from kiro_crew.probes import targets
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    is_sensitive_path,
+    redact_and_truncate,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1089,6 +1095,30 @@ class NudgeLoop:
     # concurrency framework. Absent in a store written before this field ->
     # decodes to 0, and a first fire simply captures 0.
     config_generation: int = 0
+    # WHY, in the stopping party's own words: the redacted, length-capped
+    # free-text reason a directive stop (``autonudge_stop`` / ``monitor_stop``)
+    # was given, kept beside the machine code in ``stopped_reason`` so the
+    # Crew Members drawer can show a person what the member said when it
+    # stopped itself. Set only on a deactivation that supplies one, cleared
+    # on every revival with ``stopped_reason``. Absent in a store written
+    # before the field decodes to ""; ``_load`` filters unknown keys, so a
+    # downgrade merely loses the text.
+    stopped_detail: str = ""
+
+
+def normalize_stopped_detail(value: Any) -> str:
+    """The one spelling of ``NudgeLoop.stopped_detail`` every boundary applies.
+
+    A non-string is no detail. A string is redacted (credentials,
+    exfiltration URLs) and capped at ``MAX_MONITOR_STOP_REASON_CHARS`` -- the
+    same cap a structured monitor's stop reason carries. Applied on the
+    write (``update``), on ``_load`` (the store is agent-writable) and again
+    on the REST output (``handlers.autonudge._serialize``), so no path can
+    hand a reader a raw persisted value.
+    """
+    if not isinstance(value, str):
+        return ""
+    return redact_and_truncate(value, MAX_MONITOR_STOP_REASON_CHARS)
 
 
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
@@ -1581,6 +1611,16 @@ class AutoNudgeService:
                             _cg,
                         )
                         loop_values["config_generation"] = 0
+                # ``stopped_detail`` is display text from an agent-writable
+                # store: anything but a string reads as no detail, and a
+                # string is redacted and capped here exactly as the write
+                # path caps it, so a hand-edited value never reaches a
+                # reader longer or more sensitive than one the gateway
+                # itself would have stored.
+                if "stopped_detail" in loop_values:
+                    loop_values["stopped_detail"] = normalize_stopped_detail(
+                        loop_values["stopped_detail"]
+                    )
                 loop = NudgeLoop(**loop_values)
                 # Rotated on EVERY load: a human may have hand-edited the goal while we
                 # were down, so a pre-restart token must not authorise overwriting it.
@@ -2864,6 +2904,7 @@ class AutoNudgeService:
         judge: dict | None = None,
         expected_generation: int | None = None,
         expect_fingerprint: str | None = None,
+        stopped_detail: str | None = None,
     ) -> NudgeLoop | None:
         # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
         # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -2883,6 +2924,7 @@ class AutoNudgeService:
                 judge=judge,
                 expected_generation=expected_generation,
                 expect_fingerprint=expect_fingerprint,
+                stopped_detail=stopped_detail,
             )
         )
         self._inflight_adds.add(inner)
@@ -2967,6 +3009,7 @@ class AutoNudgeService:
         judge: dict | None = None,
         expected_generation: int | None = None,
         expect_fingerprint: str | None = None,
+        stopped_detail: str | None = None,
     ) -> NudgeLoop | None:
         lock = await self._acquire_mutation_lock(loop_id)
         if lock is None:
@@ -2984,6 +3027,7 @@ class AutoNudgeService:
                 judge=judge,
                 expected_generation=expected_generation,
                 expect_fingerprint=expect_fingerprint,
+                stopped_detail=stopped_detail,
             )
         finally:
             lock.release()
@@ -3002,6 +3046,7 @@ class AutoNudgeService:
         judge: dict | None = None,
         expected_generation: int | None = None,
         expect_fingerprint: str | None = None,
+        stopped_detail: str | None = None,
     ) -> NudgeLoop | None:
         async with self._lock:
             loop = self._loops.get(loop_id)
@@ -3256,6 +3301,7 @@ class AutoNudgeService:
                     # "manual", which the revive logic never auto-resumes.
                     if loop.active:
                         loop.stopped_reason = ""
+                        loop.stopped_detail = ""
                         # Spent only by an actual REVIVAL, hence ``not
                         # was_active``. A still-active loop also receives
                         # ``active=True`` from an ordinary settings save (the
@@ -3272,6 +3318,9 @@ class AutoNudgeService:
                             loop.consecutive_start_failures = 0
                     else:
                         loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
+                        # A stop with no words of its own leaves the field
+                        # empty rather than carrying an earlier stop's text.
+                        loop.stopped_detail = normalize_stopped_detail(stopped_detail)
             revived = loop.active and not was_active
             if revived:
                 # A revival re-arms the loop for a fresh run: a structural verdict

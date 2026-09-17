@@ -1367,14 +1367,19 @@ class TestSelfArmTrustRecord:
         monkeypatch.setattr(autonudge_selfarm, "data_home", lambda: tmp_path)
         return tmp_path
 
-    def test_record_lives_under_trust_and_round_trips(self, tmp_path: Path) -> None:
+    def test_record_lives_in_its_own_leaf_and_round_trips(self, tmp_path: Path) -> None:
         from kiro_crew import autonudge_selfarm as sa
 
         sa.record_self_arm("abc12345", "member-conductor")
-        assert sa.self_arm_record_path() == tmp_path / "trust" / sa.SELF_ARM_RECORD_NAME
+        # Inside the ``tag-grants`` whole-directory mask, in a child of its own.
+        assert sa.self_arm_record_path() == tmp_path / sa.ARM_RECORD_LEAF / sa.SELF_ARM_RECORD_NAME
         assert sa.self_arm_record_path().exists()
+        # Not under ``trust/``, which the sandbox keeps read-write for the SEL appends,
+        # and not a root-level leaf of its own, which only a spawn-time mask would hold.
+        assert not (tmp_path / "trust" / sa.SELF_ARM_RECORD_NAME).exists()
+        assert not (tmp_path / sa.ARM_RECORD_DIRNAME).exists()
         # The read-modify-write transaction is serialised through a sibling lock.
-        assert (tmp_path / "trust" / sa._LOCK_NAME).exists()
+        assert (tmp_path / sa.ARM_RECORD_LEAF / sa._LOCK_NAME).exists()
         assert sa.is_recorded_self_arm("abc12345", "member-conductor") is True
         # Same id on another slot does not inherit the authorization.
         assert sa.is_recorded_self_arm("abc12345", "chat-1-1") is False
@@ -1412,6 +1417,69 @@ class TestSelfArmTrustRecord:
         with ThreadPoolExecutor(max_workers=6) as pool:
             list(pool.map(lambda i: sa.record_self_arm(i, f"member-{i}"), ids))
         assert all(sa.is_recorded_self_arm(i, f"member-{i}") for i in ids)
+
+    def test_the_lock_file_is_never_created_nonexclusively(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Darwin can answer ENOENT to concurrent nonexclusive ``openat(O_CREAT)``
+        calls on an absent name (CI macOS shard, 12 arms on 6 threads). The lock
+        is therefore created ``O_EXCL`` and the loser opens the winner's file; a
+        single ``O_CREAT`` open without ``O_EXCL`` is the shape that lost, so this
+        pin makes exactly that call fail the way Darwin does and expects the arm
+        to succeed regardless."""
+        import errno
+        import os
+
+        from kiro_crew import autonudge_selfarm as sa
+
+        real_open = os.open
+        seen: list[int] = []
+
+        def darwin_like_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if os.fspath(path).endswith(sa._LOCK_NAME):
+                seen.append(flags)
+                if flags & os.O_CREAT and not flags & os.O_EXCL:
+                    raise FileNotFoundError(errno.ENOENT, "darwin: lost nonexclusive create")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", darwin_like_open)
+        sa.record_self_arm("excl0001", "member-a")
+        assert sa.is_recorded_self_arm("excl0001", "member-a") is True
+        assert seen and all(f & os.O_EXCL for f in seen if f & os.O_CREAT)
+        assert all(f & os.O_RDWR for f in seen)  # the Windows lock needs write access
+
+    def test_losing_the_lock_create_race_opens_the_winners_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loser of the exclusive create finds the winner's file and locks THAT,
+        instead of failing the arm or creating a second lock file."""
+        import os
+
+        from kiro_crew import autonudge_selfarm as sa
+
+        real_open = os.open
+        state = {"lost": False, "fallback": 0}
+
+        def racing_open(path, flags, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if os.fspath(path).endswith(sa._LOCK_NAME):
+                if flags & os.O_EXCL and not state["lost"]:
+                    # The other arm wins the create in the window: its file now
+                    # exists, and this attempt sees EEXIST.
+                    state["lost"] = True
+                    os.close(real_open(path, flags, *args, **kwargs))
+                    raise FileExistsError
+                if not flags & os.O_CREAT:
+                    state["fallback"] += 1
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", racing_open)
+        sa.record_self_arm("lost0001", "member-a")
+        assert state["lost"] and state["fallback"] == 1
+        assert sa.is_recorded_self_arm("lost0001", "member-a") is True
+        record_dir = sa.self_arm_record_path().parent
+        assert sorted(p.name for p in record_dir.iterdir()) == sorted(
+            [sa.SELF_ARM_RECORD_NAME, sa._LOCK_NAME]
+        )
 
     def test_readers_are_total_on_a_malformed_file(self) -> None:
         from kiro_crew import autonudge_selfarm as sa

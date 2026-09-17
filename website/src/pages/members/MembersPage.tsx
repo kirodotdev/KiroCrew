@@ -115,6 +115,8 @@ import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { useMemberProjection, useMemberRosterViews } from '../../state/useMemberProjection'
+import { CrewPerpetualControl, useCrewPerpetualSwitch } from '../../components/crew/CrewPerpetualControl'
+import { perpetualBriefText } from '../../components/crew/useCrewPerpetual'
 import type { RosterView, ActivityView, WakeView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
 
@@ -362,6 +364,9 @@ const PATROL_STOPPED_REASON: Record<string, string> = {
   runtime_budget: 'pages.membersPage.patrol_stopped_runtime_budget',
   approval_stalled: 'pages.membersPage.patrol_stopped_approval_stalled',
   interrupted: 'pages.membersPage.patrol_stopped_interrupted',
+  // The code the service writes for a stop a restart imposed (``_load``).
+  interrupted_cycle: 'pages.membersPage.patrol_stopped_interrupted',
+  autonudge_stop: 'pages.membersPage.patrol_stopped_autonudge_stop',
 }
 /** How often the "next wake in …" countdown in the drawer re-reads the clock.
  *  Coarser than the popover's per-second tick on purpose: the drawer line is
@@ -1450,6 +1455,9 @@ export default function MembersPage() {
   // render the affirmative "no activity"; a refetch error after a good read
   // keeps the last entries. The finite staleTime is the roster's: a return to
   // the summary shows the cached pointers and refreshes them behind.
+  // The owner's Perpetual mode switch, the same control the detail page
+  // renders. No floor poll here: pushed registry changes refresh its state.
+  const perpetualSwitch = useCrewPerpetualSwitch(activeMemberName, { poll: false })
   const activityQuery = useQuery({
     queryKey: memberActivityQueryKey(activeSlug, activeMemberName),
     queryFn: () => api.memberActivity(activeSlug, activeMemberName),
@@ -1646,8 +1654,17 @@ export default function MembersPage() {
       loops,
     }
   }, [patrolQuery.data, patrolQuery.isError])
+  /** The loop record for a member's slot, but only when the roster counts it
+   *  as the switch's loop: `GET /api/autonudge` lists a STRUCTURED MONITOR
+   *  (`monitor_watch`) on the same slot as a reduced, active row, and that is
+   *  a watch task, not Perpetual mode -- the roster's `perpetual` reads `none`
+   *  for it (`perpetual_state_of` applies `is_structured_monitor_loop`), so
+   *  the badge, the status filter and the Work log block all follow that
+   *  reading rather than the bare registry row. A roster without the field
+   *  (an older backend) falls back to the registry alone. */
   const patrolLoopOf = useCallback(
     (m: MemberRosterRow) => {
+      if (m.perpetual === 'none') return undefined
       const key = slotKeyOf(m)
       return key ? patrol.loops[key] : undefined
     },
@@ -1662,11 +1679,15 @@ export default function MembersPage() {
   const activePatrolOf = useCallback(
     (m: MemberRosterRow): AutoNudgeLoop | undefined => {
       const lp = patrolLoopOf(m)
+      if (m.perpetual !== undefined && m.perpetual !== 'on') return undefined
       return lp?.active ? lp : undefined
     },
     [patrolLoopOf],
   )
-  const activePatrol = activeMemberKey ? patrol.loops[activeMemberKey] : undefined
+  // Keep a stopped loop for its reason/detail. patrolState below still makes
+  // explicit `off` authoritative over a stale active bit.
+  const activePatrol =
+    activeMemberKey && active?.perpetual !== 'none' ? patrol.loops[activeMemberKey] : undefined
   // The armed/stopped verdict and the stop reason now come from the pushed
   // `wake` projection, so a stop that lands re-renders the block without a
   // poll — that is why patrolQuery no longer carries a refetchInterval. The
@@ -1727,7 +1748,13 @@ export default function MembersPage() {
   // a stop (and its reason) survives the registry forgetting the loop. That
   // is the case that used to read "nothing scheduled" after a restart killed
   // a patrol mid-cycle; now the loader's synthesised stop is what renders.
-  const patrolState: 'active' | 'stopped' | 'none' = activePatrol?.active
+  // Both sources yield to the roster's `perpetual` when it says `none`: a
+  // structured monitor on the slot is neither armed nor stopped Perpetual mode.
+  const patrolState: 'active' | 'stopped' | 'none' = active?.perpetual === 'none'
+    ? 'none'
+    : active?.perpetual === 'off'
+      ? 'stopped'
+    : activePatrol?.active
     ? 'active'
     : activeWake?.patrol === 'stopped'
       ? 'stopped'
@@ -2712,7 +2739,21 @@ export default function MembersPage() {
               aria-hidden="true"
             />
             <span className="flex-1">{t('pages.membersPage.patrol_title')}</span>
+            {/* The switch sits on the title row here as on the detail page.
+                This block renders beside an OPEN thread (the page opens it on
+                selection), so the detail page's "thread never opened" case
+                cannot arise here; the control still disables itself if it did. */}
+            <CrewPerpetualControl sw={perpetualSwitch} testIdPrefix="member-perpetual" />
           </div>
+          {/* A refused press, in plain words, above the state it did not change.
+              askAgent is safe here: this drawer holds no draft. */}
+          <ErrorNotice
+            variant="inline"
+            title={t('components.crewPerpetualSection.change_failed')}
+            message={perpetualSwitch.refusalText}
+            askAgent
+            testId="member-perpetual-error"
+          />
           {!patrolReadoutReady ? (
             <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
               <div className="h-3 rounded bg-bg-hover animate-pulse" />
@@ -2797,21 +2838,27 @@ export default function MembersPage() {
                         })()}
                       </dd>
                     </div>
-                    {(activePatrol.banner || activePatrol.message) && (
-                      <div className="flex gap-2">
-                        <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_instruction')}</dt>
-                        {/* The banner is the SHORT stand-in the transcript row
-                            shows; without one, the instruction's first line.
-                            The full text sits in the hover title. */}
-                        <dd
-                          className="min-w-0 truncate m-0"
-                          title={activePatrol.banner || activePatrol.message}
-                          data-testid="member-patrol-instruction"
-                        >
-                          {(activePatrol.banner || activePatrol.message).split('\n')[0]}
-                        </dd>
-                      </div>
-                    )}
+                    {(() => {
+                      // The banner is the SHORT stand-in the transcript row
+                      // shows; without one, the instruction's first line. The
+                      // full text sits in the hover title. A loop the owner's
+                      // switch armed carries only the switch's own default
+                      // brief, which restates the block's title -- that row is
+                      // hidden; a brief the crewmate wrote itself stays.
+                      const brief = perpetualBriefText(activePatrol)
+                      return brief ? (
+                        <div className="flex gap-2">
+                          <dt className="w-24 shrink-0 text-muted">{t('pages.membersPage.patrol_instruction')}</dt>
+                          <dd
+                            className="min-w-0 truncate m-0"
+                            title={brief}
+                            data-testid="member-patrol-instruction"
+                          >
+                            {brief.split('\n')[0]}
+                          </dd>
+                        </div>
+                      ) : null
+                    })()}
                   </dl>
                 </>
               ) : patrolState === 'active' ? (
@@ -2839,13 +2886,15 @@ export default function MembersPage() {
                         : patrolStoppedReason}
                     </span>
                   )}
-                  {/* No rearm control here, deliberately. The state reads as a dead end
-                      that wants one, but what a control here could create is a
-                      SCHEDULE, which lives on the crewmate's detail page (the crew
-                      editor's Schedules pane) — and this block renders from the
-                      durable `wake` projection's `patrol` field, which a schedule
-                      writes nothing to. A button whose own remedy could not clear the
-                      notice above it would read as a remedy that failed. */}
+                  {/* The crewmate's own words for a stop it chose (redacted and
+                      capped on the server), under the coded reason. Absent for
+                      every other stop. The switch on the title row turns it
+                      back on. */}
+                  {activePatrol?.stopped_detail && (
+                    <span className="block mt-0.5 italic" data-testid="member-patrol-detail">
+                      {activePatrol.stopped_detail}
+                    </span>
+                  )}
                   {activePatrol && activePatrol.last_fire_ts > 0 && (
                     <span className="block mt-0.5" title={fmtDateTimeNumeric(activePatrol.last_fire_ts)}>
                       {t('pages.membersPage.patrol_last_wake_ago', { when: timeAgo(activePatrol.last_fire_ts) })}
@@ -2854,7 +2903,12 @@ export default function MembersPage() {
                 </div>
               ) : (
                 <div className="text-[11px] text-muted" data-testid="member-patrol-status">
-                  {t('pages.membersPage.patrol_none')}
+                  {/* A gateway with no nudge service cannot run the mode at all:
+                      the switch is withheld and the block says so, as the
+                      detail page does, never "never turned on". */}
+                  {perpetualSwitch.enabled
+                    ? t('pages.membersPage.patrol_none')
+                    : t('components.crewPerpetualSection.refused_autonudge_disabled')}
                 </div>
               )}
             </motion.div>

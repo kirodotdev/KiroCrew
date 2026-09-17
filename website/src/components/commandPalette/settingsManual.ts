@@ -73,6 +73,18 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
+    // ChatPanel hosts several rail pages in one source file. The extractor sees
+    // this toggle but cannot infer that its switch case is the transcript page,
+    // so replace the generated entry with the deep-link subpage attached.
+    id: 'chat.double-click-to-edit-your-messages',
+    labelKey: 'pages.settings.chatPanel.double_click_to_edit',
+    descriptionKey: 'pages.settings.chatPanel.double_click_to_edit_desc',
+    tab: 'chat',
+    type: 'toggle',
+    occurrence: 1,
+    params: { sub: 'transcript' },
+  },
+  {
     // Override of the one primitive the extractor DOES see in SecurityPanel:
     // without `section=apps` the deep link lands on the security rail with the
     // toggle's section unmounted, so the highlight silently no-ops.

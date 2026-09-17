@@ -520,7 +520,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # The chat_tag authorization store. Grant rows decide which tags an agent
     # may self-apply, so agent file tools must neither read nor write them;
     # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
-    # gateway opens the path.
+    # gateway opens the path. Matched by PREFIX, so this one entry also fences
+    # the auto-nudge ARM record beneath it (``tag-grants/autonudge-trust``,
+    # autonudge_selfarm.py): the entry that lets a crew/member session's loop
+    # fire and the whole of the owner's Perpetual mode authorization for a
+    # member loop, kept inside this directory so the sandbox's whole-directory
+    # stand-in holds its name for the namespace lifetime rather than a leaf
+    # mask at the data-home root holding it only at spawn. Every legitimate
+    # reader and writer of that record is gateway code opening the path directly.
     "tag-grants",
     # Crewmate teams (``crew_teams.py``): the owner's grouping of the roster. Not
     # a secret, but it decides which team view a crewmate's questions and work
