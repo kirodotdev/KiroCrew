@@ -4193,6 +4193,54 @@ class GatewayOrchestrator:
 
             cron_memory_store, cron_agent = await asyncio.to_thread(resolve_cron_memory, job)
 
+            def _resolve_cron_agent(alias: str | None) -> "tuple[str | None, str | None]":
+                """Resolve a cron agent alias to (kiro_agent, cwd).
+
+                A cron bound to a Slack channel carries that channel's agent
+                ALIAS (e.g. ``in-3d``) in ``job.agent_id`` / ``agent_sequence``.
+                kiro-cli only accepts a materialized agent MODE, not a KiroCrew
+                alias, so dispatching the alias verbatim fails closed with
+                "Agent mode 'in-3d' is not available … its ~/.kiro/agents/
+                in-3d.json is likely missing". The Slack CHAT path already
+                collapses the alias via ``resolve_agent_bindings`` (see
+                ``_agent_workspace_binding`` in transport_dispatch/handler); the
+                cron path was the one turn-running surface that skipped it.
+                Mirror that here so a channel-bound cron dispatches the alias's
+                ``kiro_agent`` (usually ``kirocrew``) and runs in the agent's
+                workspace ``cwd``. Returns (None, None) on any miss so the caller
+                falls back to the raw value unchanged (behavior-preserving for a
+                job whose agent is already a real mode or is unset).
+                """
+                if not alias:
+                    return None, None
+                try:
+                    from kiro_crew.config.loader import resolve_agent_bindings
+
+                    cfg = getattr(self, "_cfg", None)
+                    if cfg is None:
+                        return None, None
+                    # ONLY collapse a real KiroCrew alias. resolve_agent_bindings
+                    # falls back to the default agent for an unknown name, so
+                    # resolving unconditionally would rewrite a legitimate kiro
+                    # mode (e.g. 'kirocrew-lite') into the default 'kirocrew'.
+                    # A name that is not an alias is either a real mode or unset
+                    # — leave it untouched.
+                    agents = getattr(cfg, "agents", None) or {}
+                    if alias not in agents:
+                        return None, None
+                    bindings = resolve_agent_bindings(cfg, alias)
+                    kiro_agent = bindings.kiro_agent or None
+                    # Take the workspace dir straight off the resolved bindings —
+                    # it already reflects THIS config's workspace mapping. (Do not
+                    # route through default_project_dir(), which reloads the global
+                    # on-disk config and would ignore an override cfg.)
+                    ws_dir = getattr(bindings, "workspace_dir", None)
+                    cwd = str(ws_dir) if ws_dir else None
+                    return kiro_agent, cwd
+                except Exception:
+                    logger.debug("cron agent resolve failed for %r", alias, exc_info=True)
+                    return None, None
+
             # ── Concurrent execution guard ──
             if (job.script or job.command) and job.id in self._running_script_ids:
                 logger.info("Cron '%s': previous execution still running, skipping", job.name)
@@ -5041,11 +5089,16 @@ class GatewayOrchestrator:
                 return env or None
 
             async def _acquire_with_model_fallback(
-                key: str, agent_id: str | None
+                key: str, agent_id: str | None, cwd: str | None = None
             ) -> "tuple[LLMProvider, bool, bool, bool]":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
-                Returns (client, is_new, resumed, downgraded)."""
+                Returns (client, is_new, resumed, downgraded).
+
+                ``agent_id`` is the RESOLVED kiro agent mode (an alias must be
+                collapsed via _resolve_cron_agent before this call), and ``cwd``
+                is that agent's workspace so the session runs in the right tree.
+                """
 
                 assert self.sessions is not None
                 modes = getattr(self.ctx_builder, "_session_memory_modes", None)
@@ -5093,6 +5146,7 @@ class GatewayOrchestrator:
                         approval_policy=job.approval_mode,
                         model=job.model or None,
                         extra_env=_cron_extra_env(),
+                        cwd=cwd,
                     )
                     return client, is_new, resumed, False
                 except Exception as model_exc:
@@ -5117,6 +5171,7 @@ class GatewayOrchestrator:
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
                         extra_env=_cron_extra_env(),
+                        cwd=cwd,
                     )
                     return client, is_new, resumed, True
 
@@ -5144,8 +5199,12 @@ class GatewayOrchestrator:
                         self.cron_svc.register_active_session_key(job.id, agent_session_key)
                     _acq = False
                     try:
+                        # Collapse an alias (e.g. a channel-bound agent) to its
+                        # real kiro mode + workspace; keep the session key on the
+                        # ORIGINAL alias so per-agent keys stay stable.
+                        _seq_kagent, _seq_cwd = _resolve_cron_agent(agent)
                         client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, agent
+                            agent_session_key, _seq_kagent or agent, _seq_cwd
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
@@ -5294,8 +5353,12 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
+                # Collapse an alias (channel-bound agent) to its real kiro mode
+                # + workspace before dispatch; falls back to the raw value when
+                # it is already a real mode or unset.
+                _single_kagent, _single_cwd = _resolve_cron_agent(cron_agent or None)
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, cron_agent or None
+                    session_key, _single_kagent or cron_agent or None, _single_cwd
                 )
                 _acquired = True
                 # Same identity publish as the sequential site above — the
