@@ -305,6 +305,29 @@ def test_sandbox_allow_unsandboxed_exec_loads_from_config() -> None:
     assert enabled.agent.sandbox_allow_unsandboxed_exec is True
 
 
+def test_ssh_auth_sock_forward_is_not_an_agent_config_field() -> None:
+    """The SSH_AUTH_SOCK forward enable is NOT read from config.json.
+
+    Keeping the socket grants USE of the operator's ssh-agent keys for the
+    session -- an authorization, not a preference -- so its consent lives on the
+    keystone (``ssh_auth_sock_consent.json``, agent-nonwritable, sealed read-only
+    in the sandbox), the same placement as ``computer_use.json``. An
+    agent-writable enable in config.json would let a prompt-injected shell flip
+    its own forwarding on. This asserts the field is absent so it cannot silently
+    return: an agent-readable enable is the exact hole this design closes.
+    """
+    import dataclasses
+
+    from kiro_crew.config.sections import AgentConfig
+
+    field_names = {f.name for f in dataclasses.fields(AgentConfig)}
+    assert "sandbox_forward_ssh_auth_sock" not in field_names
+    # A config.json that names the old key is ignored, not honoured: the loader
+    # builds AgentConfig field-by-field and never reads it.
+    cfg = _load_from_dict({"agent": {"sandbox_forward_ssh_auth_sock": True}})
+    assert not hasattr(cfg.agent, "sandbox_forward_ssh_auth_sock")
+
+
 def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
     """The Stop-hook nudge cap is built field-by-field in load(), so an
     operator's value must hydrate and survive a to_dict() -> load() round-trip.

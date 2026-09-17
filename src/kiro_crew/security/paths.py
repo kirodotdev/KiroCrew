@@ -594,6 +594,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     # writer and opens the path directly, not through this gate, so it keeps
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
+    # Recorded consent to forward SSH_AUTH_SOCK into the sandbox. Same class of
+    # control as ``aws_service_consent.json`` and ``file_delivery_consent.json``
+    # above: the record is what keeps the operator's ssh-agent socket in the
+    # agent environment, granting USE of the operator's keys for the session, so
+    # an agent that could write it would flip its own forwarding on and a subagent
+    # it spawns would authenticate as the operator. The authenticated, owner-gated
+    # dashboard handler is the ONLY writer and opens the path directly, not through
+    # this gate; there is deliberately no CLI verb to fence.
+    "ssh_auth_sock_consent.json",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",

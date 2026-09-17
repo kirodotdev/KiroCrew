@@ -1159,6 +1159,33 @@ def file_delivery_consent_path() -> Path:
     return config_dir() / "file_delivery_consent.json"
 
 
+def ssh_auth_sock_consent_path() -> Path:
+    """Return path to ssh_auth_sock_consent.json -- the SSH-agent forward consent.
+
+    Same KEYSTONE reasoning as :func:`aws_consent_path` and
+    :func:`file_delivery_consent_path`, and the leaf is on
+    ``security._CREW_SECRET_LEAVES`` for the same reason: keeping
+    ``SSH_AUTH_SOCK`` in the agent subprocess environment grants USE of the
+    operator's ssh-agent keys -- signing, git-over-SSH, and any authentication
+    the socket reaches -- for the lifetime of the session. That is an
+    authorization, not a preference. Stored in the agent-readable ``config.json``
+    it would be writable by any auto-approved agent shell, so a prompt-injected
+    agent could flip its own forwarding on and a subagent it spawns would then
+    authenticate as the operator with keys the sandbox exists to keep out of its
+    reach. ``is_sensitive_path`` blocks the tool path and the OS sandbox mounts
+    the keystone read-only for the agent's shell, so the consent is
+    un-flippable from inside the sandbox.
+
+    Holds ``{"enabled": bool, "granted_at": str}``; every read fails soft to
+    DISABLED (see ``ssh_auth_sock_consent.is_granted``). The only writer is the
+    authenticated, OWNER-gated dashboard handler, which opens the path directly
+    rather than through this gate. There is deliberately NO CLI verb -- a
+    terminal command that records the grant on request is a grant an automated
+    caller can take. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "ssh_auth_sock_consent.json"
+
+
 def read_local_secret(port: int) -> str:
     """Read the internal-API credential for the gateway on *port*.
 

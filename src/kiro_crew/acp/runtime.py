@@ -115,6 +115,7 @@ from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     BoundWorkspaceMismatch,
+    _forward_ssh_auth_sock,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
@@ -1960,10 +1961,15 @@ class AcpRuntime:
                 exc_info=True,
             )
         scratch_window = (str(self._scratch_dir),) if self._scratch_dir is not None else ()
+        # Resolve the SSH_AUTH_SOCK forward opt-in off-loop ONCE
+        # (config read) and pass it to both the sandbox wrap and the parent scrub
+        # below, so neither reads config on the loop. Scoped to this agent spawn.
+        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            forward_ssh_auth_sock=forward_ssh_auth_sock,
             is_kiro_cli=delegate_internal_sandbox,
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_private_dirs=scratch_window,
@@ -2018,7 +2024,7 @@ class AcpRuntime:
         # CLI's internal sandbox without a POSIX `env -u` wrapper. Do it after
         # credential-pointer/API-key resolution so no resolver can reintroduce a
         # denied variable; KIRO_API_KEY itself is intentionally not denied.
-        env = scrub_agent_subprocess_env(env)
+        env = scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
         # Bundled skill scripts must not depend on a system ``python`` name.
         # The desktop bundles carry their interpreter outside the user's PATH,
         # while this path is already running under the exact environment that
