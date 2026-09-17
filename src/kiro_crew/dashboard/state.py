@@ -102,6 +102,7 @@ if TYPE_CHECKING:
         TaskRunner,
     )
     from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog  # noqa: F401
+    from kiro_crew.crew_wakes import WakeQueue  # noqa: F401
     from kiro_crew.messaging.transport import MessagingTransport  # noqa: F401
     from kiro_crew.power import SleepInhibitor  # noqa: F401
     from kiro_crew.slack.outbound import PostedOptions  # noqa: F401
@@ -3892,6 +3893,13 @@ class DashboardState:
         # the session-recognition gate so the supervising CLI's ``kiro-cli:<id>``
         # session keys count as established sessions (they have no slot here).
         self.supervised: bool = False
+        # Plane C wake queue for supervised ``kiro-cli:<id>`` owners. A monitor
+        # interval or an agent-message cron owned by such a session enqueues a
+        # wake here instead of injecting a prompt into a gateway slot, and the
+        # supervising CLI long-polls it to run the turn in its OWN session. Lazy
+        # so a loop-less or standalone caller pays nothing: constructed on first
+        # access via ``wake_queue`` below, rooted at ``<home>/crew-wakes``.
+        self._wakes: "WakeQueue | None" = None
         self.memory_startup_task: "asyncio.Task[None] | None" = None
         # Wired by server.py after the gateway-owned prerequisite service is
         # constructed. The central chat runner reads this latch so every turn
@@ -4278,6 +4286,26 @@ class DashboardState:
             self.context_builder.memory_mode_for_session = lambda key: resolve_session_memory_mode(
                 self, key
             )
+
+    def wake_queue(self) -> "WakeQueue":
+        """The Plane C wake queue, constructed and loaded on first access.
+
+        Lazy so a process that never has a supervised owner (standalone
+        dashboard, loop-less CLI/MCP) constructs nothing and reads no disk. The
+        first caller pays a one-time load of any persisted un-acked wakes so a
+        gateway restart redelivers them; ``load()`` is idempotent so concurrent
+        first-callers are safe. Rooted under the resolved data home so it honors
+        ``KIROCREW_HOME`` exactly like the cron store.
+        """
+        wq = self._wakes
+        if wq is None:
+            from kiro_crew.config.paths import config_dir
+            from kiro_crew.crew_wakes import WakeQueue
+
+            wq = WakeQueue(config_dir() / "crew-wakes")
+            wq.load()
+            self._wakes = wq
+        return wq
 
     def register_channel_transport(self, transport: "MessagingTransport") -> None:
         """Register a live channel transport for cross-surface mirror delivery.
