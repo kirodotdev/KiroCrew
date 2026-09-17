@@ -49,7 +49,13 @@ from kiro_crew.dashboard.session_pulse_counter import increment_user_session_cou
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
 from kiro_crew.dashboard.slot_projection import SlotProjection
-from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
+from kiro_crew.dashboard.slot_queue_repository import (
+    EMPTY_QUEUE_SIGNATURE,
+    SlotQueueRepository,
+    durable_queue_entries,
+    durable_queue_view,
+    queue_persist_signature,
+)
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
@@ -2061,6 +2067,9 @@ class _ChatSlot:
         "_pending_consumers",
         "_pending_release_deferred",
         "_queue",
+        "_queue_persisted_sig",
+        "_queue_persist_inflight",
+        "_queue_persist_owed",
         "_last_enqueue_ts",
         "_approval_futures",
         "_trust",
@@ -2336,6 +2345,21 @@ class _ChatSlot:
         # outlive every consumer and the leak survives its own fix.
         self._pending_release_deferred: bool = False
         self._queue: list[dict[str, Any]] = []  # [{"id": uuid, "content": str}, ...]
+        # Signature of the durable queue value this slot's last committed save
+        # wrote (see slot_queue_repository.queue_persist_signature). Drift
+        # between it and the live queue is what tells the periodic flush a
+        # queued prompt is not on disk yet, so durability does not depend on
+        # every queue mutation site remembering to mark the slot dirty. Starts
+        # at the EMPTY signature: a slot with nothing queued owes no write, and
+        # an unnecessary save would rewrite the transcript and invalidate every
+        # cache keyed on its mtime.
+        self._queue_persisted_sig: str = EMPTY_QUEUE_SIGNATURE
+        # Single-flight for the immediate queue write (``start_queue_persist``).
+        # Loop-affine: set on the event loop, cleared in the future's done
+        # callback, which the loop also runs. The executor thread doing the save
+        # never reads either one, so they need no lock.
+        self._queue_persist_inflight: bool = False
+        self._queue_persist_owed: bool = False
         # Newest enqueue instant, read only while ``_queue`` is non-empty — see
         # ``_note_enqueue``.
         self._last_enqueue_ts: str = ""
@@ -3610,6 +3634,30 @@ class _ChatSlot:
 
     def queue_promote_by_id(self, queue_id: str) -> bool:
         return self._queue_repository.queue_promote_by_id(self, queue_id)
+
+    def durable_queue_entries(self) -> list[dict[str, Any]]:
+        """The queued user prompts a metadata writer may persist right now."""
+        return durable_queue_entries(self._queue)
+
+    def durable_queue_view(self) -> tuple[list[dict[str, Any]], int]:
+        """Persistable queued prompts and the candidate count, from one read.
+
+        Used where the two are SUBTRACTED (the save's over-cap report), so the
+        difference describes one observation of the queue rather than two.
+        """
+        return durable_queue_view(self._queue)
+
+    @property
+    def queue_persist_pending(self) -> bool:
+        """True while a queued user prompt differs from what is on disk.
+
+        A queued prompt is the user's own words with NO other copy: the
+        transcript row for it is written by the drain, not by the enqueue, so
+        until a save carries the queue itself the only record is this process's
+        memory. The periodic flush reads this beside ``_dirty`` so an enqueue
+        (or any in-place queue mutation) reaches disk on the next pass.
+        """
+        return queue_persist_signature(self.durable_queue_entries()) != self._queue_persisted_sig
 
     @property
     def task(self) -> asyncio.Task[Any] | None:

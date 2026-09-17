@@ -1731,6 +1731,133 @@ WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later
 (capability-driven, like `supports_proactive_send=False`).
 
+### Queued prompt durability
+
+A prompt admitted while the slot is busy is answered `{"ok": true, "queued":
+true}` and held in `slot._queue`. Its transcript row is written by the DRAIN,
+not by the enqueue, so the queue is the only record until it runs — and a
+gateway restart in that window (an auto-update, a watchdog exit) used to drop
+the prompt with no row, no error card, and an empty queue on reload.
+
+The slot save therefore persists it. `slot.durable_queue_entries()`
+(`slot_queue_repository.durable_queue_entries`) selects the entries and the
+metadata line carries them as `queued_prompts`, a `SLOT_OWNED_META_KEYS` field
+so absence clears it.
+
+- **The accept STARTS the write, it does not wait for the interval.**
+  `queue_for_next_turn` hands `flush_slot_now` to the executor
+  (`start_queue_persist`) so the residual loss window is one save's duration
+  rather than one flush interval. BOTH accept sites use it: the busy-slot path
+  and `chat_handlers`' sub-agent hold branch, which holds an IDLE slot where no
+  drain is coming and the wait for the last sub-agent is unbounded. Each accepts
+  onto the same queue under the same ceilings, so each starts the write.
+  Started, not awaited: the acknowledgment keeps
+  its existing meaning — accepted in memory, durable on a flush — because making
+  durability a precondition would refuse a queued send on a slow or failing disk,
+  taking the user's words away at the one moment they cannot be re-read from the
+  transcript. A failed background write is logged and stays owed to the periodic
+  flush; with no running loop (a synchronous caller) the flush owns it as before.
+  **One writer per slot.** Two immediate writers would snapshot independently and
+  the transcript's file lock orders their commits, not their reads, so the older
+  snapshot could land last and put back a value missing an acknowledged prompt.
+  A send arriving mid-write records the debt (`_queue_persist_owed`) and the
+  finishing writer runs one follow-up pass when the queue still differs from disk.
+  That flag gates only the writers it starts, so the save closes the rest: inside
+  the history lock it compares the slot's committed-queue witness
+  (`_queue_persisted_sig`) against the value held when it read the queue, and
+  refuses the pass when another writer committed in between. Only a committed
+  value refuses — a queue that merely moved is an ordinary consistent past state —
+  and a refused pass leaves the queue owed rather than dropped, so losing the race
+  costs one flush interval of lag instead of an acknowledged prompt. A rows-only
+  write over another holder's line is exempt, since it defers the key instead of
+  deciding it. Both refusals this adds mark the slot dirty on the way out, because
+  `flush_slot_now` clears `_dirty` on any return that did not raise and compares
+  `_dirty_gen` to spot a concurrent mark: without it a refused pass would drop
+  window rows it never wrote, and the queue signal cannot cover them once the
+  overtaking writer has satisfied it.
+
+- **Only a plain user prompt is durable.** An entry carrying a `kind` is an
+  injection whose producer is gone (a cron notification names an event, and a
+  restart is not that event happening again); an entry carrying a `payload` is a
+  synthetic recovery continuation; an entry carrying `_on_consumed` /
+  `_on_irreversibly_consumed` acknowledges an automatic payload through a
+  callback that does not survive the process. `meta` rides along verbatim,
+  because it holds the admission-time containment snapshot the drain
+  re-validates against and an entry without one fails closed.
+- **Provenance does NOT survive the restart, and that is a security property.**
+  `_directive_user_origin` / `_directive_channel_origin` record that an entry's
+  words came from an authenticated human, and the drain reduces the consumed
+  entries' flags into `producer_is_user_facing`, which admits user-surface and
+  self-arming directives and exempts them from the LINKED containment
+  constraint. The metadata line is an ordinary readable-writable file in the
+  crew home, not a write-protected one, so a flag read back from it is
+  indistinguishable from one a prompt-injected agent's shell wrote — authority
+  granted to whoever can write the file. Neither half of the round trip moves
+  it: the keys are absent from `_DURABLE_QUEUE_KEYS` so the writer never emits
+  them, and `sanitize_restored_queue` drops a hand-added one, so a restored
+  entry is non-directive by construction.
+- **Correctness rests on the window and the queue being ONE observation.** The
+  drain removes the entry and appends its row in the same event-loop step, and
+  the save runs in the flush executor thread, so the save takes the pair under
+  one consistency generation: read the queue, snapshot the window, read the
+  queue again, retry while the two disagree, and REFUSE the save (nothing
+  written, the entry still owed) when no pair is proven inside the budget. Read
+  separately, the two halves could commit a file showing neither the entry nor
+  its row. A crash between the drain and the save loses the row as well, so a
+  replayed entry is a prompt the transcript never recorded — never a second copy
+  of one it did.
+- **Restored entries are handed back as queue CARDS, not dispatched.** Nothing
+  drains an idle slot on boot, so the user sends, edits or deletes them. This is
+  the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
+  turn may have run un-persisted must never be auto-resent.
+- **Durability does not depend on the mutation site.** `_queue_persisted_sig`
+  records what the last committed save wrote and `slot.queue_persist_pending`
+  compares it against the live queue, so an in-place rewrite — a reorder, a
+  plan-approval filter, a force-stop clear — is picked up by the periodic flush
+  without each site marking the slot dirty. The flush and the resumed-slot no-op
+  guard both read it beside `_dirty`.
+- **A rows-only handover save defers the key** (it is in
+  `ROWS_ONLY_DEFERRED_META_KEYS`): the line describes the live holder, whose
+  queue this write does not own. The popped slot keeps owing its own entries,
+  which is the conservative side. `_persist_handover_tail` therefore treats an
+  owed queue as work — a queued prompt changes neither the window length nor
+  `_dirty`, so its "nothing owed" test would otherwise answer True over one — and
+  reports the count when the committed write could not carry them. Nothing in the
+  process visits that slot again, the same position the held `/note` lines are in.
+- Bounds: `MAX_DURABLE_QUEUE_ENTRIES` entries and `MAX_DURABLE_QUEUE_BYTES` of
+  serialized value, admitted front-first because the front runs first. An
+  over-budget prompt is DROPPED, never truncated — a shortened prompt replayed
+  as the user's own words is worse than one reported as not carried. The SAME
+  two ceilings gate the restore, costed against the SAME key projection, because
+  the writer's bounds bound only what this gateway wrote and the line can be
+  edited outside it, while whatever the restore admits is retained live and
+  re-serialized by every later save. The projection matters: the restore adds
+  `kind: ""` to keep a restored entry out of the system-injection paths, and
+  billing itself for that key would make the reader's budget the smaller of the
+  two, so a queue written just under the ceiling would drop its tail on the way
+  back in — losing a prompt that WAS durably written.
+  `MAX_DURABLE_QUEUE_SCAN` bounds how much of the raw value is INSPECTED, which
+  the retention cap does not: the apply phase reading it is loop-affine, so a
+  hand-edited line must not buy startup work proportional to its own length.
+  Entries past it are counted as not restored, never quietly ignored.
+- The send is **not refused** when the bounds cannot carry it: taking the user's
+  words away at the one moment they cannot be re-read from the transcript is
+  worse than a best-effort durable copy. `durable_queue_view` returns the
+  persisted entries and the candidate count from ONE read of the queue, and the
+  save logs their difference once, naming the slot, so the omission is an
+  operational fact rather than a silent one. The pairing matters: counted from
+  two reads, an ordinary send landing during a save is reported as a prompt the
+  bounds refused. The ACCEPT reports it too, and earlier:
+  `warn_if_not_durable` logs at WARNING when the entry just queued is one the
+  write will not keep, naming the slot, the entry, the candidate count, the
+  carried count and which ceiling refused it. Both the verdict and the reason are
+  read off `durable_queue_entries`' own output — an entry absent from a full set
+  was refused by the count cap, absent from a short one by the byte budget — so
+  nothing re-implements the interacting ceilings. This is a LOG, not a receipt
+  field: a caller-visible `durable` boolean on the acknowledgments has no reader,
+  so it is not shipped, and the on-screen queue-card marker belongs with its
+  consumer (issue #11695).
+
 ## Cross-Surface Reply Mirror
 
 The same conversation can appear on a channel and in the

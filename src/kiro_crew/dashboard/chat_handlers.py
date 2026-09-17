@@ -48,6 +48,7 @@ from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     normalize_send_id,
     queue_for_next_turn,
+    start_queue_persist,
     steer_into_running_turn,
 )
 from kiro_crew.dashboard.chat_folders import (
@@ -139,6 +140,7 @@ from kiro_crew.dashboard.slot_buffers import (
     note_hold_durable,
     persist_deferred_notes_sync,
 )
+from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
 from kiro_crew.dashboard.state import (
     DashboardState,
     SlotOrigin,
@@ -812,6 +814,16 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _c, _ = redact_exfiltration_urls(message)
         _c, _ = redact_credentials(_c)
         _redacted = _redact_for_display(_c)
+        warn_if_not_durable(slot._queue, qid, slot.key)
+        # Start the durable write here too, not only in the busy-slot branch.
+        # This branch holds an IDLE slot, so no drain is coming to write the
+        # prompt's transcript row and no turn-end flush is scheduled: the queue
+        # is the only record of the user's words until the last sub-agent
+        # finishes, which is unbounded. Waiting for the periodic flush would
+        # leave a window as wide as its interval, so the accept and the write
+        # start from the same place. Same single-flight and same self-limiting
+        # skip as the other caller.
+        start_queue_persist(state, slot)
         state.broadcast_ws(
             "queue_push",
             {
@@ -821,8 +833,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 "queue_id": qid,
             },
         )
-        # Same receipt contract as the busy-slot queue branch: `queue_id`
-        # binds the sender's pre-send composer state to this exact entry.
+        # Same receipt contract as the busy-slot queue branch: `queue_id` binds
+        # the sender's pre-send composer state to this exact entry. An entry the
+        # durable bounds refuse is reported in the log by the call above, not on
+        # the receipt: the on-screen marker belongs with its consumer.
         return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
     # WS mode: return JSON immediately, chunks delivered via WebSocket
@@ -3430,6 +3444,11 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
     reach these rows again, so a caller that discards the answer reports a close
     that succeeded while the rows became unreachable. The log line names the exact
     count for the same reason.
+
+    A queued prompt the hand-over line could not carry is reported, not returned:
+    the answer is about ROWS, and every caller reads False as "the transcript
+    write failed". A committed write that deferred the queue is a different fact,
+    and the log is where it belongs.
     """
     try:
         slot.flush_deferred_notes()
@@ -3453,7 +3472,12 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
     # covers the other shape of unsaved state: an in-place edit to a row already
     # persisted leaves the length unchanged.
     unsaved = max(0, len(slot.messages) - slot._disk_window_len)
-    if not unsaved and not slot._dirty:
+    # A queued prompt is unsaved state that changes NEITHER of those: its row is
+    # written by the drain, so the window length is unchanged, and an enqueue does
+    # not dirty the slot. Returning True here on that state would report a clean
+    # hand-over while the prompt's only copy goes with the discarded object.
+    owed_prompts = len(slot.durable_queue_entries())
+    if not unsaved and not slot._dirty and not slot.queue_persist_pending:
         return True
     history_key = slot_history_key(slot)
     try:
@@ -3488,6 +3512,27 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
             history_key,
         )
         return False
+    if owed_prompts and slot.queue_persist_pending:
+        # The write committed, and it still did not carry these entries: a
+        # rows-only save over a line another live slot published defers every
+        # slot-owned field, ``queued_prompts`` among them (``queue_line_is_ours``
+        # keeps them owed rather than falsely credited). Nothing in this process
+        # will visit this slot again, so say so with the count — the same
+        # obligation the held-note arm above carries, and for the same reason:
+        # these are the user's own words and this frame is their last reader.
+        #
+        # Carrying them instead would mean making ``queued_prompts`` a merge
+        # field on the rows-only path, which is a change to what a durable
+        # metadata line MEANS for a key two slots share, not a loop-side
+        # ordering fix. Left out deliberately; the report is the remedy here.
+        logger.warning(
+            "Slot %s: %d queued prompt(s) were not carried by the hand-over write to "
+            "%s (the line belongs to the replacement holding this key); they are lost "
+            "with the original slot",
+            name,
+            owed_prompts,
+            history_key,
+        )
     return True
 
 

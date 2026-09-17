@@ -206,6 +206,11 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # CLEARED by absence once the flush delivers them — carried forward
         # instead, a restart would re-deliver a note the user already saw.
         "deferred_notes",
+        # Durable copy of the queued user prompts. Owned, not monotonic: the
+        # value is written while prompts wait and must be CLEARED by absence
+        # once the drain consumes them — carried forward instead, a restart
+        # would hand back a prompt whose turn already ran.
+        "queued_prompts",
         "pinned",
         "color_index",
         "color_hex",

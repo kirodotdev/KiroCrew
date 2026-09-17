@@ -95,7 +95,12 @@ class DashboardPersistenceCoordinator:
         # provisional value durable while the guarded writer is still waiting.
         if getattr(slot, "_metadata_persist_inflight", 0):
             return
-        if not owner.conversation_log or not slot._dirty or not slot.messages:
+        if not owner.conversation_log or not slot.messages:
+            return
+        # A queued user prompt is persisted by the metadata line, not by a row,
+        # so an enqueue does not make the transcript dirty. Save on either
+        # signal: ``_dirty`` for the window, queue drift for the queue.
+        if not slot._dirty and not getattr(slot, "queue_persist_pending", False):
             return
         save_slot_to_history = self._slot_saver_provider()
 
