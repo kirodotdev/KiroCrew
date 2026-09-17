@@ -985,8 +985,17 @@ _SUPERVISED_ONLY_MIXED_INTERNAL_API_PATHS = frozenset(
 # boundary that the bridge does not use and the CLI is not the author of. The
 # scoped semantic write the bridge DOES need (``knowledge/add``) is
 # ``POST /api/knowledge/agent-document``, already in the STRICT internal set.
+#
+# ``POST /api/knowledge/dedup`` backs ``knowledge/dedup`` (Phase-6 residual 3).
+# It is a WRITE the supervising CLI is the legitimate author of (a dry-run
+# preview by default; ``apply=true`` collapses cross-source duplicates), so it is
+# admitted method-scoped rather than by a bare prefix — a prefix here would sweep
+# in nothing today, but keeping it POST-scoped documents that only the dedup verb
+# is intended and leaves no room for a future GET/DELETE child to ride in. The
+# handler re-checks ``internal_auth`` regardless.
 _SUPERVISED_ONLY_MIXED_INTERNAL_API_METHODS: dict[str, frozenset[str]] = {
     "/api/knowledge/sources": frozenset({"GET"}),
+    "/api/knowledge/dedup": frozenset({"POST"}),
 }
 
 
@@ -1793,10 +1802,15 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers_system import (
         api_crew_injection_context,
         api_crew_mcp_servers,
+        api_knowledge_dedup,
     )
 
     app.router.add_get("/api/crew/mcp-servers", api_crew_mcp_servers)
     app.router.add_get("/api/crew/injection-context", api_crew_injection_context)
+    # Residual 3 (Phase 6): POST-only cross-source Knowledge Library dedup, the
+    # sidecar endpoint the knowledge_dedup MCP tool lacked. Supervised-only,
+    # POST-scoped in the allowlist (a dry-run preview by default; apply deletes).
+    app.router.add_post("/api/knowledge/dedup", api_knowledge_dedup)
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
     app.router.add_post("/api/autonudge/{loop_id}/fire", api_autonudge_fire)

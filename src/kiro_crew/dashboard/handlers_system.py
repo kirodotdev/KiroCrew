@@ -390,6 +390,73 @@ async def api_crew_injection_context(request: web.Request) -> web.Response:
     return web.json_response({"sessionId": session_key, "blocks": blocks})
 
 
+def _knowledge_dedup_sweep(apply: bool) -> dict:
+    """Run the same ``dedup_sweep`` over the same ``KnowledgeStore`` the
+    ``knowledge_dedup`` MCP tool uses (``mcp_tools/knowledge.py``), returning the
+    Plane B wire shape. Synchronous (SQLite I/O), so the handler dispatches it via
+    ``asyncio.to_thread``.
+
+    No store on disk is not an error: the library simply has not been configured,
+    so ``{removed: 0, preview, duplicates: []}`` is returned — the same
+    ``not_configured`` outcome the MCP tool reports as prose. ``preview`` echoes
+    the request's ``apply=False`` so the caller can tell a dry run from a delete.
+    """
+    from kiro_crew.knowledge.dedup import dedup_sweep
+    from kiro_crew.knowledge.store import KnowledgeStore
+
+    preview = not apply
+    db_path = Path(config_dir()) / "workspace" / "knowledge" / "knowledge.db"
+    if not db_path.exists():
+        return {"removed": 0, "preview": preview, "duplicates": []}
+    store = KnowledgeStore(str(db_path))
+    try:
+        results = dedup_sweep(store, apply=apply)
+    finally:
+        store.db.close()
+    # ``dedup_sweep`` returns snake_case ``items_deleted``; the wire shape is
+    # camelCase ``itemsDeleted`` (SIDECAR-API6). ``removed`` is the pair count and
+    # equals the number of loser documents collapsed, whether previewed or applied.
+    duplicates = [
+        {
+            "loser": r["loser"],
+            "winner": r["winner"],
+            "reason": r["reason"],
+            "itemsDeleted": r["items_deleted"],
+        }
+        for r in results
+    ]
+    return {"removed": len(duplicates), "preview": preview, "duplicates": duplicates}
+
+
+async def api_knowledge_dedup(request: web.Request) -> web.Response:
+    """POST /api/knowledge/dedup — cross-source Knowledge Library dedup (R2).
+
+    Closes residual 3: the ``knowledge_dedup`` MCP tool had no sidecar endpoint,
+    so a supervised sidecar could not run a dedup on behalf of the CLI. Body
+    ``{apply?: bool}`` (default ``false`` = dry-run preview); response
+    ``{removed, preview, duplicates: [{loser, winner, reason, itemsDeleted}]}``,
+    reusing the MCP tool's ``dedup_sweep`` + ``KnowledgeStore`` path so the two
+    cannot drift.
+
+    Admitted only to a supervised internal-secret caller via the method-scoped
+    supervised allowlist (POST on ``/api/knowledge/dedup``); this still refuses a
+    caller that reached the handler without ``internal_auth``. A missing store
+    yields ``{removed: 0, preview, duplicates: []}`` rather than an error — an
+    unconfigured library is a valid state, not a failure.
+    """
+    if request.get("internal_auth") is not True:
+        return web.json_response(
+            {"error": "internal caller required", "code": "internal_required"}, status=403
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    apply = bool((body or {}).get("apply", False))
+    result = await asyncio.to_thread(_knowledge_dedup_sweep, apply)
+    return web.json_response(result)
+
+
 async def api_status(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     uptime = time.time() - state.start_time
