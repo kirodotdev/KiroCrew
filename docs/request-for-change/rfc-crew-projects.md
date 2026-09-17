@@ -3,10 +3,10 @@ title: Projects — portable, syncable context bundles
 status: draft
 author: kseam
 created: 2026-08-21
-last-audited: 2026-08-21
-audited-at: 5cd92ff99
+last-audited: 2026-09-17
+audited-at: 0640c1e0d5
 doc-pr: 4941
-implementation-prs: []
+implementation-prs: [7181]
 tracking-issues: [3551]
 supersedes: []
 superseded-by: []
@@ -49,6 +49,331 @@ superseded-by: []
 * Four phases, each independently shippable: P0 manifest + repos + pinned docs,
   P1 knowledge recipes + federated search, P2 Jira/Confluence/ServiceNow
   connectors + S3 backend, P3 team ergonomics.
+
+> **Revision 2 (2026-09-17) narrows this design.** The section immediately
+> below supersedes the *capabilities* half of what follows — installing a
+> bundle's agents, skills and MCP servers into the install's global state at
+> activation — and adds two things the original did not have: a memory store
+> keyed to the Project, and MCP servers referenced by name. The sources,
+> sessions, and sharing design below stands. Where a later section conflicts
+> with Revision 2, Revision 2 wins.
+
+## Revision 2 — the thin Project
+
+### Why revise
+
+The P0 implementation ([PR #7181](https://github.com/kirodotdev/KiroCrew/pull/7181),
+about 13k lines) went through twelve review rounds. Of roughly fifteen blocking
+findings, all but two were one class: **authority read back from state an
+agent shell can write.** The registry, activation records, source provenance
+records, managed clones and source checkouts all lived in agent-writable
+derived state, and each round found another place where a privileged reader
+trusted that state — a checkout's own `.git/config` steering the owner's sync,
+an activation record that could be written but never read back, a cached
+attachment that outlived the Project it pointed at. Each instance was closed,
+class-level guard tests held, and the final finding named the root: the
+registry itself sat in a tree the sandbox deliberately leaves visible.
+
+Almost every one of those hazards lived in the **capabilities layer** — the
+code that copied a bundle's agents into the global agents dir, its skills
+under `skills/projects/<id>`, and its MCP entries into the global `mcp.json`,
+with an activation record to roll all of that back. Two facts, both verified
+at `0640c1e0d5`, make that layer a second path for things the runtime already
+provides:
+
+* **The session's project directory already discovers its own agent
+  context.** A directory bound to a session loads its `.kiro/skills` behind a
+  per-directory consent grant (PR #4736), its project-local agents (PR #2167),
+  and its `.kiro/steering` (PR #4361). Nothing needs to be *installed* for a
+  repo's steering, skills or agents to reach a session working in it.
+* **kiro-cli itself honours a workspace-level `.kiro/settings/mcp.json`** in
+  the session's cwd, merged under agent-level `mcpServers` and over the global
+  file (documented precedence: agent config, then workspace, then global). A
+  repo that carries its own MCP config already reaches a session with zero
+  Crew machinery; copying it anywhere adds a second path, not a second
+  control. What Crew *does* owe is a review step over that file when the
+  checkout it lives in is one Crew syncs on the owner's behalf — see "The
+  synced checkout is a second channel" below.
+
+So the thin Project keeps exactly the parts only a runtime can provide — a
+synced Git workspace, a fenced binding from session to Project, a memory store
+keyed to the Project, and MCP servers resolved by name — and treats everything
+else in the bundle as text that loads because the cwd is there.
+
+### What a Project is, revised
+
+A Project is a **Git repository the gateway materializes and keeps in sync**,
+registered under a fenced per-install registry, that a session binds to at
+creation. The manifest shrinks to intent:
+
+```yaml
+apiVersion: crew.kiro/v1
+kind: Project
+id: 5f2c9a71-8e0d-4b3a-9c14-7d6e2f0a1b33   # the Project's identity; see below
+name: payments-platform
+description: The payments platform team's working context.
+
+sources:                       # `repo` is the only type in v1; the list shape stays
+  - type: repo
+    url: https://github.com/acme/payments-api
+    default_branch: main
+    role: primary
+  - type: repo
+    url: https://github.com/acme/payments-infra
+    role: reference
+
+mcp:                           # servers by NAME, resolved against the owner's catalogue
+  - name: atlassian
+    scope: { site: acme, project: PAY, space: PAYDOCS }
+  - name: datadog
+
+memory:
+  mode: project                # project | none — WHETHER, never WHICH
+```
+
+`id` is a UUID minted when the manifest is first written and never changed
+afterwards. It is the Project's identity across installs and renames: the
+managed clone, every source checkout's provenance record, the reviewed digest
+and the memory store are keyed on it, and it is what lets a re-added or
+re-cloned Project be recognised as the same one rather than a fresh bundle.
+`name` is for people and may change; `id` is for the store and may not. A
+public schema field is a one-way door, so it is adopted here deliberately
+rather than left to the implementation.
+
+Gone from the manifest: `context.skills`, `context.crew`, `context.mcp` (as a
+file of definitions), `context.workflows`, `knowledge` recipes and
+`credentials`. The first three are covered by cwd discovery; the rest move to
+later phases (below). `context.steering` and `context.pinned` are unnecessary
+as manifest keys — a repo's `.kiro/steering` and its docs are simply files in
+the checkout.
+
+**A Project materializes as a Crew Member.** Activation is the owner's one
+explicit trust step, keyed to a digest of the reviewed bundle. On approval the
+gateway writes one member record `project--<id>` — `workspace` = the primary
+checkout, `kiro_agent` = one generated agent template, `memory_store` = the
+store below when `memory.mode: project` — and that one agent file. Removal
+deletes the member record and the agent file and archives the store. There is
+nothing to roll back partially, which is what deletes the rollback, ordering
+and record-budget hazards rather than fencing them.
+
+### Memory keyed to the Project
+
+`memory.mode` declares **whether** the Project gets its own memory, never
+which store. The manifest cannot name a store, because a bundle naming an
+existing private store is a hijack question, and a portable store *name* buys
+nothing a derived one does not — memory contents never travel in the repo.
+
+* **The manifest declares, activation ratifies.** Nothing reads `memory.mode`
+  at session time. The activation dialog shows the stake ("this Project gets
+  its own private memory"); on approval a Memory V2 store named `project--<id>`
+  is provisioned, owned by the `project--<id>` member, and the binding is
+  written into the fenced activation record. Sessions resolve their store from
+  that record only.
+* **A pull can never create or select a store.** A manifest edit — by an agent
+  or a `git pull` — changes the review key, the activation goes stale, and the
+  binding does not follow until the owner re-activates. Re-activation keeps the
+  existing store: a Project's identity is its id, not its manifest digest.
+* **Binding is fixed at conversation creation.** Every conversation started on
+  the Project shares that one store; attaching or detaching a Project on a live
+  session refuses when the memory store would change, consistent with the
+  Memory V2 rule that a missing binding never silently turns a private topic
+  into Global memory.
+* **Provisioning is gated exactly as any V2 member is** (`memory.private_provisioning_enabled`,
+  a supported ACP backend, the WSL gateway on Windows). On an unsupported
+  backend activation completes with memory listed as *unavailable*; it never
+  falls back to a V1 member.
+* **Removal archives the store** with files preserved, as deleting a member
+  does today.
+
+This resolves open question 6 as (a) plus (b): working memory is an
+install-local private store; durable decisions are promoted into the repo as
+ordinary documents, mediated by git.
+
+### MCP by name
+
+The bundle **references servers by name and never carries a definition**.
+Definitions — command line, URL, credentials — come from the owner's own
+catalogue: installed apps' `mcpServers`, the global `mcp.json`, vault slots. A
+repo can therefore never introduce an executable or a credential; the worst a
+hostile edit can do is ask for a server the owner has not installed, which
+shows as *unavailable* at activation. This is also what makes a Project port:
+every install resolves the same names against its own catalogue.
+
+Resolution happens **onto the session's own agent at session start**, not as
+an install. Agent-level `mcpServers` already exist and are already projected
+onto backends; the Project's generated agent template lists the approved names
+and the gateway fills in definitions from the catalogue when the session
+starts. Nothing is written into the global `mcp.json`. Scope hints (`site`,
+`project`, `space`) are steering text the agent reads; the tools do the rest.
+
+Live actions on linked systems — transition a Jira ticket, write a Confluence
+page — therefore arrive through the same servers a member would use, under the
+same approval surface, with no Project-specific write path.
+
+### The synced checkout is a second channel — decided, not assumed
+
+The "never introduces an executable" guarantee above is a property of
+**Crew's resolution path only**. The checkout itself is a second channel:
+kiro-cli reads the checkout's own `.kiro/settings/mcp.json` (full server
+definitions, command lines included) and its `.kiro/agents/` (which may carry
+`mcpServers`) directly from the cwd, and `sync` pulls remote commits without
+any review step. A hostile commit to a linked repository could therefore land
+an executable definition that the next session start runs, and the activation
+digest — which covers `project.yaml` — would not notice.
+
+Two decisions close this, one per kind of content:
+
+* **Executable surfaces in the checkout are part of the reviewed bundle.** The
+  activation digest covers, besides `project.yaml`, **everything under the
+  primary checkout's `.kiro/` directory except the text-only surfaces named
+  below**. It is deliberately not an allowlist of the executable files kiro-cli
+  reads today (`.kiro/settings/mcp.json`, `.kiro/agents/`): kiro-cli owns its
+  discovery surfaces and can add one — hooks, a skill's scripts — without
+  Crew noticing, and a digest that enumerated files would let that new surface
+  through by default. Default-stale over `.kiro/` fails the other way: a file
+  Crew does not know about moves the digest and the owner reviews it. The
+  carve-out is exactly `.kiro/steering/` (instructions, handled under the text
+  decision below); everything else under `.kiro/` is treated as able to run
+  code until the RFC says otherwise, and a guard test pins that the carve-out
+  set is that one directory. `sync`
+  recomputes the digest after the pull; when it moved, the Project's health
+  reports *review stale* naming the changed files, and a session start or
+  per-turn re-resolve on that Project **refuses** with `project_review_stale`
+  until the owner re-activates. Re-activation is digest-bound: the review
+  surface shows the owner each changed file's current content (added, changed,
+  removed, or unreadable, with the reason) and the accept call carries the
+  digest those bytes hash to; a recompute that differs refuses with
+  `project_review_moved` and records nothing, so what is accepted is exactly
+  what was shown. Nothing is started from a definition the owner has not seen. A repository with no `.kiro/` directory has nothing to gate. A
+  surface the hardened reader cannot read as a regular in-tree file — a link
+  to a target outside the checkout, an oversized file — is never an accepted
+  baseline: it counts as stale on every check, because kiro-cli would follow
+  the link and load a target the digest cannot see.
+  The digest stops at the primary checkout because of an invariant the
+  runtime holds: **a Project session's working directory is only ever the
+  primary checkout** (the bundle clone when no source is declared primary).
+  `reference` sources are materialized beside it and are never a kiro-cli
+  workspace root, so kiro-cli never reads their `.kiro/`; a session that wants
+  one as its cwd is a different Project, and PR A's exit criteria test the
+  invariant rather than assume it.
+* **Text surfaces inherit kiro-cli's repository-trust posture, by decision.**
+  `.kiro/steering` and the checkout's documents reach the session as
+  instructions kiro-cli loads from any directory it runs in; a Project checkout
+  is no more and no less trusted than a directory the user opened by hand. The
+  agent-side defences (injected text is data, not instructions) are the same
+  ones every session already relies on. `.kiro/skills` is under the digest
+  like every other non-steering `.kiro/` path (a skill can carry scripts) and
+  additionally keeps its own per-directory consent grant.
+
+This resolves what an earlier draft of this revision listed as open question 8.
+
+### Sources, providers and knowledge — deferred, not dropped
+
+`sources:` keeps its list shape with `type: repo` as the only built-in, and
+the materialized layout stays per-source (`sources/<id>/`) so a second type is
+a registration. The Python provider SPI is **not** landed until a second
+provider exists: one implementation is not an interface. Linked systems arrive
+as MCP by name in v1; a synced snapshot indexed into the Knowledge Library
+(recipes, federated search, the Project namespace) is an optimization for the
+"search across everything" case and moves to a later phase.
+
+When a non-repo provider does land, its manifest entry names *what* (a site
+alias, a project key, a space), never *how to reach it*: the credential slot
+lives in the fenced per-install store and pins the host, so a manifest edit
+cannot send an owner's token anywhere the slot was not configured for.
+
+### Storage rule — the fence
+
+Every trust-bearing Project file — the registry, activation records, source
+provenance records, the approved MCP name set — lives in a **gateway-only
+leaf** that is on *both* fences: `security.paths._SENSITIVE_HOME_DIRS` (the
+agent file-tool gate) *and* `sandbox._CREW_HIDDEN_LEAVES` (the OS-level mask
+every sandbox mode applies). That is the treatment `memory_stores` gets. It is
+**not** the treatment `trust/` gets: that directory is deliberately
+sandbox-visible and read-write because in-sandbox MCP servers append to the
+audit log there, which is exactly why a registry under it was reachable from
+a spawned shell.
+
+Materialized checkouts stay visible — the agent works in them — and are never
+a source of authority:
+
+* Git coordinates (remote, pinned branch) come from the registry, never from a
+  checkout's `.git/config`; `sync` fetches exactly the pinned remote and
+  branch.
+* Every install-level or derived JSON read goes through one hardened,
+  link-refusing, size-bounded reader.
+* An existing checkout is reused only when its provenance record matches the
+  registry's declaration; a mismatch re-clones, and the previous checkout
+  survives until the replacement is recorded.
+
+Each of these is an invariant with a guard test that fails the build on a raw
+read or a Git call naming `origin` inside the Project modules; the guards and
+the hardened Git store exist on #7181 and are carried forward unchanged.
+
+### Revised migration plan
+
+* **PR A — the thin Project** (cut from #7181, mostly deletion): the registry
+  moved to the fenced leaf; `project_git.py` as hardened; a manifest reduced
+  to `name`, `description`, `sources[type: repo]`, `mcp[].name/scope`,
+  `memory.mode`; slot binding (`project_id`, the composer chip, "New session
+  on this Project"); the Projects rail page and sidebar entry; `sync`. No
+  capabilities module, no activation record beyond the digest and the
+  approved name set, no CLI group. *Exit criteria:* a Project registered on
+  install A and added by URL on install B attaches to a session on each with
+  the same primary checkout contents; a spawned shell inside a Project session
+  cannot read or write the registry; a manifest edit that repoints a source
+  re-clones rather than reusing the old checkout; a session on a removed
+  Project fails its next turn loudly through `project_not_found`; a `sync`
+  that changes anything under the primary checkout's `.kiro/` other than
+  `.kiro/steering/` marks the Project *review stale* and the next session start
+  on it refuses with `project_review_stale` until the owner re-activates; the
+  accept call names the digest of the content the owner was shown and a moved
+  digest refuses with `project_review_moved`; a
+  guard test pins the carve-out set to exactly `.kiro/steering/`; a session
+  cannot be bound to a `reference` checkout as its working directory (the
+  binding resolves to the primary checkout or refuses), so the digest's scope
+  and the session's cwd are the same tree by construction.
+* **PR B — memory.mode.** Activation provisions the `project--<id>` member and
+  its V2 store; the binding is fixed at conversation creation; attach/detach
+  refuses when the store would change; removal archives. Re-activation after a
+  manifest change keeps the existing store, and flipping `memory.mode` back to
+  `none` leaves the store bound until the Project is removed — the store's
+  lifetime is the Project's, never the manifest's. *Exit criteria:* two
+  sessions on one Project recall each other's facts; a `git pull` that flips
+  `memory.mode` changes nothing until re-activation, and re-activating with
+  `none` archives nothing; a private-memory provisioning refusal leaves the
+  Project activated with memory unavailable.
+* **PR C — MCP by name.** Names in the manifest resolve onto the session
+  agent from the owner's catalogue at session start; unknown names show as
+  unavailable; nothing is written to the global `mcp.json`. *Exit criteria:* a
+  manifest naming a server the owner has not installed activates with that
+  server unavailable and no other effect; a session on the Project sees the
+  named servers' tools without any global config change.
+* **Later, in any order:** knowledge recipes and the Project namespace in the
+  Knowledge Library; the first non-repo provider (and only then the SPI); S3;
+  auto-tagging; Project artifacts; the CLI group.
+
+### What this dissolves
+
+Several decisions left open by #7181's review close by construction rather
+than by choice: the "Project" vocabulary collision with the composer chip
+(the chip's project directory *is* the Project's primary checkout);
+managed-clone-on-remove (the workspace is archived like a member's store);
+whether a `project-skills.json` denial should veto activation (activation
+installs nothing, so there is nothing to veto); Project MCP through the
+app-kit installer versus two namespaced installers (no installer — reference
+by name); and the CLI group (deferred).
+
+### Revised open questions
+
+Open question 1 (third-party provider packaging) is deferred with the SPI.
+Open question 6 (Project memory) is resolved above, as are the synced-checkout
+MCP question (decided in "The synced checkout is a second channel") and the
+store's lifetime on a `memory.mode` flip (decided under PR B). New:
+
+8. **Shared memory across Projects.** Several Projects sharing one store is an
+   owner-side grouping decision, not a bundle claim. Does that need a surface
+   in v1, or does one-store-per-Project cover every real consumer for now?
 
 ## Motivation
 
@@ -395,6 +720,12 @@ search answer *within the project* by default. The graph is derived state —
 rebuilt from recipes, never synced.
 
 ### Project agent context — crew, skills, MCP, steering, workflows
+
+> **Superseded by Revision 2.** Agents, skills and steering reach a Project
+> session through the session's project directory (cwd discovery), not through
+> the bundle; MCP servers are referenced by name and resolved onto the session
+> agent; workflows are deferred. The text below is kept as the original
+> proposal.
 
 `context` in the manifest carries the project's *agent configuration*, so a
 session created from the project starts with the right working setup, on every
