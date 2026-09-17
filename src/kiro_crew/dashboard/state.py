@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from aiohttp import web
 
