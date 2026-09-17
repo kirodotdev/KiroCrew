@@ -44,7 +44,13 @@ def _allocator_owner(path: Path, info: os.stat_result) -> None:
     else:
         sid = platform_compat.current_user_sid()
         try:
-            owned = bool(sid) and windows_acl.describe(path).owner_sid == sid
+            security = windows_acl.describe(path)
+            # Elevated Windows creation defaults to the local Administrators
+            # owner. The same SID on a share belongs to a different machine.
+            owned = bool(sid) and (
+                security.owner_sid == sid
+                or (security.owner_sid == "S-1-5-32-544" and security.volume_is_local)
+            )
         except windows_acl.AclUnavailable as exc:
             raise WorkflowMemoryError("Workflow allocator owner is unavailable") from exc
     if not owned:

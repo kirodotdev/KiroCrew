@@ -316,20 +316,124 @@ def test_lock_inode_stays_fixed_and_new_allocations_create_no_directories():
     assert {entry.name for entry in root.iterdir()} == {".run-id.lock", ".run-id.json"}
 
 
-@pytest.mark.parametrize("sid", [None, "foreign", "current"])
-def test_allocator_windows_owner_is_checked_not_synthesized_uid(monkeypatch, sid):
+@pytest.mark.parametrize(
+    "current_sid,owner_sid,local,accepted",
+    [
+        ("current", "current", True, True),
+        ("current", "current", False, True),
+        ("current", "S-1-5-32-544", True, True),
+        ("current", "S-1-5-32-544", False, False),
+        ("current", "S-1-5-32-544", None, False),
+        ("current", "foreign", True, False),
+        ("current", "foreign", False, False),
+        ("current", "S-1-5-18", True, False),
+        ("current", None, True, False),
+        (None, "current", True, False),
+        (None, "S-1-5-32-544", True, False),
+        ("", "S-1-5-32-544", True, False),
+    ],
+)
+def test_allocator_windows_owner_is_checked_not_synthesized_uid(
+    monkeypatch, current_sid, owner_sid, local, accepted
+):
     from types import SimpleNamespace
 
     import kiro_crew.workflow_memory as wm
 
+    security = SimpleNamespace(owner_sid=owner_sid, volume_is_local=local)
     monkeypatch.setattr(wm.platform_compat, "IS_POSIX", False)
-    monkeypatch.setattr(wm.platform_compat, "current_user_sid", lambda: "current")
-    monkeypatch.setattr(wm.windows_acl, "describe", lambda path: SimpleNamespace(owner_sid=sid))
-    if sid == "current":
+    monkeypatch.setattr(wm.platform_compat, "current_user_sid", lambda: current_sid)
+    monkeypatch.setattr(wm.windows_acl, "describe", lambda path: security)
+    if accepted:
         wm._allocator_owner(Path("unused"), SimpleNamespace(st_uid=0))
     else:
         with pytest.raises(wm.WorkflowMemoryError, match="owner"):
             wm._allocator_owner(Path("unused"), SimpleNamespace(st_uid=0))
+
+
+def test_allocator_windows_unreadable_owner_still_refuses(monkeypatch):
+    from types import SimpleNamespace
+
+    import kiro_crew.workflow_memory as wm
+
+    def unreadable(path):
+        raise wm.windows_acl.AclUnavailable("descriptor unavailable")
+
+    monkeypatch.setattr(wm.platform_compat, "IS_POSIX", False)
+    monkeypatch.setattr(wm.platform_compat, "current_user_sid", lambda: "current")
+    monkeypatch.setattr(wm.windows_acl, "describe", unreadable)
+    with pytest.raises(wm.WorkflowMemoryError, match="owner is unavailable"):
+        wm._allocator_owner(Path("unused"), SimpleNamespace(st_uid=0))
+
+
+@pytest.mark.parametrize("owner,accepted", [(41, True), (0, False), (42, False)])
+def test_allocator_posix_owner_remains_exact(monkeypatch, owner, accepted):
+    from types import SimpleNamespace
+
+    import kiro_crew.workflow_memory as wm
+
+    monkeypatch.setattr(wm.platform_compat, "IS_POSIX", True)
+    monkeypatch.setattr(wm.platform_compat, "local_user_id", lambda: 41)
+    if accepted:
+        wm._allocator_owner(Path("unused"), SimpleNamespace(st_uid=owner))
+    else:
+        with pytest.raises(wm.WorkflowMemoryError, match="owner"):
+            wm._allocator_owner(Path("unused"), SimpleNamespace(st_uid=owner))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="native Windows security descriptors")
+class TestNativeWindowsAllocator:
+    @pytest.fixture(autouse=True)
+    def _windows_restrict_to_owner_stub(self):
+        """Override the suite's no-op DACL fixture only for this native test."""
+        yield
+
+    def test_keeps_owner_and_locks_down_every_object(self):
+        from kiro_crew import platform_compat, windows_acl
+
+        root = _allocator_root()
+        root.mkdir(parents=True)
+        owner_before = windows_acl.describe(root).owner_sid
+        sid = platform_compat.current_user_sid()
+        assert sid
+        assert owner_before in {sid, "S-1-5-32-544"}
+        assert allocate_run_id() == "wf_000001"
+        assert allocate_run_id() == "wf_000002"
+        for path in (root.parent, root, root / ".run-id.lock", root / ".run-id.json"):
+            assert windows_acl.describe(path).owner_sid == owner_before
+            assert windows_acl.owner_only_dacl_matches(
+                path, inherit=path.is_dir(), sids=("S-1-3-4", sid)
+            )
+        assert read_binding("wf_000001") is None
+
+
+@pytest.mark.parametrize("component", ["directory", "lock", "counter"])
+def test_allocator_lockdown_failure_does_not_issue_or_advance(monkeypatch, component):
+    import kiro_crew.workflow_memory as wm
+
+    assert allocate_run_id() == "wf_000001"
+    root = _allocator_root()
+    counter = root / ".run-id.json"
+    before = counter.read_bytes()
+    target = {
+        "directory": root,
+        "lock": root / ".run-id.lock",
+        "counter": counter,
+    }[component]
+    helper = "restrict_dir_to_owner" if component == "directory" else "restrict_to_owner"
+    real_restrict = getattr(wm.platform_compat, helper)
+
+    def refuse(path):
+        if Path(path) == target:
+            raise OSError("injected lockdown failure")
+        return real_restrict(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wm.platform_compat, helper, refuse)
+        with pytest.raises(wm.WorkflowMemoryError, match="I/O failed"):
+            allocate_run_id()
+    assert counter.read_bytes() == before
+    assert allocate_run_id() == "wf_000002"
 
 
 @pytest.mark.parametrize("after_witness", [False, True])

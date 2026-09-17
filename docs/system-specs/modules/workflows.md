@@ -1528,6 +1528,14 @@ The counter is ordinary workflow allocation state and creates no per-run grant
 or reservation registry. Allocation grants no memory or caller permission.
 No legacy V2 identity migration, rollback or retirement path is introduced.
 
+On Windows, allocator objects must belong to the current user or to the local
+Administrators group (`S-1-5-32-544`), the default owner for elevated creation.
+The group exception requires a confirmed local volume: the same SID on a network
+share denotes that server's administrators, not this machine's. An unknown user
+SID, unreadable owner or any other owner still refuses. The existing fail-loud
+owner-only DACL lockdown remains required for both directories and files; no
+ownership is rewritten. POSIX retains its exact-current-UID check.
+
 Saved task-plan execution passes its captured execution context to TaskRunner,
 including calls supplying only `author`. Runtime, worker and reviewer contexts
 retain that record; closing the author cannot select Global for the saved work.
