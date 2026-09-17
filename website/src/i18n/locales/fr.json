@@ -11034,7 +11034,14 @@
           "crew_media_members": "La page Crew Members, avec un membre sélectionné et son panneau d’activité ouvert."
         },
         "crew_members": "Membres de l’équipe",
-        "crew_members_desc": "La page Crew Members : tous vos agents, chacun avec son propre fil. Encore en construction, donc non proposée tant que ceci n’est pas activé."
+        "crew_members_desc": "La page Crew Members : tous vos agents, chacun avec son propre fil. Encore en construction, donc non proposée tant que ceci n’est pas activé.",
+        "decisions": "Décisions (Jev)",
+        "decisions_desc": "Jev est un petit modèle de décision peu coûteux. Dans cette préversion, {{productName}} lui pose une question par oui/non ou à choix unique à trois moments : quelles compétences charger pour votre message, si une compétence tout juste apprise répète une compétence existante, et si le résultat d'une tâche planifiée apporte du nouveau. Uniquement en mode ombre dans cette version : les réponses de Jev ne changent rien à ce que fait {{productName}} ; chacune est écrite dans un journal sur cette machine afin de pouvoir les comparer. Ce commutateur n'est pas enregistré dans le navigateur mais sur la machine qui exécute {{productName}} : il vaut donc sur chaque appareil depuis lequel vous l'ouvrez.",
+        "decisions_egress": "Lorsque c'est activé, le texte de vos messages et les descriptions de vos compétences quittent cette machine. Ils sont envoyés par Internet au service de décision que ce {{productName}} est configuré pour utiliser. Lorsque c'est désactivé, rien n'est envoyé.",
+        "decisions_backend_required": "Le {{productName}} qui exécute ce tableau de bord est plus ancien que ce commutateur : ses réglages n'ont pas encore de section decisions, il n'y a donc rien à activer. Mettez-le à jour d'abord.",
+        "decisions_points": "Chaque vérification ci-dessous indique le mode dans lequel elle tourne.",
+        "decisions_config_unavailable": "Impossible de lire les réglages, ce commutateur n'est donc pas proposé. Rechargez pour réessayer.",
+        "decisions_save_failed": "Impossible d'enregistrer ce réglage. Le commutateur affiche à nouveau la valeur enregistrée."
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",
@@ -13558,7 +13565,7 @@
         "developer_mode": "Mode développeur",
         "developer_tools": "Outils de développement",
         "feature_previews": "Aperçus de fonctionnalités",
-        "feature_previews_desc": "Fonctionnalités et pages non publiées. Les pages restent masquées dans la barre latérale et dans Rechercher partout jusqu’à ce que tu les actives ici ; les interrupteurs eux-mêmes apparaissent bien dans la recherche des paramètres. Valable pour cet appareil uniquement, et inachevées à dessein.",
+        "feature_previews_desc": "Fonctionnalités et pages non publiées. Les pages restent masquées dans la barre latérale et dans Rechercher partout jusqu’à ce que tu les actives ici ; les interrupteurs eux-mêmes apparaissent bien dans la recherche des paramètres. Inachevées à dessein, et valables pour cet appareil uniquement, sauf indication contraire sur une carte.",
         "gateway": "Passerelle",
         "open_developer_page": "Ouvrir la page Développeur",
         "run_a_local_gateway": "Exécuter une passerelle locale",

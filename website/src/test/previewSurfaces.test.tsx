@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom'
 
 // DeveloperPage's tabs are heavy and irrelevant here — the last describe only
@@ -55,6 +56,7 @@ import {
 } from '../utils/previewFlags'
 import { usePreviewFlag, usePreviewFlagRevision } from '../hooks/usePreviewFlag'
 import { createPagesProvider } from '../components/commandPalette/providers/pagesProvider'
+import { api } from '../api/client'
 import { FeaturePreviewsSection, FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from '../pages/settings/FeaturePreviewsSection'
 import DeveloperPage from '../pages/DeveloperPage'
 
@@ -342,8 +344,24 @@ describe('usePreviewFlagRevision', () => {
 })
 
 describe('Settings > Developer > Feature Previews', () => {
+  // One card in this section — Decisions — is backed by `config.json` rather
+  // than a `previewFlags.ts` key, so the section reads `['kirocrewConfig']`.
+  // Stubbed here rather than left to reach the network: every case below is
+  // about the four localStorage previews, and a real read cannot succeed under
+  // vitest. `decisionsCard.test.tsx` owns that card's own states.
+  beforeEach(() => {
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   const renderTab = () =>
-    render(<MemoryRouter><FeaturePreviewsSection /></MemoryRouter>)
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><FeaturePreviewsSection /></MemoryRouter>
+      </QueryClientProvider>,
+    )
 
   /** `aria-checked` via the ATTRIBUTE: the Toggle is a `div role="switch"`, and
    *  the reflected `ariaChecked` DOM property is not populated for one. */
@@ -422,7 +440,7 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(realButtons().map(b => b.textContent?.trim())).toEqual(['Open Webhooks'])
   })
 
-  it('renders the section header and the per-device caveat once, above the cards', () => {
+  it('renders the section header and the section-wide caveat once, above the cards', () => {
     // The caveat used to be the Developer-page tab's description, rendered by
     // SidePanelLayout as the page header. Inside Settings the section has to
     // carry it itself — once, not per card — or the toggles read as released
@@ -443,9 +461,10 @@ describe('Settings > Developer > Feature Previews', () => {
     const anchor = anchors[0]
     expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
     for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
-    // Four, not three: the count is here so a card added outside the anchor
-    // fails rather than silently escaping the ring.
-    expect(screen.getAllByRole('switch')).toHaveLength(4)
+    // Five, not four: the count is here so a card added outside the anchor
+    // fails rather than silently escaping the ring. The fifth is Decisions,
+    // whose switch is backend config — a different write path, the same ring.
+    expect(screen.getAllByRole('switch')).toHaveLength(5)
   })
 
   it('carries a remote-instance-sessions card that starts off and writes only its own key', async () => {

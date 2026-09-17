@@ -1,10 +1,14 @@
 import { useNavigate } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight } from 'lucide-react'
 
+import { api } from '../../api/client'
+import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { DECISIONS_PREVIEW_PATH, readDecisionsPreview } from './decisionsPreview'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -14,9 +18,9 @@ import { i18nT } from '../../i18n/t'
  * Formerly its own tab on the standalone Developer page (`/developer`). It moved
  * here because the switch that HOLDS an unreleased feature belongs next to the
  * switch that REVEALS the developer tooling (Developer Mode, one section up):
- * both are per-device consent gates, and a reader looking for "how do I turn
- * the unfinished thing on" looks in Settings, not on an internals page they
- * first have to unlock. `DeveloperPage.tsx` redirects the old
+ * both are consent gates, and a reader looking for "how do I turn the unfinished
+ * thing on" looks in Settings, not on an internals page they first have to
+ * unlock. `DeveloperPage.tsx` redirects the old
  * `/developer?tab=feature-previews` link here.
  *
  * The USER-FACING copy says "features" and "pages", never "surfaces": `Surface`
@@ -50,11 +54,16 @@ import { i18nT } from '../../i18n/t'
  * page it holds. The PAGE stays un-advertised: `getAdvertisedSurfaces()` and
  * the Search Everywhere Pages provider still filter it until the flag is on.
  *
- * No `configKey` on these toggles, deliberately. That prop names a
- * `config.json` path so `<SettingRef>` chips can deep-link, and preview flags
- * are per-device localStorage keys by design (`previewFlags.ts` explains why
- * they are NOT backend config). Search deep-links still reach each toggle
- * through its registry id + `data-setting-label`, which need no configKey.
+ * No `configKey` on these toggles, deliberately — INCLUDING the one whose value
+ * really is a `config.json` path (Decisions, below). That prop is what makes a
+ * `<SettingRef>` chip deep-link here, and it also feeds
+ * `settingsRegistry.gen.ts`, whose every `configKey` is asserted to exist in the
+ * backend `SCHEMA_REGISTRY` (`test/test_settingref_schema_fixture.py`). A
+ * frontend that ships before the schema entry does would fail that guard, which
+ * is precisely the split this file has to survive. The four `previewFlags.ts`
+ * toggles have no path to name at all. Search deep-links still reach every
+ * toggle through its registry id + `data-setting-label`, which need no
+ * configKey.
  *
  * Each card may also carry a "See what it looks like" button (`FeaturePreviewIntroButton`)
  * opening a dialog with a REAL capture of the surface the flag reveals, a
@@ -102,6 +111,137 @@ function crewIntro(): FeaturePreviewIntro {
       },
     ],
   }
+}
+
+/** ids of the notes this card points its switch at via `aria-describedby`. */
+const DECISIONS_BACKEND_NOTE_ID = 'decisions-preview-backend-note'
+const DECISIONS_EGRESS_NOTE_ID = 'decisions-preview-egress-note'
+
+/**
+ * Decisions (Jev): the one card here whose switch is BACKEND config.
+ *
+ * The other four previews are `previewFlags.ts` keys — per-device localStorage,
+ * because what they hold is a page this browser either draws or does not. What
+ * this one holds is a gate that will run in the GATEWAY, which cannot read this
+ * browser's localStorage — so the value has to live in `config.json`, and the
+ * switch writes it through the same `PATCH /api/config/kirocrew` route the
+ * Privacy panel's telemetry switch uses. Sharing the `['kirocrewConfig']` cache
+ * entry with every other config reader is what keeps this switch from disagreeing
+ * with the file about its own state.
+ *
+ * NOTHING READS `decisions.preview` YET, and that is the honest state of it: the
+ * gate, the config section and the schema entry all arrive in a separate backend
+ * PR. Stated here rather than implied because the alternative is a comment that
+ * names a module in the present tense before it exists.
+ *
+ * Which means EVERY gateway answers the config GET with no `decisions` section
+ * today, and would refuse the PATCH as a non-editable field. The switch therefore
+ * renders DISABLED with the reason next to it rather than offering a write that
+ * comes back 400 — the same stance the telemetry switch takes when an env var or
+ * an overlay is what decides. When the backend lands, this toggle gains
+ * `configKey={DECISIONS_PREVIEW_PATH}` and the cross-layer fixture guard
+ * (`test/test_settingref_schema_fixture.py`) starts holding the two halves
+ * together. That is tracked as issue #11510 — the guard being ENGAGED is the
+ * deliverable there, not the prop.
+ *
+ * The point rows are read-only on purpose. Which arm a point is on is an
+ * experiment setting (`off` / `shadow` / `live`), not a preference: a reader here
+ * is deciding whether to let the preview run at all, and offering three more
+ * switches would imply this release can act on what the model answers. It
+ * cannot — this release logs and discards.
+ *
+ * NO "See what it looks like" button, and that is the missing-capture rule the
+ * "Chat on a crew" card below states, not an omission: this preview draws no
+ * surface at all. Everything it produces is a line in a log file.
+ */
+function DecisionsPreviewCard() {
+  const qc = useQueryClient()
+  const configQ = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
+  const view = readDecisionsPreview(configQ.data)
+  const mut = useMutation({
+    mutationFn: (value: boolean) => api.patchConfig(DECISIONS_PREVIEW_PATH, value),
+    // Refetch rather than trusting the value just sent: the server owns the
+    // effective verdict, and only it knows whether an overlay shadowed the write.
+    //
+    // RETURNED, not just started: react-query holds a mutation pending only while
+    // `onSettled` has an unresolved promise outstanding. Dropping the return let
+    // `isPending` clear the instant the PATCH resolved, which re-enabled the
+    // switch for as long as the refetch took — while `checked` still read the
+    // pre-flip value. The flip looked like it had not taken, and a second click
+    // wrote the same value again.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+  // "Old gateway" and "could not read the config" are different facts and must
+  // not share a sentence: the first is a state the user fixes by updating, the
+  // second by retrying. Only the first is knowable from a config that WAS read.
+  const backendMissing = configQ.isSuccess && !view.supported
+  const describedBy =
+    [backendMissing ? DECISIONS_BACKEND_NOTE_ID : '', DECISIONS_EGRESS_NOTE_ID]
+      .filter(Boolean)
+      .join(' ')
+
+  return (
+    <SettingsCard>
+      <SettingsToggle
+        label={i18nT('pages.developer.featurePreviewsTab.decisions')}
+        description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
+        checked={view.preview}
+        onChange={v => mut.mutate(v)}
+        // A config that has not been read, or could not be, is no basis for
+        // offering a write against the value it holds.
+        disabled={configQ.isLoading || configQ.isError || !view.supported || mut.isPending}
+        describedBy={describedBy}
+      />
+      {/* The egress fact carries body weight, not muted fine print: it is what a
+          reader is actually consenting to, and it stays outside the row so a
+          disabled switch does not dim its own explanation. */}
+      <p id={DECISIONS_EGRESS_NOTE_ID} className="text-[12px] text-text">
+        {i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
+      </p>
+      {backendMissing && (
+        <p id={DECISIONS_BACKEND_NOTE_ID} className="text-[12px] text-muted">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_backend_required')}
+        </p>
+      )}
+      {/* Nothing on this card is a draft, so the hand-off to the agent is on. */}
+      {configQ.isError && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_config_unavailable')}
+        />
+      )}
+      {mut.isError && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_save_failed')}
+        />
+      )}
+      {/* Only rendered for points the config actually exposes: a row invented for
+          a point the gateway does not carry would describe an arm nothing is on. */}
+      {view.arms.length > 0 && (
+        <div className="pt-1">
+          <div className="text-[12px] text-muted mb-1">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_points')}
+          </div>
+          <ul className="list-none p-0 m-0 flex flex-col gap-1">
+            {view.arms.map(({ point, arm }) => (
+              // The point name and the arm are config vocabulary, printed
+              // verbatim in mono rather than translated: they are the strings a
+              // reader types into `config.json` or greps the log for.
+              <li key={point} className="flex items-center justify-between text-[12px]">
+                <span className="font-mono text-text">{point}</span>
+                <span className="font-mono text-muted">{arm}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </SettingsCard>
+  )
 }
 
 /**
@@ -245,6 +385,10 @@ export function FeaturePreviewsSection() {
           onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
         />
       </SettingsCard>
+      {/* LAST, and the only card here whose switch is not a per-device flag: it
+          writes `decisions.preview` in `config.json`. Its own doc comment carries
+          why, and why its point rows are read-only. */}
+      <DecisionsPreviewCard />
     </SettingsSection>
     </div>
   )

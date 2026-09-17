@@ -10877,7 +10877,14 @@
           "crew_media_members": "Die Seite Crew Members mit einem ausgewählten Mitglied und geöffnetem Aktivitätsbereich."
         },
         "crew_members": "Crew-Mitglieder",
-        "crew_members_desc": "Die Seite Crew Members: alle deine Agenten, jeder mit eigenem Thread. Noch im Aufbau, daher erst verfügbar, wenn du das hier einschaltest."
+        "crew_members_desc": "Die Seite Crew Members: alle deine Agenten, jeder mit eigenem Thread. Noch im Aufbau, daher erst verfügbar, wenn du das hier einschaltest.",
+        "decisions": "Entscheidungen (Jev)",
+        "decisions_desc": "Jev ist ein kleines, günstiges Entscheidungsmodell. In dieser Vorschau fragt {{productName}} es an drei Stellen etwas mit Ja/Nein oder einer Auswahl: welche Skills für deine Nachricht geladen werden, ob ein neu gelernter Skill einen vorhandenen wiederholt und ob das Ergebnis eines geplanten Jobs etwas Neues aussagt. In dieser Version nur im Schattenbetrieb – Jevs Antworten ändern nichts an dem, was {{productName}} tut; jede Antwort wird in ein Protokoll auf diesem Rechner geschrieben, damit sich beides vergleichen lässt. Dieser Schalter wird nicht im Browser gespeichert, sondern auf dem Rechner, der {{productName}} ausführt – er gilt also auf jedem Gerät, von dem aus du es öffnest.",
+        "decisions_egress": "Solange dies an ist, verlassen der Text deiner Nachrichten und die Beschreibungen deiner Skills diesen Rechner. Über das Internet gehen sie an den Entscheidungsdienst, den dieses {{productName}} verwenden soll. Solange es aus ist, wird nichts gesendet.",
+        "decisions_backend_required": "Das {{productName}}, das dieses Dashboard ausführt, ist älter als dieser Schalter: In seinen Einstellungen fehlt der Abschnitt decisions, es gibt also noch nichts einzuschalten. Aktualisiere es zuerst.",
+        "decisions_points": "Jede Prüfung unten zeigt den Modus, in dem sie läuft.",
+        "decisions_config_unavailable": "Die Einstellungen konnten nicht gelesen werden, daher wird dieser Schalter nicht angeboten. Neu laden und erneut versuchen.",
+        "decisions_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Der Schalter zeigt wieder den gespeicherten Wert."
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",
@@ -13374,7 +13381,7 @@
         "developer_mode": "Entwicklermodus",
         "developer_tools": "Entwicklerwerkzeuge",
         "feature_previews": "Funktionsvorschauen",
-        "feature_previews_desc": "Nicht veröffentlichte Funktionen und Seiten. Die Seiten erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst; die Schalter selbst findet die Einstellungssuche aber. Gilt nur für dieses Gerät, und sie sind absichtlich unfertig.",
+        "feature_previews_desc": "Nicht veröffentlichte Funktionen und Seiten. Die Seiten erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst; die Schalter selbst findet die Einstellungssuche aber. Sie sind absichtlich unfertig und gelten nur für dieses Gerät, sofern eine Karte nichts anderes sagt.",
         "gateway": "Gateway",
         "open_developer_page": "Entwicklerseite öffnen",
         "run_a_local_gateway": "Lokales Gateway ausführen",

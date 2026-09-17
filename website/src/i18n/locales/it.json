@@ -11034,7 +11034,14 @@
           "crew_media_members": "La pagina Crew Members con un membro selezionato e il suo pannello attività aperto."
         },
         "crew_members": "Membri della crew",
-        "crew_members_desc": "La pagina Crew Members: tutti i tuoi agenti, ognuno con il proprio thread. Ancora in costruzione, quindi non viene offerta finché non attivi questo."
+        "crew_members_desc": "La pagina Crew Members: tutti i tuoi agenti, ognuno con il proprio thread. Ancora in costruzione, quindi non viene offerta finché non attivi questo.",
+        "decisions": "Decisioni (Jev)",
+        "decisions_desc": "Jev è un modello di decisione piccolo ed economico. In questa anteprima {{productName}} gli pone una domanda sì/no o a scelta singola in tre momenti: quali skill caricare per il tuo messaggio, se una skill appena appresa ripete una già presente e se il risultato di un job pianificato dice qualcosa di nuovo. In questa versione solo in ombra: le risposte di Jev non cambiano ciò che fa {{productName}}; ognuna viene scritta in un log su questa macchina per poterle confrontare. Questo interruttore non viene salvato nel browser ma sulla macchina che esegue {{productName}}, quindi vale su ogni dispositivo da cui lo apri.",
+        "decisions_egress": "Mentre è attivo, il testo dei tuoi messaggi e le descrizioni delle tue skill lasciano questa macchina. Vengono inviati via Internet al servizio di decisione che questo {{productName}} è configurato per usare. Mentre è disattivato non viene inviato nulla.",
+        "decisions_backend_required": "Il {{productName}} che esegue questa dashboard è più vecchio di questo interruttore: nelle sue impostazioni non c'è ancora una sezione decisions, quindi non c'è nulla da attivare. Aggiornalo prima.",
+        "decisions_points": "Ogni controllo qui sotto mostra la modalità in cui è in esecuzione.",
+        "decisions_config_unavailable": "Non è stato possibile leggere le impostazioni, quindi questo interruttore non viene offerto. Ricarica per riprovare.",
+        "decisions_save_failed": "Non è stato possibile salvare questa impostazione. L'interruttore mostra di nuovo il valore salvato."
       },
       "kiroSignInCard": {
         "title": "Accesso a Kiro",
@@ -13557,7 +13564,7 @@
         "developer_mode": "Modalità sviluppatore",
         "developer_tools": "Strumenti per sviluppatori",
         "feature_previews": "Anteprime delle funzionalità",
-        "feature_previews_desc": "Funzionalità e pagine non rilasciate. Le pagine restano nascoste dalla barra laterale e da Cerca in tutto finché non le attivi qui; gli interruttori stessi compaiono invece nella ricerca delle impostazioni. Valgono solo per questo dispositivo e sono incomplete di proposito.",
+        "feature_previews_desc": "Funzionalità e pagine non rilasciate. Le pagine restano nascoste dalla barra laterale e da Cerca in tutto finché non le attivi qui; gli interruttori stessi compaiono invece nella ricerca delle impostazioni. Sono incomplete di proposito e valgono solo per questo dispositivo, a meno che una scheda non dica il contrario.",
         "gateway": "Gateway",
         "open_developer_page": "Apri la pagina Sviluppatore",
         "run_a_local_gateway": "Esegui un gateway locale",

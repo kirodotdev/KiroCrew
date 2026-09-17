@@ -11,25 +11,39 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { DeveloperPanel } from '../pages/settings/DeveloperPanel'
+import { api } from '../api/client'
 
 function LocationProbe() {
   const loc = useLocation()
   return <div data-testid="loc">{loc.pathname}</div>
 }
 
+// The Feature Previews section this panel mounts carries one card whose switch is
+// backend config (Decisions), so the panel now reads the shared
+// `['kirocrewConfig']` cache and needs a provider. `retry: false` keeps the
+// stubbed read from being retried after a test ends.
 function renderPanel() {
   return render(
-    <MemoryRouter initialEntries={['/settings?tab=developer']}>
-      <DeveloperPanel />
-      <LocationProbe />
-    </MemoryRouter>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={['/settings?tab=developer']}>
+        <DeveloperPanel />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>
   )
 }
 
 describe('DeveloperPanel', () => {
-  beforeEach(() => { localStorage.removeItem('mc-dev-mode') })
+  beforeEach(() => {
+    localStorage.removeItem('mc-dev-mode')
+    // Stubbed rather than left to reach the network: every case here is about the
+    // panel's own sections, and a real config read cannot succeed under vitest.
+    // `decisionsCard.test.tsx` owns that card's states.
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+  })
 
   it('renders the Developer Mode toggle and no Updates section', () => {
     renderPanel()
@@ -66,7 +80,7 @@ describe('DeveloperPanel', () => {
     // has not unlocked the Developer page must still find the opt-ins.
     beforeEach(() => { localStorage.removeItem('mc-preview-webhooks') })
 
-    it('renders the three preview toggles with Developer Mode off', () => {
+    it('renders the preview toggles with Developer Mode off', () => {
       renderPanel()
       expect(screen.getByRole('heading', { name: 'Feature Previews' })).toBeInTheDocument()
       expect(screen.getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'false')

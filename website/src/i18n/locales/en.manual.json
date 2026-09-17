@@ -5423,7 +5423,7 @@
       },
       "developerPanel": {
         "feature_previews": "Feature Previews",
-        "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Per-device, and unpolished on purpose."
+        "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose, and per-device unless a card says otherwise."
       },
       "computerUsePanel": {
         "computer_use_lets_the_agent_read_any_app_window": "Computer use lets the agent read any app window and send clicks and keystrokes into it. Most clicks are delivered straight to the app and leave your pointer alone, but the agent can ask to move the real pointer when a target needs it. Password fields are never read; nothing else limits which apps it may drive.",
@@ -6331,7 +6331,14 @@
           "crew_media_members": "The Crew Members page, with one member selected and its activity panel open."
         },
         "crew_members": "Crew Members",
-        "crew_members_desc": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
+        "crew_members_desc": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
+        "decisions": "Decisions (Jev)",
+        "decisions_desc": "Jev is a small, cheap decision model. This preview lets {{productName}} ask it one yes-or-no or pick-one question at three moments: which skills to load for your message, whether a skill it has just learned repeats one you already have, and whether a scheduled job's result says anything new. Shadow-only in this release — nothing Jev answers changes what {{productName}} does; each answer is written to a log on this machine so the two can be compared. This switch is saved on the machine that runs {{productName}}, not in this browser, so it applies on every device you open it from.",
+        "decisions_egress": "While this is on, the text of your messages and the descriptions of your skills leave this machine. They are sent over the internet to the decision service this {{productName}} is set up to use. Nothing is sent while this is off.",
+        "decisions_backend_required": "The {{productName}} running this dashboard is older than this switch: its settings have no decisions section yet, so there is nothing to turn on. Update it first.",
+        "decisions_points": "Each check below shows the mode it runs in.",
+        "decisions_config_unavailable": "Could not read the settings, so this switch is not offered. Reload to try again.",
+        "decisions_save_failed": "Could not save this setting. The switch is showing the saved value again."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

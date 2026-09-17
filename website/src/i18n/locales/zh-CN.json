@@ -10720,7 +10720,14 @@
           "crew_media_members": "Crew Members 页面，选中了一个成员并打开了它的活动面板。"
         },
         "crew_members": "团队成员",
-        "crew_members_desc": "团队成员（Crew Members）页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。"
+        "crew_members_desc": "团队成员（Crew Members）页面：列出你拥有的每个代理，各有自己的话题。仍在建设中，开启后才会提供。",
+        "decisions": "决策（Jev）",
+        "decisions_desc": "Jev 是一个小而便宜的决策模型。这个预览让 {{productName}} 在三个时刻先问它一个是非题或单选题：为你这条消息加载哪些技能、刚学到的技能是否和已有技能重复、定时任务结果里是否有新信息。本版本只做影子运行——Jev 的回答不改变 {{productName}} 的行为，每条回答写入本机日志，供事后对比。这个开关保存在运行 {{productName}} 的机器上，不在浏览器里，所以你在任何设备上打开都生效。",
+        "decisions_egress": "开启后，你的消息文本和技能描述会离开本机，通过互联网发送到这台 {{productName}} 配置使用的决策服务。关闭时不发送任何内容。",
+        "decisions_backend_required": "运行这个面板的 {{productName}} 比开关本身旧：设置里还没有 decisions 段，因此暂时无法开启。请先更新。",
+        "decisions_points": "下面每一项都显示它运行的模式。",
+        "decisions_config_unavailable": "无法读取设置，因此不提供此开关。请重新加载后再试。",
+        "decisions_save_failed": "无法保存此设置。开关已恢复为已保存的值。"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",
@@ -13191,7 +13198,7 @@
         "developer_mode": "开发者模式",
         "developer_tools": "开发者工具",
         "feature_previews": "功能预览",
-        "feature_previews_desc": "尚未发布的功能和页面。在此开启之前，这些页面不会出现在侧边栏和全局搜索中；下面的开关本身则可以通过设置搜索找到。设置仅对本设备生效，且这些内容有意保留未完善的状态。",
+        "feature_previews_desc": "尚未发布的功能和页面。在此开启之前，这些页面不会出现在侧边栏和全局搜索中；下面的开关本身则可以通过设置搜索找到。这些内容有意保留未完善的状态；除卡片另有说明外，开关仅对本设备生效。",
         "gateway": "网关",
         "open_developer_page": "打开开发者页面",
         "run_a_local_gateway": "运行本地网关",

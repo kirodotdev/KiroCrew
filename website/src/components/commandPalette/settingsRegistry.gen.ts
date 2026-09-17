@@ -1375,6 +1375,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.decisions-jev",
+    "label": "Decisions (Jev)",
+    "labelKey": "pages.developer.featurePreviewsTab.decisions",
+    "description": "Jev is a small, cheap decision model. This preview lets Kiro Crew ask it one yes-or-no or pick-one question at three moments: which skills to load for your message, whether a skill it has just learned repeats one you already have, and whether a scheduled job's result says anything new. Shadow-only in this release — nothing Jev answers changes what Kiro Crew does; each answer is written to a log on this machine so the two can be compared. This switch is saved on the machine that runs Kiro Crew, not in this browser, so it applies on every device you open it from.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.developer-mode",
     "label": "Developer Mode",
     "labelKey": "pages.settings.developerPanel.developer_mode",
