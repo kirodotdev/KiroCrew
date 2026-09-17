@@ -42,6 +42,7 @@ from kiro_crew.cloud.fargate_engine import (
     plan_teardown,
 )
 from kiro_crew.cloud.launch_job import LaunchEngine, SigninHandle
+from kiro_crew.cloud.login_target import KiroLoginTarget
 
 TAG = "kc-a1b2c3"
 ARN = "arn:aws:ecs:us-west-2:111122223333:task/crews/1111111111111111"
@@ -123,11 +124,11 @@ def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
 def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     """The handle carries every member ``SigninHandle`` declares, attributes included.
 
-    ``SigninHandle`` declares four ATTRIBUTES (``already_logged_in``, ``url``,
-    ``code``, ``ports``) beside its two methods, and ``run_launch`` reads
-    ``handle.already_logged_in`` unconditionally before anything else. A check
-    written against the Protocol's ``def`` lines alone would pass a handle with
-    no attributes at all, and that handle raises ``AttributeError`` on every
+    ``SigninHandle`` declares five ATTRIBUTES (``already_logged_in``, ``url``,
+    ``code``, ``ports``, ``error``) beside its two methods, and ``run_launch``
+    reads ``handle.already_logged_in`` unconditionally before anything else. A
+    check written against the Protocol's ``def`` lines alone would pass a handle
+    with no attributes at all, and that handle raises ``AttributeError`` on every
     launch. So the member set is taken from the Protocol's annotations AND its
     functions, and each one must resolve on a real handle.
 
@@ -138,7 +139,7 @@ def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     handle = FargateSigninHandle(task_arn=ARN)
     attributes = set(typing.get_type_hints(SigninHandle))
     methods = {n for n, _ in inspect.getmembers(SigninHandle, inspect.isfunction) if n[0] != "_"}
-    assert attributes == {"already_logged_in", "url", "code", "ports"}
+    assert attributes == {"already_logged_in", "url", "code", "ports", "error"}
     assert methods == {"wait", "close"}
     for name in attributes | methods:
         assert hasattr(handle, name), f"FargateSigninHandle is missing {name}"
@@ -157,6 +158,37 @@ def test_signin_handle_reports_already_signed_in_with_no_prompt() -> None:
     assert handle.url == ""
     assert handle.code == ""
     assert handle.ports == []
+
+
+def test_signin_target_refuses_non_default_identity() -> None:
+    """Protocol parity must not turn an unsupported identity target into success."""
+    engine = FargateLaunchEngine()
+    none_target = engine.begin_signin(
+        instance_id=ARN, profile="p", region="us-west-2", login_target=None
+    )
+    default_target = engine.begin_signin(
+        instance_id=ARN,
+        profile="p",
+        region="us-west-2",
+        login_target=KiroLoginTarget(),
+    )
+    non_default_target = engine.begin_signin(
+        instance_id=ARN,
+        profile="p",
+        region="us-west-2",
+        login_target=KiroLoginTarget.from_fields(
+            license="pro",
+            start_url="https://example.awsapps.com/start",
+            region="us-west-2",
+        ),
+    )
+
+    assert none_target.error == ""
+    assert default_target.error == ""
+    assert non_default_target.error == (
+        "The Fargate launch engine does not yet pin a Kiro identity."
+    )
+    assert non_default_target.already_logged_in is True
 
 
 def test_signin_completes_without_waiting() -> None:

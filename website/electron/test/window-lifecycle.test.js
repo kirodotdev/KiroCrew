@@ -266,16 +266,16 @@ describe("local gateway ownership policy", () => {
 });
 
 describe("window lifecycle source contracts", () => {
-  it("tears command/control owners down before closing dashboard contents", () => {
-    const setupStart = SOURCE.indexOf("function setupWindowContents");
-    const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
+  it("force-close cleanup tears command/control owners down before their pages", () => {
+    const setupStart = SOURCE.indexOf("function setupWindowClose");
+    const setupEnd = SOURCE.indexOf("function showMainWindow", setupStart);
     assert.notEqual(setupStart, -1);
     assert.notEqual(setupEnd, -1);
     const setup = SOURCE.slice(setupStart, setupEnd);
 
-    const stop = setup.indexOf("void win._mcAgentChannel.stop()");
+    const stop = setup.indexOf("win._mcAgentChannel.stop()");
     const destroyPanels = setup.indexOf("win._mcDestroyBrowserPanel(id)");
-    const closeDashboard = setup.indexOf("view.webContents.close()");
+    const closeDashboard = setup.indexOf("contents.close()");
     assert.ok(stop !== -1, "agent command channel cleanup missing");
     assert.ok(destroyPanels !== -1, "browser panel cleanup missing");
     assert.ok(closeDashboard !== -1, "dashboard WebContents cleanup missing");

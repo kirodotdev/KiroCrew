@@ -195,7 +195,7 @@ export function toShortcutDef(entry: ShortcutEntry, platform: ShortcutPlatform =
   const def = shortcutDefFromChord(entry, chord)
   const aliases = entry.aliases?.[platform]
   if (aliases && aliases.length > 0) def.aliases = aliases
-  if (entry.browserReserved) def.browserReserved = true
+  if (entry.browserReserved && chord.mod) def.browserReserved = true
   return def
 }
 
@@ -647,7 +647,7 @@ export function resolveShortcutDef(id: string, overrides: ShortcutOverrides = lo
   if (!r?.primary) return null
   const def = shortcutDefFromChord(entry, r.primary)
   if (r.aliases.length > 0) def.aliases = r.aliases
-  if (entry.browserReserved) def.browserReserved = true
+  if (entry.browserReserved && r.primary.mod) def.browserReserved = true
   return def
 }
 
@@ -995,16 +995,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         'focus-input': () => queryComposerOrExpand(ta => ta.focus()),
         // ⌘N / Ctrl+N (alias Option/Alt+Shift+N): new session.
         'new-chat': () => onNewChat(),
-        // ⌘W / Ctrl+W (alias Option/Alt+Shift+W): close the current session —
-        // same semantics as the header-menu close (gated by confirmCloseSession,
-        // dispatches deleteSlot). One addition for the NEW chord surface: a
-        // session that is not IDLE always confirms. ⌘W/Ctrl+W is the most
-        // habitual chord there is (it closed the WINDOW in the previous desktop
-        // release on Windows/Linux), and `confirmCloseSession` defaults off — a
-        // default calibrated for the hard-to-mispress ⌥⇧W. An idle session is
-        // losslessly reopenable from the sidebar's older-sessions list, so it
-        // keeps the user's confirm setting; anything else is where a stray
-        // keystroke costs work, so it asks.
+        // Option+Shift+W on macOS, Ctrl+W or Alt+Shift+W elsewhere: close the
+        // session through deleteSlot, as the header menu does. A primary-modifier
+        // chord always confirms before closing a non-idle session because an
+        // accidental press could stop ongoing work. Idle sessions can be reopened
+        // from history and follow the user's confirmCloseSession preference.
         //
         // "Not idle" is the sidebar's own lane inference, not `slot.running`: that
         // flag covers only the slot's own turn and reads FALSE between the cycles

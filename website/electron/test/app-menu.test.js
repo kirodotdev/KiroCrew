@@ -141,10 +141,17 @@ test("win/linux: Window menu is written out with Close on Ctrl+Shift+W", () => {
   assert.strictEqual(win.submenu[2].accelerator, "Ctrl+Shift+W");
 });
 
-test("mac: Window menu keeps the stock role (no Close entry, so Cmd+W reaches the page)", () => {
+test("mac: Window menu closes the focused window on Cmd+W and keeps native window actions", () => {
   const { deps } = makeDeps({ isMac: true });
   const win = buildMenuTemplate(deps).find((i) => i.id === "window-menu");
   assert.strictEqual(win.role, "windowMenu");
+  const close = findItem([win], (i) => i.role === "close");
+  assert.ok(close, "native Close command present");
+  assert.strictEqual(close.accelerator, "Cmd+W");
+  assert.strictEqual(close.click, undefined, "Electron owns the focused-window close");
+  for (const role of ["minimize", "zoom", "front"]) {
+    assert.ok(findItem([win], (i) => i.role === role), `${role} remains available`);
+  }
 });
 
 // ── shared structure (both platforms) ──
@@ -162,13 +169,14 @@ for (const isMac of [true, false]) {
     }
   });
 
-  // Cmd/Ctrl+N is "new session" and Cmd/Ctrl+W "close session" in the renderer
-  // (src/lib/shortcutRegistry.ts, #4608). A menu accelerator on either would take
-  // the keystroke before the page saw it, so the menu must leave both unclaimed.
-  test(`${os}: no menu item claims CmdOrCtrl+N or CmdOrCtrl+W`, () => {
+  // New-session chords belong to the renderer on every platform. Ctrl+W also
+  // belongs to it on Windows/Linux; macOS reserves Cmd+W for native window close.
+  test(`${os}: menu leaves renderer session shortcuts unclaimed`, () => {
     const { deps } = makeDeps({ isMac });
     const template = buildMenuTemplate(deps);
-    for (const acc of ["CmdOrCtrl+N", "Cmd+N", "Ctrl+N", "CmdOrCtrl+W", "Cmd+W", "Ctrl+W"]) {
+    const unclaimed = ["CmdOrCtrl+N", "Cmd+N", "Ctrl+N"];
+    if (!isMac) unclaimed.push("CmdOrCtrl+W", "Cmd+W", "Ctrl+W");
+    for (const acc of unclaimed) {
       assert.strictEqual(findItem(template, (i) => i.accelerator === acc), null, `${acc} unclaimed`);
     }
   });

@@ -27,10 +27,10 @@ import { safeGetItem } from '../utils/safeStorage'
  * chord that moved keeps the old Option/Alt chord as an ALIAS for one release, so
  * nobody's hands break; aliases render muted in the modal.
  *
- * `browserReserved` marks chords a browser never delivers to the page (⌘N/Ctrl+N,
- * ⌘W/Ctrl+W: new window, close tab). Only the desktop shell can honour them —
- * `electron/app-menu.js` leaves them unclaimed so the keydown reaches the
- * renderer — and a browser host advertises the alias first instead.
+ * `browserReserved` marks primary-modifier chords a browser never delivers to
+ * the page (⌘N/Ctrl+N and Ctrl+W). The desktop shell leaves those unclaimed so
+ * the renderer can handle them; browser hosts advertise the alias first.
+ * macOS reserves ⌘W for native window close, so session close uses ⌥⇧W.
  *
  * User overrides ({@link loadShortcutOverrides}) are the #4488 panel-toggle
  * pattern generalized: localStorage holds OVERRIDES only, `null` is a deliberate
@@ -97,7 +97,7 @@ export interface ShortcutEntry {
   aliases?: Readonly<Partial<Record<ShortcutPlatform, readonly Chord[]>>>
   /** See the module doc: `registry` is matched here; `code` is matched by the handler. */
   dispatch: ShortcutDispatch
-  /** Browsers never deliver this chord to the page; only the desktop shell can. */
+  /** The primary-modifier chord is browser-reserved; an Option/Alt default is not. */
   browserReserved?: boolean
   /**
    * Interpolation count for an indexed label — the N in "Jump to chat {{n}}". Set
@@ -151,11 +151,12 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // window on it, so there the alias is the working chord.
   { id: 'new-chat', group: 'actions', dispatch: 'registry', browserReserved: true,
     defaults: both({ key: 'n', mod: true }), aliases: alias({ key: 'n', alt: true, shift: true }) },
-  // ⌘W / Ctrl+W — close session (the tab-close convention). Was ⌥⇧W; alias.
-  // Browser-reserved: closes the tab. On Windows/Linux the desktop shell moves
-  // its window-close role to Ctrl+Shift+W so this reaches the renderer.
+  // macOS keeps ⌘W for native window close and uses ⌥⇧W for session close.
+  // Windows/Linux reserve Ctrl+Shift+W for window close, leaving Ctrl+W to the
+  // renderer. Browsers claim Ctrl+W themselves, so Alt+Shift+W stays an alias.
   { id: 'close-chat', group: 'actions', dispatch: 'registry', browserReserved: true,
-    defaults: both({ key: 'w', mod: true }), aliases: alias({ key: 'w', alt: true, shift: true }) },
+    defaults: mac({ key: 'w', alt: true, shift: true }, { key: 'w', mod: true }),
+    aliases: { other: [{ key: 'w', alt: true, shift: true }] } },
   // ⌘/ / Ctrl+/ — the shortcuts reference (Slack, Notion, Linear, GitHub). Was
   // ⌥K; alias. Both fire even while shortcuts are globally disabled, so the user
   // can always reach the toggle that re-enables them.

@@ -201,7 +201,10 @@ def test_a_session_ledger_may_cite_a_crew_segment_too():
     _crew()
     session = _session()
     entry = session.append(
-        "turn/started", {"turn": 1}, src="gateway", ref=Ref(lg.KIND_CREW, CREW, 1)
+        "turn/started",
+        {"turn": 1, "actor": "user", "depth": 0},
+        src="gateway",
+        ref=Ref(lg.KIND_CREW, CREW, 1),
     )
     assert entry.ref is not None and entry.ref.unit == lg.KIND_CREW
 

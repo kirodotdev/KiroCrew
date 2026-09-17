@@ -222,7 +222,7 @@ function createWindowLifecycle(options) {
   // to dark/light also overrides prefers-color-scheme in renderers; feeding the
   // resolved value back would freeze the dashboard's Auto mode.
   function syncNativeTheme(view, win) {
-    if (win.isDestroyed()) return;
+    if (win.isDestroyed() || !view.webContents || view.webContents.isDestroyed()) return;
     view.webContents.executeJavaScript(
       `JSON.stringify({`
         + `pref: document.documentElement.dataset.modePref || "",`
@@ -299,7 +299,7 @@ function createWindowLifecycle(options) {
 
   function syncLinuxMaximizeState(win, view) {
     const push = () => {
-      if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+      if (win.isDestroyed() || !view.webContents || view.webContents.isDestroyed()) return;
       const maxed = win.isMaximized();
       view.webContents.executeJavaScript(`
         {
@@ -373,16 +373,7 @@ function createWindowLifecycle(options) {
       log: glog,
     });
 
-    // Teardown order is load-bearing: no command poller or CDP owner may outlive
-    // the page it targets. Close the dashboard WebContents only after releasing
-    // every embedded panel.
-    win.on("closed", () => {
-      if (win._mcAgentChannel) void win._mcAgentChannel.stop();
-      if (win._mcBrowserPanels) {
-        for (const id of [...win._mcBrowserPanels.keys()]) win._mcDestroyBrowserPanel(id);
-      }
-      view.webContents.close();
-    });
+    const isWindowClosing = setupWindowClose(win, view.webContents);
 
     function updateViewBounds() {
       if (win.isDestroyed()) return;
@@ -399,7 +390,7 @@ function createWindowLifecycle(options) {
     win.on("resize", updateViewBounds);
 
     const sendFullScreen = () => {
-      if (win.isDestroyed() || view.webContents.isDestroyed()) return;
+      if (win.isDestroyed() || !view.webContents || view.webContents.isDestroyed()) return;
       view.webContents.send("fullscreen-changed", win.isFullScreen());
     };
 
@@ -490,17 +481,24 @@ function createWindowLifecycle(options) {
 
       const entry = { id, agentAct: false };
       entry.manager = createBrowserViewManager({
-        createView: () => new WebContentsView({
-          webPreferences: {
-            // Persistent for ordinary browser logins, but isolated from the
-            // dashboard's host-scoped mc_token_<port> cookie jar.
-            partition: BROWSER_PARTITION,
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
-            webviewTag: false,
-          },
-        }),
+        createView: () => {
+          // A page created during a dashboard-only unload would miss the
+          // window's confirmation. Existing pages and their owners stay live.
+          if (isWindowClosing()) {
+            throw new Error("Cannot open a browser page while closing this window");
+          }
+          return new WebContentsView({
+            webPreferences: {
+              // Persistent for ordinary browser logins, but isolated from the
+              // dashboard's host-scoped mc_token_<port> cookie jar.
+              partition: BROWSER_PARTITION,
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: true,
+              webviewTag: false,
+            },
+          });
+        },
         getContentBounds: () => win.getContentBounds(),
         addView: (child) => win.contentView.addChildView(child),
         removeView: (child) => win.contentView.removeChildView(child),
@@ -522,7 +520,7 @@ function createWindowLifecycle(options) {
             }
             return;
           }
-          if (!view.webContents.isDestroyed()) {
+          if (!win.isDestroyed() && view.webContents && !view.webContents.isDestroyed()) {
             view.webContents.send(
               `browser:${name}`,
               { ...(payload || {}), panelId: id },
@@ -1063,6 +1061,82 @@ function createWindowLifecycle(options) {
     });
 
     return mainWindow;
+  }
+
+  function setupWindowClose(win, contents) {
+    // Retain the contents reference: WebContentsView drops it at destruction.
+    // Stop command polling and release each embedded panel's CDP owner before
+    // destroying its page. No teardown happens while a close is undecided.
+    function closeDashboard() {
+      if (win._mcAgentChannel) void win._mcAgentChannel.stop();
+      if (win._mcBrowserPanels) {
+        for (const id of [...win._mcBrowserPanels.keys()]) win._mcDestroyBrowserPanel(id);
+      }
+      if (!contents.isDestroyed()) {
+        contents.close();
+      }
+    }
+    win.on("closed", () => closeDashboard());
+
+    if (win === mainWindow) return () => win.isDestroyed();
+    // A WebContents close can destroy its page before an unload veto arrives,
+    // including when the renderer times out. Keep every secondary window intact
+    // until the user accepts closing it, even if it has no browser pages.
+    let closePending = false;
+    const finishClose = () => {
+      if (!win.isDestroyed()) win.destroy();
+    };
+
+    function hasBrowserPages() {
+      for (const { manager } of win._mcBrowserPanels?.values() || []) {
+        const page = manager.getWebContents();
+        if (page && !page.isDestroyed()) return true;
+      }
+      return false;
+    }
+
+    async function confirmClose() {
+      if (closePending || win.isDestroyed() || isQuitting()) return;
+      closePending = true;
+      try {
+        const { response } = await dialog.showMessageBox(win, {
+          type: "warning",
+          message: "Close this window?",
+          detail: hasBrowserPages()
+            ? "Any unsaved changes in this dashboard and its browser pages would be lost."
+              + "\n\nChoose Stay to keep this window open; its pages and browser work will continue."
+            : "Any unsaved changes in this dashboard would be lost."
+              + "\n\nChoose Stay to keep this window open.",
+          buttons: ["Stay", "Close Window"],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        });
+        if (response === 1 && !isQuitting()) finishClose();
+      } catch (error) {
+        glog(`window close confirmation failed: ${error && error.message}`);
+      } finally {
+        closePending = false;
+      }
+    }
+
+    const rendererClosed = () => {
+      if (win.isDestroyed() || closePending) return;
+      if (!isQuitting() && hasBrowserPages()) void confirmClose();
+      else finishClose();
+    };
+    const close = (event) => {
+      if (isQuitting()) return;
+      event.preventDefault();
+      void confirmClose();
+    };
+    win.on("close", close);
+    contents.on("destroyed", rendererClosed);
+    win.once("closed", () => {
+      win.removeListener("close", close);
+      contents.removeListener("destroyed", rendererClosed);
+    });
+    return () => closePending || win.isDestroyed();
   }
 
   function showMainWindow({ focus = false } = {}) {

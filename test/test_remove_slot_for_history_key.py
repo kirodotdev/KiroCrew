@@ -3494,7 +3494,18 @@ class TestSessionLedgerOnPermanentDelete:
         held = self._ledger("acp-busy")
         # The append is what claims the lease -- ownership is taken lazily, on a
         # handle's first write.
-        held.append("session/opened", {"resumed": False}, src="gateway")
+        held.append(
+            "session/opened",
+            {
+                "agent": "kirocrew",
+                "slot": "dashboard_chat-1-100",
+                "model": "",
+                "cwd": "",
+                "owner": "default",
+                "resumed": False,
+            },
+            src="gateway",
+        )
         slot = _make_slot("dashboard_chat-1-100")
         state = _make_state({"dashboard_chat-1-100": slot})
         state.sessions.resumable_sid = MagicMock(return_value="acp-busy")

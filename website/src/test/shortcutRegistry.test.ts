@@ -16,7 +16,7 @@ import {
   shortcutEntry,
   type Chord,
 } from '../lib/shortcutRegistry'
-import { SHORTCUT_LABEL_KEY } from '../hooks/useKeyboardShortcuts'
+import { SHORTCUT_LABEL_KEY, toShortcutDef } from '../hooks/useKeyboardShortcuts'
 
 type Ev = Pick<KeyboardEvent, 'code' | 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>
 const ev = (code: string, mods: Partial<Ev> = {}): Ev =>
@@ -102,6 +102,16 @@ describe('shortcutRegistry — table invariants', () => {
     expect(shortcutEntry('chat-1')?.defaults).toEqual({ mac: { key: '1', ctrl: true }, other: { key: '1', alt: true } })
   })
 
+  it('advertises Option+Shift+W for closing a session on macOS without a browser restriction', () => {
+    expect(resolveShortcut('close-chat', {}, 'mac')).toEqual({
+      id: 'close-chat', primary: { key: 'w', alt: true, shift: true }, aliases: [],
+    })
+    const entry = shortcutEntry('close-chat')!
+    expect(toShortcutDef(entry, 'mac')).toMatchObject({ key: 'w', alt: true, shift: true })
+    expect(toShortcutDef(entry, 'mac')?.browserReserved).toBeUndefined()
+    expect(toShortcutDef(entry, 'other')?.browserReserved).toBe(true)
+  })
+
   it('registryAltNonShiftKeys lists exactly the Option/Alt chords the handler now claims pre-panel', () => {
     expect(registryAltNonShiftKeys().sort()).toEqual([',', 'Enter', 'k'])
   })
@@ -179,9 +189,9 @@ describe('shortcutRegistry — matchShortcutEvent', () => {
     expect(matchShortcutEvent(ev('Digit1', { ctrlKey: true }), r, 'other')).toBeNull()
   })
 
-  it('on macOS the ⌘ chords match Meta and the Option aliases match Alt', () => {
+  it('on macOS Cmd+W stays native while Option+Shift+W closes the session', () => {
     const r = resolveShortcuts({}, 'mac')
-    expect(matchShortcutEvent(ev('KeyW', { metaKey: true }), r, 'mac')).toBe('close-chat')
+    expect(matchShortcutEvent(ev('KeyW', { metaKey: true }), r, 'mac')).toBeNull()
     expect(matchShortcutEvent(ev('KeyW', { altKey: true, shiftKey: true }), r, 'mac')).toBe('close-chat')
     expect(matchShortcutEvent(ev('KeyW', { ctrlKey: true }), r, 'mac')).toBeNull()
     expect(matchShortcutEvent(ev('Comma', { metaKey: true }), r, 'mac')).toBe('open-settings')

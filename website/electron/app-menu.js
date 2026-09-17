@@ -131,13 +131,21 @@ function buildMenuTemplate(deps) {
         { label: "Open Config File", click: openConfigFile },
       ],
     },
-    // macOS keeps the stock Window menu (Minimize, Zoom, Front — no Close entry,
-    // so Cmd+W reaches the renderer). Windows/Linux write it out: the stock role
-    // puts "Close" on Ctrl+W, which is "close session" in the renderer, so the
-    // window close moves to Ctrl+Shift+W — the VS Code / Chrome convention (Ctrl+W
-    // closes a tab, Ctrl+Shift+W the window; Alt+F4 still works).
+    // Native Close reaches the focused window's existing close handler, even
+    // when the renderer is loading or app shortcuts are disabled. Windows/Linux
+    // reserve Ctrl+W for closing a session and use Ctrl+Shift+W for the window.
     isMac
-      ? { id: "window-menu", role: "windowMenu" }
+      ? {
+          id: "window-menu",
+          role: "windowMenu",
+          submenu: [
+            { role: "close", accelerator: "Cmd+W" },
+            { role: "minimize" },
+            { role: "zoom" },
+            { type: "separator" },
+            { role: "front" },
+          ],
+        }
       : {
           id: "window-menu",
           label: "Window",

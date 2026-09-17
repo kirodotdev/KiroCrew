@@ -20,6 +20,7 @@ import shutil
 import time
 
 import pytest
+from ledger_type_helpers import minimal_data
 
 from kiro_crew import ledger as lg
 from kiro_crew.ledger import Ledger, store
@@ -31,6 +32,16 @@ CREW = "qa"
 DAY_MS = 86_400_000
 #: The teardown marker, spelled here so a planted line matches what the sweep reads.
 _CLOSED = "session/closed"
+
+
+def _opened(*, resumed: bool) -> dict:
+    """A valid ``session/opened`` payload carrying only *resumed* meaningfully.
+
+    The registry requires every header field the emitter writes, so a fixture
+    that named only ``resumed`` would be refused. The builder fills the rest with
+    the type's own zero values, which these tests never read.
+    """
+    return {**minimal_data(lg.KIND_SESSION, "session/opened"), "resumed": resumed}
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +63,7 @@ def _closed_session(
     """
     ledger = Ledger.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
     closed_at = store.now_ms() - int(closed_days_ago * DAY_MS)
-    ledger.append("session/opened", {"resumed": False}, src="gateway")
+    ledger.append("session/opened", _opened(resumed=False), src="gateway")
     _append_at(ledger, "session/closed", {"reason": reason}, closed_at)
     return ledger
 
@@ -67,24 +78,35 @@ def _open_session(unit_id: str = SESSION, *, age_days: float = 90.0) -> Ledger:
     """
     ledger = Ledger.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
     _append_at(
-        ledger, "session/opened", {"resumed": False}, store.now_ms() - int(age_days * DAY_MS)
+        ledger, "session/opened", _opened(resumed=False), store.now_ms() - int(age_days * DAY_MS)
     )
     _age_file(ledger.path, age_days)
     return ledger
 
 
-def _append_at(ledger: Ledger, entry_type: str, data: dict, time_ms: int) -> None:
+def _append_at(
+    ledger: Ledger, entry_type: str, data: dict, time_ms: int, *, plant: dict | None = None
+) -> None:
     """Append *entry_type*, then rewrite its ``time`` to *time_ms*.
 
     The writer assigns ``time`` from the clock, and these tests need a close that
     happened months ago. Editing the line afterwards is confined to the test: the
     entry keeps its real shape, so the sweep still reads it exactly as it reads a
     genuinely old one.
+
+    *plant* replaces the written entry's ``data`` on disk after the append, for
+    the reader tests that need a line the append path would refuse -- a close with
+    no ``reason``, or one whose ``reason`` is not a string. The append itself
+    still goes through with a valid *data*, so the line keeps a well-formed
+    envelope (seq, thread, header); only the payload the sweep reads is the
+    deliberately-malformed one.
     """
     ledger.append(entry_type, data, src="gateway")
     lines = ledger.path.read_text(encoding="utf-8").splitlines()
     last = json.loads(lines[-1])
     last["time"] = time_ms
+    if plant is not None:
+        last["data"] = plant
     lines[-1] = json.dumps(last, separators=(",", ":"), sort_keys=True)
     ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -457,7 +479,7 @@ def test_sweep_reads_the_newest_close_when_a_resumed_session_closed_twice():
     """
     ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
     _append_at(ledger, "session/closed", {"reason": "destroyed"}, store.now_ms() - 90 * DAY_MS)
-    ledger.append("session/opened", {"resumed": True}, src="gateway")
+    ledger.append("session/opened", _opened(resumed=True), src="gateway")
     _append_at(ledger, "session/closed", {"reason": "destroyed"}, store.now_ms() - 1 * DAY_MS)
     del ledger
 
@@ -482,7 +504,7 @@ def test_sweep_never_expires_a_session_that_was_REOPENED_after_its_close():
     """
     ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
     _append_at(ledger, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 400 * DAY_MS)
-    _append_at(ledger, "session/opened", {"resumed": True}, store.now_ms() - 399 * DAY_MS)
+    _append_at(ledger, "session/opened", _opened(resumed=True), store.now_ms() - 399 * DAY_MS)
     _append_at(
         ledger,
         "turn/started",
@@ -508,7 +530,7 @@ def test_an_in_flight_closer_after_the_teardown_still_reads_as_closed():
     _append_at(ledger, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 90 * DAY_MS)
     ledger.append(
         "tool/completed",
-        {"turn": 1, "step": 1, "call_id": "c", "status": "unknown"},
+        {"turn": 1, "step": 1, "call_id": "c", "name": "", "server": "", "status": "unknown"},
         src="gateway",
     )
     ledger.append(
@@ -543,7 +565,7 @@ def test_the_sweep_re_decides_inside_the_lease_and_stands_down_on_a_revival():
         _revive_then_answer.done = True
         answer = real_guard_input(directory, cutoff_ms)
         revived = Ledger.open(lg.KIND_SESSION, SESSION)
-        revived.append("session/opened", {"resumed": True}, src="gateway")
+        revived.append("session/opened", _opened(resumed=True), src="gateway")
         del revived
         return answer
 
@@ -1129,8 +1151,8 @@ def test_a_valid_empty_session_map_cannot_authorize_collecting_a_reset_closed_un
 def test_a_close_with_no_reason_field_at_all_is_never_collected():
     """Absent proof is not proof. The unit stays and the next pass sees it again."""
     ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    ledger.append("session/opened", {"resumed": False}, src="gateway")
-    _append_at(ledger, _CLOSED, {}, store.now_ms() - 400 * DAY_MS)
+    ledger.append("session/opened", _opened(resumed=False), src="gateway")
+    _append_at(ledger, _CLOSED, {"reason": "reset"}, store.now_ms() - 400 * DAY_MS, plant={})
     del ledger
 
     assert store.sweep_expired(30) == (0, 0)
@@ -1140,8 +1162,14 @@ def test_a_close_with_no_reason_field_at_all_is_never_collected():
 def test_a_non_string_reason_is_read_as_absent_rather_than_matched():
     """The reason decides an irreversible deletion, so it is type-checked."""
     ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    ledger.append("session/opened", {"resumed": False}, src="gateway")
-    _append_at(ledger, _CLOSED, {"reason": ["destroyed"]}, store.now_ms() - 400 * DAY_MS)
+    ledger.append("session/opened", _opened(resumed=False), src="gateway")
+    _append_at(
+        ledger,
+        _CLOSED,
+        {"reason": "reset"},
+        store.now_ms() - 400 * DAY_MS,
+        plant={"reason": ["destroyed"]},
+    )
     del ledger
 
     assert store.sweep_expired(30) == (0, 0)

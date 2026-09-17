@@ -476,7 +476,7 @@ def test_a_group_refuses_a_citing_entry_the_registry_rejects():
 def test_a_crew_append_is_untouched_by_the_registry():
     crew = Ledger.create("crew", "qa")
     crew.append("member/joined", {}, src="gateway")
-    crew.append("crew:qa/report", {"anything": 1}, src="crew:qa")
+    crew.append("crew/report", {"anything": 1}, src="crew:qa")
     assert crew.last_seq == 2
 
 
