@@ -3598,6 +3598,137 @@ def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypat
     assert state.creator_slot_count(caller.key) == 1
 
 
+def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkeypatch):
+    """The child's parent lineage must cite the creator that was live AT MINT.
+
+    The creator SID is stamped on the child at ``session_create`` time, from the
+    live caller handle. If instead it were read live at the child's first turn,
+    a creator slot closed and replaced in between (a distinct handle with its own
+    session id) would make the child cite the REPLACEMENT's crew log -- and that id
+    lands in the append-only, immutable ``session/opened`` entry with no recovery.
+
+    Mutation guard: re-read the creator SID live at emit (from the current slot
+    handle) and this test reddens, because the replacement below carries a
+    different session id than the one frozen at mint.
+    """
+    from unittest.mock import MagicMock
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "acp-sess-creator-at-mint"
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+
+    # Frozen at mint from the live caller handle, and witnessed by this process.
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+    assert getattr(child, "_lineage_minted", False) is True
+
+    # The sid is NOT written into the birth metadata: the transcript is a file an
+    # agent's file tools can edit, so nothing read back from it may become the
+    # gateway-authored crew-log lineage. Only the attribution rides the metadata,
+    # for the ownership boundary.
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert written.get("created_by") == caller.key
+    assert "created_by_sid" not in written
+
+    # Now the creator's handle is replaced with a distinct session id -- the exact
+    # window the finding names. The frozen value on the child must NOT follow it.
+    replacement = MagicMock()
+    replacement.session_id = "acp-sess-replacement"
+    caller._acp_client = replacement
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+
+
+def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_path):
+    """A slot that was not created through ``session_create`` in THIS process --
+    a person's own tab, a fork, a restore -- has no lineage witness, whatever its
+    ``_created_by`` says. The crew-log ``session/opened.parent`` write is gated on
+    the witness, so restored or hand-edited attribution never becomes lineage.
+
+    Mutation guard: default the flag to True, or set it on the plain
+    ``get_or_create_slot`` path, and this test reddens.
+    """
+    state = _make_state(tmp_path)
+    plain = _slot(state, "chat-9")
+    plain._created_by = "chat-1"  # what a restore from transcript metadata sets
+    assert getattr(plain, "_lineage_minted", False) is False
+    assert getattr(plain, "_created_by_sid", "") == ""
+
+
+def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
+    """``_ledger_lineage`` is the one seam between the slot and the crew-log
+    ``session/opened.parent`` write. It yields the creator only when this process
+    minted the slot; attribution that arrived any other way -- restored from a
+    transcript an agent's file tools can edit, or set by hand -- yields nothing,
+    so the emitter writes no ``parent`` and no metadata edit can forge lineage.
+
+    Mutation guard: drop the witness check and the second case reddens; read the
+    sid live instead of the frozen field and the first case reddens.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.chat_runner import _ledger_lineage
+
+    minted = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-creator-at-mint", _lineage_minted=True
+    )
+    assert _ledger_lineage(minted) == ("chat-1", "acp-sess-creator-at-mint")
+
+    restored = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-forged-by-editing-the-transcript"
+    )
+    assert _ledger_lineage(restored) == ("", "")
+    restored_explicit = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-x", _lineage_minted=False
+    )
+    assert _ledger_lineage(restored_explicit) == ("", "")
+
+    minted_without_handle = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="", _lineage_minted=True
+    )
+    assert _ledger_lineage(minted_without_handle) == ("chat-1", "")
+
+
+def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):
+    """The creator sid is backend-authored, so it is bounded where it is RETAINED.
+
+    An id past ``MAX_ACP_SESSION_ID_LEN`` is not stored on the child -- dropped,
+    never truncated, so it cannot push the child's ``session/opened`` entry over
+    the crew log's size cap and lose the whole entry. The sid is optional: absent
+    is a legal record, a clipped id would be a wrong one. (The sid never reaches
+    the birth metadata in any case; the bound is about the in-memory slot and the
+    entry it feeds.)
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "s" * (MAX_ACP_SESSION_ID_LEN + 1)
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert getattr(child, "_created_by_sid", "") == ""
+    # Still a witnessed mint: the slot half of the lineage is recorded, sid absent.
+    assert getattr(child, "_lineage_minted", False) is True
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert "created_by_sid" not in written
+    # The attribution itself is unaffected: the slot key is ours, not the backend's.
+    assert getattr(child, "_created_by", "") == caller.key
+
+
 def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
     """The per-creator ceiling bounds the DISTRIBUTION, not just the total.
 

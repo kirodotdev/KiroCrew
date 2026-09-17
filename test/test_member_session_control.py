@@ -184,6 +184,109 @@ class TestCreatedByRecentSessionRestore:
         assert restore_recent_sessions(state, window_minutes=60) == 1
         assert state._slots["chat-1-worker"]._created_by == "member-autofix"
 
+    def test_recent_session_restore_never_promotes_metadata_to_lineage(self, tmp_path, monkeypatch):
+        # Transcript metadata is a file an agent's file tools can edit. The
+        # attribution is restored for the ownership boundary, but a
+        # `created_by_sid` found there is ignored and the slot carries no lineage
+        # witness, so the child's first turn after a restart writes no
+        # `session/opened.parent` -- a metadata edit cannot forge gateway lineage.
+        import json as _json
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard.chat import restore_recent_sessions
+        from kiro_crew.dashboard.state import DashboardState
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        meta_line = {
+            "_type": "metadata",
+            "created_at": "2026-03-23T10:00:00",
+            "last_consolidated": 0,
+            "title": "Worker",
+            "agent": "kirocrew",
+            "created_by": "member-autofix",
+            "created_by_sid": "acp-sess-creator-at-mint",
+        }
+        rows = [
+            _json.dumps(meta_line),
+            _json.dumps({"role": "user", "content": "task", "ts": "2026-03-23T10:00:00"}),
+        ]
+        path = tmp_path / "dashboard_chat-1-worker.jsonl"
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        path.touch()
+
+        sessions = MagicMock(count=0)
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.remove = AsyncMock()
+        state = DashboardState(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            start_time=0.0,
+            conversation_log=ConversationLog(base_dir=tmp_path),
+        )
+        assert restore_recent_sessions(state, window_minutes=60) == 1
+        restored = state._slots["chat-1-worker"]
+        assert restored._created_by == "member-autofix"
+        assert restored._created_by_sid == ""
+        assert restored._lineage_minted is False
+
+    def test_save_and_rehydrate_keep_attribution_but_never_lineage(self, tmp_path, monkeypatch):
+        # Round trip through the real serializer: `created_by` is written and
+        # restored (ownership boundary); the frozen sid is never written, and the
+        # rehydrated slot has no lineage witness, so nothing read back from the
+        # transcript can become the crew-log `session/opened.parent` record.
+        import json as _json
+        from unittest.mock import AsyncMock, MagicMock
+
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+        from kiro_crew.dashboard.state import DashboardState
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        sessions = MagicMock(count=0)
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.remove = AsyncMock()
+        state = DashboardState(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            start_time=0.0,
+            conversation_log=ConversationLog(base_dir=tmp_path),
+        )
+        slot = state.get_or_create_slot("chat-1-worker")
+        slot._created_by = "member-autofix"
+        slot._created_by_sid = "acp-sess-creator-at-mint"
+        slot._lineage_minted = True
+        slot.append("user", "task")
+        slot.drain()
+
+        _save_slot_to_history(state, slot, force=True)
+        written = [
+            _json.loads(line)
+            for line in (tmp_path / "dashboard_chat-1-worker.jsonl").read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        meta = next(row for row in written if row.get("_type") == "metadata")
+        assert meta.get("created_by") == "member-autofix"
+        assert "created_by_sid" not in meta
+        assert "_lineage_minted" not in meta
+
+        del state._slots[slot.key]
+        restored = _rehydrate_slot_from_history(state, slot.key)
+
+        assert restored is not None
+        assert restored._created_by == "member-autofix"
+        assert restored._created_by_sid == ""
+        assert restored._lineage_minted is False
+
 
 class TestCreatedByProjection:
     """``created_by`` rides the slot payload the WS ``slots`` frames carry.

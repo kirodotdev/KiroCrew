@@ -165,6 +165,69 @@ def test_an_agentless_call_site_still_produces_a_valid_header():
     assert _entries()[0]["agent"] == "kirocrew"
 
 
+# --- lineage: who made this session ----------------------------------------
+
+
+def _opened_data() -> dict:
+    opened = [e for e in _body() if e["type"] == "session/opened"]
+    assert len(opened) == 1
+    return opened[0]["data"]
+
+
+def test_a_created_session_records_its_creator_on_the_opened_entry():
+    # Both halves of the edge, from the one side that holds both: the creator's
+    # key and ACP session id captured on the slot when session_create minted the
+    # child. The sid is absent when the creator had no live handle at mint.
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew-worker",
+        slot="chat-42",
+        parent_slot="chat-7",
+        parent_sid="acp-sess-creator",
+    )
+    assert _opened_data()["parent"] == {"slot": "chat-7", "sid": "acp-sess-creator"}
+
+
+def test_a_creator_whose_handle_is_gone_is_recorded_by_slot_alone():
+    # An empty sid is not written as "": a reader would take an empty string for
+    # a creator with an empty name, where an absent key says the handle was down.
+    emit.on_session_opened(SESSION, agent="kirocrew-worker", slot="chat-42", parent_slot="chat-7")
+    assert _opened_data()["parent"] == {"slot": "chat-7"}
+
+
+def test_a_session_nobody_created_carries_no_parent_at_all():
+    # A person's own tab and a fork have no creator. The key is absent rather
+    # than null or empty, so a fold can tell "no creator" from "creator unknown".
+    _open_session()
+    assert "parent" not in _opened_data()
+
+
+def test_a_sid_without_a_slot_names_no_creator():
+    # The slot is the tree key; a sid alone is a citation with nowhere to hang.
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-42", parent_sid="acp-sess-creator")
+    assert "parent" not in _opened_data()
+
+
+def test_the_creator_is_written_again_on_a_re_attach():
+    # A resume re-announces the header facts, and the creator is one of them: the
+    # slot's attribution outlives the ACP session, so a gateway taking the child
+    # over records who made it in the entry that says it re-attached. The emitter
+    # writes whatever the caller froze on the slot; it never looks the sid up.
+    emit.on_session_opened(SESSION, agent="kirocrew-worker", slot="chat-42", parent_slot="chat-7")
+    emit.reset_caches()
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew-worker",
+        slot="chat-42",
+        resumed=True,
+        parent_slot="chat-7",
+        parent_sid="acp-sess-creator",
+    )
+    opened = [e for e in _body() if e["type"] == "session/opened"]
+    assert [e["data"]["resumed"] for e in opened] == [False, True]
+    assert opened[-1]["data"]["parent"] == {"slot": "chat-7", "sid": "acp-sess-creator"}
+
+
 def test_reopening_appends_instead_of_truncating():
     _open_session()
     first = len(_entries())

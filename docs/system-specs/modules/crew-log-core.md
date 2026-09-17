@@ -163,7 +163,7 @@ source were removed (see the emitter spec's "Removed types").
 ### Session, turn
 | Type | `data` | Emitter |
 |---|---|---|
-| `session/opened` | header echo + `resumed` | yes |
+| `session/opened` | header echo + `resumed`; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
 | `session/closed` | `{reason}` | yes |
 | `turn/started` | `{turn, actor, depth, message_seq?, attempt?}` | yes |
 | `turn/refused` | `{turn, actor, reason, depth}` | yes |
@@ -248,6 +248,22 @@ session's behalf, whether a person asked for it or not, is a fact in that sessio
 what caused it. A subagent is itself a session with its own crew log, whose header `thread` points at
 the parent's `subagent/spawned` entry while that entry carries a `ref` into the child's log — the
 same pair as a crew dispatch, one level down.
+
+The edge that IS written today is the `session_create` one, and it takes the child's side of that
+pair only: a created session's `session/opened` carries `parent {slot, sid?}` -- the creator's slot
+key, and the creator's ACP session id as `session_create` froze it when it minted the child. It is
+recorded on the child because the child is the side that knows it: `_created_by` and `_created_by_sid`
+are stamped on the slot at mint, before any turn, while the creator never learns the child's id. The
+sid is frozen rather than read at the child's first turn because a creator slot can be closed and
+replaced in between, and a live read would cite the replacement's crew log in an entry that is never
+rewritten. The edge is written only from a mint THIS gateway process witnessed (`_lineage_minted`,
+never persisted): the transcript is a file an agent's file tools can edit, and this log is fenced from
+those tools precisely so nothing in it can be forged as gateway-authored, so `_created_by` read back
+from transcript metadata is restored for authorization but never promoted to lineage, and the sid is
+not persisted at all. A child whose gateway restarted between mint and its first turn therefore
+writes no `parent`. `sid` is a citation of the creator's unit, not the tree key -- a slot outlives its ACP
+session, so a fold that builds the session tree keys it by `slot` and reads one `session/opened` per
+crew log.
 
 ## 6. Rules
 

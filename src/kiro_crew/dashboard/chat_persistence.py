@@ -1199,6 +1199,11 @@ def _rehydrate_slot_from_history(
             # worker a member dispatched would come back unowned and the
             # fail-closed `not_creator` check would strand them.
             slot._created_by = str(meta["created_by"])
+            # `created_by_sid` is never restored, and `_lineage_minted` stays False
+            # on a restored slot: this file is editable by an agent's file tools,
+            # so a value read back from it must not become the gateway-authored
+            # crew-log lineage record. Attribution above is restored for the
+            # ownership boundary only.
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
@@ -1757,6 +1762,8 @@ def _apply_recent_session(
         # loses its creator binding and authorize_target refuses the
         # legitimate member with not_creator.
         slot._created_by = str(meta["created_by"])
+        # `created_by_sid` is never restored here either -- see
+        # _rehydrate_slot_from_history: transcript metadata is not a lineage source.
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
     if meta.get("channel_folder_filed"):
@@ -3204,6 +3211,8 @@ def _save_slot_to_history(
                     # session-control authorization reads it, so dropping it here
                     # would orphan a member's workers on the next restart.
                     fields["created_by"] = slot._created_by
+                # `_created_by_sid` is NOT persisted (lineage is process-local; see
+                # _ChatSlot._lineage_minted).
                 if slot.linked_session_key:
                     fields["linked_session_key"] = slot.linked_session_key
                 if getattr(slot, "channel_origin", False):
@@ -3568,6 +3577,7 @@ def _save_slot_to_history(
                 # Creator attribution — read by the member ownership boundary in
                 # session-control authorization; see the partial-save mirror above.
                 meta_line["created_by"] = slot._created_by
+            # `_created_by_sid` is NOT persisted -- see the partial-save mirror above.
             # Artifact companion binding — persisted so a bound
             # session restored after a gateway restart (or resumed from the
             # History page) comes back as the artifact's active bound session.

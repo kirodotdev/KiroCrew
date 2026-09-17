@@ -68,6 +68,16 @@ MAX_TOOL_NAME_LEN = 256
 MAX_SHORT_STRING = 500  # names, IDs, categories
 MAX_MEDIUM_STRING = 5_000  # messages, rules
 MAX_LONG_STRING = 50_000  # task specs, inline content
+# Longest backend-authored ACP session id Kiro Crew RETAINS in a store of its
+# own: the native-child rosters and a created slot's frozen creator id (held in
+# memory only, never written to the transcript), and through it the crew log's
+# ``parent.sid`` citation. One
+# constant for the whole population, applied at the point of retention: an id
+# past it is dropped there, never truncated, so no store grows with a string the
+# backend controls and no two stores bound the same ids differently. It lives
+# here, not in the ACP layer, because application code must not import
+# ``kiro_crew.acp`` and both sides of the boundary retain these ids.
+MAX_ACP_SESSION_ID_LEN = 128
 # A cron job's message IS a task prompt (real dispatched task specs routinely
 # exceed 5k chars), so it gets its own cap at task-spec scale instead of
 # borrowing MAX_MEDIUM_STRING — raising that shared constant would widen ~20

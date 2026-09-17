@@ -158,6 +158,7 @@ from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.recovery.ladder import InfraError, classify_infra_error
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -4977,7 +4978,11 @@ class AcpSessionHandle:
         be recognised as a duplicate, so it would reintroduce exactly the
         unbounded growth the cap refuses.
         """
-        if not isinstance(child_sid, str) or not child_sid or len(child_sid) > 128:
+        if (
+            not isinstance(child_sid, str)
+            or not child_sid
+            or len(child_sid) > MAX_ACP_SESSION_ID_LEN
+        ):
             return False
         if child_sid == self._session_id:
             # A parent is never its own sub-agent, in the count or in a roster row.

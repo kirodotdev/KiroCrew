@@ -43,6 +43,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
@@ -65,7 +66,7 @@ from kiro_crew.memory_stores import memory_store_version, named_store_or_empty
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import record_agent_selection
-from kiro_crew.validation import MAX_LONG_STRING
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_LONG_STRING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -1278,6 +1279,31 @@ async def create_session(
         # unattributed, so ordinary human use never consumes an automated caller's
         # share.
         slot._created_by = caller_key
+        # Freeze the creator's ACP session id HERE, at mint, from the live caller
+        # handle we just authorized -- not later at the child's first turn. The
+        # creator slot can be closed and replaced between this mint and that turn,
+        # and a replacement is a distinct handle with its own session id; reading
+        # the id live at emit would then cite the replacement's crew log and corrupt
+        # the child's immutable `session/opened` lineage with no recovery path.
+        # `live_caller` is the same object the authorization gate above resolved,
+        # so this is the id that was live when the child was made. Empty when the
+        # caller's handle has no ACP session yet, which is recorded as absent.
+        # Bounded HERE, at retention, by the one constant every store of a
+        # backend-authored session id shares: an id past it is dropped, not
+        # truncated, so an oversize backend id can neither grow the slot's
+        # metadata nor make the child's ``session/opened`` entry too large to
+        # land -- the sid is optional, its absence is a legal record.
+        _creator_sid = crew_log_emit.session_id_of(getattr(live_caller, "_acp_client", None))
+        slot._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
+        # Witness that THIS process stamped the two fields above at mint. Neither
+        # the flag nor the sid is persisted: the transcript is a file an agent's
+        # file tools can edit, and the crew log is fenced from those tools exactly
+        # so nothing in it can be forged as gateway-authored -- so the child's
+        # first turn writes `session/opened.parent` only when this flag is set,
+        # never from `created_by` read back off disk. A restart between mint and
+        # the child's first turn therefore loses the link rather than trusting
+        # metadata for it.
+        slot._lineage_minted = True
         # The creator's interactive auto-approve grant follows the work it is
         # handing off. Without this a trusted operator dispatches a worker that
         # then blocks on an approval prompt nobody is watching -- the same failure
@@ -1465,6 +1491,10 @@ async def create_session(
                     # losing it on restart would strand every worker a member
                     # dispatched — controllable in memory, orphaned after reboot.
                     **({"created_by": slot._created_by} if slot._created_by else {}),
+                    # `created_by_sid` is deliberately NOT written: the transcript
+                    # is agent-editable, so nothing read back from it may become
+                    # crew-log lineage. The sid lives on the slot for this process
+                    # only (see `_lineage_minted`).
                     # The agent's memory silo, recorded ONLY when it is not the
                     # default. This is what lets the consolidator write an agent's
                     # semantic, episodic and lesson rows into its own store

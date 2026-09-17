@@ -1322,6 +1322,26 @@ def _ledger_model(slot: Any, fallback: str = "") -> str:
     return fallback
 
 
+def _ledger_lineage(slot: Any) -> tuple[str, str]:
+    """The ``(parent_slot, parent_sid)`` a session's ``session/opened`` may cite.
+
+    Both come from the slot, and both are used ONLY when ``_lineage_minted`` says
+    THIS gateway process stamped them at ``session_create`` time. ``_created_by``
+    is also restored from transcript metadata for the ownership boundary, and that
+    file is editable by an agent's file tools, so promoting a restored value to
+    gateway-authored lineage would let a metadata edit forge the one record the
+    crew log's fence exists to protect. A slot with no witness -- a person's own
+    tab, a fork, a restore after a restart -- yields two empty strings, and the
+    emitter then writes no ``parent`` at all.
+    """
+    if not bool(getattr(slot, "_lineage_minted", False)):
+        return "", ""
+    return (
+        str(getattr(slot, "_created_by", "") or ""),
+        str(getattr(slot, "_created_by_sid", "") or ""),
+    )
+
+
 def _sync_served_model(slot: Any, client: Any) -> None:
     """Re-read the live session's served model into the slot.
 
@@ -8871,6 +8891,23 @@ async def _run_chat(
         # handle exists. This is still ahead of every turn entry, and the announce
         # decision itself is latched inside the emitter, so a retry after the header
         # landed cannot skip it.
+        #
+        # `_created_by` is `session_create`'s attribution, stamped on the slot at
+        # mint -- so it is already settled here, at the child's FIRST turn. The
+        # creator's session id is read from `_created_by_sid`, FROZEN at mint from
+        # the live caller handle, NOT re-read live here: the creator slot can be
+        # closed and replaced between mint and this first turn, and a replacement
+        # is a distinct handle with its own session id, so a live read would cite
+        # the replacement's crew log and corrupt this child's immutable
+        # `session/opened` lineage with no recovery. The creator's crew log is keyed
+        # by that frozen id, so `parent_sid` is what lets a fold open the unit that
+        # was live when this child was made; a creator whose handle had no session
+        # at mint gets its slot recorded, sid absent.
+        #
+        # Both fields are used ONLY when `_lineage_minted` says this process
+        # stamped them -- see `_ledger_lineage` for why a restored `_created_by`
+        # must never be promoted to gateway-authored lineage.
+        _creator_key, _creator_sid = _ledger_lineage(slot)
         crew_log_emit.on_session_opened(
             _ledger_sid,
             agent=slot.agent or "",
@@ -8878,6 +8915,8 @@ async def _run_chat(
             model=_ledger_model(slot),
             cwd=slot.project or "",
             resumed=bool(resumed),
+            parent_slot=_creator_key,
+            parent_sid=_creator_sid,
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the

@@ -147,7 +147,7 @@ from kiro_crew.session_pid import (
     register_protected_pid,
     unregister_protected_pid,
 )
-from kiro_crew.validation import MODEL_ID_RE
+from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
 
@@ -2714,7 +2714,7 @@ class AcpRuntime:
             if not isinstance(entry, dict):
                 continue
             sid = entry.get("sessionId") or entry.get("session_id")
-            if not isinstance(sid, str) or not sid or len(sid) > 128:
+            if not isinstance(sid, str) or not sid or len(sid) > MAX_ACP_SESSION_ID_LEN:
                 continue
             if sid in ids:
                 continue

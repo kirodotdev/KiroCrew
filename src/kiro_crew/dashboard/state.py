@@ -2079,6 +2079,8 @@ class _ChatSlot:
         "_detail_render_lock",
         "_last_stop_reason",
         "_created_by",
+        "_created_by_sid",
+        "_lineage_minted",
         "_artifact",
         "_channel_folder_filed",
         "_resumed_count",
@@ -2395,6 +2397,24 @@ class _ChatSlot:
         #: person's own tab, a fork, a restore. Read by
         #: ``DashboardState.creator_slot_count`` for ``MAX_SLOTS_PER_CREATOR``.
         self._created_by: str = ""
+        #: The creator's ACP session id, FROZEN at mint (see ``session_control``).
+        #: Read at the child's first turn to stamp ``parent_sid`` on the immutable
+        #: ``session/opened`` crew log entry -- never re-read live, so a creator slot
+        #: closed and replaced after mint cannot corrupt this child's lineage.
+        #: In-memory only: it is never written to or restored from the transcript,
+        #: because that file is editable by an agent's file tools and the crew log
+        #: is fenced from them precisely so nothing there can be forged as
+        #: gateway-authored.
+        self._created_by_sid: str = ""
+        #: True only on a slot THIS gateway process minted through the
+        #: session-control create verb. Never persisted or restored: it is the
+        #: witness that ``_created_by`` / ``_created_by_sid`` were stamped by the
+        #: gateway at mint rather than read back from transcript metadata, and the
+        #: crew log ``session/opened.parent`` lineage is written only when it is set.
+        #: A child whose gateway restarted before its first turn writes no
+        #: ``parent`` -- ``_created_by`` alone is restored for authorization, never
+        #: promoted to lineage.
+        self._lineage_minted: bool = False
         # Artifact companion binding: set when this slot is a
         # companion chat session for an artifact (slug). At most one
         # non-archived slot per slug by convention — the frontend flow
