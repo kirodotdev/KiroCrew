@@ -64,8 +64,12 @@ def test_supervised_prefix_additions_include_the_phase3_reads_plus_approvals() -
 
 
 def test_supervised_method_scoped_map_is_only_knowledge_sources_get() -> None:
+    # Exact-equality guard on the method-scoped map: GET on the knowledge
+    # sources read plus the Phase-6 POST-scoped dedup write. Kept as == (not
+    # <=) so a future stray method-scoped admission is caught here.
     assert supervised_mixed_internal_method_paths(True) == {
-        "/api/knowledge/sources": frozenset({"GET"})
+        "/api/knowledge/sources": frozenset({"GET"}),
+        "/api/knowledge/dedup": frozenset({"POST"}),
     }
 
 
