@@ -10950,3 +10950,37 @@ class TestStoreSessionConfigParseConsolidation:
         assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]
         handle.store_session_config({"models": {"availableModels": "nope"}})
         assert [m["modelId"] for m in handle.available_models] == ["kiro-model-x"]
+
+
+class TestResolveInitTimeout:
+    """_resolve_init_timeout: env-configurable ACP initialize handshake budget.
+
+    Regression for cron/background turns failing with
+    ``Request initialize timed out`` when a cold start on a loaded host exceeds
+    the generic 30s _REQUEST_TIMEOUT.
+    """
+
+    def test_default_is_120(self, monkeypatch):
+        from kiro_crew.acp import runtime as rt_mod
+
+        monkeypatch.delenv("KIROCREW_ACP_INIT_TIMEOUT_SECS", raising=False)
+        assert rt_mod._resolve_init_timeout() == 120.0
+
+    def test_env_override_applied(self, monkeypatch):
+        from kiro_crew.acp import runtime as rt_mod
+
+        monkeypatch.setenv("KIROCREW_ACP_INIT_TIMEOUT_SECS", "180")
+        assert rt_mod._resolve_init_timeout() == 180.0
+
+    def test_env_floored_at_request_timeout(self, monkeypatch):
+        from kiro_crew.acp import runtime as rt_mod
+
+        # A too-small override cannot shrink below the generic request bound.
+        monkeypatch.setenv("KIROCREW_ACP_INIT_TIMEOUT_SECS", "5")
+        assert rt_mod._resolve_init_timeout() == rt_mod._REQUEST_TIMEOUT
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        from kiro_crew.acp import runtime as rt_mod
+
+        monkeypatch.setenv("KIROCREW_ACP_INIT_TIMEOUT_SECS", "not-a-number")
+        assert rt_mod._resolve_init_timeout() == 120.0
