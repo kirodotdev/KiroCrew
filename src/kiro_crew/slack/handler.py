@@ -177,18 +177,19 @@ from kiro_crew.voice_reply import voice_reply as _voice_reply_fn
 
 logger = logging.getLogger(__name__)
 
-# Mapping of bang commands to their /kirocrew slash equivalents.
+# Bang commands and the slash subcommand each is deprecated in favour of; the
+# slash trigger word is ``slack.command`` and is prepended where the text is posted.
 _BANG_TO_SLASH: dict[str, str] = {
-    "!yolo": "/kirocrew yolo",
-    "!stop": "/kirocrew stop",
-    "!voice": "/kirocrew voice",
-    "!agent": "/kirocrew agent",
-    "!dashboard": "/kirocrew dashboard",
-    "!ta": "/kirocrew agent",
+    "!yolo": "yolo",
+    "!stop": "stop",
+    "!voice": "voice",
+    "!agent": "agent",
+    "!dashboard": "dashboard",
+    "!ta": "agent",
     # "!allowlist" removed — multi-user access disabled for security
-    "!channel": "/kirocrew channel",
-    "!link-to-dashboard": "/kirocrew link-to-dashboard",
-    "!restart": "/kirocrew restart",
+    "!channel": "channel",
+    "!link-to-dashboard": "link-to-dashboard",
+    "!restart": "restart",
 }
 
 # Approval modes (UX-level, not provider-specific)
@@ -1646,8 +1647,9 @@ async def _handle_slash_command(
     cmd = cmd_text.split()[0].lower()
 
     # ── Deprecation warning for all bang commands ──
-    slash_equiv = _BANG_TO_SLASH.get(cmd)
-    if slash_equiv:
+    subcommand = _BANG_TO_SLASH.get(cmd)
+    if subcommand:
+        slash_equiv = f"/{slack_cfg().slack.command} {subcommand}"
         logger.warning("Deprecated bang command %s used — suggest %s", cmd, slash_equiv)
         warn_block = deprecation_warning_block(cmd, slash_equiv)
         await slack.post_blocks(channel, [warn_block], f"{cmd} is deprecated", reply_ts)
@@ -2369,7 +2371,7 @@ async def _handle_slash_command(
     # Catch-all: unrecognized ! command — post error instead of falling through to LLM
     await slack.post_message(
         channel,
-        f"❌ Unknown command `{cmd}`. Type `/kirocrew help` for available commands.",
+        f"❌ Unknown command `{cmd}`. Type `/{slack_cfg().slack.command} help` for available commands.",
         reply_ts,
     )
     return ""

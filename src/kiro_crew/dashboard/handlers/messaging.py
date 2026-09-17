@@ -4101,6 +4101,15 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     alias = request.query.get("alias", "").strip() or "kirocrew"
     if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
+    command = slack_manifest.slash_command(alias)
+    if len(command) > slack_manifest.SLASH_COMMAND_MAX:
+        return web.json_response(
+            {
+                "error": f"alias too long: /{command} exceeds Slack's {slack_manifest.SLASH_COMMAND_MAX}-character command limit",
+                "code": "alias_too_long",
+            },
+            status=400,
+        )
     try:
         rendered = slack_manifest.render(alias)
         create_url = slack_manifest.deep_link(alias)
@@ -4111,6 +4120,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "alias": alias,
             "manifest": rendered,
             "create_url": create_url,
+            "command": slack_manifest.slash_command(alias),
         }
     )
 

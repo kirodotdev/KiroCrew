@@ -15,6 +15,9 @@ import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredB
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
+// Mirrors the server's alias shape, capped so `/kirocrew-<alias>` fits Slack's
+// 32-character command limit (slack_manifest.SLASH_COMMAND_MAX).
+const MANIFEST_ALIAS_RE = /^[A-Za-z0-9_-]{1,23}$/
 
 type Draft = {
   owner_id: string
@@ -170,10 +173,19 @@ export function SlackPanel() {
   // but only the failure needs a notice (same split as MobileLoginCard).
   const [manifestCopyFailed, setManifestCopyFailed] = useState(false)
 
+  // The alias names the app and its slash command `/kirocrew-<alias>`: a
+  // per-install name, because every install in an
+  // Enterprise Grid registering the same `/kirocrew` makes Slack dispatch to the
+  // wrong app (`invalid_service`). The server has no non-identifying default
+  // worth suggesting, so the user types it here.
+  const [alias, setAlias] = useState('')
+  const aliasValid = MANIFEST_ALIAS_RE.test(alias)
+
   // Public manifest template + one-click Slack create URL (no secrets).
   const manifestQ = useQuery({
-    queryKey: ['slack-manifest'],
-    queryFn: api.getSlackManifest,
+    queryKey: ['slack-manifest', alias],
+    queryFn: () => api.getSlackManifest(alias),
+    enabled: aliasValid,
     staleTime: Infinity,
     retry: false,
   })
@@ -212,6 +224,16 @@ export function SlackPanel() {
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
   }, [data])
+
+  // Typing an alias is the user saying "this is the app I am creating", so the
+  // slash command follows the manifest that alias renders. No install-state
+  // heuristic: the field stays visible and editable, and nothing is saved
+  // until Save.
+  useEffect(() => {
+    const m = manifestQ.data
+    if (!m || m.alias !== alias) return
+    setDraft(d => (d ? { ...d, command: m.command } : d))
+  }, [alias, manifestQ.data])
 
   const saveMut = useMutation({
     mutationFn: (body: Partial<SlackConfigSave>) => api.saveSlackConfig(body),
@@ -316,8 +338,18 @@ export function SlackPanel() {
       <SettingsSection title={i18nT('pages.settings.slackPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
+            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: aliasValid ? alias : '<alias>' })}
           </p>
+          <div className="mt-2">
+            <SettingsInput
+              label={i18nT('pages.settings.slackPanel.alias')}
+              description={i18nT('pages.settings.slackPanel.alias_description')}
+              value={alias}
+              onChange={v => setAlias(v.trim())}
+              placeholder={i18nT('pages.settings.slackPanel.alias_placeholder')}
+              disabled={ro}
+            />
+          </div>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
               href={manifestQ.data?.create_url ?? '#'}

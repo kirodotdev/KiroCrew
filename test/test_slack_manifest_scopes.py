@@ -125,3 +125,26 @@ class TestManifestGrantsNothingMore:
             "search:read",
             "users:read",
         ]
+
+
+class TestSlashCommandFollowsTheAlias:
+    """The slash command is named after the alias, like the app and bot user.
+
+    Slack resolves slash command names org-wide in an Enterprise Grid, so a
+    shared ``/kirocrew`` makes Slack dispatch to another workspace's app and
+    fail with ``invalid_service`` before the gateway sees anything. The name the
+    manifest registers and the ``slack.command`` value setup offers come from
+    two files; this pins them to one procedure.
+    """
+
+    def test_template_registers_the_alias_suffixed_command(self) -> None:
+        [cmd] = _manifest()["features"]["slash_commands"]
+        assert cmd["command"] == "/" + slack_manifest.slash_command(
+            slack_manifest.ALIAS_PLACEHOLDER
+        )
+
+    def test_render_substitutes_the_alias_into_the_command(self) -> None:
+        rendered = yaml.safe_load(slack_manifest.render("zed"))
+        [cmd] = rendered["features"]["slash_commands"]
+        assert cmd["command"] == "/kirocrew-zed"
+        assert slack_manifest.slash_command("zed") == "kirocrew-zed"

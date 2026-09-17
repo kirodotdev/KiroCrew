@@ -6602,7 +6602,7 @@ class TestKiroCrewSlackAppCreateLink:
             assert scan_exfiltration_urls(self._link(hostile)) != [], hostile
 
     def test_mismatched_aliases_redacted(self) -> None:
-        """The manifest names the alias twice; they must be the SAME alias."""
+        """The manifest names the alias in several places; all must be the SAME alias."""
         from kiro_crew import slack_manifest
         from kiro_crew.security import scan_exfiltration_urls
 

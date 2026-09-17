@@ -48,6 +48,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.use_builtin_browser"
   },
   {
+    "id": "channels.alias-slack",
+    "label": "Alias (Slack)",
+    "labelKey": "pages.settings.slackPanel.alias",
+    "labelSuffix": "Slack",
+    "description": "Names the app and its slash command /kirocrew-<alias>; the slash command below is set to match. Letters, digits, - and _ only.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    }
+  },
+  {
     "id": "channels.allowed-emails-webex",
     "label": "Allowed emails (Webex)",
     "labelKey": "pages.settings.webexPanel.allowed_emails",

@@ -5452,6 +5452,9 @@
         "live_count_unavailable": "The live count for this control is currently unavailable."
       },
       "slackPanel": {
+        "alias": "Alias",
+        "alias_description": "Names the app and its slash command /kirocrew-<alias>; the slash command below is set to match. Letters, digits, - and _ only.",
+        "alias_placeholder": "johndoe",
         "create_the_slack_app_from_the_manifest": "Create the Slack app from the pre-filled manifest below (Socket Mode and permissions\n            included, named KiroCrew-{{alias}}). Install it to your\n            workspace, then paste the bot token and app-level token here.",
         "connected": "Connected",
         "copy_manifest_yaml": "Copy manifest YAML",

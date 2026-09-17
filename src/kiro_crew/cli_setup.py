@@ -44,14 +44,20 @@ from kiro_crew.skills import remove_retired_conductor_skill
 from kiro_crew.validation import USER_ID_RE
 
 
-def _get_alias() -> str:
-    """Return the user's login name (used to name the Slack app)."""
+def _detect_alias() -> str:
+    """The login name from the environment, or "" when it cannot be read."""
     alias = os.environ.get("USER") or ""
     if not alias:
         try:
             alias = os.getlogin()
         except OSError:
             pass
+    return alias
+
+
+def _get_alias() -> str:
+    """Return the user's login name, which names the Slack app."""
+    alias = _detect_alias()
     if not alias:
         alias = input("  Your username (e.g. johndoe): ").strip()
     if not alias:
@@ -75,19 +81,34 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
             file=sys.stderr,
         )
         sys.exit(1)
+    command = slack_manifest.slash_command(alias)
+    if len(command) > slack_manifest.SLASH_COMMAND_MAX:
+        print(
+            f"❌ Alias too long for the slash command: /{command} exceeds Slack's "
+            f"{slack_manifest.SLASH_COMMAND_MAX}-character limit. Re-run with a shorter "
+            "`--alias <alias>`.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         rendered = slack_manifest.render(alias)
     except FileNotFoundError:
         print("❌ Cannot find slack-manifest.yaml", file=sys.stderr)
         sys.exit(1)
+    hint = (
+        f"   Slash command: /{command} — set slack.command to match:\n"
+        f"   kirocrew config set slack.command {command}\n"
+    )
     if url:
         print("\n🔗 Click to create your Slack app:\n")
         print(f"{slack_manifest.deep_link(alias)}\n")
+        print(hint)
     elif output:
         out = Path(output)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(rendered, encoding="utf-8")
         print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")
+        print(hint)
     else:
         print(rendered)
 
@@ -364,10 +385,11 @@ def _setup_impl(
     #    dashboard or its setup guide.
     if slack or whatsapp:
         if slack:
+            fresh_install = not _slack_tokens_stored()
             _setup_slack_tokens()
 
             # 3b. Slash command name (Slack-only concept)
-            _setup_slash_command()
+            _setup_slash_command(fresh_install=fresh_install)
         if whatsapp:
             _setup_whatsapp()
     else:
@@ -996,8 +1018,20 @@ def _input_or_skip(prompt: str) -> str | None:
     return answer or None
 
 
-def _setup_slash_command() -> None:
-    """Prompt for custom slash command name, save to config.json."""
+def _slack_tokens_stored() -> bool:
+    creds = KiroCrewConfig.load().load_credentials()
+    return bool(creds.get(CRED_SLACK_BOT_TOKEN) or creds.get(CRED_SLACK_APP_TOKEN))
+
+
+def _setup_slash_command(*, fresh_install: bool = False) -> None:
+    """Prompt for custom slash command name, save to config.json.
+
+    *fresh_install* is "no Slack tokens were stored before this run": only then
+    is the manifest's ``/kirocrew-<alias>`` offered as the default. An install
+    whose app already registered ``/kirocrew`` re-runs setup to rotate tokens,
+    and offering it the alias name there would make the gateway listen for a
+    command Slack never sends.
+    """
     cfg_file = config_path()
     cfg: dict = {}
     if cfg_file.exists():
@@ -1017,7 +1051,16 @@ def _setup_slash_command() -> None:
     if slack_section is not None and not isinstance(slack_section, dict):
         print("  ⚠️  'slack' section is not an object; leaving config untouched.\n")
         return
-    current = (slack_section or {}).get("command", "kirocrew")
+    configured = (slack_section or {}).get("command")
+    if configured:
+        current = configured
+    elif fresh_install:
+        alias = _detect_alias()
+        current = slack_manifest.slash_command(alias)
+        if not slack_manifest.valid_alias(alias) or len(current) > slack_manifest.SLASH_COMMAND_MAX:
+            current = "kirocrew"
+    else:
+        current = "kirocrew"
     # EOF keeps the current value (same reasoning as the workspace step).
     raw = _input_or_skip(f"  Slash command name [{current}]: ") or ""
     if raw:

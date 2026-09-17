@@ -1764,6 +1764,17 @@ class TestManifest:
             except SystemExit as e:
                 assert e.code == 1
 
+    def test_rejects_alias_whose_command_exceeds_slack_limit(self, capsys):
+        from kiro_crew.cli_setup import _manifest
+
+        alias = "a" * 24  # valid alias, but "kirocrew-" + 24 = 33 > 32
+        try:
+            _manifest(alias=alias)
+            assert False, "should have exited"
+        except SystemExit as e:
+            assert e.code == 1
+        assert "32-character limit" in capsys.readouterr().err
+
     def test_url_flag_prints_creation_link(self, capsys):
         with self._patch_template("# comment\nname: KiroCrew-{{ALIAS}}\n"):
             from kiro_crew.cli_setup import _manifest
@@ -1775,6 +1786,15 @@ class TestManifest:
         assert "%0A" in out  # newlines are URL-encoded
         assert "\nname:" not in out  # raw YAML not printed
         assert "%23" not in out  # comments stripped from URL
+        assert "kirocrew config set slack.command kirocrew-alice" in out
+
+    def test_plain_render_prints_only_the_yaml(self, capsys):
+        template = "name: KiroCrew-{{ALIAS}}\n"  # brand-ok: product emits KiroCrew-<alias> (slack-manifest.yaml)
+        with self._patch_template(template):
+            from kiro_crew.cli_setup import _manifest
+
+            _manifest(alias="alice")
+        assert "slack.command" not in capsys.readouterr().out
 
 
 class TestLogout:
@@ -5098,7 +5118,8 @@ class TestSetupChannelGating:
         ):
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
-        monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+        monkeypatch.setattr(cs, "_slack_tokens_stored", lambda: False)
+        monkeypatch.setattr(cs, "_setup_slash_command", lambda **k: calls.append("slash_command"))
         monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
         # Conductor-skill step catches Exception and continues.
         monkeypatch.setattr(
