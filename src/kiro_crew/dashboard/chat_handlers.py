@@ -55,7 +55,13 @@ from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_project_dir,
     _unhide_folder,
 )
-from kiro_crew.dashboard.chat_orchestrator import _stage_loop
+from kiro_crew.dashboard.chat_orchestrator import (
+    _cancel_stage_subagents,
+    _queue_consumed_stage_resume,
+    _release_cancelled_plan_boundary,
+    _settle_discarded_stage_deliveries,
+    _stage_loop,
+)
 from kiro_crew.dashboard.chat_persistence import (
     _FLUSH_SNAPSHOT_RETRIES,
     _TRANSIENT_ROLES,
@@ -103,7 +109,6 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta_for_role,
     _remove_queued_by_id,
     _sync_dashboard_slots,
-    chat_done_payload,
     drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
@@ -149,13 +154,13 @@ from kiro_crew.dashboard.state import (
     _mark_permission_resolved,
     _normalize_slot_key,
     _slots_serialization_note,
-    append_and_surface,
     chat_message_frame,
     durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
     parse_cls_meta,
     request_slot_origin,
+    stage_boundary_for,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
@@ -681,7 +686,28 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
-    if slot.running or slot._in_stage_execution:
+    _pending_control_text = message.strip().lower()
+    _pending_control_words = _pending_control_text.split()
+    _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
+    _stop_words = {"stop", "cancel", "abort"}
+    _orchestrator_mode = getattr(slot, "mode", "") == "orchestrator"
+    _is_go = _pending_control_text in ("go", "go all")
+    _is_go_all = _pending_control_text == "go all"
+    tracker = slot._orch_tracker
+    _pending_escalated_stop = bool(
+        tracker is not None
+        and tracker.has_escalated
+        and not tracker.stopped
+        and _pending_control_words
+        and _pending_control_words[0] in _stop_words
+    )
+    _pending_stage_control = _orchestrator_mode and (
+        (_is_go and not _widget_origin) or _pending_escalated_stop
+    )
+    _pending_stage_boundary = (
+        stage_boundary_for(slot).stage is not None and not _pending_stage_control
+    )
+    if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
@@ -1019,13 +1045,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # approvals live on separate endpoints a widget iframe cannot reach.
     # `is not None` (not truthiness): user_meta is normalized to dict-or-None
     # above, and with the body typed by read_bounded_json, mypy narrows the
-    # Optional only through an explicit None check.
-    _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
-    if (
-        getattr(slot, "mode", "") == "orchestrator"
-        and message.strip().lower() in ("go", "go all")
-        and _widget_origin
-    ):
+    # Optional only through an explicit None check. `_widget_origin` is computed
+    # before pending-stage admission so rejected control text cannot bypass that
+    # boundary and fall through as an ordinary turn.
+    if _orchestrator_mode and _is_go and _widget_origin:
         sel().log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex,
@@ -1044,11 +1067,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             "Refused orchestrator auto-run escalation for widget-origin turn on slot %s",
             slot.key,
         )
-    elif getattr(slot, "mode", "") == "orchestrator" and message.strip().lower() in (
-        "go",
-        "go all",
-    ):
-        _is_auto = message.strip().lower() == "go all"
+    elif _orchestrator_mode and _is_go:
+        _is_auto = _is_go_all
         if _is_auto:
             slot._auto_run = True
             logger.info("Auto-run enabled for slot %s", slot.key)
@@ -1079,12 +1099,21 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             )
         )
         # Use Python-controlled stage loop instead of _run_chat
+        if stage_boundary_for(slot).stage is not None:
+            _queue_consumed_stage_resume(
+                state,
+                slot,
+                directive_user_origin=not bool(request.get("app", "")),
+            )
+            slot._last_turn_auth_required = False
         task = asyncio.create_task(
             _stage_loop(state, slot, auto_run=_is_auto),
             name=f"dashboard-stage:{slot.key}",
         )
+        slot.track_stage_controller(task)
         slot.task = task
-        slot._recovery_retrigger_count = 0
+        # S4: one accepted Go resets the recovery budget shared by its stages.
+        stage_boundary_for(slot).recovery_retrigger_count = 0
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
         state.push_slots_update()
@@ -1092,14 +1121,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         return web.json_response({"ok": True, "slot": slot.key})
 
     # ── Orchestrator stop detection ─────────────────────────────────
-    _stop_words = {"stop", "cancel", "abort"}
-    tracker = slot._orch_tracker
-    if (
-        tracker is not None
-        and tracker.has_escalated
-        and not tracker.stopped
-        and message.strip().lower().split()[0] in _stop_words
-    ):
+    if _pending_escalated_stop and tracker is not None:
         tracker.stop()
         # Same latch as the plan-action Cancel handler: tracker.stopped
         # alone does not survive the Slack gateway lazily re-creating a fresh
@@ -1108,17 +1130,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # across both cancel surfaces.
         slot._plan_cancelled = True
         slot._auto_run = False
-        # Cancel running agents for this slot
-        if state.subagents:
-            session_key = f"dashboard:{slot.key}"
-            mgr = state.subagents
-            for a in mgr.running_agents_for(session_key):
-                t = mgr._tasks.get(a["id"])
-                if t and not t.done():
-                    t.cancel()
-        stop_msg = "🛑 [SYSTEM] Orchestration stopped by user."
-        append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
-        state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
+        await _cancel_stage_subagents(state, slot)
+        await _cancel_stage_controller(slot)
+        await _release_cancelled_plan_boundary(
+            state,
+            slot,
+            terminal_message="🛑 [SYSTEM] Orchestration stopped by user.",
+        )
         return web.json_response({"ok": True, "stopped": True})
 
     # ── Reset rounds after user guidance (not a stop) ───────────────
@@ -1218,7 +1236,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         ),
     )
     slot.task = task
-    slot._recovery_retrigger_count = 0
+    stage_boundary_for(slot).recovery_retrigger_count = 0
     state.push_slots_update()
 
     if ws_mode:
@@ -4355,6 +4373,21 @@ def _app_cancel_denied(
     return _slot_not_found()
 
 
+async def _cancel_stage_controller(slot: "_ChatSlot") -> None:
+    """Cancel and boundedly join the outer Autopilot controller, if live."""
+    controller = getattr(slot, "_stage_controller_task", None)
+    if controller is None or controller is asyncio.current_task() or controller.done():
+        return
+    controller.cancel()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(controller, return_exceptions=True),
+            timeout=2.0,
+        )
+    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+        pass
+
+
 async def stop_slot_turn(
     state: "DashboardState",
     slot: "_ChatSlot",
@@ -4426,11 +4459,17 @@ async def stop_slot_turn(
     # timeout retry. A withheld escalation falls into the no-op branch below.
     if escalate and slot._stop_state == "soft_pending":
         slot._stop_state = "killing"
+        stage_boundary_for(slot).preserve_stop_generation = -1
         # Survives turn teardown, which resets _stop_state to "idle". Without
         # it a cooperative ack from the first press could still land and label
         # this hard kill a clean stop. Scoped to this card so it cannot defer
         # a later card's ack.
         slot._stop_escalated_card_id = slot._stop_event_id
+        await _settle_discarded_stage_deliveries(
+            state,
+            slot,
+            [str(entry.get("content", "")) for entry in slot._queue],
+        )
         slot._queue.clear()
         # Hard kill = "discard everything": drop unconsumed steers too, so the
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
@@ -4466,6 +4505,7 @@ async def stop_slot_turn(
         # reports success and cancels nothing. The SEL record below stays on the
         # slot-derived key, which identifies the tab the operator pressed.
         await state.sessions.stop_turn(cancel_key, force=True, on_hard=_on_hard_force)
+        await _cancel_stage_controller(slot)
         sel().log_tool_invocation(
             session_key=_history_key_for(name),
             agent=getattr(slot, "agent", "") or "kirocrew",
@@ -4546,6 +4586,7 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
+    stage_boundary_for(slot).preserve_stop_generation = slot._stop_generation
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -4553,6 +4594,7 @@ async def stop_slot_turn(
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    await _cancel_stage_controller(slot)
     # Resolve orphaned card when provider reports no active turn
     if outcome == "idle" and slot._stop_event_id:
         _resolve_stop_event(slot, "soft")
@@ -5784,10 +5826,19 @@ async def _close_slot(
     # was claimed), while a cancel landing mid-removal would interrupt
     # provider.shutdown() after the registry entry was already popped and
     # leak the process holding kiro-cli's native session lock.
-    if slot.running and slot.task is not None:
-        slot.task.cancel()
+    _teardown_tasks = {
+        task
+        for task in (slot.task, slot._stage_controller_task)
+        if task is not None and not task.done()
+    }
+    if _teardown_tasks:
+        for task in _teardown_tasks:
+            task.cancel()
         try:
-            await asyncio.wait_for(asyncio.shield(slot.task), timeout=2.0)
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.gather(*_teardown_tasks, return_exceptions=True)),
+                timeout=2.0,
+            )
         except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
             pass
     # Post-pop teardown race: across the awaits above (and the app-notify awaits

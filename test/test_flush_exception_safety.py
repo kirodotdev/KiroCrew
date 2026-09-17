@@ -240,6 +240,9 @@ class TestSeam3StageLoopFinally:
         slot._orch_tracker = None
 
         async def _noop(s, sl, msg, **kw):
+            callback = kw.get("_on_consumed")
+            if callable(callback):
+                callback(True)
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _noop)

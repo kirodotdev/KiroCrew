@@ -18,6 +18,8 @@ def completion_state(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     state.subagents = MagicMock()
     state.subagents.running_agents_for.return_value = []
+    state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+    state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
     state.subagents._queued_depth.return_value = 0
     state.broadcast_ws = MagicMock()
     slot = state.get_or_create_slot("chat-sound")
@@ -151,6 +153,9 @@ async def test_plan_handoff_notifies_only_completion_or_manual_approval(
     monkeypatch.setattr(orchestrator, "config_dir", lambda: tmp_path)
 
     async def run_stage(state, slot, message, **kwargs):
+        callback = kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         slot.append("assistant", "Stage result", "msg msg-a")
         await cr._finish_queue_cycle(state, slot)
 

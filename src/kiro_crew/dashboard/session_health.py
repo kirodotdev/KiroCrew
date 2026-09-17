@@ -347,7 +347,10 @@ def snapshot_slot(
     """Capture one slot's structured facts. Every read is fail-soft."""
     mono_now = time.monotonic() if mono_now is None else mono_now
     key = str(_getattr_soft(slot, "key", "") or "")
-    snap = SlotSnapshot(key=key, running=bool(_getattr_soft(slot, "running", False)))
+    snap = SlotSnapshot(
+        key=key,
+        running=bool(_getattr_soft(slot, "turn_running", _getattr_soft(slot, "running", False))),
+    )
     futures = _getattr_soft(slot, "_approval_futures", None) or {}
     try:
         snap.pending_approval = any(not f.done() for f in futures.values())

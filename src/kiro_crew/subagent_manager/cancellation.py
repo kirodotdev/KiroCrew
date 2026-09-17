@@ -267,6 +267,7 @@ class CancellationCoordinator(ManagerComponent):
             id=str(params.get("_preassigned_id") or ""),
             task=str(params.get("task") or "(stopped before start)"),
             parent_session_key=str(params.get("parent_session_key") or ""),
+            _stage_boundary_owner=str(params.get("_stage_boundary_owner") or ""),
             agent=str(params.get("agent") or ""),
             user_stopped=True,
             queued=True,
@@ -430,6 +431,7 @@ class CancellationCoordinator(ManagerComponent):
         if followup_watchers:
             await asyncio.gather(*followup_watchers, return_exceptions=True)
         self._manager._followup_watchers.clear()
+        self._manager._followup_watcher_parents.clear()
         for agent_id in watcher_ids:
             watcher_info = self._manager._agents.get(agent_id)
             if watcher_info is not None and watcher_info.pending_followups:

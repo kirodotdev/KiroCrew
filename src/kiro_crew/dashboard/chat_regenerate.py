@@ -17,7 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -44,6 +44,15 @@ _MAX_EDIT_CONTENT_CHARS = 32_768
 _SAVE_DRAIN_ATTEMPTS = 8
 
 
+def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
+    """Refuse history mutation while a turn or admission reservation owns the slot."""
+    if slot.turn_running:
+        return web.json_response({"error": "slot is running", "code": "slot_running"}, status=409)
+    if slot.running:
+        return web.json_response({"error": "slot is busy", "code": "slot_busy"}, status=409)
+    return None
+
+
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply."""
     # Destructive: this truncates and PERSISTS history before the background
@@ -68,10 +77,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
-        if slot.running:
-            return web.json_response(
-                {"error": "slot is running", "code": "slot_running"}, status=409
-            )
+        busy = _destructive_history_busy(slot)
+        if busy is not None:
+            return busy
 
         msgs = slot.messages
         ai_idx = -1
@@ -256,10 +264,9 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid index", "code": "index_invalid"}, status=400)
 
     async with slot._lock:
-        if slot.running:
-            return web.json_response(
-                {"error": "slot is running", "code": "slot_running"}, status=409
-            )
+        busy = _destructive_history_busy(slot)
+        if busy is not None:
+            return busy
 
         target = None
         for m in reversed(slot.messages):
@@ -437,43 +444,40 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         )
 
     async with slot._lock:
-        # Reading the body above was an await, and ``linked_session_key`` is
-        # rebound on ALREADY-LIVE slots with no ``running`` gate (a cron
-        # completion, a workflow injection), so a slow caller can be authorized
-        # against its own session and land on somebody else's conversation.
-        # Re-authorize before the first read of slot state, since ``running``
-        # belongs to whichever conversation the slot now routes to.
+        # Reading the body above was an await, and ``linked_session_key`` can
+        # be rebound on an already-live slot by a cron or workflow injection, so
+        # a slow caller can be authorized against its own session and land on
+        # somebody else's conversation. Re-authorize before checking admission
+        # on whichever conversation the slot now routes to.
         stale = _reauthorize_after_await(state, slot, name, request_app, "chat.slot_edit_resend")
         if stale is not None:
             return stale
 
-        if slot.running:
-            return web.json_response(
-                {"error": "slot is running", "code": "slot_running"}, status=409
-            )
+        busy = _destructive_history_busy(slot)
+        if busy is not None:
+            return busy
 
         # The session whose native resume identity the discard below clears.
         # Resolved here because the two guards that follow are about THAT
         # session, not about this slot's own task.
         session_key = effective_session_key(slot)
 
-        # ``slot.running`` is not the whole "is this session busy" question, and
-        # ``discard_conversation`` is a full teardown. Both guards below are the
+        # The slot admission reservation is not the whole "is this session
+        # busy" question, and ``discard_conversation`` is a full teardown. Both guards below are the
         # ones the sibling teardown route (``reset-conversation``) already
         # applies before the SAME call, in the same order and with the same
         # codes -- reused rather than respelled, so the two cannot drift.
         if slot._in_stage_execution:
-            # An autopilot plan reads ``running`` False BETWEEN stages while it
-            # is still mid-plan, so ``running`` alone would discard the
-            # conversation the plan is writing into and cold-start its next
-            # stage -- on top of truncating the history that plan is producing.
+            # Defensive fallback for stage execution that has not yet
+            # published its task or boundary reservation. An ordinary pending
+            # stage was already refused by the admission guard above.
             return web.json_response(
                 {"error": "slot is orchestrating", "code": "slot_orchestrating", "slot": name},
                 status=409,
             )
         # The discard also releases the shared sub-agent runtime the parent's
-        # children run on. ``slot.running`` is False while they keep going (the
-        # parent turn ends first), so nothing above catches it and a child's
+        # children run on. ``slot.running`` can be False while they keep going
+        # (the parent turn ends first), so nothing above catches it and a child's
         # work would be destroyed by an edit it has no part in.
         attached = await _subagents_attached_response(
             state, slot, session_key, "chat.slot_edit_resend"
@@ -585,7 +589,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         pre_await_pending = list(slot._pending)
         pre_await_pending_ids = {id(row) for row in pre_await_pending}
 
-        # Reserve the slot BEFORE the awaits below. ``slot.running`` derives
+        # Reserve the slot BEFORE the awaits below. ``slot.turn_running`` derives
         # from ``slot.task``, and the send path is not serialized on
         # ``slot._lock``: without a live task, a send arriving while any of the
         # three durable boundaries below is pending observes an IDLE slot,
@@ -681,7 +685,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 # keeps this handler alive long enough to learn the outcome.
                 discard_task = asyncio.ensure_future(
                     # ``skip_if_busy``: an inbound channel turn holds the session
-                    # semaphore while ``slot.running`` reads False, so the idle
+                    # semaphore while ``slot.turn_running`` reads False, so the idle
                     # check above cannot see it -- an unconditional discard would
                     # tear down its provider mid-reply.
                     state.sessions.discard_conversation(session_key, skip_if_busy=True)

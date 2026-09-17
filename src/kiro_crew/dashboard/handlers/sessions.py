@@ -2307,12 +2307,22 @@ async def _remove_slot_for_history_key(
                 cancelled,
                 slot.key,
             )
-    if slot and slot.running and slot.task is not None:
-        slot.task.cancel()
-        try:
-            await asyncio.wait_for(slot.task, timeout=2.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-            pass
+    if slot:
+        teardown_tasks = {
+            task
+            for task in (slot.task, slot._stage_controller_task)
+            if task is not None and not task.done()
+        }
+        if teardown_tasks:
+            for task in teardown_tasks:
+                task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*teardown_tasks, return_exceptions=True),
+                    timeout=2.0,
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
 
     session_destroyed = False
     if slot and target_session_key is not None:

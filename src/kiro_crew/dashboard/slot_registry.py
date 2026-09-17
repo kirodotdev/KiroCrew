@@ -95,7 +95,7 @@ class SlotRegistry:
         # may mutate the registry.  Snapshotting prevents a read-only scan from
         # failing with ``RuntimeError: dictionary changed size``.
         return frozenset(
-            effective_session_key(slot) for slot in list(owner._slots.values()) if slot.running
+            effective_session_key(slot) for slot in list(owner._slots.values()) if slot.turn_running
         )
 
     @staticmethod

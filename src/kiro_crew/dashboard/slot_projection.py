@@ -188,7 +188,7 @@ class SlotProjection:
 
         pending_approval = any(not future.done() for future in slot._approval_futures.values())
         last_turn_ts = last_ts
-        if slot.running:
+        if slot.turn_running:
             prompt_ts = next(
                 (
                     message.get("ts") or ""
@@ -203,14 +203,14 @@ class SlotProjection:
                 last_turn_ts = latest_transcript_ts(prompt_ts, queued_ts) or queued_ts
 
         waiting_for_input = (
-            not slot.running
+            not slot.turn_running
             and not has_options
             and not pending_approval
             and bool(slot.messages)
             and last_conv_role == "assistant"
         )
         needs_input = bool(slot._question_pending)
-        interrupted = not slot.running and is_turn_interrupted(slot.messages)
+        interrupted = not slot.turn_running and is_turn_interrupted(slot.messages)
 
         pending_approval_info: dict[str, str] | None = None
         if pending_approval:
@@ -275,7 +275,7 @@ class SlotProjection:
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             "messages": len(slot.messages),
-            "running": slot.running,
+            "running": slot.turn_running,
             "orchestrating": slot._in_stage_execution,
             "queue_depth": slot.queue_depth,
             "stopping": slot._stopping,

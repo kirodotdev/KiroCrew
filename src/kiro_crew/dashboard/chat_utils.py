@@ -2982,10 +2982,24 @@ AUTH_REQUIRED_KIND = "auth_required"
 SUBAGENT_COMPLETION_KIND = "subagent_completion"
 CRON_NOTIFICATION_KIND = "cron_notification"
 
+#: Queue-entry kinds whose turns must settle before an Autopilot stage advances.
+STAGE_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND))
+
+
+def owned_stage_delivery_entry(boundary: Any, entries: list[dict]) -> dict | None:
+    """Return the first stage-delivery entry owned by *boundary* (S1)."""
+    return next(
+        (
+            entry
+            for entry in entries
+            if entry.get("kind") in STAGE_DELIVERY_KINDS and boundary.owns_entry(entry)
+        ),
+        None,
+    )
+
+
 #: All system-injection kinds (for set-membership checks).
-_SYSTEM_INJECTION_KINDS = frozenset(
-    (SUBAGENT_COMPLETION_KIND, CRON_NOTIFICATION_KIND, SYNTHETIC_RECOVERY_KIND)
-)
+_SYSTEM_INJECTION_KINDS = STAGE_DELIVERY_KINDS | frozenset((CRON_NOTIFICATION_KIND,))
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
@@ -3099,8 +3113,13 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     return item["content"], [item]
 
 
-def _dequeue_next_system_message(slot, *, exclude_cron: bool = False) -> tuple:
-    """Pop the first queued sub-agent-completion or cron injection, leaving
+def _dequeue_next_system_message(
+    slot,
+    *,
+    exclude_cron: bool = False,
+    preferred_id: str = "",
+) -> tuple:
+    """Pop a preferred queued system injection, or the first one, leaving
     plain user messages queued.
 
     Implements the (always-on) queue-during-subagents behavior: while background
@@ -3114,14 +3133,27 @@ def _dequeue_next_system_message(slot, *, exclude_cron: bool = False) -> tuple:
     runs each stage as its own ``_run_chat`` whose tail-drain fires while
     ``_in_stage_execution`` is still set; without this a cron notification
     queued during the plan is pulled BETWEEN stages and starts a turn that
-    scatters the plan's output. Sub-agent completions and synthetic recovery
-    still flow (a stage may legitimately spawn sub-agents or re-queue a
-    continuation) -- only the external cron injection waits for the plan to end.
+    scatters the plan. Sub-agent completions and synthetic recovery still flow
+    (a stage may legitimately spawn sub-agents or re-queue a continuation) --
+    only the external cron injection waits for the plan to end.
+
+    ``preferred_id`` is selected by the stage boundary's single owner predicate.
+    It changes queue order only for that owned row; this helper never re-decides
+    ownership.
     """
+
+    def _eligible(item: dict) -> bool:
+        return is_system_injection_item(item) and not (
+            exclude_cron and item.get("kind") == CRON_NOTIFICATION_KIND
+        )
+
+    if preferred_id:
+        for i, item in enumerate(slot._queue):
+            if item.get("id") == preferred_id and _eligible(item):
+                popped = slot.queue_pop(i)
+                return popped["content"], [popped]
     for i, item in enumerate(slot._queue):
-        if is_system_injection_item(item):
-            if exclude_cron and item.get("kind") == CRON_NOTIFICATION_KIND:
-                continue
+        if _eligible(item):
             popped = slot.queue_pop(i)
             return popped["content"], [popped]
     return None, []

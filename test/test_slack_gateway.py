@@ -3689,6 +3689,66 @@ class TestSubagentDone:
         orch.dashboard_state.push_slots_update.assert_called()
 
     @pytest.mark.asyncio
+    async def test_dashboard_completion_routes_to_exact_run_owner(self):
+        """A tagged run routes to its owner even when another alias armed later."""
+        from kiro_crew.dashboard.state import StageBoundary, _ChatSlot
+        from kiro_crew.subagent import SubagentInfo
+
+        orch, mock_sm = self._setup_orch_with_subagent_mgr()
+        on_done = mock_sm.call_args[1]["on_done"]
+        parent = "dashboard:chat-1"
+        canonical = _ChatSlot("chat-1")
+        canonical.mode = "chat"
+        first = _ChatSlot("chat-1-first")
+        first.mode = "chat"
+        first.linked_session_key = parent
+        first.stage_boundary = StageBoundary(
+            stage=1,
+            generation="first-owner",
+            parent_session_keys={parent},
+            armed_at=2,
+        )
+        first._in_stage_execution = True
+        second = _ChatSlot("chat-1-second")
+        second.mode = "chat"
+        second.linked_session_key = parent
+        second.stage_boundary = StageBoundary(
+            stage=1,
+            generation="second-owner",
+            parent_session_keys={parent},
+            armed_at=1,
+        )
+        second._in_stage_execution = True
+        orch.dashboard_state._slots = {
+            canonical.key: canonical,
+            first.key: first,
+            second.key: second,
+        }
+        orch.dashboard_state.get_slot = MagicMock(return_value=canonical)
+
+        info = SubagentInfo(id="alias-agent", task="alias task", parent_session_key=parent)
+        info.done = True
+        info.result = "alias result"
+        info._stage_boundary_owner = second.stage_boundary.owner or ""
+        with patch("kiro_crew.slack.gateway._run_chat", new_callable=AsyncMock) as run_chat:
+            await on_done(info)
+            await asyncio.sleep(0)
+
+        assert not canonical._queue
+        assert not first._queue
+        assert not first._subagent_delivery_pending
+        assert len(second._queue) == 1
+        assert second._subagent_delivery_pending
+        assert second.stage_boundary.owns_entry(second._queue[0])
+        status_payload = next(
+            call.args[1]
+            for call in orch.dashboard_state.broadcast_ws.call_args_list
+            if call.args[0] == "subagent_status"
+        )
+        assert status_payload["slot"] == second.key
+        run_chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_dashboard_slot_busy_queues(self):
         """Subagent done → dashboard slot busy → queues message."""
         orch, mock_sm = self._setup_orch_with_subagent_mgr()

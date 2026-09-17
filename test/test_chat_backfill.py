@@ -618,3 +618,34 @@ class TestBackfillHandlerWiring:
         state.slack_client = None
 
         await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_treat_a_paused_boundary_as_a_running_turn(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import chat_slack
+    from kiro_crew.dashboard.chat_backfill import BackfillSelection
+
+    state = _state(tmp_path)
+    slot = state.get_or_create_slot("s1")
+    _seed(slot, [("user", "choose"), ("assistant", "pick one [OPTIONS: A | B]")])
+    reply = slot.messages[-1]
+    state.link_slack(slot.key, "1700.1", "C1")
+    slot.stage_boundary.arm(1, consumed=True)
+    assert slot.running is True and slot.turn_running is False
+
+    monkeypatch.setattr(
+        chat_slack,
+        "select_backfill_messages",
+        lambda _state, _slot: BackfillSelection(first_turn=[], recent=[[reply]], skipped_turns=0),
+    )
+    state.slack_client.post_blocks = AsyncMock(return_value="opt-1")
+    expired: list[str] = []
+
+    async def _record_expiry(_state, session_key, *, ts=None):
+        expired.append(f"{session_key}:{ts}")
+
+    monkeypatch.setattr(chat_slack, "expire_slack_options", _record_expiry)
+
+    await drain_slack_backfill(state, slot, "C1", "1700.1")
+
+    assert expired == []
