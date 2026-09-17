@@ -145,7 +145,9 @@ class TestGuards:
         # Provisioning itself stays refused — the deploy engine needs bash/aws.
         created = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -176,7 +178,9 @@ class TestGuards:
         (`!dashboard`): request["user"] is set to THEIR subject with an empty app,
         so the old app-only check cleared them into the owner's billable AWS control
         plane. Only the configured owner may pass."""
-        req = _req("GET", "/api/cloud/iam-policy", state=_state(tmp_path), user="allowed-slack-user")
+        req = _req(
+            "GET", "/api/cloud/iam-policy", state=_state(tmp_path), user="allowed-slack-user"
+        )
         resp = await hc.api_cloud_iam_policy(req)
         assert resp.status == 403
         assert _body(resp)["code"] == "cloud_owner_only"
@@ -270,9 +274,7 @@ class TestPluginInstallCommand:
         assert "linux_arm64/session-manager-plugin.rpm" in cmd
         assert cmd.startswith("sudo dnf install -y")
 
-    def test_an_unsupported_platform_returns_nothing_rather_than_a_wrong_command(
-        self, monkeypatch
-    ):
+    def test_an_unsupported_platform_returns_nothing_rather_than_a_wrong_command(self, monkeypatch):
         assert self._cmd(monkeypatch, "Windows", "x86_64", set()) == ""
 
 
@@ -282,7 +284,9 @@ class TestLaunch:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -312,7 +316,9 @@ class TestLaunch:
         state.cloud_launch_store.create = _record  # type: ignore[method-assign]
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -322,7 +328,9 @@ class TestLaunch:
     async def test_create_bad_size_400(self, tmp_path):
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
                 body={"profile": "dev", "region": "us-east-1", "size_key": "nope"},
             )
         )
@@ -340,15 +348,23 @@ class TestLaunch:
 
     async def test_get_unknown_404(self, tmp_path):
         resp = await hc.api_cloud_launch_get(
-            _req("GET", "/api/cloud/launch/deadbeef", state=_state(tmp_path),
-                 match_info={"id": "deadbeef"})
+            _req(
+                "GET",
+                "/api/cloud/launch/deadbeef",
+                state=_state(tmp_path),
+                match_info={"id": "deadbeef"},
+            )
         )
         assert resp.status == 404
 
     async def test_cancel_unknown_404(self, tmp_path):
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", "/api/cloud/launch/deadbeef/cancel", state=_state(tmp_path),
-                 match_info={"id": "deadbeef"})
+            _req(
+                "POST",
+                "/api/cloud/launch/deadbeef/cancel",
+                state=_state(tmp_path),
+                match_info={"id": "deadbeef"},
+            )
         )
         assert resp.status == 404
 
@@ -358,8 +374,9 @@ class TestLaunch:
         ev = threading.Event()
         hc._cancels(state)[job.id] = ev
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", f"/api/cloud/launch/{job.id}/cancel", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/cancel", state=state, match_info={"id": job.id}
+            )
         )
         assert resp.status == 200
         assert ev.is_set() is True
@@ -381,8 +398,9 @@ class TestLaunch:
         assert hc._cancels(state).get(job.id) is None  # no worker owns it
 
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", f"/api/cloud/launch/{job.id}/cancel", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/cancel", state=state, match_info={"id": job.id}
+            )
         )
 
         assert resp.status == 200
@@ -403,8 +421,9 @@ class TestLaunch:
         assert hc._cancels(state).get(job.id) is None
 
         resp = await hc.api_cloud_launch_cancel(
-            _req("POST", f"/api/cloud/launch/{job.id}/cancel", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/cancel", state=state, match_info={"id": job.id}
+            )
         )
 
         assert resp.status == 200
@@ -428,8 +447,12 @@ class TestLaunchConcurrency:
         state.cloud_launch_store.adopt(running.id)  # a worker here owns it
 
         resp = await hc.api_cloud_launch_create(
-            _req("POST", "/api/cloud/launch", state=state,
-                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"})
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+            )
         )
 
         assert resp.status == 409
@@ -455,8 +478,12 @@ class TestLaunchConcurrency:
 
         def _post():
             return hc.api_cloud_launch_create(
-                _req("POST", "/api/cloud/launch", state=state,
-                     body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"})
+                _req(
+                    "POST",
+                    "/api/cloud/launch",
+                    state=state,
+                    body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+                )
             )
 
         try:
@@ -475,8 +502,12 @@ class TestLaunchConcurrency:
         state.cloud_launch_store.save(old)
 
         resp = await hc.api_cloud_launch_create(
-            _req("POST", "/api/cloud/launch", state=state,
-                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"})
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+            )
         )
 
         assert resp.status == 202
@@ -497,8 +528,9 @@ class TestSignin:
         # adopt), which is what keeps the orphan reaper off it.
         state.cloud_launch_store.adopt(job.id)
         resp = await hc.api_cloud_launch_signin(
-            _req("POST", f"/api/cloud/launch/{job.id}/signin", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/signin", state=state, match_info={"id": job.id}
+            )
         )
         assert resp.status == 200
         assert _body(resp)["signin"]["code"] == "BQTZ-XKFD"
@@ -509,8 +541,9 @@ class TestSignin:
             profile="dev", region="us-east-1", size_key="balanced"
         )
         resp = await hc.api_cloud_launch_signin(
-            _req("POST", f"/api/cloud/launch/{job.id}/signin", state=state,
-                 match_info={"id": job.id})
+            _req(
+                "POST", f"/api/cloud/launch/{job.id}/signin", state=state, match_info={"id": job.id}
+            )
         )
         assert resp.status == 409
 
@@ -537,22 +570,34 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
 
-        st = _req("POST", "/api/cloud/kc-3f9a/stop?profile=dev&region=us-east-1",
-                  state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+        st = _req(
+            "POST",
+            "/api/cloud/kc-3f9a/stop?profile=dev&region=us-east-1",
+            state=_state(tmp_path),
+            match_info={"tag": "kc-3f9a"},
+        )
         r1 = await hc.api_cloud_stop(st)
         assert r1.status == 200
         assert seen["stop"] == {"tag": "kc-3f9a", "profile": "dev", "region": "us-east-1", "kw": {}}
 
         r2 = await hc.api_cloud_start(
-            _req("POST", "/api/cloud/kc-7b21/start", state=_state(tmp_path),
-                 match_info={"tag": "kc-7b21"})
+            _req(
+                "POST",
+                "/api/cloud/kc-7b21/start",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-7b21"},
+            )
         )
         assert r2.status == 200
         assert seen["start"]["tag"] == "kc-7b21"
 
         r3 = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-7b21", state=_state(tmp_path),
-                 match_info={"tag": "kc-7b21"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-7b21",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-7b21"},
+            )
         )
         assert r3.status == 200
         assert seen["destroy"]["tag"] == "kc-7b21"
@@ -583,8 +628,12 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.source_mod, "delete_source", _delete_source)
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a?instance_id=i-0abc123456789def0",
-                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a?instance_id=i-0abc123456789def0",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
         )
 
         assert resp.status == 200
@@ -603,17 +652,23 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda tag, p, r: False)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", True),
         )
         monkeypatch.setattr(
-            hc.source_mod, "delete_source",
+            hc.source_mod,
+            "delete_source",
             lambda *a, **k: calls.setdefault("source", True) or {"removed": True},
         )
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a?instance_id=i-0abc", state=_state(tmp_path),
-                 match_info={"tag": "kc-3f9a"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a?instance_id=i-0abc",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
         )
 
         assert resp.status == 200
@@ -627,28 +682,29 @@ class TestInstanceMutations:
         resolves it from the stack itself — before the delete, since the outputs
         are unreadable once the stack is gone."""
         calls = {}
-        monkeypatch.setattr(
-            hc.ec2, "describe", lambda tag, p, r: {"instance_id": "i-resolved123"}
-        )
+        monkeypatch.setattr(hc.ec2, "describe", lambda tag, p, r: {"instance_id": "i-resolved123"})
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", iid) is None or True,
         )
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a", state=_state(tmp_path),
-                 match_info={"tag": "kc-3f9a"})  # no instance_id
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )  # no instance_id
         )
 
         assert resp.status == 200
         assert calls["unregistered"] == "i-resolved123"
 
-    async def test_invalid_cloud_parameter_is_a_coded_400_not_a_500(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_invalid_cloud_parameter_is_a_coded_400_not_a_500(self, tmp_path, monkeypatch):
         """ec2.* validates tag/profile/region and raises ValidationError, which is
         NOT an AWSError — without its own arm a malformed tag becomes a 500."""
         from kiro_crew.validation import ValidationError
@@ -659,8 +715,7 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "stop", _boom)
 
         resp = await hc.api_cloud_stop(
-            _req("POST", "/api/cloud/%20/stop", state=_state(tmp_path),
-                 match_info={"tag": " "})
+            _req("POST", "/api/cloud/%20/stop", state=_state(tmp_path), match_info={"tag": " "})
         )
 
         assert resp.status == 400
@@ -678,14 +733,19 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", iid) is None or True,
         )
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-3f9a?instance_id=i-someone-elses",
-                 state=_state(tmp_path), match_info={"tag": "kc-3f9a"})
+            _req(
+                "DELETE",
+                "/api/cloud/kc-3f9a?instance_id=i-someone-elses",
+                state=_state(tmp_path),
+                match_info={"tag": "kc-3f9a"},
+            )
         )
 
         assert resp.status == 200
@@ -696,6 +756,7 @@ class TestInstanceMutations:
         """The id lookup shells out to AWS. If it throws — including non-AWSError
         types like a sandbox/exec failure — the delete must still go through, or the
         user is stranded with a crew they cannot remove."""
+
         def _explode(*a, **k):
             raise RuntimeError("no sandbox backend available")
 
@@ -706,8 +767,9 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
 
         resp = await hc.api_cloud_destroy(
-            _req("DELETE", "/api/cloud/kc-9", state=_state(tmp_path),
-                 match_info={"tag": "kc-9"})  # no instance_id -> forces the lookup
+            _req(
+                "DELETE", "/api/cloud/kc-9", state=_state(tmp_path), match_info={"tag": "kc-9"}
+            )  # no instance_id -> forces the lookup
         )
 
         assert resp.status == 200
@@ -733,7 +795,8 @@ class TestInstanceMutations:
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": True})
         monkeypatch.setattr(hc.ec2, "wait_for_delete", lambda *a, **k: True)
         monkeypatch.setattr(
-            hc.connect_mod, "unregister_instance",
+            hc.connect_mod,
+            "unregister_instance",
             lambda iid: calls.setdefault("unregistered", iid) is None or True,
         )
         monkeypatch.setattr(hc.source_mod, "delete_source", lambda *a, **k: {"removed": True})
@@ -763,12 +826,15 @@ class TestInstanceMutations:
 class _Provisioner:
     """A minimal RemoteProvisioner stand-in (duck-typed like the real dataclass)."""
 
-    def __init__(self, id, kind=None, label="", posix_only=True, step_labels=()):
+    def __init__(
+        self, id, kind=None, label="", posix_only=True, step_labels=(), confirm_before_launch=""
+    ):
         self.id = id
         self.kind = kind or id
         self.label = label or id
         self.posix_only = posix_only
         self.step_labels = tuple(step_labels)
+        self.confirm_before_launch = confirm_before_launch
 
 
 class _Provider:
@@ -776,12 +842,14 @@ class _Provider:
         self._rows = rows
         self._engines = engines
         self.asked: list = []
+        self.confirmed: list = []
 
     def provisioners(self):
         return list(self._rows)
 
-    def engine_for(self, provisioner_id):
+    def engine_for(self, provisioner_id, *, confirmed_recipient=""):
         self.asked.append(provisioner_id)
+        self.confirmed.append(confirmed_recipient)
         return self._engines[provisioner_id]
 
 
@@ -805,6 +873,398 @@ def _compose(monkeypatch, provider):
 
 @pytest.mark.asyncio
 class TestProvisionerSeam:
+    def test_the_engine_is_resolved_off_the_event_loop(self):
+        """Resolving an engine now touches the disk, so it must not run on the loop.
+
+        The seam reads ``cloud.json`` to decide whether the Fargate lane exists, and
+        this handler's sibling store calls are already wrapped for exactly this
+        reason -- one says so in a comment: a slow disk would stall the gateway's
+        other requests and its heartbeat behind it. An unwrapped resolve beside
+        wrapped calls is also the inconsistency a later reader re-litigates, so the
+        property is pinned rather than left to a comment.
+
+        Asserted on the code because the cost is a blocking syscall inside a
+        coroutine: a behavioural test would have to make the disk slow to see it,
+        and this class is pinned the same way elsewhere in the suite.
+
+        Read as a TREE, not as a substring. A substring pins the call's line breaks as
+        well as its meaning, so adding one argument reformats the line and reddens a test
+        about the event loop -- which says nothing about the event loop.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(hc.api_cloud_launch_create)))
+        wrapped = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_in_executor"
+            and "_engine" in ast.unparse(n)
+        ]
+        assert wrapped, "the engine resolve is not inside an _in_executor call"
+
+    async def test_a_lane_with_a_recipient_refuses_a_launch_that_confirms_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """Required because the ROW says so, not because the id is Fargate.
+
+        The value it demands is the same one `GET /api/cloud/provisioners` publishes, so a
+        client cannot reach a launch without having read what it must confirm -- which is the
+        difference between the operator judging the recipient and echoing a string.
+        """
+        row = _Provisioner(
+            "lane_with_recipient", confirm_before_launch="img@sha256:aaa <- arn:secret"
+        )
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                },
+            )
+        )
+
+        assert resp.status == 400
+        body = _body(resp)
+        assert body["code"] == "recipient_not_confirmed"
+        # It ECHOES the value, so a stale client can correct itself rather than guess.
+        assert body["confirm_before_launch"] == row.confirm_before_launch
+        assert not engine.calls, "a job ran without the recipient being confirmed"
+
+    async def test_a_stale_confirmation_is_refused(self, tmp_path, monkeypatch):
+        """The tampering case at the HTTP edge: the operator confirmed what the row said, the
+        block changed, and the row now resolves something else."""
+        row = _Provisioner("lane_with_recipient", confirm_before_launch="new-image <- arn:secret")
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "confirm_recipient": "old-image <- arn:secret",
+                },
+            )
+        )
+
+        assert resp.status == 400
+        assert _body(resp)["code"] == "recipient_not_confirmed"
+        assert not engine.calls
+
+    async def test_a_matching_confirmation_launches(self, tmp_path, monkeypatch):
+        """The complement, so neither refusal above can be satisfied by refusing everything."""
+        row = _Provisioner(
+            "lane_with_recipient", confirm_before_launch="img@sha256:aaa <- arn:secret"
+        )
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "confirm_recipient": row.confirm_before_launch,
+                },
+            )
+        )
+
+        assert resp.status == 202, _body(resp)
+
+    async def test_a_lane_with_nothing_to_confirm_is_unaffected(self, tmp_path, monkeypatch):
+        """The built-in EC2 lane: no value on the row, no requirement, and a body that omits
+        the field launches exactly as it did before this existed."""
+        row = _Provisioner("plain_lane")
+        engine = RecordingEngine()
+        state = _state(tmp_path)
+        _compose(monkeypatch, _Provider([row], {row.id: engine}))
+
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "balanced",
+                },
+            )
+        )
+
+        assert resp.status == 202, _body(resp)
+
+    async def test_the_published_row_carries_the_value_a_launch_will_demand(
+        self, tmp_path, monkeypatch
+    ):
+        """One value, two readers. If the list published something else, an operator confirming
+        what they were shown would be refused by the launch."""
+        row = _Provisioner(
+            "lane_with_recipient", confirm_before_launch="img@sha256:aaa <- arn:secret"
+        )
+        state = _state(tmp_path)
+        _compose(monkeypatch, _Provider([row], {row.id: RecordingEngine()}))
+
+        listed = await hc.api_cloud_provisioners(
+            _req("GET", "/api/cloud/provisioners", state=state)
+        )
+
+        published = _body(listed)["provisioners"][0]["confirm_before_launch"]
+        assert published == row.confirm_before_launch
+
+    async def test_a_provider_on_the_older_signature_still_gets_an_engine(
+        self, tmp_path, monkeypatch
+    ):
+        """``confirmed_recipient`` is keyword-only WITH a default, so a provider written before
+        it existed is still conforming -- and calling it with the keyword raises ``TypeError``,
+        which reached the client as HTTP 500. A lane with nothing to confirm is called exactly
+        as it was before the keyword existed."""
+        row = _Provisioner("legacy_lane")
+        engine = RecordingEngine()
+
+        class OldProvider:
+            def provisioners(self):
+                return [row]
+
+            def engine_for(self, provisioner_id):  # no confirmed_recipient
+                return engine
+
+        state = _state(tmp_path)
+        # The SEAM has to answer, not the test hook: this case is about how _engine calls the
+        # provider, and the injected engine returns before it ever reaches one.
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, OldProvider())
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "balanced",
+                },
+            )
+        )
+
+        assert resp.status == 202, _body(resp)
+
+    async def test_a_conforming_provider_still_receives_the_confirmation(
+        self, tmp_path, monkeypatch
+    ):
+        """The other half: dispatching by signature must not quietly stop delivering the value
+        to a provider that does accept it."""
+        row = _Provisioner("lane_with_recipient", confirm_before_launch="img <- arn:secret")
+        engine = RecordingEngine()
+        seen: list = []
+
+        class NewProvider:
+            def provisioners(self):
+                return [row]
+
+            def engine_for(self, provisioner_id, *, confirmed_recipient=""):
+                seen.append(confirmed_recipient)
+                return engine
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None  # the seam must answer, not the test hook
+        _compose(monkeypatch, NewProvider())
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "confirm_recipient": row.confirm_before_launch,
+                },
+            )
+        )
+
+        assert resp.status == 202, _body(resp)
+        assert seen == [row.confirm_before_launch]
+
+    async def test_a_provider_that_cannot_take_the_confirmation_its_row_demands_is_refused(
+        self, tmp_path, monkeypatch
+    ):
+        """Refused with a coded 400, not launched.
+
+        A lane that publishes a credential recipient and then cannot be handed the operator's
+        answer to it would let them believe they had confirmed something. A 500 would be wrong
+        twice: the request is well formed, and the remedy belongs to the deployment.
+        """
+        row = _Provisioner("mismatched_lane", confirm_before_launch="img <- arn:secret")
+        engine = RecordingEngine()
+
+        class OldProviderWithRecipient:
+            def provisioners(self):
+                return [row]
+
+            def engine_for(self, provisioner_id):
+                return engine
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None  # the seam must answer, not the test hook
+        _compose(monkeypatch, OldProviderWithRecipient())
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                    "confirm_recipient": row.confirm_before_launch,
+                },
+            )
+        )
+
+        assert resp.status == 400, _body(resp)
+        assert _body(resp)["code"] == "lane_cannot_confirm"
+        assert not engine.calls
+
+    async def test_an_aliased_config_answers_400_and_not_500(self, tmp_path, monkeypatch):
+        """The alias refusal stays where a launch consumes the file; only its exit changes.
+
+        A symlinked or hardlinked ``cloud.json`` is what stow, chezmoi and
+        ``rsync --link-dest`` leave behind, so this reaches ordinary operators. It has to read
+        as something they can fix -- the message names the file and the remedy -- rather than
+        as a gateway fault.
+        """
+        from kiro_crew.sandbox import SandboxCeilingUnsealable
+
+        row = _Provisioner("aliased_lane")
+
+        class RefusingProvider:
+            def provisioners(self):
+                return [row]
+
+            def engine_for(self, provisioner_id, *, confirmed_recipient=""):
+                raise SandboxCeilingUnsealable(
+                    "cloud.json is a symlink; replace the link with a regular file"
+                )
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None  # the seam must answer, not the test hook
+        _compose(monkeypatch, RefusingProvider())
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                },
+            )
+        )
+
+        assert resp.status == 400, _body(resp)
+        body = _body(resp)
+        assert body["code"] == "config_alias_refused"
+        # The operator has to be able to act on it, so the file and the remedy travel with it.
+        assert "cloud.json" in body["error"] and "regular file" in body["error"]
+
+    async def test_the_alias_refusal_is_not_confused_with_an_unknown_lane(
+        self, tmp_path, monkeypatch
+    ):
+        """Two different 400s, because the operator does two different things about them.
+
+        Folding a host-setup refusal into ``unknown_provisioner`` would tell someone whose
+        configuration is symlinked that the lane does not exist.
+        """
+        from kiro_crew.sandbox import SandboxCeilingUnsealable
+
+        row = _Provisioner("aliased_lane")
+
+        class RefusingProvider:
+            def provisioners(self):
+                return [row]
+
+            def engine_for(self, provisioner_id, *, confirmed_recipient=""):
+                raise SandboxCeilingUnsealable("cloud.json has a second hardlink")
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None  # the seam must answer, not the test hook
+        _compose(monkeypatch, RefusingProvider())
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                },
+            )
+        )
+
+        assert _body(resp)["code"] != "unknown_provisioner"
+
+    def test_the_confirmed_recipient_is_read_from_the_body_unaltered(self):
+        """The operator's confirmation reaches the seam as they gave it.
+
+        It is the one input here that does NOT come from ``cloud.json``, which is the whole
+        reason it can contradict it. So this handler neither validates nor normalises it: a
+        check here would be a second copy of the engine's rule, and the two drifting is how a
+        value passes one and fails the other. It reads the field and forwards it.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(hc.api_cloud_launch_create)))
+        reads = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and ast.unparse(n).startswith("body.get('confirm_recipient'")
+        ]
+        assert reads, "the launch body's confirm_recipient is never read"
+        forwarded = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and "_engine" in ast.unparse(n)
+            and "confirm_recipient" in ast.unparse(n)
+        ]
+        assert forwarded, "the confirmation is read and then not passed to the engine"
+
     async def test_stock_listing_is_the_builtin_lane(self, tmp_path):
         """No composition: exactly the EC2 descriptor, drawn by the core's own form."""
         resp = await hc.api_cloud_provisioners(
@@ -816,7 +1276,10 @@ class TestProvisionerSeam:
         assert rows[0]["kind"] == "aws_ec2"
         assert rows[0]["posix_only"] is True
         assert [s["key"] for s in rows[0]["steps"]] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     async def test_listing_answers_on_windows(self, tmp_path, monkeypatch):
@@ -839,7 +1302,9 @@ class TestProvisionerSeam:
             [
                 _Provisioner("aws_ec2"),
                 _Provisioner(
-                    "devspace", kind="amazon_devspace", label="Amazon DevSpace",
+                    "devspace",
+                    kind="amazon_devspace",
+                    label="Amazon DevSpace",
                     posix_only=False,
                     step_labels=((lj.STEP_PROVISION, "Create the DevSpace"), ("bogus", "x")),
                 ),
@@ -879,7 +1344,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -892,7 +1359,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "nope", "profile": "", "region": "", "size_key": "x"},
             )
         )
@@ -906,10 +1375,14 @@ class TestProvisionerSeam:
         ladder, and the job's steps carry the provisioner's labels."""
         engine = RecordingEngine()
         provider = _Provider(
-            [_Provisioner("aws_ec2"), _Provisioner(
-                "devspace", kind="amazon_devspace",
-                step_labels=((lj.STEP_PROVISION, "Create the DevSpace"),),
-            )],
+            [
+                _Provisioner("aws_ec2"),
+                _Provisioner(
+                    "devspace",
+                    kind="amazon_devspace",
+                    step_labels=((lj.STEP_PROVISION, "Create the DevSpace"),),
+                ),
+            ],
             engines={"devspace": engine},
         )
         _compose(monkeypatch, provider)
@@ -917,9 +1390,13 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None  # let the seam, not the test hook, answer
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={
-                    "provider_id": "devspace", "profile": "", "region": "us-west-2",
+                    "provider_id": "devspace",
+                    "profile": "",
+                    "region": "us-west-2",
                     "size_key": "dev.standard1.large",
                 },
             )
@@ -929,7 +1406,9 @@ class TestProvisionerSeam:
         assert job["provider_id"] == "devspace"
         assert job["status"] == lj.DONE
         assert job["instance_id"] == "ds-devspace-0001"
-        assert {s["key"]: s["label"] for s in job["steps"]}[lj.STEP_PROVISION] == "Create the DevSpace"
+        assert {s["key"]: s["label"] for s in job["steps"]}[
+            lj.STEP_PROVISION
+        ] == "Create the DevSpace"
         assert provider.asked == ["devspace"]
         assert engine.calls == [("provision", job["tag"], "dev.standard1.large", "", "us-west-2")]
 
@@ -940,7 +1419,9 @@ class TestProvisionerSeam:
         _compose(monkeypatch, provider)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
                 body={"provider_id": "aws_ec2", "profile": "", "region": "", "size_key": "nope"},
             )
         )
@@ -954,7 +1435,9 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "ghost", "profile": "", "region": "", "size_key": "x"},
             )
         )
@@ -976,15 +1459,24 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None
         ok = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "devspace", "profile": "", "region": "", "size_key": "s"},
             )
         )
         assert ok.status == 202, _body(ok)
         refused = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
-                body={"provider_id": "aws_ec2", "profile": "", "region": "", "size_key": "balanced"},
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
+                body={
+                    "provider_id": "aws_ec2",
+                    "profile": "",
+                    "region": "",
+                    "size_key": "balanced",
+                },
             )
         )
         assert refused.status == 400
@@ -998,7 +1490,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)  # carries FakeEngine via the hook
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "", "region": "", "size_key": "balanced"},
             )
         )

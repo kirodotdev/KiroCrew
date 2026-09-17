@@ -1,4 +1,4 @@
-"""``delegated_workspace_exposes_agents_dir``: the agents-tree seal is a rule
+"""``delegated_workspace_exposes_sealed_target``: the agents-tree seal is a rule
 of Kiro Crew's own launcher, so a kiro-cli spawn delegated to kiro-cli's
 internal sandbox (macOS with that sandbox on, first-party Windows) must be
 refused when its workspace is, contains, or sits inside the agents directory.
@@ -33,7 +33,7 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: True)
         for workspace in _overlapping(agents_dir):
-            reason = sandbox_mod.delegated_workspace_exposes_agents_dir(workspace)
+            reason = sandbox_mod.delegated_workspace_exposes_sealed_target(workspace)
             assert reason is not None, workspace
             assert "agents directory" in reason
             assert str(workspace) in reason
@@ -42,10 +42,12 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: True)
         sibling = agents_dir.parent / "crew" / "workspace"
-        assert sandbox_mod.delegated_workspace_exposes_agents_dir(sibling) is None
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(sibling) is None
         # A name that merely shares a prefix is not inside the directory.
         assert (
-            sandbox_mod.delegated_workspace_exposes_agents_dir(agents_dir.parent / "agents-archive")
+            sandbox_mod.delegated_workspace_exposes_sealed_target(
+                agents_dir.parent / "agents-archive"
+            )
             is None
         )
 
@@ -58,27 +60,28 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: False)
         for workspace in _overlapping(agents_dir):
-            assert sandbox_mod.delegated_workspace_exposes_agents_dir(workspace) is None
+            assert sandbox_mod.delegated_workspace_exposes_sealed_target(workspace) is None
 
     def test_linux_never_refuses(self, monkeypatch, agents_dir):
         monkeypatch.setattr(sandbox_mod.sys, "platform", "linux")
         # Even with the kiro setting on: Linux never delegates.
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: True)
         for workspace in _overlapping(agents_dir):
-            assert sandbox_mod.delegated_workspace_exposes_agents_dir(workspace) is None
+            assert sandbox_mod.delegated_workspace_exposes_sealed_target(workspace) is None
 
     def test_windows_refuses_regardless_of_kiro_setting(self, monkeypatch, agents_dir):
         # Windows has no Kiro Crew backend: every first-party spawn delegates.
         monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
         monkeypatch.setattr(sandbox_mod, "kiro_internal_sandbox_enabled", lambda: False)
-        assert sandbox_mod.delegated_workspace_exposes_agents_dir(agents_dir) is not None
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(agents_dir) is not None
         assert (
-            sandbox_mod.delegated_workspace_exposes_agents_dir(agents_dir.parent / "crew") is None
+            sandbox_mod.delegated_workspace_exposes_sealed_target(agents_dir.parent / "crew")
+            is None
         )
 
     def test_none_workspace_is_not_judged(self, monkeypatch, agents_dir):
         monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
-        assert sandbox_mod.delegated_workspace_exposes_agents_dir(None) is None
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(None) is None
 
     def test_symlinked_workspace_resolving_into_agents_dir_is_refused(
         self, monkeypatch, agents_dir, tmp_path
@@ -92,7 +95,7 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         for target in (agents_dir, inner, agents_dir.parent):
             link = tmp_path / f"ws-{target.name}"
             link.symlink_to(target, target_is_directory=True)
-            reason = sandbox_mod.delegated_workspace_exposes_agents_dir(link)
+            reason = sandbox_mod.delegated_workspace_exposes_sealed_target(link)
             assert reason is not None, link
             assert str(link) in reason
 
@@ -106,8 +109,8 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         monkeypatch.setattr(sandbox_mod, "_resolved_kiro_agents_targets", lambda: [str(alias)])
         inside = agents_dir / "spec-dir"
         inside.mkdir()
-        assert sandbox_mod.delegated_workspace_exposes_agents_dir(inside) is not None
-        assert sandbox_mod.delegated_workspace_exposes_agents_dir(tmp_path / "elsewhere") is None
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(inside) is not None
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(tmp_path / "elsewhere") is None
 
     def test_not_yet_created_sibling_workspace_is_allowed(self, monkeypatch, agents_dir):
         # A workspace the spawn is about to mkdir has no inode; its lexical and
@@ -115,4 +118,4 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
         fresh = agents_dir.parent / "crew" / "not-yet"
         assert not fresh.exists()
-        assert sandbox_mod.delegated_workspace_exposes_agents_dir(fresh) is None
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(fresh) is None

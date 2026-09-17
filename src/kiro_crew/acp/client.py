@@ -227,7 +227,7 @@ from kiro_crew.sandbox import (
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
     create_subprocess_limited,
-    delegated_workspace_exposes_agents_dir,
+    delegated_workspace_exposes_sealed_target,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
     scrub_agent_subprocess_env,
@@ -7485,7 +7485,7 @@ class AcpClient:
             # left to rewrite a spec. Refused before the spawn; off-loop because
             # the delegation predicate reads the kiro settings file.
             overlap = await asyncio.to_thread(
-                delegated_workspace_exposes_agents_dir, self._work_dir
+                delegated_workspace_exposes_sealed_target, self._work_dir
             )
             if overlap:
                 raise AcpError(overlap)

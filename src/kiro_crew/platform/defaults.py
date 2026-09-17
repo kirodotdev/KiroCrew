@@ -11,6 +11,7 @@ The Amazon companion subclasses or replaces these in its composition root.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
@@ -669,25 +670,148 @@ BUILTIN_REMOTE_PROVISIONER = RemoteProvisioner(
     posix_only=True,
 )
 
+#: The id a launch request names as ``provider_id`` for the Fargate lane.
+FARGATE_PROVISIONER_ID = "aws_fargate"
+
+#: The Fargate descriptor. ``kind`` equals the id, so the dashboard looks for a
+#: renderer registered under that kind and skips the row when none is, rather than
+#: handing the EC2 form a lane that takes no instance type.
+FARGATE_REMOTE_PROVISIONER = RemoteProvisioner(
+    id=FARGATE_PROVISIONER_ID,
+    kind=FARGATE_PROVISIONER_ID,
+    label="AWS Fargate in your own account",
+    posix_only=True,
+)
+
 
 class DefaultRemoteProvisionerProvider:
-    """The one provisioner the core ships: EC2 in the user's own AWS account.
+    """The provisioners the core ships: EC2 always, Fargate when it is configured.
 
-    ``provisioners()`` returns the single ``aws_ec2`` descriptor and
-    ``engine_for`` hands out ``RealLaunchEngine`` for it, so the stock Set-up
-    tab and its launch path are unchanged. A companion replaces this via
-    ``dataclasses.replace(ctx, remote_provisioners=...)`` to add a lane (or
-    withdraw the AWS one on a fleet whose users have no AWS account of their
-    own). The engine import is deferred: ``cloud/launch_engine.py`` pulls in the
-    whole ``cloud/`` package and this module is loaded during ``platform`` init.
+    ``provisioners()`` always returns the ``aws_ec2`` descriptor and ``engine_for``
+    hands out ``RealLaunchEngine`` for it, so the stock Set-up tab and its launch
+    path are unchanged. A companion still replaces this whole object via
+    ``dataclasses.replace(ctx, remote_provisioners=...)`` to add a lane of its own
+    (or withdraw the AWS one on a fleet whose users have no AWS account).
+
+    **The Fargate lane is offered only when ``cloud.json`` configures it, and that
+    is deliberate.** ``FargateLaunchEngine`` refuses to guess a placement, an image
+    or a secret ARN -- an unnamed subnet is the same class of error as deleting a
+    task on a guess -- so a lane offered without those fields is a lane that
+    rejects every launch made through it, spending an operator's attention at
+    launch time on a mistake that was visible when they saved the file.
+    ``FargateConfig`` is the judge: complete means the lane exists, anything else
+    means it does not.
+
+    Registering it does NOT put a row in the Set-up selector on its own.
+    ``RemoteProvisioner.kind`` names a frontend form and the dashboard skips a kind
+    it cannot draw; no ``registerRemoteProvisionerRenderer`` claims this kind today,
+    so the lane is reachable through the API and absent from the selector until one
+    does -- absent rather than broken, which is what that skip exists for.
+
+    Every cloud import here is DEFERRED, and not only for weight.
+    ``kiro_crew.cloud`` reaches ``kiro_crew.sandbox``, which imports
+    ``kiro_crew.platform.current_context``, so a module-level import raises
+    ``ImportError: cannot import name 'current_context' from partially initialized
+    module`` -- this module is loaded during ``platform`` init. Measured after
+    bootstrap, ``kiro_crew.cloud.config`` alone is 105 ms and 122 modules against a
+    126 ms init, so deferring is also what keeps a lane most deployments have not
+    configured from doubling startup.
     """
 
     def provisioners(self) -> List[RemoteProvisioner]:
-        return [BUILTIN_REMOTE_PROVISIONER]
+        rows = [BUILTIN_REMOTE_PROVISIONER]
+        config = self._fargate_config()
+        if config is not None:
+            # The row carries the resolved credential recipient, so the operator READS it
+            # where they choose the lane instead of discovering it in a refusal. This is the
+            # display half of the confirmation: without it "confirm the recipient" is a
+            # copy-paste of a string the operator never had a chance to judge.
+            rows.append(
+                dataclasses.replace(
+                    FARGATE_REMOTE_PROVISIONER,
+                    confirm_before_launch=config.credential_recipient(),
+                )
+            )
+        return rows
 
-    def engine_for(self, provisioner_id: str) -> Any:
-        if provisioner_id != BUILTIN_PROVISIONER_ID:
+    def engine_for(self, provisioner_id: str, *, confirmed_recipient: str = "") -> Any:
+        if provisioner_id == BUILTIN_PROVISIONER_ID:
+            # circular import: ``cloud.launch_engine`` reaches this module through its own
+            # graph, so a module-scope import here closes the loop. Deferring also keeps
+            # platform init off the cloud module graph entirely.
+            from kiro_crew.cloud.launch_engine import RealLaunchEngine
+
+            # No credential recipient to confirm: this lane creates an instance from a
+            # CloudFormation template shipped with the product, and nothing in
+            # ``cloud.json`` chooses what receives a credential. A value passed for it
+            # is ignored rather than refused, so a caller may confirm uniformly.
+            return RealLaunchEngine()
+        if provisioner_id != FARGATE_PROVISIONER_ID:
             raise KeyError(provisioner_id)
-        from kiro_crew.cloud.launch_engine import RealLaunchEngine  # deferred: heavy
+        config = self._fargate_config()
+        if config is None:
+            # The same KeyError an unknown id raises. A caller naming an
+            # unconfigured lane and one naming a nonexistent lane are in the same
+            # position -- there is no engine -- and a second failure mode would ask
+            # every caller to learn a distinction that changes nothing they can do.
+            raise KeyError(provisioner_id)
+        # circular import: each of these reaches ``kiro_crew.platform.defaults`` through its
+        # own module graph, so a module-scope import here closes the loop -- importing any one
+        # of them alone already pulls this module in. Deferring is also what keeps platform
+        # init light, per the class note above.
+        from kiro_crew.cloud.fargate.identity import SecretRef
+        from kiro_crew.cloud.fargate.runtask import Placement
+        from kiro_crew.cloud.fargate_engine import FargateLaunchEngine, FargateLaunchSpec
+        from kiro_crew.sandbox import require_unaliased_cloud_config
 
-        return RealLaunchEngine()
+        # The strict no-alias refusal lives HERE, at the point the saved block becomes a
+        # launch, and not on the universal spawn path. An alias on this file lets a write
+        # reach the inode by a name no seal covers, and the field it would reach chooses the
+        # container the model credential is delivered to -- so the launch is refused. On the
+        # spawn path the same refusal refused every sandboxed spawn on a host whose files
+        # legitimately carry a second name (stow, chezmoi, `rsync --link-dest`), which is the
+        # whole box for one lane's exposure.
+        require_unaliased_cloud_config()
+
+        return FargateLaunchEngine(
+            FargateLaunchSpec(
+                placement=Placement(
+                    cluster=config.cluster,
+                    subnets=tuple(config.subnets),
+                    security_groups=tuple(config.security_groups),
+                    assign_public_ip=config.assign_public_ip,
+                ),
+                image=config.image,
+                secrets=tuple(SecretRef(name=name, arn=arn) for name, arn in config.secrets),
+                cpu_architecture=config.cpu_architecture,
+                # Carried through UNCHECKED and UNRESOLVED. This is the operator's
+                # confirmation, so it must reach the engine as they gave it: comparing it
+                # here, against the same read of ``cloud.json`` that built the spec, would
+                # be the file confirming itself. ``provision`` resolves the recipient from
+                # the spec and compares, and it refuses an empty value.
+                confirmed_recipient=confirmed_recipient,
+            )
+        )
+
+    @staticmethod
+    def _fargate_config() -> Any:
+        """The configured Fargate block, or ``None``. A read failure is ``None``.
+
+        Read PER CALL, so an operator who edits ``cloud.json`` gets the new answer
+        from the next request rather than the next gateway restart, and a lane
+        removed from the file leaves the selector for the same reason.
+
+        A failure returns ``None`` rather than raising because this runs while the
+        selector is being built: raising would take the whole provisioner list down
+        over one malformed block and hide the ``aws_ec2`` lane too, turning one
+        lane's misconfiguration into a Set-up tab that shows nothing.
+        """
+        try:
+            # circular import: ``cloud.config`` reaches this module through its own graph, so a
+            # module-scope import here closes the loop; the class note above carries the
+            # measured startup cost that makes deferring worth it on its own.
+            from kiro_crew.cloud.config import CloudConfig
+
+            return CloudConfig.load().fargate_config()
+        except Exception:  # noqa: BLE001 - a config read must not break the selector
+            return None

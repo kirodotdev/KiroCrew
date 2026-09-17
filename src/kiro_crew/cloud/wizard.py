@@ -12,6 +12,7 @@ into the testable engine modules (:mod:`cloud.ec2`, :mod:`cloud.iam`,
 
 from __future__ import annotations
 
+import dataclasses
 import secrets
 import threading
 import time
@@ -21,7 +22,8 @@ from typing import Optional
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes, ssm, ui
 from kiro_crew.cloud.aws import AWSError
-from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.cloud.config import DEFAULT_REGION
+from kiro_crew.cloud.launch_state import LaunchState
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.validation import ValidationError
 
@@ -360,7 +362,7 @@ def launch(
     wizard is embedded in a larger flow (``kirocrew setup``) that still has
     steps to print after this one.
     """
-    cfg = CloudConfig.load()
+    cfg = LaunchState.load()
     profile = profile or cfg.profile
     region = region or cfg.region or DEFAULT_REGION
     target = login_target or KiroLoginTarget()
@@ -505,13 +507,19 @@ def launch(
         if subnet_id:
             ui.info(f"Subnet: {subnet_id} (explicit --subnet; auto-discovery skipped)")
         # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
-        # would leave cloud.json pointing at a ROLLBACK_COMPLETE / no-instance
+        # would leave the record pointing at a ROLLBACK_COMPLETE / no-instance
         # stack on a failed first launch, and the NEXT `launch` would then treat
         # that broken stack as the saved deployment and abort at "instance not
-        # ready" instead of cleanly creating a new one. We set the in-memory
-        # fields (so progress streaming + failure diagnostics have the tag) but
-        # only `cfg.save()` AFTER a confirmed-healthy deploy below.
-        cfg.profile, cfg.region, cfg.last_tag = profile, region, tag
+        # ready" instead of cleanly creating a new one. We hold the fields in memory (so
+        # progress streaming + failure diagnostics have the tag) and only write the launch
+        # record AFTER a confirmed-healthy deploy below.
+        #
+        # The PRIOR pointer is a different question, and it is cleared HERE rather than left
+        # to the write below. See `_clear_prior_pointer`: leaving it is what would make a
+        # failed post-deploy write destructive rather than merely lossy.
+        if not _clear_prior_pointer(cfg.last_tag):
+            return 1
+        cfg = dataclasses.replace(cfg, profile=profile, region=region, last_tag=tag)
         ui.info("Provisioning EC2 + installing KiroCrew (this takes a few minutes)…")
         try:
             result = _deploy_with_progress(
@@ -545,8 +553,13 @@ def launch(
             return 1
         # Deploy succeeded (WaitCondition confirmed the gateway healthy) — NOW it
         # is safe to persist the tag as the saved deployment.
-        cfg.profile, cfg.region, cfg.last_tag = profile, region, tag
-        cfg.save()
+        #
+        # Into the LAUNCH RECORD, which this path owns, and not into `cloud.json`, which the
+        # operator owns and may have open in an editor. Writing there had to choose between
+        # overwriting their `fargate` block and refusing, and a refusal lands HERE -- after
+        # the instance is deployed and billing, before sign-in and dashboard setup -- so the
+        # command aborted over a file it did not need to write at all.
+        _record_launch(profile=profile, region=region, tag=tag)
         ui.ok(f"Instance {result.instance_id} is up and KiroCrew is healthy.")
     elif not result.instance_id:
         ui.warn("Previous cloud stack exists but the instance is not ready yet.")
@@ -739,8 +752,103 @@ def _ensure_session_manager_plugin(*, assume_yes: bool = False) -> bool:
     return False
 
 
+def _clear_prior_pointer(previous_tag: str) -> bool:
+    """Drop the pointer to the PREVIOUS stack before a new one is provisioned.
+
+    Returns False to abort the launch, and the two halves of this decision are opposites on
+    purpose. :func:`_record_launch` writes the pointer to the stack this launch just created,
+    after it is deployed and billing, so a failure there warns and continues -- losing that
+    pointer costs a ``kirocrew cloud list``. The pointer to the LAST stack is a different
+    object with a different failure: if it is still on disk when the post-deploy write fails,
+    the record names ``kc-old`` while ``kc-new`` is the stack that exists, and a later
+    ``cloud destroy`` with no ``--tag`` resolves ``kc-old`` and deletes a stack the operator
+    did not mean to touch. That is irreversible, it takes the data with it, and nothing the
+    operator can see says the pointer is stale.
+
+    Clearing it first makes the only reachable outcome of a failed write "no target", which is
+    an inconvenience, instead of "the wrong target", which is destruction. The same move as
+    removing the power from a file rather than defending its bytes.
+
+    This one refuses where the later write warns because of WHEN it runs: nothing has been
+    provisioned yet, so an abort costs the operator no stack and no bill -- while the later
+    write cannot abort anything without throwing away work already paid for.
+
+    ``clear_tag`` is conditional on the pointer still naming *previous_tag*, so a launch that
+    recorded its own tag in between is left alone. That is the right answer for the FILE -- the
+    pointer is current, not stale -- and it is NOT a reason to carry on: the question that
+    decides whether to provision is whose stack a no-tag ``destroy`` would name if this
+    launch's own write then failed, and the answer is the other launch's.
+
+    Its ``False`` covers two states and only one is a hazard, which is why the bool alone does
+    not decide: it also declines when there is NO pointer, which is the state this function
+    exists to reach. So a declined clear is followed by a read of what the pointer is now, and
+    only a different NON-EMPTY tag aborts.
+    """
+    if not previous_tag:
+        return True
+    try:
+        # Both values from ONE locked call: the tag reported is the one the compare saw, not a
+        # second read that can have moved again -- and ``clear_tag``'s bool alone cannot decide
+        # here, because it declines both when another launch recorded its own tag AND when
+        # there is no pointer at all. The second is the state this function exists to reach.
+        _cleared, saved_now = LaunchState.try_clear_tag(previous_tag)
+    except OSError as exc:
+        ui.fail(f"Could not clear the saved pointer to '{previous_tag}': {exc}")
+        ui.detail("Nothing was created, and nothing is billing.")
+        ui.detail(
+            f"Launching now could leave that pointer naming '{previous_tag}' while the new "
+            "stack is the one that exists, and a later `kirocrew cloud destroy` without "
+            f"--tag would delete '{previous_tag}'."
+        )
+        ui.detail("Free some disk space (or fix the file's permissions) and re-run.")
+        return False
+    if saved_now:
+        # A REFUSAL IS NOT A COMMIT. The clear declined and the pointer names a DIFFERENT stack,
+        # so another launch recorded its own while this one was being set up. That makes the
+        # pointer CURRENT rather than stale, which is why declining is the right answer for the
+        # file -- and reading it as success is the bug this branch exists for. The question that
+        # decides whether to provision is not "is the pointer stale", it is "if my own record
+        # write fails after the deploy, whose stack does a no-tag destroy name": that launch's,
+        # which is live and not this operator's to lose.
+        #
+        # So abort, in the same shape as the write failure above: nothing has been provisioned,
+        # so an abort costs nothing, and a re-run observes the pointer that is there now.
+        ui.fail(f"The saved pointer changed while this launch was starting: '{saved_now}'.")
+        ui.detail("Nothing was created, and nothing is billing.")
+        ui.detail(
+            f"Another launch recorded '{saved_now}'. Launching now could leave that tag saved "
+            "while this stack is the one that exists, and a later `kirocrew cloud destroy` "
+            f"without --tag would delete '{saved_now}'."
+        )
+        ui.detail("Re-run `kirocrew cloud launch` to launch against the current pointer.")
+        return False
+    return True
+
+
+def _record_launch(*, profile: str, region: str, tag: str) -> None:
+    """Write the launch record, and never fail the command over it.
+
+    Every caller runs AFTER its remote work: the instance is deployed and billing, or the
+    resume has already reattached. Sign-in, the dashboard tunnel and the closing instructions
+    still have to happen, and all of them matter more to the operator than a pointer file.
+
+    So a write failure warns and the wizard continues. Nothing is silently lost: the warning
+    names the tag, and `kirocrew cloud list` enumerates the real stacks, so the instance is
+    findable and re-attachable by tag even with no pointer on disk. The reverse -- aborting
+    here -- leaves a running instance whose sign-in never happened.
+
+    Narrow on purpose. Only `OSError` is swallowed, which is what a disk or permission
+    failure raises; anything else is a defect in this code and must surface.
+    """
+    try:
+        LaunchState.record(profile=profile, region=region, last_tag=tag)
+    except OSError as exc:
+        ui.warn(f"Could not save the launch record: {exc}")
+        ui.detail(f"The instance is up. Reach it with: kirocrew cloud connect --tag {tag}")
+
+
 def _select_existing_launch(
-    cfg: CloudConfig,
+    cfg: LaunchState,
     profile: str,
     region: str,
     *,
@@ -759,14 +867,17 @@ def _select_existing_launch(
     result = _resume_tag(selected.tag, profile, region)
     if result is None:
         return None
-    cfg.profile, cfg.region, cfg.last_tag = profile, region, selected.tag
+    cfg = dataclasses.replace(cfg, profile=profile, region=region, last_tag=selected.tag)
     if not selected.saved:
-        cfg.save()
+        # The launch record, for the reason the post-deploy write uses it: this runs after
+        # the resume has already reattached, so a write that can fail must not be a write
+        # that can fail the command.
+        _record_launch(profile=profile, region=region, tag=selected.tag)
     return result
 
 
 def _discover_existing_launches(
-    cfg: CloudConfig, profile: str, region: str
+    cfg: LaunchState, profile: str, region: str
 ) -> list[_ExistingLaunch]:
     """Find resumable stacks from saved state or CloudFormation discovery."""
     launches: list[_ExistingLaunch] = []
@@ -811,7 +922,7 @@ def _discover_existing_launches(
 
 
 def _choose_existing_launch(
-    launches: list[_ExistingLaunch], cfg: CloudConfig, *, assume_yes: bool = False
+    launches: list[_ExistingLaunch], cfg: LaunchState, *, assume_yes: bool = False
 ) -> _ExistingLaunch | None:
     """Return the stack the user chose to keep, or None to create a new one."""
     if not launches:
@@ -861,7 +972,7 @@ def _choose_existing_launch(
 
 
 def _preferred_existing_launch(
-    launches: list[_ExistingLaunch], cfg: CloudConfig
+    launches: list[_ExistingLaunch], cfg: LaunchState
 ) -> _ExistingLaunch:
     """Prefer the saved launch when non-interactive defaults are accepted."""
     if cfg.last_tag:
@@ -892,7 +1003,7 @@ def _deploy_result_for_tag(tag: str, profile: str, region: str) -> ec2.DeployRes
     )
 
 
-def _saved_launch_matches(cfg: CloudConfig, profile: str, region: str) -> bool:
+def _saved_launch_matches(cfg: LaunchState, profile: str, region: str) -> bool:
     return (cfg.profile or "") == (profile or "") and (cfg.region or DEFAULT_REGION) == region
 
 

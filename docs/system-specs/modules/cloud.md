@@ -74,11 +74,12 @@ claim that a hostile in-process agent is fully contained.
 | `login.py` | `kiro-cli` device-code / social sign-in on the box over SSM, plus `logout` — the account switch. `login` short-circuits on an existing session, so `logout` is what makes a different Kiro account reachable without a hand-run SSM command. It kills any still-polling background `kiro-cli login` **and** any live `kiro-cli acp` runtime **before** signing out (otherwise the login re-authenticates the old account, and an ACP runtime keeps serving the old account's in-memory credential until its next 401), removes the login log/PID/FIFO (they hold the previous device-code URL + code, which must never be re-shown as a fresh prompt), and confirms the result with `is_logged_in` rather than the exit code — `kiro-cli logout` exits non-zero when there was no session to drop, which is still the requested state. That confirmation fails CLOSED: it requires a positive signed-out sentinel (`__NOAUTH__`), so an SSM timeout or transport error — where the session may still be active — reports failure rather than a false "signed out". The same fail-closed applies to the cleanup command itself: if that SSM invocation doesn't return `Success`, the kills it was meant to do can't be trusted and logout reports failure without probing. The CLI warns the operator that in-flight chats/cron sessions are stopped (their runtimes are killed). |
 | `connect.py` | SSM port-forward + token mint + open browser; Instances-registry integration; `redact_token`. `is_launched_instance()` prevents the generic instance PATCH endpoint from rewriting a correlated launch’s connection method, SSM target, AWS profile, or region, so Stop/Start/Delete retain the stack address and a running billable instance is not stranded. |
 | `source.py` | Detect and package an editable local checkout (`git archive`, tarfile fallback) and upload it to a per-account S3 bucket; packaged installs instead use the template's public-repo clone fallback. The secret-excluding filter is shared by both packaging paths. Also **`ensure_instance_boundary`** — creates the shared, immutable `kirocrew-ec2-boundary` managed policy once (create-if-not-exists, never re-versioned) and returns its ARN; `delete_instance_boundary` for admin cleanup. |
-| `config.py` | Persisted profile / region / tag (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` — bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. |
+| `config.py` | Persisted profile / region / tag **plus the optional `fargate` block** (**never credentials**); `load()` tolerates a hand-edited/corrupt `cloud.json` -- bad JSON *or* a non-object shape falls back to defaults rather than crashing every cloud command. The `fargate` field holds the block **exactly as read**, and `fargate_config()` is what judges it. **This module has no writer:** no `save()`, no `apply_update()`, no lock. `profile` / `region` / `last_tag` are still READ here so an install whose pointer predates `launch_state.py` keeps resuming, and `launch_state.py` is where those three are written now. See "The Fargate lane's configuration home" and "Where launch state lives" below. |
+| `launch_state.py` | The product-owned launch record (`cloud_launch_state.json`): the profile, region and tag a LAUNCH decided. One writer, three fields, frozen dataclass, whole-record `atomic_write`. `load()` falls back to the legacy fields in `cloud.json` when the record holds none, read-only, so `cloud resume` works on an install that predates it. `clear_tag(expect)` clears only while the pointer still names the stack `destroy` deleted. See "Where launch state lives" below. |
 | `sizes.py` | arm64/Graviton size tiers (16 GB default `t4g.xlarge`). |
 | `fargate/` | A crew's Fargate task definition and `RunTask` request produced as **data**, by pure functions that call nothing. `identity.py` recovers which crew an ARN belongs to and refuses a document naming more than one; `taskdef.py` holds the revision key and the `RegisterTaskDefinition` document; `runtask.py` holds the launch request and the closed set of overrides it may carry. See "Fargate task definitions as data" below. |
-| `fargate_engine.py` | The `LaunchEngine` for Fargate, not yet reachable through `engine_for`: nothing registers it, and the provisioner id it will need belongs to the change that wires it, because the built-in id gates `size_key` against the EC2 instance ladder and a cpu/memory pair is not on it. Its teardown decides ownership from a task's tags: the `kirocrew:managed` marker is checked as a boolean gate **before** the identifier, so a task whose marker holds anything other than `true` is `UNMARKED` and is never stopped, and identity is then read under the imported `LAUNCH_TAG_KEY`. A running task this launch started but whose launch tag is absent or names another launch is `MISLABELLED`; both it and a running `UNMARKED` task carrying this launch's `startedBy` are REFUSED rather than deleted, and the plan returns `confirmed=False` naming the ARNs, because deleting on a `startedBy` match alone is a guess and reporting `True` would tell the operator their billing stopped when a task may still be running. Neither the marker's key nor its value nor the launch-tag key is spelled here; all three are imported from the modules that own them. |
-| `ui.py` / `wizard.py` | Terminal UI + the interactive launch flow. `_deploy_with_progress` runs the blocking deploy on a daemon thread and captures the `aws cloudformation deploy` child via a `proc_sink`, so a Ctrl+C on the main (poll) thread terminates it instead of orphaning it (~1800s). An unknown `--size`/`size_key` on the public `launch()` entrypoint yields a clean rc=1 + message, not an uncaught `KeyError`. Resuming a saved stack (`launch` after `stop`) first calls `_ensure_running_and_ssm_ready` — starts a `stopped` instance and waits for SSM `Online` before sign-in/tunnel (which are SSM-only and would otherwise fail); a `terminated` instance fails clean pointing at `--new`. `last_tag` is persisted (`cfg.save()`) **only after** a deploy confirms healthy — a failed first launch leaves no saved pointer, so the next `launch` retries clean instead of resuming a rolled-back/instance-less stack; `_saved_launch_is_usable` additionally ignores a stale saved tag (from an older build) whose stack is in a `_FAILED_STATES` status or has no instance. |
+| `fargate_engine.py` | The `LaunchEngine` for Fargate, reachable through `engine_for("aws_fargate")` when -- and only when -- `cloud.json` carries a complete `fargate` block (see the `config.py` row and "The Fargate lane's configuration home" below). The lane is registered by `DefaultRemoteProvisionerProvider`, which appends the descriptor to `provisioners()` on the same condition; an absent or incomplete block leaves the lane unregistered rather than registered and refusing, and `engine_for` then raises the same `KeyError` an unknown id raises. Registration makes the lane reachable through the API and does **not** put a row in the Set-up picker: `kind` names a frontend form and no renderer claims this kind yet, so the dashboard skips it. Its teardown decides ownership from a task's tags: the `kirocrew:managed` marker is checked as a boolean gate **before** the identifier, so a task whose marker holds anything other than `true` is `UNMARKED` and is never stopped, and identity is then read under the imported `LAUNCH_TAG_KEY`. A running task this launch started but whose launch tag is absent or names another launch is `MISLABELLED`; both it and a running `UNMARKED` task carrying this launch's `startedBy` are REFUSED rather than deleted, and the plan returns `confirmed=False` naming the ARNs, because deleting on a `startedBy` match alone is a guess and reporting `True` would tell the operator their billing stopped when a task may still be running. Neither the marker's key nor its value nor the launch-tag key is spelled here; all three are imported from the modules that own them. |
+| `ui.py` / `wizard.py` | Terminal UI + the interactive launch flow. `_deploy_with_progress` runs the blocking deploy on a daemon thread and captures the `aws cloudformation deploy` child via a `proc_sink`, so a Ctrl+C on the main (poll) thread terminates it instead of orphaning it (~1800s). An unknown `--size`/`size_key` on the public `launch()` entrypoint yields a clean rc=1 + message, not an uncaught `KeyError`. Resuming a saved stack (`launch` after `stop`) first calls `_ensure_running_and_ssm_ready` — starts a `stopped` instance and waits for SSM `Online` before sign-in/tunnel (which are SSM-only and would otherwise fail); a `terminated` instance fails clean pointing at `--new`. `last_tag` is persisted (to the launch record, via `_record_launch`) **only after** a deploy confirms healthy, and a write that fails there WARNS rather than aborting -- the instance is already billing and sign-in still has to happen — a failed first launch leaves no saved pointer, so the next `launch` retries clean instead of resuming a rolled-back/instance-less stack; `_saved_launch_is_usable` additionally ignores a stale saved tag (from an older build) whose stack is in a `_FAILED_STATES` status or has no instance. |
 | `templates/kirocrew-ec2.yaml` | The CloudFormation stack. |
 | `templates/kirocrew-fargate-base.yaml` | The account-and-region Fargate stack: the ECS cluster and an egress-only security group with no ingress. One per account and region, shared by every crew's tasks, so deleting one crew's stack cannot delete the cluster its siblings run on. |
 | `templates/kirocrew-fargate-crew.yaml` | The per-crew Fargate stack: the execution role (crew-scoped secret read, log write), a policy-less task role, and the log group. Resource names are the ones `identity.py` derives (`kirocrew-crew-<crew>-exec`, `-task`, `/kirocrew/crew/<crew>`) and `taskdef.py` refuses a document that disagrees with, so a rename on either side becomes a launch refusal rather than a mismatch that runs. The task role is created with no policies at all and must never gain `secretsmanager:GetSecretValue` -- the execution role holds that read, scoped to the one crew's secret namespace. |
@@ -172,12 +173,179 @@ The automatic delete is owner-pinned: `source.delete_source()` issues `s3api del
 
 When that delete fails, `cli_cloud._cloud_destroy()` prints an unpinned `aws s3 rm <uri>` as the manual fallback, with no profile, region, or owner pin. That fallback drops the anti-squat guarantee the rest of this module maintains, so an operator who follows it can delete against a replacement bucket instead of the one teardown owned. The owner-pinned equivalent is `aws --profile <profile> --region <region> s3api delete-object --bucket <bucket> --key <key> --expected-bucket-owner <account>`.
 
+## The Fargate lane's configuration home
+
+`cloud.json` gains an optional `fargate` block. It is the only place the Fargate
+lane is configured today: there is no wizard step and no dashboard renderer, so an
+operator writes it by hand.
+
+| Field | Meaning |
+|---|---|
+| `cluster` | the ECS cluster the task runs in |
+| `subnets` | list of subnet ids; at least one required |
+| `security_groups` | list of security-group ids; at least one required |
+| `image` | the container image, **digest-pinned only** (`<repo>@sha256:<64 hex>`) |
+| `secrets` | list of `[canonical name, ARN]` pairs; one must be named for the model credential |
+| `cpu_architecture` | `X86_64` or `ARM64`; defaults to `X86_64` |
+| `assign_public_ip` | JSON boolean; defaults to `false` |
+
+**Incomplete means absent.** A block missing any required field, naming a movable
+image tag, carrying a secret entry that is not a two-string pair, or carrying an
+`assign_public_ip` that is not a JSON boolean, leaves the lane **unregistered**
+rather than registered and refusing every launch. The credential secret is part of
+that judgement because `taskdef` refuses a definition that delivers none, so a
+block without it would register a lane that rejects every launch through it. The
+whole secret **set** is judged, by calling the engine's own `secret_destinations`
+and `sole_binding`: a valid credential reference sitting beside a malformed one, or
+beside one belonging to a different crew, voids the block rather than registering a
+lane whose every launch then fails. A present-but-non-boolean `assign_public_ip`
+voids the whole block rather than being coerced, because coercion would read the
+string `"false"` as true on the one field that decides network exposure. For the
+same reason **no** string-typed field is coerced: `str()` would turn JSON `false`
+into the non-empty string `"False"` and register a lane against a cluster that does
+not exist. The rejection is written once over the dataclass's string fields, so a
+field added later is covered without a new branch.
+
+The block is read **per call**, so editing `cloud.json` takes effect on the next
+request and deleting the block removes the lane, with no gateway restart. A read
+failure yields no lane rather than an exception, because the read happens while the
+provisioner list is being built and raising would hide the `aws_ec2` lane too.
+
+## Where launch state lives
+
+Two files, two owners. `cloud.json` is the OPERATOR's: they hand-write the `fargate` block
+into it, and the product only reads it. `cloud_launch_state.json` is the PRODUCT's: the
+launch path writes the profile, region and tag it decided, and nothing hand-edits it.
+
+| | `cloud.json` | `cloud_launch_state.json` |
+|---|---|---|
+| written by | the operator | the launch path only |
+| read for | the `fargate` block; the legacy pointer | profile, region, `last_tag` |
+| product writer | none | `LaunchState.record` / `clear_tag` |
+| sealed against agent writes | yes, defence in depth | yes: its tag selects a `destroy` target |
+| an aliased name | refused where a launch consumes the block | refused where a command consumes the tag |
+| lock | none: no product writer | one, serialising the launch write against `destroy`'s clear; a lock that cannot be taken RAISES rather than writing unlocked, and each writer's caller answers that `OSError` |
+
+They were one file, and every collision followed from that. A post-deploy write into a file a
+person may have left mid-edit has to choose between overwriting their bytes and refusing.
+Refusing lands after the deploy is billed and before sign-in, so the command aborts over a
+pointer; overwriting loses the block. Splitting the owners removes the choice.
+
+**`cloud resume` still re-attaches on an existing install.** Its pointer is in `cloud.json`,
+so `LaunchState.load()` falls back to those fields when the record holds none. The fallback is
+read-only -- migrating by writing would reintroduce the write being removed, and it would
+write on a READ, so any `cloud` subcommand would touch the operator's file. Once a launch has
+written the record, the record wins, so a stale pointer in `cloud.json` (which nothing clears
+now) cannot outrank the launch that actually happened, and a tag `destroy` cleared stays
+cleared.
+
+**A write failure does not fail the command.** `wizard._record_launch` swallows `OSError`,
+warns, and prints how to reach the instance. Every caller runs after its remote work, and
+sign-in, the tunnel and the closing instructions all matter more to the operator than a
+pointer -- which `kirocrew cloud list` can rediscover from the real stacks anyway.
+
 ## Security model
 
-- **No stored credentials.** `cloud.json` holds profile name + region + tag only;
-  the `aws` CLI resolves credentials via its own provider chain. Env-var-only
+- **No stored credentials.** `cloud.json` holds profile name + region + tag, plus
+  the `fargate` block's placement and its secret **names and ARNs** -- identifiers,
+  never values. The task's execution role fetches each secret's value from Secrets
+  Manager before the container starts. A name is carried beside its ARN because an
+  ARN alone cannot say where the secret's name ends: the service appends a
+  six-character suffix and nothing marks the boundary. The `aws` CLI resolves AWS
+  credentials via its own provider chain. Env-var-only
   credentials are unsupported (the sandbox scrubs `AWS_SECRET*`/`AWS_SESSION*`);
   `env_credentials_hint()` detects that and prints an actionable message.
+- **The credential recipient is confirmed at launch.** `cloud.json` is dangerous
+  only because of what it decides: `fargate.image` chooses the container a launch
+  runs, and the task's execution role delivers the model credential into it. So the
+  launch path resolves that recipient and requires the operator to have confirmed
+  it. `FargateConfig.credential_recipient()` renders the pair that decides it --
+  the digest-pinned image and the ARN of the secret carrying the credential -- and
+  `POST /api/cloud/launch` carries the operator's confirmation as
+  `confirm_recipient`. `FargateLaunchEngine.provision` resolves the recipient from
+  the spec it is about to launch, compares it, and refuses an empty or differing
+  value before `RegisterTaskDefinition` and before `RunTask`, naming both values.
+  A rewritten block therefore produces a **refused launch the operator sees**
+  rather than a silent substitution. The confirmation does not come from the file
+  and is not persisted, so nothing here depends on a filesystem property; one
+  renderer serves both sides, so the shown value and the launched value cannot be
+  spelled differently. A launch job resumed after a gateway restart carries no
+  confirmation and is refused, because persisting one would put the answer on disk
+  beside the file it is meant to be independent of.
+- **Nothing in the product writes `cloud.json`.** The launch path's own profile,
+  region and tag live in `cloud_launch_state.json` (`launch_state.py`), so there is
+  no post-deploy write into the operator's file: nothing to refuse, nothing to
+  clobber, and no cross-process lock to hold. `config.py` exposes no writer at all,
+  which is asserted on the module rather than on one path -- no function in it calls
+  a writing primitive.
+- **`cloud.json` is also sealed against agent writes**, as defence in depth rather
+  than as the property the design rests on. It is in
+  `security.paths._WRITE_PROTECTED_HOME_PATHS`: readable, because the gateway reads
+  it on every request to build the provisioner list, but not writable through an
+  agent's file-edit tool. Nothing in the product writes it, so no product writer
+  needs exempting from that gate. Known limitation, scoped separately: the crew-home
+  leaf-seal mechanism this entry uses is per-leaf and shared by every governance
+  leaf, so strengthening it is a change to all of them rather than to this one.
+- **The launch record is sealed too**, on all three layers `cloud.json` uses: the
+  file-write gate, the OS read-only seal, and absent-file pre-creation so the seal
+  has a file to bind to. Its reason is its own rather than inherited -- the tag in it
+  is what `cloud destroy` resolves when no `--tag` is given, so a writable copy lets
+  an agent choose which stack a `destroy --yes` deletes. Moving the tag out of
+  `cloud.json` moved that power with it, so sealing the record is what finishes the
+  move rather than one more door. It is NOT in the strict no-alias list: that list is
+  walked where a spawn is prepared, so a leaf in it refuses every sandboxed spawn on a
+  host whose files legitimately carry a second name. The record's own alias refusal
+  sits at its consume seam instead, in the bullet below.
+- **A write to the record can only ever leave "no target", never "the wrong target".** The two
+  halves are opposites deliberately. BEFORE provisioning a new stack, the pointer to the
+  PREVIOUS one is cleared and a failure ABORTS the launch (`wizard._clear_prior_pointer`) --
+  nothing is created and nothing bills, so an abort is free. AFTER the deploy confirms, a
+  failed write only WARNS (`wizard._record_launch`, and `destroy`'s own `clear_tag`) -- the
+  irreversible work is done and cannot be retried, so losing the pointer costs a
+  `kirocrew cloud list`. Without the first half the second is destructive rather than lossy: a
+  failed post-deploy write would leave the record naming the old stack while the new one is
+  what exists, and a later `destroy` with no `--tag` would delete the old one. A DECLINED clear
+  aborts the launch too when a different tag is saved: declining means another launch recorded
+  its own stack, so provisioning would make that stack's tag the saved one. The decision uses
+  the tag the compare saw (`LaunchState.try_clear_tag`, inside the same lock hold), not the
+  bool, because a decline also happens when no pointer is saved at all -- which is the state
+  the clear exists to reach and is safe to launch from.
+- **An aliased launch record is refused where a command CONSUMES its tag**, in
+  `LaunchState.load` (`sandbox.require_unaliased_launch_state`). All three seal layers
+  name a PATH, and a symlink at the name or a second hardlink to the inode is reachable
+  by a name none of them covers -- so a write through it puts any tag in the record and
+  `cloud destroy --yes` deletes the stack it names, with `cloud launch` re-attaching to
+  it as the same substitution one step quieter. **The legacy fallback is guarded too**: when
+  the record holds nothing, `load` reads `cloud.json`'s fields, and that file is then the
+  source of the tag, so `require_unaliased_cloud_config` runs before it is read. Its own
+  launch-seam guard (`defaults.engine_for`) never runs on a teardown, and the empty record
+  the sandbox pre-creates is the default state, so without that call the same hole stayed
+  open through the old file. The refusal takes the path being read
+  rather than deriving it, so the file checked and the file consumed cannot differ. It
+  is a named refusal, not an escaping exception: `handle_cloud` catches it for the whole
+  dispatch table and prints the file, the shape and one command that clears it. That command
+  is rendered for the operator's own platform by `sandbox._delete_file_command` -- `rm` with
+  POSIX quoting, or `del "<path>"` on Windows, which is a `cmd` builtin and a PowerShell alias
+  where `rm` is neither and POSIX single quotes are not quoting characters. The platform is a
+  PARAMETER, not only a read of `IS_WINDOWS`, so both renderings are testable from one host.
+  `clear_tag` deliberately uses the unguarded read -- it runs after `destroy` has already
+  deleted the stack, and a refusal there would abort a command whose irreversible work is done.
+- **An aliased governance leaf WARNS on the spawn path, on every platform.**
+  `_materialize_sealable_ceilings` runs from `namespace_argv` on every Linux
+  sandboxed spawn, so a refusal there refuses all of the host's agent work -- chat,
+  cron, subagents -- whenever a leaf carries a second name, which is what stow,
+  chezmoi and `rsync --link-dest` leave behind. The strict refusal for `cloud.json`
+  lives where a launch consumes the file instead
+  (`require_unaliased_cloud_config`, called from the provisioner seam), so the alias
+  costs one lane's launch rather than the box. `playwright-cli` keeps main's own
+  strict DIRECTORY rule, which this change does not touch.
+- **An aliased `cloud.json` is refused where a launch CONSUMES it**, in
+  `DefaultRemoteProvisionerProvider.engine_for`, and only warned about on the
+  universal spawn path (`sandbox._warn_aliased_strict_leaves`). Refusing on the spawn
+  path failed every sandboxed spawn on the host -- chat turns, cron jobs, subagents --
+  when the file carried a second name, which is what stow, chezmoi and
+  `rsync --link-dest` leave behind. The exposure is one lane's launch, so that is what
+  the refusal costs.
 - **Injection closed in depth.** tag/region/profile/CIDR/repo/ref/run_as are
   charset-validated (`validation.FieldSpec`) before reaching argv; `ec2.validate_profile()` aliases `deploy.profiles.PROFILE_SPEC`, which admits `+` in IAM Identity Center-derived profile names while excluding option-shaped names, so valid profile names remain usable without weakening argv validation; **and** the
   template mirrors those charsets as `AllowedPattern`s so a direct

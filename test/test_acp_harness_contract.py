@@ -85,7 +85,9 @@ def kiro_gates_pass(monkeypatch):
     """All three of the kiro spawn's pre-spawn gates answer "go"."""
     monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
     monkeypatch.setattr(agent_mod, "require_fork_governance", lambda agent, work_dir: None)
-    monkeypatch.setattr(sandbox_mod, "delegated_workspace_exposes_agents_dir", lambda work_dir: "")
+    monkeypatch.setattr(
+        sandbox_mod, "delegated_workspace_exposes_sealed_target", lambda work_dir: ""
+    )
 
 
 @pytest.fixture
@@ -247,7 +249,7 @@ async def test_kiro_spawn_refuses_a_workspace_overlapping_the_agents_tree(
 
     monkeypatch.setattr(
         sandbox_mod,
-        "delegated_workspace_exposes_agents_dir",
+        "delegated_workspace_exposes_sealed_target",
         lambda work_dir: "overlaps agents dir",
     )
     with pytest.raises(AcpRuntimeError, match="overlaps agents dir"):

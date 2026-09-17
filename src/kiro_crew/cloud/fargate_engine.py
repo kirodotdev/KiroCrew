@@ -64,6 +64,7 @@ from kiro_crew.cloud.fargate import (
     SecretRef,
     TaskDefinitionSpec,
     TaskSize,
+    credential_recipient,
     default_log_spec,
     revision_fingerprint,
     run_task_request,
@@ -406,6 +407,24 @@ class FargateLaunchSpec:
     image: str
     secrets: tuple[SecretRef, ...]
     cpu_architecture: str
+    #: The credential recipient the OPERATOR confirmed for this launch, as
+    #: ``CloudConfig.fargate_config().credential_recipient()`` renders it -- the image that
+    #: receives the model credential, and the ARN of the secret that delivers it.
+    #:
+    #: It is what keeps the protections ON ``cloud.json`` defence in depth rather than
+    #: load-bearing. Every field above is read from that file, so an agent that could write the
+    #: file could choose the container the credential is handed to, and every defence that
+    #: answers this by protecting the file is a protection over a NAME -- a seal, a mask, an
+    #: alias check -- which has to be complete across platforms and shapes to hold. This value
+    #: comes from somewhere else entirely: the launch request the operator made.
+    #: :meth:`FargateLaunchEngine.provision` compares it to what it resolves from the spec and
+    #: refuses when they differ, so rewriting the file turns a silent substitution into a
+    #: refused launch that names both values.
+    #:
+    #: Empty means NOT CONFIRMED and is refused, not waved through. The default exists so a
+    #: caller constructing a spec has to pass the confirmation to get a usable one, rather
+    #: than getting a launch it never confirmed.
+    confirmed_recipient: str = ""
 
 
 def _tier_as_pair(size_key: str) -> Optional[str]:
@@ -570,6 +589,10 @@ class FargateLaunchEngine:
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
         """Register or reuse a task definition revision and ``RunTask`` it.
 
+        Refuses first of all when the operator has not confirmed the credential recipient
+        this launch resolves (:attr:`FargateLaunchSpec.confirmed_recipient`), before the tag
+        checks and before anything is registered or run.
+
         Owns the two obligations the ``fargate`` module leaves to its caller. It
         refuses a ``tag`` or derived ``started_by`` outside the accepted charset
         (or a ``started_by`` longer than :data:`STARTED_BY_MAX`) here rather than
@@ -582,6 +605,34 @@ class FargateLaunchEngine:
         Returns the task ARN ``RunTask`` reports.
         """
         spec = self._require_spec()
+        # FIRST, before the tag checks and before any AWS call: this launch delivers the
+        # model credential into a container that `cloud.json` names, so the operator must
+        # have confirmed which container that is. Resolved from the SPEC -- what is about to
+        # run -- rather than re-read from the file, and compared to what the operator
+        # confirmed in the launch request, which is not on disk at all.
+        #
+        # That is what lets `cloud.json` be an ordinary file. A rewrite of it changes the
+        # value resolved here, so it stops matching the confirmation and the launch is
+        # refused with both values shown, instead of silently handing the credential to an
+        # image the operator never chose. No seal, mask or alias check is involved, so none
+        # of the ways those can be incomplete reaches this.
+        #
+        # Refused BEFORE `RegisterTaskDefinition` as well as before `RunTask`: a revision
+        # carrying the secret ARNs is durable in the account, so a confirmation checked only
+        # at run time would already have written the recipient down.
+        resolved = credential_recipient(spec.image, spec.secrets)
+        if not spec.confirmed_recipient:
+            raise ValueError(
+                "this launch would hand the model credential to "
+                f"{resolved}, and nothing in the request confirmed that recipient; "
+                "re-request the launch confirming it"
+            )
+        if spec.confirmed_recipient != resolved:
+            raise ValueError(
+                "the confirmed credential recipient does not match this launch: confirmed "
+                f"{spec.confirmed_recipient}, would deliver to {resolved}. The Fargate block "
+                "in cloud.json changed since it was confirmed, so nothing was launched"
+            )
         if not tag or not _TAG_VALUE_RE.match(tag):
             raise ValueError(
                 f"launch tag {tag!r} is outside the letters, digits, hyphen and underscore a "
