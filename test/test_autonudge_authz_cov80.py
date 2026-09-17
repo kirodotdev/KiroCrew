@@ -1023,6 +1023,7 @@ class TestNormalizeBannerTruncate:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.asyncio
 async def test_add_admits_supervised_kiro_cli_owner_without_a_slot(audits: list[dict]) -> None:
     svc = RecordingSvc()
     state = _state()
@@ -1041,6 +1042,7 @@ async def test_add_admits_supervised_kiro_cli_owner_without_a_slot(audits: list[
     assert audits[-1]["outcome"] == "success"
 
 
+@pytest.mark.asyncio
 async def test_add_denies_kiro_cli_owner_on_unsupervised_gateway(audits: list[dict]) -> None:
     svc = RecordingSvc()
     state = _state()
