@@ -153,12 +153,24 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again for the project-path resolver (``ProjectPathVerdict`` /
+#: ``resolve_project_path`` in ``paths.py``) and the two names it adds to the facade's
+#: owner table and ``TYPE_CHECKING`` block. A scheduled job may name a directory, and
+#: that one answer -- sensitive, resolved, is-a-directory -- has to be decided in this
+#: package rather than by each caller probing the path itself, because a sensitive path
+#: must be refused before anything stats it.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+#:
+#: The value is MEASURED from the merged tree rather than taken from either side of a
+#: rebase: each side counts only its own additions, so either number pins a total the
+#: merged package already exceeds. `test_the_package_stays_within_its_line_budget`
+#: confirms the number below against the tree it ships with.
+_PACKAGE_LINE_BUDGET = 28_448
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

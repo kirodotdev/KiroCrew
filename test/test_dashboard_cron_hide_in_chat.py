@@ -81,6 +81,11 @@ class TestCronUpdateHideInChat:
         mock_job = MagicMock()
         mock_job.id = job_id
         state.crons.update_job_async = AsyncMock(return_value=mock_job)
+        # The job-level owner gate fetches the job first via get_job_async;
+        # project_path="" (unbound) makes it pass through unconditionally.
+        existing_job = MagicMock()
+        existing_job.project_path = ""
+        state.crons.get_job_async = AsyncMock(return_value=existing_job)
         request = MagicMock()
         request.app = {"state": state}
         request.match_info = {"job_id": job_id}

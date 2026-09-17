@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random  # noqa: F401 -- patch seam: tests patch kiro_crew.cron.random.uniform
 import threading
 import time
@@ -93,6 +94,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _CHAT_FOLDER_NEEDS_PERSISTENT,
     _CRON_STRING_FIELD_CAPS,
     _MIN_INTERVAL_SECS,
+    _PROJECT_PATH_OVERLAPS_DATA_HOME,
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
@@ -156,6 +158,7 @@ from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
     _FILE_LOCK_TIMEOUT_SECS,
     _STORE_VERSION,
     CronPendingMismatch,
+    CronProjectBoundDenied,
     CronStoreBusy,
     CronStoreUnreadable,
     _is_loadable_record,
@@ -191,6 +194,8 @@ from kiro_crew.process_identity import (
 )
 from kiro_crew.resource_status import admission_check
 from kiro_crew.runtime_ownership import authorize_runtime_kill
+from kiro_crew.sandbox import voice_runtime_workspace_conflict
+from kiro_crew.security import resolve_project_path
 from kiro_crew.validation import (  # noqa: F401 -- re-exported
     CHANNEL_MAX_LEN,
     MAX_CRON_MESSAGE,
@@ -365,6 +370,12 @@ def job_pause_state_from_disk(job_id: str) -> str | None:
 
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
+# Distinguishes "the caller passed no expect_project_path precondition" from
+# "the caller expects the field to be the empty string (unbound)" -- both are
+# meaningfully different states for `_update_job_locked`'s compare-and-swap,
+# and `None`/`""` cannot tell them apart since "" is itself a valid expected
+# value, not an absence of one.
+_UNSET = object()
 #: How many ROUNDS of key-ending a reap or cancel runs over a run
 #: (``_end_run_sessions``): the first ends every key the run had registered,
 #: each with ONE reset-then-kill pass (``_end_run_processes``) under the key's
@@ -463,11 +474,13 @@ class CronService:
         base_dir: Path | None = None,
         on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
         *,
+        on_jobs_removed: Callable[[set[str]], None] | None = None,
         _defer_initial_load: bool = False,
     ):
         self._dir = base_dir if base_dir is not None else _default_dir()
         self._path = self._dir / _CRONS_FILE
         self._on_job = on_job
+        self._on_jobs_removed = on_jobs_removed
         self._jobs: list[CronJob] = []
         self._timer_task: asyncio.Task[None] | None = None
         # True only for the span of an in-flight _on_timer() dispatch pass
@@ -552,6 +565,13 @@ class CronService:
         # the entire exact key, not one caller's reference to it.
         self._active_session_lock = threading.Lock()
         self._active_session_keys: dict[str, dict[str, _RunClaim | None]] = {}
+        # Structural removals stage their ids here; the atomic save is the sole
+        # commit boundary that evicts exact session handles and notifies observers.
+        # This keeps every current and future _remove_job_rows caller from having
+        # to remember a separate post-save publication step. A failed save publishes
+        # nothing, and a later save filters staged ids against the rows it actually
+        # commits (important for tests/fault injectors that replace _save entirely).
+        self._removed_job_ids_pending_publish: set[str] = set()
         self._sessions: SessionManager | None = None
         self._reaper_task: asyncio.Task[None] | None = None
         self._push_refresh: Callable[[str], None] | None = None  # set externally
@@ -615,6 +635,8 @@ class CronService:
         cls,
         base_dir: Path | None = None,
         on_job: Callable[[CronJob], Awaitable[str | None]] | None = None,
+        *,
+        on_jobs_removed: Callable[[set[str]], None] | None = None,
     ) -> "CronService":
         """Async factory for event-loop contexts (the gateway).
 
@@ -631,7 +653,12 @@ class CronService:
         Genuinely-sync, loop-less processes (CLI, MCP server, apps SDK, tests)
         must keep using the plain constructor, which loads inline.
         """
-        self = cls(base_dir=base_dir, on_job=on_job, _defer_initial_load=True)
+        self = cls(
+            base_dir=base_dir,
+            on_job=on_job,
+            on_jobs_removed=on_jobs_removed,
+            _defer_initial_load=True,
+        )
         # Bind to the gateway loop so off-loop mutation paths (async mutators'
         # worker cores, app-hook/SDK calls offloaded via asyncio.to_thread) can
         # re-arm the timer thread-safely — see _arm_timer / __init__ _loop.
@@ -941,6 +968,14 @@ class CronService:
                         status="timeout",
                         summary=job.last_error or "",
                         error=job.last_error or "",
+                        # See CronRunRecord.project_bound. A reaped run's text
+                        # lands in ``summary``, which the non-owner withhold
+                        # pass treats as agent output -- and unlike the three
+                        # named project-bound skips, a timed-out run's
+                        # ``last_error`` is whatever the run itself produced
+                        # inside the bound cwd. Leaving the field at its False
+                        # default would serve that path-stripped only.
+                        project_bound=bool(job.project_path),
                     )
                     await self._history.append(record)
                     if self._push_refresh:
@@ -1648,6 +1683,13 @@ class CronService:
                         status="cancelled",
                         summary=job.last_error or "",
                         error=job.last_error or "",
+                        # See CronRunRecord.project_bound, and the reaper's
+                        # sibling record above: a cancelled run's text lands in
+                        # ``summary``, which the non-owner withhold pass treats
+                        # as agent output, and it is whatever the run produced
+                        # inside the bound cwd before it was cut short rather
+                        # than one of the three named project-bound skips.
+                        project_bound=bool(job.project_path),
                     )
                     await self._history.append(record)
                     if self._push_refresh:
@@ -1725,6 +1767,7 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        project_path: str = "",
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1786,6 +1829,7 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            project_path=project_path,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1819,8 +1863,17 @@ class CronService:
         registrars (e.g. a CLI enable racing gateway boot) cannot both
         observe the name as absent and persist duplicates. Returns None when
         a matching job already exists.
+
+        Like :meth:`add_job_async`, a non-empty ``project_path`` kwarg is
+        resolved via :meth:`_validate_project_path_async` (a worker-thread
+        offload) before the on-loop build, since ``_build_job`` cannot run
+        that syscall-bearing check inline without stalling the loop.
         """
-        job = self._build_job(**kwargs)
+        project_path = kwargs.get("project_path") or ""
+        resolved_project_path = (
+            await self._validate_project_path_async(project_path) if project_path else None
+        )
+        job = self._build_job(**kwargs, _resolved_project_path=resolved_project_path)
         persisted = await asyncio.to_thread(self._persist_add_if_absent_locked, predicate, job)
         if not persisted:
             return None
@@ -1889,6 +1942,106 @@ class CronService:
     #: through it, so each create surface validates identically before disk work.
     _build_job = staticmethod(build_job)
 
+    @staticmethod
+    def _validate_project_path(raw: str) -> str:
+        """Validate a cron job's ``project_path``. Returns the resolved path.
+
+        Mirrors ``chat_folders._validate_project_dir``'s shape (absolute,
+        resolved, non-sensitive, existing directory) so a cron's project
+        binding is held to the same bar as a chat folder's. Raises
+        ``ValueError`` on any failure — this runs inside
+        :func:`~kiro_crew.cron_service.fields.build_job`, the single locked
+        create chokepoint, so a rejected path never reaches disk as part of a
+        job.
+
+        The realpath/sensitivity/existing-directory core is
+        :func:`security.resolve_project_path`; the absolute/``~`` gate, the
+        raise-on-failure shape, and the SEL denial log are this create surface's.
+        A fourth gate follows them: the macOS voice-runtime pre-flight the four
+        sibling directory-choice surfaces already run, so a directory that would
+        raise from the fail-closed spawn guard on every fire is refused at save
+        instead of auto-pausing the job. It is last so no path that refuses
+        today changes its sentence, and it is value-free like the other three.
+
+        Synchronous filesystem I/O (``os.path.realpath``, ``os.path.isdir``, and
+        the pre-flight's own lexical scan) — callers on the event loop MUST NOT
+        call this directly. Use
+        :meth:`_validate_project_path_async` instead, which offloads the same
+        check to a worker thread; an unavailable NFS/FUSE-backed path here
+        would otherwise stall the gateway's single event loop.
+        """
+        if not os.path.isabs(raw) and not raw.startswith("~"):
+            raise ValueError("project_path must be an absolute path")
+        verdict = resolve_project_path(raw)
+        if verdict.sensitive:
+            # Exception-contained like this file's other audit calls: the
+            # refusal below is the caller's answer (a 400), and a `sel()` that
+            # cannot be constructed must not convert it into an unhandled 500
+            # -- which would ALSO drop the denial row this call exists to write.
+            try:
+                sel.sel().log_api_access(
+                    caller="cron",
+                    operation="cron.project_path",
+                    outcome="denied",
+                    source="cron",
+                    resources=verdict.resolved,
+                    error="sensitive path",
+                )
+            except Exception:
+                logger.debug("SEL logging failed for sensitive project_path", exc_info=True)
+            raise ValueError("project_path refers to a sensitive path")
+        if not verdict.is_dir:
+            raise ValueError("project_path must be an existing directory")
+        # Pre-flight the fail-closed macOS voice-runtime spawn guard, the LAST
+        # gate after the three above so no path that refuses today changes its
+        # sentence: only a directory that PASSES the absolute/sensitive/is_dir
+        # bar can reach this. Without it a directory that CONTAINS the data
+        # home (an ancestor of it is not itself `sensitive` — is_sensitive_path
+        # answers the inside direction) saved fine and then raised on EVERY
+        # fire, spending a strike each time until the job auto-paused. The four
+        # sibling directory-choice surfaces already pre-flight it
+        # (`chat_folders._folder_project_overlap_denied`, the chat project
+        # endpoint, `set_project`, `session_directive_apply`), all through the
+        # same shared scan, so this cannot drift from the guard it mirrors.
+        # `voice_runtime_workspace_conflict` is imported at module level above
+        # (`sandbox` is a heavy module, but `cron` is imported early on every
+        # boot anyway, so the cost is paid once regardless of where the import
+        # sits).
+        # Darwin-gated inside the helper, deliberately: every spawn-time guard
+        # early-returns off macOS, so a workspace that overlaps the data home
+        # fires fine on Linux/Windows and refusing it here would delete a
+        # working configuration to prevent a macOS-only harm.
+        if voice_runtime_workspace_conflict(verdict.resolved) is not None:
+            try:
+                sel.sel().log_api_access(
+                    caller="cron",
+                    operation="cron.project_path",
+                    outcome="denied",
+                    source="cron",
+                    resources=verdict.resolved,
+                    error="voice runtime overlap",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for project_path voice-runtime overlap", exc_info=True
+                )
+            raise ValueError(_PROJECT_PATH_OVERLAPS_DATA_HOME)
+        return verdict.resolved
+
+    @classmethod
+    async def _validate_project_path_async(cls, raw: str) -> str:
+        """Event-loop-safe :meth:`_validate_project_path`.
+
+        Offloads the same absolute/resolved/non-sensitive/existing-directory
+        check to a worker thread via ``asyncio.to_thread`` — the async build
+        paths (:meth:`add_job_async`, :meth:`add_job_if_absent_async`) resolve
+        ``project_path`` through this BEFORE calling
+        :func:`~kiro_crew.cron_service.fields.build_job`, then pass the
+        already-resolved path in via ``_resolved_project_path`` so the builder
+        does not repeat the syscalls on the loop.
+        """
+        return await asyncio.to_thread(cls._validate_project_path, raw)
+
     def _persist_add_locked(self, job: CronJob) -> None:
         """Lock/reload/append/save for a new job — the thread-safe disk core.
 
@@ -1941,17 +2094,26 @@ class CronService:
         timeout_secs: int = 0,
         source_preset: str = "",
         source_template_prompt: str = "",
+        project_path: str = "",
     ) -> CronJob:
         """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
         The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
         calling the sync :meth:`add_job` there parks the loop in the bounded lock
-        spin under contention. This builds+validates on the loop (no I/O),
-        offloads the lock+persist to a worker thread via ``asyncio.to_thread``
-        (the disk core is thread-safe — flock on separate fds mutually excludes
-        in-process too), then re-arms the timer back on the loop. Raises
+        spin under contention. This builds+validates on the loop, offloads the
+        lock+persist to a worker thread via ``asyncio.to_thread`` (the disk core
+        is thread-safe — flock on separate fds mutually excludes in-process
+        too), then re-arms the timer back on the loop. Raises
         :class:`CronStoreBusy` (retryable) on sustained contention; the public
         boundaries translate it to a clean 409 / structured error.
+
+        ``project_path`` is the one field in ``_build_job`` that does real
+        filesystem I/O (``os.path.realpath``, ``os.path.isdir``), so it is
+        resolved here via :meth:`_validate_project_path_async` — a worker-thread
+        offload — BEFORE the on-loop build, and the already-resolved value is
+        passed through so ``_build_job`` does not repeat the syscalls on the
+        loop. An unavailable NFS/FUSE-backed path would otherwise stall the
+        gateway's single event loop for the duration of the stat.
 
         Optional presentation/routing fields (``agent_id``, ``model``,
         ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
@@ -1959,6 +2121,9 @@ class CronService:
         follow-up unlocked ``_save()`` (which could race a concurrent create and
         drop a job).
         """
+        resolved_project_path = (
+            await self._validate_project_path_async(project_path) if project_path else None
+        )
         job = self._build_job(
             name,
             message,
@@ -1990,6 +2155,8 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            project_path=project_path,
+            _resolved_project_path=resolved_project_path,
         )
         # Dashboard-only template provenance. Set on the freshly-built job
         # BEFORE the off-loop persist -- the object has no other reference yet,
@@ -2075,6 +2242,20 @@ class CronService:
         # to, and clobberable by, the others. A dict the caller allocated is seen
         # by that caller alone.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        # Same shape again for the owner-authorization decision itself: the
+        # dashboard handler reads the job's `project_path` OUTSIDE this lock
+        # to decide whether the caller needs owner authorization, then applies
+        # the update separately here. A concurrent owner bind/unbind landing
+        # in that gap would let a non-owner's already-authorized (on the
+        # stale snapshot) update or run execute against a project it was
+        # never checked against -- the multi-human TOCTOU this field exists
+        # to close. `_UNSET` (not `None`) is the "no precondition" sentinel,
+        # since the empty string is itself a meaningful expected value
+        # (unbound) that must be distinguishable from "the caller didn't ask".
+        expect_project_path = kwargs.pop("expect_project_path", _UNSET)
+        # Owner authorization for a job that ALREADY carries a binding, decided
+        # here rather than from a caller-side read: see CronProjectBoundDenied.
+        refuse_project_bound = bool(kwargs.pop("refuse_project_bound", False))
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -2090,6 +2271,10 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
+                if refuse_project_bound and job.project_path:
+                    raise CronProjectBoundDenied("job is project-bound")
+                if expect_project_path is not _UNSET and job.project_path != expect_project_path:
+                    raise CronPendingMismatch("project binding changed concurrently")
                 apply_job_update(job, kwargs, chat_folder_out)
                 self._save()
                 logger.info("Updated cron job %s", job_id)
@@ -2428,8 +2613,17 @@ class CronService:
         on save failure restore the returned ``(job, previous_owner)`` pairs
         (and reset the fingerprint where its path requires it). Grant-epoch
         bumps read the live rows, so callers bump BEFORE calling this.
+
+        Exact active-session-key eviction and observer notification are staged
+        here but published by :meth:`_save` only after its atomic store replace
+        succeeds. Keeping that commit boundary in ``_save`` means every future
+        caller of this sanctioned helper gets persist-before-publication ordering
+        without another rollback obligation. A failed save leaves the exact key
+        available to cancel/reaper and tells no observer about a deletion that
+        durable state still contains.
         """
         self._jobs = [j for j in self._jobs if j.id not in removed_ids]
+        self._removed_job_ids_pending_publish.update(removed_ids)
         return self._release_children_of_removed(removed_ids)
 
     def _release_children_of_removed(self, removed_ids: set[str]) -> list[tuple[CronJob, str]]:
@@ -2955,42 +3149,62 @@ class CronService:
         return await asyncio.to_thread(self._owner_keys_locked)
 
     def enable_job(
-        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+        self,
+        job_id: str,
+        enabled: bool = True,
+        expect_project_path: str | object = _UNSET,
+        *,
+        expected_owner: str | None = None,
     ) -> bool:
         """Enable or disable a job by ID.
+
+        ``expect_project_path``, when passed, closes the same TOCTOU the
+        update path's precondition of the same name closes (see
+        :meth:`update_job_async`): re-verified against the freshly reloaded
+        record UNDER the lock, atomically with the actual toggle, rather than
+        trusting a snapshot the caller read separately before deciding
+        whether the request needed owner authorization.
 
         Raises :class:`CronStoreBusy` on lock contention; see
         :meth:`enable_job_async` for the event-loop-safe variant.
         """
-        ok = (
-            self._enable_job_locked(job_id, enabled, expected_owner=expected_owner)
-            if expected_owner is not None
-            else self._enable_job_locked(job_id, enabled)
+        ok = self._enable_job_locked(
+            job_id, enabled, expect_project_path, expected_owner=expected_owner
         )
         if ok:
             self._arm_timer()
         return ok
 
     async def enable_job_async(
-        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+        self,
+        job_id: str,
+        enabled: bool = True,
+        expect_project_path: str | object = _UNSET,
+        *,
+        expected_owner: str | None = None,
     ) -> bool:
         """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
 
         Raises :class:`CronStoreBusy` (retryable) on sustained contention.
         """
-        ok = (
-            await asyncio.to_thread(
-                self._enable_job_locked, job_id, enabled, expected_owner=expected_owner
-            )
-            if expected_owner is not None
-            else await asyncio.to_thread(self._enable_job_locked, job_id, enabled)
+        ok = await asyncio.to_thread(
+            self._enable_job_locked,
+            job_id,
+            enabled,
+            expect_project_path,
+            expected_owner=expected_owner,
         )
         if ok:
             self._arm_timer()
         return ok
 
     def _enable_job_locked(
-        self, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+        self,
+        job_id: str,
+        enabled: bool = True,
+        expect_project_path: str | object = _UNSET,
+        *,
+        expected_owner: str | None = None,
     ) -> bool:
         """Lock/reload/mutate/save core; app ownership is checked under the lock.
 
@@ -2998,6 +3212,13 @@ class CronService:
         process has changed the store. Missing and foreign jobs both refuse
         when an expected owner is supplied; ordinary host calls retain False
         for a missing job.
+
+        ``expect_project_path`` is a precondition rather than an
+        authorization: it is re-verified here, under the same lock and
+        atomically with the toggle, so a binding that changed since the
+        caller's snapshot refuses instead of toggling a job the caller never
+        inspected. Authorization is settled first — a foreign caller is
+        refused without its request reporting on a binding it may not read.
         """
         with self._file_lock():
             self._sync_for_write()
@@ -3005,6 +3226,11 @@ class CronService:
                 if job.id == job_id:
                     if expected_owner is not None and job.created_by != expected_owner:
                         raise PermissionError("Cron job ownership violation")
+                    if (
+                        expect_project_path is not _UNSET
+                        and job.project_path != expect_project_path
+                    ):
+                        raise CronPendingMismatch("project binding changed concurrently")
                     job.user_paused = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
@@ -3122,6 +3348,40 @@ class CronService:
             if not keys:
                 self._active_session_keys.pop(job_id, None)
 
+    def stale_session_key(self, job_id: str) -> str | None:
+        """The newest live key for ``job_id`` that the RUN NOW EXECUTING did not mint.
+
+        For the fire path that refuses BEFORE acquiring a session: the refusal
+        mints no key, so a key still registered under this job is one a prior
+        run left behind, and leaving it makes the reaper target a session that
+        maps to no live run.
+
+        The test is "not attributed to THIS run", not "no run is claimed". Every
+        caller sits inside the run callback, which the dispatcher awaits while
+        the claim it took is still stored, so a claim-existence test is always
+        true there and would answer None at every call site -- leaving the prior
+        fire's key registered forever and keeping
+        ``release_jobs_for_dead_owners`` treating that dead owner as live.
+
+        ``_claims[job_id]`` IS the executing run's claim, since a job holds one
+        at a time, so the executing run needs no parameter. A key attributed to
+        no claim is returned: no product path registers outside the run callback,
+        so an unattributed key is a legacy or test registration, and it is not
+        this run's either. A job with no claim at all answers with its newest
+        key, which is the only state :meth:`_run_session_keys` cannot describe.
+        """
+        with self._active_session_lock:
+            keys = self._active_session_keys.get(job_id)
+            if not keys:
+                return None
+            executing = self._claims.get(job_id)
+            if executing is None:
+                return next(reversed(keys), None)
+            return next(
+                (key for key, owner in reversed(keys.items()) if owner is not executing),
+                None,
+            )
+
     def _run_session_keys(self, job_id: str, run: _RunClaim) -> list[str]:
         """Every live exact key ``run`` registered, newest first: the keys a reap or cancel of that run ends.
 
@@ -3217,7 +3477,9 @@ class CronService:
         """Set the dashboard refresh callback."""
         self._push_refresh = cb
 
-    def run_job(self, job_id: str) -> Coroutine[Any, Any, bool]:
+    def run_job(
+        self, job_id: str, expect_project_path: str | object = _UNSET
+    ) -> Coroutine[Any, Any, bool]:
         """Manually trigger a job via _run_job_isolated (records history).
 
         A plain ``def`` that returns the coroutine, on purpose: the claim on the
@@ -3236,13 +3498,36 @@ class CronService:
         does not hold the job. Every caller awaits or schedules the returned
         coroutine at once (the route wraps it in a task on the same line); one
         that dropped it would leave the job claimed.
+
+        ``expect_project_path``, when passed, closes the same TOCTOU the
+        update/enable paths' precondition of the same name closes (see
+        :meth:`update_job_async`): the caller's owner-authorization decision
+        was made against a snapshot read BEFORE this call, and the run
+        re-syncs its OWN fresh snapshot from disk independently -- an owner
+        binding the project in the gap between the two reads would otherwise
+        let an already-authorized (against the stale, unbound snapshot)
+        non-owner's trigger execute against the newly-bound project. It is
+        checked in ``_run_claimed_manual``, against that fresh snapshot
+        rather than here, because only the refreshed record carries the
+        binding to compare; a mismatch REFUSES the run, releases this
+        method's claim and returns ``False``, the same silent-skip contract
+        as "job not found" -- unlike the update/enable preconditions, this
+        method's caller (the REST handler) dispatches it fire-and-forget via
+        ``asyncio.create_task`` and has already returned its HTTP response by
+        the time the body runs, so there is no synchronous caller left to
+        receive a raised exception.
         """
         if job_id in self._claims:
             return _manual_run_refused()
         claim = self._claim_run(job_id, "manual")
-        return self._run_claimed_manual(job_id, claim)
+        return self._run_claimed_manual(job_id, claim, expect_project_path)
 
-    async def _run_claimed_manual(self, job_id: str, claim: _RunClaim) -> bool:
+    async def _run_claimed_manual(
+        self,
+        job_id: str,
+        claim: _RunClaim,
+        expect_project_path: str | object = _UNSET,
+    ) -> bool:
         """Body of :meth:`run_job`, entered with the claim already taken."""
         # Refresh the store off the loop, then resolve + spawn on the loop.
         #
@@ -3285,6 +3570,33 @@ class CronService:
         job = next((j for j in snapshot if j.id == job_id), None)
         if not job:
             self._runs.release(job_id, claim)
+            return False
+        if expect_project_path is not _UNSET and job.project_path != expect_project_path:
+            # Same release-before-refuse contract as the "job not found" arm
+            # above: run_job took the claim SYNCHRONOUSLY, before this
+            # coroutine was scheduled, so returning without releasing would
+            # leave the job permanently claimed -- every later trigger would
+            # then be refused as "already running" and cancel() would have
+            # nothing to cancel.
+            self._runs.release(job_id, claim)
+            # Exception-contained: the claim is already released and `False` is
+            # this arm's answer, so a `sel()` that cannot be constructed must
+            # not escape here instead -- the caller would see an exception for
+            # a refusal that has, in every other respect, completed.
+            try:
+                sel.sel().log_api_access(
+                    caller="cron",
+                    operation="cron.run.project_bound_job",
+                    outcome="denied",
+                    source="cron",
+                    resources=job_id,
+                    error="project binding changed concurrently",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for concurrent project-binding-change refusal",
+                    exc_info=True,
+                )
             return False
         task = asyncio.create_task(self._run_job_isolated(job, claim))
         claim.task = task
@@ -3913,6 +4225,11 @@ class CronService:
                         summary=run_result or terminal.last_error or "",
                         trace=run_result or "",
                         error=terminal.last_error or "",
+                        # See CronRunRecord.project_bound: stamped from this
+                        # run's own job binding, because a later job read
+                        # cannot see it once the owner clears the binding or
+                        # the job is deleted.
+                        project_bound=bool(job.project_path),
                     )
                     await self._history.append(record)
                     if self._push_refresh:
@@ -4912,6 +5229,14 @@ class CronService:
         in ``_force_reap``/``cancel`` (authoritative persist is the offloaded
         ``_merge_terminal_state_locked``).
         """
+        # Claim staged removal notices before attempting the write. A real save
+        # failure publishes nothing and discards the claim; the caller restores
+        # its in-memory mutations. A fault injector that replaces _save entirely
+        # leaves the staged ids behind, so the next real save filters them against
+        # the rows it is actually committing below rather than publishing stale
+        # removal notices.
+        pending_removals = self._removed_job_ids_pending_publish
+        self._removed_job_ids_pending_publish = set()
         if self._load_failed:
             raise self._unreadable_error()
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -4924,3 +5249,21 @@ class CronService:
         # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
         # our own write and does not reload it back over the in-memory state.
         self._record_fingerprint()
+
+        # Publish only removals represented by the store we just committed. The
+        # intersection guard handles a fault-injection _save replacement: its
+        # staged id can survive until a later transaction reloads the durable row,
+        # and must not evict that row's live session or notify its observer then.
+        committed_ids = {job.id for job in self._jobs}
+        removed_ids = pending_removals - committed_ids
+        if removed_ids:
+            with self._active_session_lock:
+                for job_id in removed_ids:
+                    self._active_session_keys.pop(job_id, None)
+            if self._on_jobs_removed is not None:
+                try:
+                    self._on_jobs_removed(set(removed_ids))
+                except Exception:
+                    # Persistence remains authoritative even when an observer fails.
+                    # Observer-owned stores must enforce their own independent cap.
+                    logger.exception("Cron job-removal observer failed")

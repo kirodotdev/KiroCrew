@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from body_stream_helpers import attach_body
@@ -256,6 +256,7 @@ class TestCronListFields:
         mock_job.source_template_prompt = ""
         mock_job.member_id = ""
         mock_job.memory_store = ""
+        mock_job.project_path = ""
 
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False
@@ -280,3 +281,154 @@ class TestCronListFields:
         assert job_data["skip_dates"] is None
         # server_tz top-level field exposes the dashboard's local TZ for client rendering
         assert "server_tz" in data
+
+    @pytest.mark.asyncio
+    async def test_response_includes_project_path_field(self):
+        # A separate test from test_response_includes_approval_mode_and_silent
+        # (not a variant of it): this pins the exact regression that shipped
+        # once already — project_path was persisted and used correctly at
+        # fire time, but silently absent from THIS list serializer, so the
+        # Schedule page's "Project directory" field always read back empty on
+        # every edit despite the value being saved.
+        mock_job = MagicMock()
+        mock_job.id = "j1"
+        mock_job.name = "test"
+        # Both added to the payload by upstream after this stub was written: an
+        # unset attribute answers as a MagicMock, which json cannot serialize, so
+        # a rebase that widens the payload fails here until the stub names it.
+        mock_job.user_paused = False
+        mock_job.created_by = ""
+        mock_job.message = "msg"
+        mock_job.enabled = True
+        mock_job.last_status = "ok"
+        mock_job.agent_id = ""
+        mock_job.channel = None
+        mock_job.approval_mode = ""
+        mock_job.silent = False
+        mock_job.strict_schedule = False
+        mock_job.hide_in_chat = False
+        mock_job.minimal_context = False
+        mock_job.schedule = CronSchedule(kind="every", every_secs=300)
+        mock_job.last_run_ts = None
+        mock_job.last_result = None
+        mock_job.last_retry_count = 0
+        mock_job.last_retry_run_ts = 0.0
+        mock_job.created_ts = None
+        mock_job.timezone = ""
+        mock_job.skip_dates = []
+        mock_job.script = ""
+        mock_job.command = ""
+        mock_job.secret_env = {}
+        mock_job.secret_env_pending = {}
+        mock_job.secret_env_pending_ts = 0.0
+        mock_job.last_error = ""
+        mock_job.model = ""
+        mock_job.folder_id = ""
+        mock_job.session_key = ""
+        mock_job.source_preset = ""
+        mock_job.source_template_prompt = ""
+        mock_job.member_id = ""
+        mock_job.memory_store = ""
+        mock_job.project_path = "/Users/dev/myrepo"
+        mock_job.chat_folder_id = ""
+        # Serialized RAW (not bool()-coerced), so an unstubbed MagicMock reaches
+        # json and raises. Same rule as the note in the approval_mode test above:
+        # a field the payload reads must be named here.
+        mock_job.persistent_session = True
+
+        mock_state = MagicMock()
+        mock_state.has_slot.return_value = False
+        mock_state.crons.list_jobs.return_value = [mock_job]
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[mock_job])
+        mock_state.crons.running_since.return_value = None
+        mock_state.crons.is_running.return_value = False
+
+        request = MagicMock()
+        request.app = {"state": mock_state}
+
+        with patch(
+            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
+            lambda request: True,
+        ):
+            resp = await api_crons(request)
+
+        data = json.loads(resp.body)
+        job_data = data["jobs"][0]
+        assert job_data["project_path"] == "/Users/dev/myrepo"
+
+        with patch(
+            "kiro_crew.dashboard.handlers.cron.is_owner_dashboard_request",
+            lambda request: False,
+        ):
+            non_owner_resp = await api_crons(request)
+        non_owner_job = json.loads(non_owner_resp.body)["jobs"][0]
+        assert (
+            non_owner_job["project_path"] is None
+        ), "non-owner cron listings must not disclose owner project paths"
+
+    @pytest.mark.asyncio
+    async def test_response_project_path_absent_reads_as_none(self):
+        # The empty-string default must serialize as `None`, matching every
+        # other optional string field in this response (approval_mode,
+        # channel, timezone, ...) — not an empty string a client would have
+        # to special-case differently from the rest.
+        mock_job = MagicMock()
+        mock_job.id = "j2"
+        # Both added to the payload by upstream after these two stubs were
+        # written: an unset attribute answers as a MagicMock, which json cannot
+        # serialize, so a rebase that widens the payload fails here until named.
+        mock_job.user_paused = False
+        mock_job.created_by = ""
+        mock_job.name = "test2"
+        # Serialized RAW (not bool()-coerced), so an unstubbed MagicMock reaches
+        # json and raises. Same rule as the note in the approval_mode test above.
+        mock_job.persistent_session = True
+        mock_job.message = "msg"
+        mock_job.enabled = True
+        mock_job.last_status = "ok"
+        mock_job.agent_id = ""
+        mock_job.channel = None
+        mock_job.approval_mode = ""
+        mock_job.silent = False
+        mock_job.strict_schedule = False
+        mock_job.hide_in_chat = False
+        mock_job.minimal_context = False
+        mock_job.schedule = CronSchedule(kind="every", every_secs=300)
+        mock_job.last_run_ts = None
+        mock_job.last_result = None
+        mock_job.last_retry_count = 0
+        mock_job.last_retry_run_ts = 0.0
+        mock_job.created_ts = None
+        mock_job.timezone = ""
+        mock_job.skip_dates = []
+        mock_job.script = ""
+        mock_job.command = ""
+        mock_job.secret_env = {}
+        mock_job.secret_env_pending = {}
+        mock_job.secret_env_pending_ts = 0.0
+        mock_job.last_error = ""
+        mock_job.model = ""
+        mock_job.folder_id = ""
+        mock_job.session_key = ""
+        mock_job.source_preset = ""
+        mock_job.source_template_prompt = ""
+        mock_job.member_id = ""
+        mock_job.memory_store = ""
+        mock_job.project_path = ""
+        mock_job.chat_folder_id = ""
+
+        mock_state = MagicMock()
+        mock_state.has_slot.return_value = False
+        mock_state.crons.list_jobs.return_value = [mock_job]
+        mock_state.crons.list_jobs_async = AsyncMock(return_value=[mock_job])
+        mock_state.crons.running_since.return_value = None
+        mock_state.crons.is_running.return_value = False
+
+        request = MagicMock()
+        request.app = {"state": mock_state}
+
+        resp = await api_crons(request)
+
+        data = json.loads(resp.body)
+        job_data = data["jobs"][0]
+        assert job_data["project_path"] is None
