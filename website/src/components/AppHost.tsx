@@ -61,8 +61,8 @@ export interface AppHostProps {
    *  every scoped call the app makes. Without it the backend's restricted-session
    *  guard fails open, so an app mounted inside an incognito chat would be allowed
    *  the persistent writes incognito exists to deny -- the same reason
-   *  `SessionControlHost` passes it. Omitted for the routed `/apps/<name>` page,
-   *  which is not scoped to a chat at all. */
+   *  `SessionControlHost` passes it. The routed `/apps/<name>` page uses the
+   *  core API client's `dashboard:ui` page identity rather than a chat key. */
   sessionKey?: string
 }
 

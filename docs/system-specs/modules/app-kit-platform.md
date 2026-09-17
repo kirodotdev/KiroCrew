@@ -8,6 +8,22 @@ the publish-facing policy in
 [../../app-kit/publishing-guide.md](../../app-kit/publishing-guide.md); this
 document is the behaviour and the one-way doors.
 
+## Scoped frontend HTTP transport
+
+`useAppApi()` exposes `request(path, RequestInit)` and JSON verb helpers through
+one unchanged API-path check. The generic method forwards raw bodies; JSON verb
+helpers serialize their body argument and keep their method authoritative.
+Request options never add a permission. HTTP failures preserve the existing error
+message and expose status plus unparsed response body through the type-only
+`AppApiError` contract; network and parsing failures remain distinct.
+
+The host owns session attribution. Chat hosts bind their session; routed app
+pages bind the established `dashboard:ui` page identity. A provided host key
+wins over caller headers; an unbound host rejects caller-selected session keys.
+See the [API reference](../../app-kit/api-reference.md#app-sdk-hooks-dashboard-ui)
+and [trust model](../../architecture/app-platform-trust-model.md) for the method
+contract and the distinction between a frontend guardrail and token enforcement.
+
 ## App Store source selection
 
 Discover's Sources rail filters the catalog shelf by namespaced source identity.

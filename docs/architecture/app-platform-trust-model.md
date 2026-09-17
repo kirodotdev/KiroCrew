@@ -137,6 +137,17 @@ frontend scoping prevents *accidental* use rather than abuse. The enforceable bo
 are the app **token** ones above (HTTP paths and WS events), which apply to app-owned
 *processes* holding their own credential.
 
+The scoped client's generic `request` method and JSON verb helpers share the
+same initial-path check. Request options do not add API grants or expand wildcard
+strings; browser redirect targets are not rechecked, and callers can use
+`redirect: 'error'` to refuse redirects. Session attribution is host-owned: a bound host overrides any supplied
+`X-Session-Key`, and a host without a binding rejects caller-supplied session
+identity. Routed app pages explicitly use `dashboard:ui`, the core API client's
+dashboard-page identity; chat surfaces retain their actual bound session. This
+remains a guardrail inside the dashboard document, not a sandbox or a replacement
+for server-side authorization. Hosts of restricted chat sessions must provide the
+real session key; absence cannot identify the restricted session to the backend.
+
 This is an **HTTP-reach boundary distinct from the in-process module-loading
 privilege**: an app's loaded Python still runs with full gateway privileges (the
 warning above stands), but an app's own HTTP token can no longer reach arbitrary

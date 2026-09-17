@@ -167,7 +167,7 @@ Available in `@kirocrew/app-sdk`:
 
 | Hook | Purpose |
 |------|---------|
-| `useAppApi()` | Permission-scoped HTTP client (GET/POST/PUT/DELETE) |
+| `useAppApi()` | Permission-scoped JSON-response HTTP client (`request`, GET/POST/PUT/PATCH/DELETE); request options and errors: [API reference](api-reference.md#app-sdk-hooks-dashboard-ui) |
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
 | `useAppInfo()` | App metadata (name, version, permissions, `active`) |

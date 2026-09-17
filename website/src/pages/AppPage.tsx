@@ -79,5 +79,7 @@ export default function AppPage() {
 
   // AppHost internally guards a null `app` (renders "not found"); its prop type
   // is non-null, so cast the nullable state through — behavior is unchanged.
-  return <AppHost app={app as AppData} />
+  // Routed pages use the same dashboard-page identity as the core API client,
+  // not whichever chat happens to be selected elsewhere in the dashboard.
+  return <AppHost app={app as AppData} sessionKey="dashboard:ui" />
 }

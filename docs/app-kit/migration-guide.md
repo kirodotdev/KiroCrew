@@ -78,6 +78,14 @@ Add the API paths and WebSocket events your app uses to `app.json`:
 | `fetch('/api/crons').then(r => r.json())` | `api.get('/api/crons')` |
 | `fetch('/api/lessons').then(r => r.json())` | `api.get('/api/lessons')` |
 
+For raw request bodies (such as `FormData`), use `api.request(path, init)`.
+JSON helpers also accept request options: `api.post(path, body, { signal })`.
+All responses are still parsed as JSON; use the `status` and unparsed `body`
+fields on an HTTP `AppApiError` to handle an endpoint's conflict response rather
+than parsing its error message. See the [API reference](api-reference.md#app-sdk-hooks-dashboard-ui).
+Do not copy a session header into app code: the host supplies it, and a chat-bound
+host always overrides caller-supplied identity.
+
 ### Step 4: Replace WebSocket code
 
 ```tsx

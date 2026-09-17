@@ -24,16 +24,31 @@ import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 // ---------------------------------------------------------------------------
 
 export interface AppApi {
+  /** Request with a JSON response, scoped to declared permissions. Body is passed through unchanged. */
+  request<T = unknown>(path: string, init?: RequestInit): Promise<T>
   /** GET request scoped to declared permissions. */
   get<T = unknown>(path: string, init?: RequestInit): Promise<T>
-  /** POST request scoped to declared permissions. */
-  post<T = unknown>(path: string, body?: unknown): Promise<T>
-  /** PUT request scoped to declared permissions. */
-  put<T = unknown>(path: string, body?: unknown): Promise<T>
-  /** PATCH request scoped to declared permissions. */
-  patch<T = unknown>(path: string, body?: unknown): Promise<T>
+  /** POST JSON request scoped to declared permissions. */
+  post<T = unknown>(path: string, body?: unknown, init?: RequestInit): Promise<T>
+  /** PUT JSON request scoped to declared permissions. */
+  put<T = unknown>(path: string, body?: unknown, init?: RequestInit): Promise<T>
+  /** PATCH JSON request scoped to declared permissions. */
+  patch<T = unknown>(path: string, body?: unknown, init?: RequestInit): Promise<T>
   /** DELETE request scoped to declared permissions. */
-  del<T = unknown>(path: string): Promise<T>
+  del<T = unknown>(path: string, init?: RequestInit): Promise<T>
+}
+
+/** HTTP failures from AppApi. Network, abort and JSON parsing errors retain their original types. */
+export interface AppApiError extends Error {
+  readonly status: number
+  readonly body: string
+}
+
+class ScopedApiError extends Error implements AppApiError {
+  constructor(readonly status: number, readonly body: string) {
+    super(`API ${status}: ${body}`)
+    this.name = 'AppApiError'
+  }
 }
 
 export interface AppPermissions {
@@ -412,16 +427,14 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
 
   const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     const safePath = check(path)
-    // Carry the session identity on every scoped request when the host knows it.
-    // The backend's restricted-session guard (`_is_restricted_session`) reads
-    // `X-Session-Key` and FAILS OPEN on absence — no header is read as "not
-    // restricted" — so a control mounted in an incognito or guest chat would
-    // otherwise be permitted exactly the persistent writes that mode exists to
-    // prevent. `Headers` rather than an object spread because `init.headers` may
-    // be either shape, and a caller-supplied header is left alone.
+    // Restricted-session checks read this header. Only the host may select it:
+    // accepting an app's override could attribute a restricted write to another
+    // session. A host without a binding cannot validate a caller-selected key.
     const headers = new Headers(init?.headers)
-    if (sessionKey && !headers.has('X-Session-Key')) {
+    if (sessionKey) {
       headers.set('X-Session-Key', sessionKey)
+    } else if (headers.has('X-Session-Key')) {
+      throw new Error('[app-sdk] X-Session-Key requires a host session binding')
     }
     const res = await fetch(safePath, { ...init, headers })
     if (!res.ok) {
@@ -431,7 +444,7 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
       // iframe copy of this SDK — detection is a no-op and the throw below is
       // unchanged either way.
       noteStaleOwnerResponse(res.status, text)
-      throw new Error(`API ${res.status}: ${text}`)
+      throw new ScopedApiError(res.status, text)
     }
     // An empty-body response is not JSON — res.json() would throw a SyntaxError
     // (e.g. a 204 No Content on DELETE, or a 200 with an empty body and no
@@ -448,24 +461,22 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     return JSON.parse(text) as T
   }
 
+  const jsonRequest = <T,>(path: string, method: string, body: unknown, init?: RequestInit): Promise<T> => {
+    const headers = new Headers(init?.headers)
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+    return jsonFetch<T>(path, {
+      ...init, method, headers,
+      body: body != null ? JSON.stringify(body) : undefined,
+    })
+  }
+
   return {
+    request: (path, init) => jsonFetch(path, init),
     get: (path, init) => jsonFetch(path, { ...init, method: 'GET' }),
-    post: (path, body) => jsonFetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: body != null ? JSON.stringify(body) : undefined,
-    }),
-    put: (path, body) => jsonFetch(path, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: body != null ? JSON.stringify(body) : undefined,
-    }),
-    patch: (path, body) => jsonFetch(path, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: body != null ? JSON.stringify(body) : undefined,
-    }),
-    del: (path) => jsonFetch(path, { method: 'DELETE' }),
+    post: (path, body, init) => jsonRequest(path, 'POST', body, init),
+    put: (path, body, init) => jsonRequest(path, 'PUT', body, init),
+    patch: (path, body, init) => jsonRequest(path, 'PATCH', body, init),
+    del: (path, init) => jsonFetch(path, { ...init, method: 'DELETE' }),
   }
 }
 
@@ -493,11 +504,11 @@ export function AppApiProvider({
    * Session the hosted surface is scoped to, sent as `X-Session-Key` on every
    * scoped request.
    *
-   * Optional because a full-page app surface is not session-scoped and has
-   * nothing to send. Where the host DOES know the session — a composer session
-   * control — passing it is what lets the backend's restricted-session guard
-   * fire: that guard fails open on a missing header, so omitting it silently
-   * grants an incognito chat the persistent writes it is meant to be denied.
+   * Chat surfaces pass their actual session; routed dashboard app pages pass
+   * `dashboard:ui`, matching the core API client. The host value overrides any
+   * caller-supplied header. Other hosts may omit the binding, but then callers
+   * cannot supply their own X-Session-Key. Hosts of restricted sessions must
+   * provide the real key so the backend's restricted-session guard can run.
    */
   sessionKey?: string
   children: ReactNode
