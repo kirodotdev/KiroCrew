@@ -697,11 +697,29 @@ mutated by execution, and lifting it is the user's action.
 `stream_and_collect`'s `on_tool_gate` callback reports each tool permission
 decision as `(tool_title, approved, security_blocked)`. Both cron agent paths
 (single-agent and the sequential `agent_sequence` loop) tally those decisions
-per run and route the outcome through one shared verdict: when tools were
-attempted and every one was **security-blocked** with none approved, the run
-sets `last_status = "error"` with a redacted reason and calls `record_failure()`,
-so the same 5-failure `_AUTO_PAUSE_THRESHOLD` applies. Any other outcome records
-a success.
+per run and route the outcome through one shared verdict with three arms:
+
+| Run's gate outcomes | `last_status` | Failure budget | Delivery |
+|---|---|---|---|
+| Every attempted call **security-blocked**, none approved | `error`, reason names the refused calls | `record_failure()` — the 5-failure `_AUTO_PAUSE_THRESHOLD` applies | unchanged |
+| **Some** call security-blocked (another ran, or another refusal left capability unknown) | `error`, reason names the refused calls | neither counter moves | result prefixed with the same reason |
+| No security block at all | `ok` | `record_success()` | unchanged |
+
+The middle arm exists because the model's prose is its own account of the run:
+a turn whose final write was refused still reports the write as done. Without
+the arm such a run records `ok`, alerts nobody, and leaves the refusal only in
+the SEL audit row, so the user learns the document was lost by reading the audit
+log. The approved calls are evidence the job can work, so the run spends
+nothing from the failure budget; the lost call means it did not succeed, so it
+does not read as `ok` and does not reset a failure streak or the failure-alert
+dedup the way a success does. `_GateTally.refusal_summary()` is the one
+spelling of the reason, shared by `last_error` and the result banner, so the
+cron row and the notification cannot name different calls.
+
+The tally does not separate the gate's tiers: a title-tier refusal (`rm -rf /`
+as a command) and an input-tier one (a document body the scanner read as a
+command line) are both `security_blocked`, and both are reported, because the
+work behind either did not happen.
 
 **History is best-effort.** `CronHistoryStore` never lets a history failure reach
 the scheduler. Its directory is resolved once by `prepare()`: usable means history

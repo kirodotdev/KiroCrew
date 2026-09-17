@@ -238,7 +238,7 @@ from kiro_crew.messaging.link import (
     channel_namespace_of,
     parse_session_key,
 )
-from kiro_crew.messaging.renderer import SilentRenderer, chunk_for_transport
+from kiro_crew.messaging.renderer import SilentRenderer, chunk_for_transport, display_safe
 from kiro_crew.messaging.transport import InboundMessage, delivery_confirmed
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
@@ -869,6 +869,13 @@ class _GateTally:
     denial and an unattended-approval timeout also arrive unapproved, but they
     describe the policy state or an absent approver rather than a defect in the
     job — and a job's failure counter drives auto-pause, which is durable.
+
+    A refusal is reported whether or not other calls got through. The prose
+    a run returns is the model's account of what it did, and a model whose
+    final write was refused still reports the write as done: the refused
+    call's work simply never happened, and the only record of it was the SEL
+    audit row. ``all_blocked`` decides the FAILURE budget; ``partially_blocked``
+    decides whether the run's status and its delivery name the refusal.
     """
 
     def __init__(self) -> None:
@@ -896,6 +903,56 @@ class _GateTally:
         """
         return bool(self.refused) and self.approved == 0 and self.unresolved == 0
 
+    @property
+    def partially_blocked(self) -> bool:
+        """At least one tool was security-blocked while the run was not a
+        total block: another call ran, or another refusal left the run's
+        capability unknown. The refused call's work did not happen either
+        way, so the run is reported, but it is not evidence of a job that
+        cannot work and spends nothing from the failure budget."""
+        return bool(self.refused) and not self.all_blocked
+
+    def refusal_summary(self) -> str:
+        """One redacted, capped line naming what the gate refused.
+
+        Shared by the job's ``last_error`` and the banner on the delivered
+        result, so the cron row and the notification cannot disagree about
+        which call was lost. At most three titles are named so a run that
+        tripped the gate many times still reads as one line.
+
+        Titles are LLM-authored, and the banner lands in the result BODY,
+        which the Slack leg posts as parsed mrkdwn without a mention defang
+        (:func:`render_for_slack` redacts; it does not touch ``<!channel>``).
+        So the line goes through :func:`display_safe`, the shared outbound
+        display sink: display-form credential redaction plus the zero-width
+        break in ``<!`` and ``@`` that stops a refused call titled
+        ``<!channel>`` from paging a whole channel the moment the run reports
+        it. The break is invisible on the dashboard cron row, so one spelling
+        serves both surfaces.
+        """
+        named = ", ".join(t or "<untitled tool>" for t in self.refused[:3])
+        if self.all_blocked:
+            head = f"all {len(self.refused)} tool call(s) blocked by the security gate: "
+        else:
+            total = self.approved + self.unresolved + len(self.refused)
+            head = f"{len(self.refused)} of {total} tool call(s) blocked by the security gate: "
+        return display_safe(head + named)[:_CRON_FAILURE_DETAIL_CAP]
+
+
+def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
+    """Prefix a partially-blocked run's result with the refusal it carries.
+
+    The result is what every delivery leg (dashboard bell and slot, channel,
+    Slack) shows and what the dedup hash is taken over, so one prefix here is
+    what puts the refused call in front of the user beside the prose that may
+    claim the work was done. A fully blocked run is not annotated: its verdict
+    is a failure alert in its own right, and a tool-free or clean run has
+    nothing to name.
+    """
+    if not tally.partially_blocked:
+        return result_text
+    return f"⛔ {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
+
 
 def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     """Record a finished cron run's success or failure from its gate outcomes.
@@ -911,6 +968,15 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     ``try`` whose handler counts too, so a blocked turn whose delivery then
     failed would otherwise reach the auto-pause threshold in three runs rather
     than five — pausing on arithmetic instead of on evidence.
+
+    Three outcomes, not two. A run with every call refused is a failure and
+    is counted. A run with SOME call refused keeps ``last_status = "error"``
+    with the refusal as its reason but is counted in neither direction: the
+    approved calls prove the job can work, so it must not march toward
+    auto-pause, and the lost call means it did not succeed, so it must not
+    read as ``ok`` and must not reset a failure streak or the failure-alert
+    dedup the way a success does. Only a run with no refusal at all records a
+    success.
     """
     if tally.all_blocked:
         # Nothing the model attempted was permitted, so the run accomplished
@@ -918,10 +984,7 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
         # consecutive_failures and clears auto_paused, so recording one here
         # would keep a structurally-failing job firing on its schedule forever.
         job.last_status = "error"
-        _named = ", ".join(t or "<untitled tool>" for t in tally.refused[:3])
-        job.last_error = redact(
-            f"all {len(tally.refused)} tool call(s) blocked by the security gate: " + _named
-        )[:500]
+        job.last_error = tally.refusal_summary()
         job.record_failure()
         if job.auto_paused:
             logger.warning(
@@ -930,6 +993,16 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
                 job.consecutive_failures,
             )
         return True
+    if tally.partially_blocked:
+        # The run did work AND lost work. "error" is the one non-ok status the
+        # row, cron_list and the history record understand, and the reason
+        # names the refused call. Neither counter moves: not record_failure(),
+        # because the approved calls are evidence the job can work; not
+        # record_success(), because that would reset a failure streak and the
+        # failure-alert dedup on a run that did not fully succeed.
+        job.last_status = "error"
+        job.last_error = tally.refusal_summary()
+        return False
     # Clear failure dedup on any success, regardless of whether the success
     # result itself is a dup. A successful run means the job recovered — next
     # failure should always alert fresh. record_success() owns the reset now, so
@@ -5318,6 +5391,7 @@ class GatewayOrchestrator:
                                     )
                 if _seq_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
+                result_text = _annotate_partial_block(result_text, _gate)
                 job.set_run_result(result_text)
                 # This path owns the same verdict as the single-agent one, so a
                 # multi-agent job's failure counter moves in both directions —
@@ -5417,6 +5491,11 @@ class GatewayOrchestrator:
                 if _model_downgraded:
                     result_text = _annotate_model_downgrade(result_text)
                 result_text = _annotate_model_fallback(result_text, client)
+                # Before set_run_result and the dedup hash below, so the stored
+                # result, the slot, the bell and every transport carry the
+                # refusal, and a run that lost a call never hashes equal to
+                # one that did not.
+                result_text = _annotate_partial_block(result_text, _gate)
 
                 job.set_run_result(result_text)
 
