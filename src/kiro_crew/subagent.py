@@ -32,6 +32,7 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE, PROVIDER_LABEL_DEFAULT
+from kiro_crew.agent_sdk.drivers.a2a import A2A_PROVIDER_LABEL, card_origin
 from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resolved by run.py via bind_component_globals
     STOP_CLASS_CANCELLED,
     STOP_CLASS_FAILED,
@@ -52,6 +53,7 @@ from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE
 from kiro_crew.config import live
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 from kiro_crew.config.paths import data_home
+from kiro_crew.config.sections import A2aAgentConfig
 from kiro_crew.constants import SUBAGENT_COMPLETION_PREFIX, SUBAGENT_TIMEOUT_SECS
 from kiro_crew.context import (
     CONTEXT_GROUP_LESSONS,
@@ -128,6 +130,7 @@ from kiro_crew.subagent_manager import (
     ContinuationCoordinator,
     OrphanStallMonitor,
     PreparedSpawn,
+    RecordedA2A,
     RunEventCoordinator,
     SpawnAdmissionCoordinator,
     TerminalCoordinator,
@@ -203,6 +206,15 @@ UNADVERTISED_AGENTS = frozenset(
 #: as the reserved pair above, because a respelled literal is exactly the drift a
 #: code exists to remove.
 AGENT_NOT_FOUND_CODE = "agent_not_found"
+
+#: A spawn named an agent that exists BOTH as a local agent and as an
+#: ``a2a_agents`` entry. Refused rather than resolved: registry membership is
+#: what routes a spawn to the remote path, so an ambiguous name would silently
+#: send the task off-box while primary selection (local agents only) kept the
+#: local one. ``_validate_agent`` is where the local roster is actually known
+#: (the config loader alone never sees local agents), so that is where the
+#: collision is defined and refused.
+AGENT_NAME_COLLISION_CODE = "agent_name_collision"
 
 
 def visible_agent_names(
@@ -302,8 +314,69 @@ def _validate_app_agent_ownership(agent: str, app: str) -> str:
     return ""
 
 
-def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, str]:
+def _a2a_agent_names() -> frozenset[str]:
+    """Names of configured A2A remote (subagent-only) agents.
+
+    Best-effort: any config-load failure yields an empty set so a broken or
+    absent ``a2a_agents`` section never wedges ordinary spawn validation. Kept a
+    module function (not inlined) so the roster union and the validate-agent
+    union read the identical source.
+    """
+    try:
+        return KiroCrewConfig.load().a2a_agent_names()
+    except Exception:  # pragma: no cover - defensive
+        return frozenset()
+
+
+def _a2a_agent_entry(name: str | None):
+    """The ``A2aAgentConfig`` for *name*, or None if it is not an A2A agent.
+
+    Single source the subagent run path uses to decide the A2A branch and to
+    build the provider. Best-effort like ``_a2a_agent_names``, and fail-closed
+    in the other direction too: only a genuine registry record with a card URL
+    routes a spawn to the remote path. A config object that is not the real
+    loader (a test double, a partially loaded config) must never turn a local
+    worker into a remote one.
+    """
+    if not name:
+        return None
+    try:
+        entry = KiroCrewConfig.load().a2a_agent_by_name(name)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if not isinstance(entry, A2aAgentConfig):
+        return None
+    if not isinstance(entry.agent_card_url, str) or not entry.agent_card_url:
+        return None
+    return entry
+
+
+def _is_a2a_agent(name: str | None) -> bool:
+    """True when *name* is a configured A2A remote (subagent-only) agent."""
+    return bool(name) and name in _a2a_agent_names()
+
+
+def _a2a_card_origin(name: str | None) -> str:
+    """The card-URL origin of registry entry *name*, or ``""``.
+
+    ``card_origin`` (the SDK driver's) is the one origin normalization application
+    code uses: it is what the ``capabilities.remote_spawn`` ``origins`` ruleset is
+    matched against and what a credential's pinned origin is compared to.
+    """
+    entry = _a2a_agent_entry(name)
+    return card_origin(entry.agent_card_url) if entry is not None else ""
+
+
+def _validate_agent(
+    requested: str, project_dir: str = "", *, remote: bool | None = None
+) -> tuple[str, str, str]:
     """Validate that an agent name is one kiro-cli can actually load.
+
+    *remote* is the admission-time classification of *requested* as an
+    ``a2a_agents`` entry (see ``admission.spawn_impl``): the collision refusal
+    and the roster union below consume THAT decision, so they cannot disagree
+    with the route the run path takes. ``None`` (direct callers, tests)
+    resolves the registry here instead.
 
     Runs ON the event loop (``spawn`` is synchronous), so it must not add
     filesystem work. The user-level ``list_agents()`` scan here is pre-existing —
@@ -334,8 +407,38 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, st
     known = {a.name for a in list_agents()}
     if project_dir:
         known |= set(cached_project_agent_names(project_dir) or frozenset())
+    # Collision gate BEFORE the union: a name that is both a local agent and an
+    # ``a2a_agents`` entry is ambiguous, and the run path would route it remote.
+    # Decided from what is already in hand -- the local roster and the admitted
+    # remote decision -- with no config re-read: a reload here could fail or see
+    # a different registry, and a refusal that depends on it can be bypassed.
+    # Only the requested name is judged; a collision on some OTHER entry must not
+    # refuse an unrelated spawn.
+    remote_names: frozenset[str] | None = None
+    if remote is None:
+        remote_names = _a2a_agent_names()
+        is_remote = requested in remote_names
+    else:
+        is_remote = bool(remote)
+    if requested in known and is_remote:
+        reason = (
+            f"a2a_agents entry {requested!r} collides with a local agent of the same name; "
+            "rename one of them"
+        )
+        logger.warning("Agent %r refused: %s", requested, reason)
+        return "", reason, AGENT_NAME_COLLISION_CODE
+    # A2A remote agents are subagent-only and live in a separate registry, so
+    # list_agents() (which scans ~/.kiro/agents) never sees them. Accept the
+    # requested name when the admitted decision says it is remote, so
+    # spawn_run(agent="<a2a-name>") is not refused as unknown. The full registry
+    # is unioned only into the not-found ROSTER HINT below (advisory text), never
+    # into the acceptance decision. Kept subagent-scoped: primary selection does
+    # not call _validate_agent.
+    if is_remote:
+        return requested, "", ""
     if requested in known:
         return requested, "", ""
+    known |= remote_names if remote_names is not None else _a2a_agent_names()
     available = sorted(known - UNADVERTISED_AGENTS)
     # REFUSE a named-but-unknown agent rather than silently falling back to the
     # host default: that fallback runs the full default agent (frequently at
@@ -353,7 +456,14 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, st
     )
 
 
-def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:
+def _vet_spawn_governance(
+    parent_session_key: str,
+    agent: str,
+    app: str = "",
+    *,
+    remote: bool | None = None,
+    remote_origin: str = "",
+) -> str | None:
     """Return a denial reason if governance forbids spawning, else None.
 
     ``app`` binds the calling app's OWN profile (precedence #1 in
@@ -365,6 +475,14 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
     Two checks against the parent surface's ceiling ∩ profile:
     1. ``capabilities.spawn`` must be enabled.
     2. if enabled with an ``agents`` scope, the target *agent* must be permitted.
+    3. when the target is REMOTE (an ``a2a_agents`` entry), ``capabilities.remote_spawn``
+       must permit it, and so must its ``agents`` scope (the entry name) and its
+       ``origins`` scope (the card URL's ``scheme://host[:port]``).
+
+    *remote* / *remote_origin* are the admission-time classification of *agent*
+    (resolved ONCE in ``admission.spawn_impl`` and stashed on the run record the
+    run path routes on), so check 3 and the actual route can never disagree.
+    ``None`` (direct callers, tests) resolves registry membership and origin here.
 
     Best-effort beyond the always-on guards: a ``PlatformCompositionError``
     propagates (fail-closed CPP); any other error returns a denial reason
@@ -389,6 +507,60 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
             )
             if not getattr(scoped, "permitted", True):
                 return f"agent {agent!r} not permitted by spawn policy"
+        # Remote (A2A) target: a SECOND gate, because the task text leaves the
+        # host. An enterprise policy may allow local sub-agents and forbid or
+        # scope off-box delegation (capabilities.remote_spawn, plus its own
+        # ``agents`` ruleset over registry entries and ``origins`` ruleset over
+        # their card-URL origins). Decided on the SAME resolution the run path
+        # routes on (``remote`` / ``remote_origin``), never re-derived here.
+        # ``fail_closed=True``: ``governance_permits`` swallows an evaluator
+        # error and degrades to PERMIT unless told otherwise (the ``except``
+        # below never sees it), and off-box egress is an authorization decision
+        # like publish or messaging -- a degraded evaluator must deny it. A
+        # decision object without ``permitted`` is treated the same way.
+        is_remote = _is_a2a_agent(agent) if remote is None else bool(remote)
+        if agent and is_remote:
+            remote_gate = governance_permits(
+                "capabilities.remote_spawn",
+                "",
+                session_key=parent_session_key,
+                app=app,
+                fail_closed=True,
+            )
+            if not getattr(remote_gate, "permitted", False):
+                return (
+                    f"remote agent {agent!r} denied: remote spawn (capabilities.remote_spawn) "
+                    f"is not permitted by policy"
+                )
+            remote_scoped = governance_permits(
+                "capabilities.remote_spawn",
+                f"agents:{agent}",
+                session_key=parent_session_key,
+                app=app,
+                fail_closed=True,
+            )
+            if not getattr(remote_scoped, "permitted", False):
+                return f"remote agent {agent!r} not permitted by remote-spawn policy"
+            # Destination: the origin the task text will be POSTed to. Judged
+            # from the admitted registry entry, so a config entry that keeps an
+            # allowed NAME but points its URL at another host is refused when
+            # the policy pins origins. An entry with no parsable origin cannot
+            # route anywhere and is refused as well.
+            origin = remote_origin if remote is not None else _a2a_card_origin(agent)
+            if not origin:
+                return f"remote agent {agent!r} has no parsable agent_card_url origin"
+            origin_scoped = governance_permits(
+                "capabilities.remote_spawn",
+                f"origins:{origin}",
+                session_key=parent_session_key,
+                app=app,
+                fail_closed=True,
+            )
+            if not getattr(origin_scoped, "permitted", False):
+                return (
+                    f"remote agent {agent!r} at {origin} not permitted by remote-spawn "
+                    "policy (origins)"
+                )
         return None
     except PlatformCompositionError:
         raise
@@ -635,7 +807,6 @@ def _subagent_default_effort() -> str:
     Never raises.
     """
     try:
-        from kiro_crew.config.loader import KiroCrewConfig
 
         val = KiroCrewConfig.load().agent.role_efforts.get("subagent", "")
         return val if isinstance(val, str) else ""
@@ -661,7 +832,6 @@ def _spawn_effective_model(model: str, agent: str) -> str:
     try:
         # circular imports (config.loader / session import sibling modules at
         # load time, matching the lazy-import convention of _subagent_default_*)
-        from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.session import _session_model
 
         # The kwarg the spawn path actually passes (see _run_inner): raw
@@ -1199,6 +1369,37 @@ _SYSTEM_PREFIX = (
     "Do NOT include [OPTIONS: ...] tags. Do NOT use the AskUserQuestion tool. "
     "Only output meaningful, actionable results. Never output greetings or filler.\n\n"
 )
+
+#: The delegation preamble a REMOTE (A2A) subagent receives instead of the
+#: local envelope. A remote agent has none of this host's tools, files or UI, so
+#: the local ``build_message`` output -- system prompt naming MCP tools, memory,
+#: lessons, project steering, skills index -- is both useless to it and an
+#: egress of operator data across an operator-configured trust boundary. This
+#: preamble tells the remote agent what it is being asked to do and how to
+#: answer, and nothing about where the request came from.
+_REMOTE_TASK_PREFIX = (
+    "You are being delegated one task by another agent. Complete it and reply "
+    "with the result as plain text. Do not ask clarifying questions unless the "
+    "task cannot be attempted at all; do not request credentials.\n\n"
+)
+
+
+def build_remote_task_message(raw_task: str, *, resumed_after_cancel: bool = False) -> str:
+    """The full text a remote (A2A) subagent receives for one turn.
+
+    Deliberately NOT ``ContextBuilder.build_message``: the remote message is the
+    task text and :data:`_REMOTE_TASK_PREFIX`, redacted for credentials and
+    exfiltration URLs -- no memory, lessons, project steering, skills index or
+    system prompt (see ``docs/system-specs/modules/a2a-subagents.md``). Widening
+    what may leave the host is a design change for a later RFC, not a flag.
+
+    ``resumed_after_cancel`` mirrors the local one-shot auto-continue so the
+    remote agent is told the prior attempt was interrupted rather than assuming
+    a fresh start.
+    """
+    text = _redact(str(raw_task or ""))
+    body = (_CANCEL_RESUME_PREFIX + text) if resumed_after_cancel else text
+    return _REMOTE_TASK_PREFIX + body
 
 
 @dataclass
@@ -2565,6 +2766,7 @@ class SubagentManager:
         _claimed: "tuple[int, bool, str] | None" = None,
         _window_hint: "bool | None" = None,
         _child_registration: bool = True,
+        _a2a_context: str = "",
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -2596,6 +2798,7 @@ class SubagentManager:
             _claimed=_claimed,
             _window_hint=_window_hint,
             _child_registration=_child_registration,
+            _a2a_context=_a2a_context,
         )
         assert not isinstance(result, PreparedSpawn)
         # ``ClaimPoint`` comes back ONLY for ``_stop_before_claim=True``, whose
@@ -2743,6 +2946,7 @@ class SubagentManager:
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        a2a_record: "RecordedA2A | None" = None,
     ) -> SubagentInfo | None:
         return self._continuation.continue_conversation_impl(
             conv_id,
@@ -2754,6 +2958,7 @@ class SubagentManager:
             cwd,
             _preassigned_id,
             _memory_mode=_memory_mode,
+            a2a_record=a2a_record,
         )
 
     async def continue_conversation_async(
@@ -2767,6 +2972,7 @@ class SubagentManager:
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        a2a_record: "RecordedA2A | None" = None,
     ) -> SubagentInfo | None:
         return await self._continuation.continue_conversation_async_impl(
             conv_id,
@@ -2778,6 +2984,7 @@ class SubagentManager:
             cwd,
             _preassigned_id,
             _memory_mode,
+            a2a_record=a2a_record,
         )
 
     def _continue_prelude(
@@ -2791,6 +2998,7 @@ class SubagentManager:
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        a2a_record: "RecordedA2A | None" = None,
     ) -> "SubagentInfo | dict[str, Any] | None":
         return self._continuation._continue_prelude_impl(
             conv_id,
@@ -2802,10 +3010,14 @@ class SubagentManager:
             cwd,
             _preassigned_id,
             _memory_mode,
+            a2a_record=a2a_record,
         )
 
     def recorded_cwd(self, conv_id: str) -> str:
         return self._continuation.recorded_cwd_impl(conv_id)
+
+    def recorded_a2a(self, conv_id: str) -> "RecordedA2A | None":
+        return self._continuation.recorded_a2a_impl(conv_id)
 
     def _inherited_context_groups(self, conv_id: str) -> tuple[bool, bool, bool]:
         return self._continuation._inherited_context_groups_impl(conv_id)
@@ -2981,6 +3193,12 @@ class SubagentManager:
     async def _teardown_run_session(self, info: SubagentInfo, session_key: str) -> None:
         return await self._run_events._teardown_run_session_impl(info, session_key)
 
+    async def _release_direct_provider(self, info: SubagentInfo, *, cancel: bool) -> None:
+        return await self._run_events._release_direct_provider_impl(info, cancel=cancel)
+
+    async def _persist_a2a_context(self, info: SubagentInfo, provider: Any) -> None:
+        return await self._run_events._persist_a2a_context_impl(info, provider)
+
     async def _run(self, info: SubagentInfo) -> None:
         return await self._run_events._run_impl(info)
 
@@ -3101,6 +3319,9 @@ class SubagentManager:
     def _should_use_session_sharing(self, info: SubagentInfo) -> bool:
         return self._run_events._should_use_session_sharing_impl(info)
 
+    async def _build_a2a_provider(self, info: SubagentInfo, entry):
+        return await self._run_events._build_a2a_provider_impl(info, entry)
+
     async def _create_shared_session(
         self, info: SubagentInfo, session_key: str, agent: str
     ) -> "LLMProvider":
@@ -3153,7 +3374,9 @@ class SubagentManager:
         """
         if ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider):
             return PROVIDER_LABEL_CLAUDE
-        # circular import: see _is_cc_provider.
+        # circular import: see _is_cc_provider. The shared helper reads the ABC's
+        # declared ``provider_label`` first (the A2A provider's "a2a"), then
+        # classifies the ACP family by backend.
         from kiro_crew.providers.acp import provider_label
 
         return provider_label(provider)
@@ -3215,6 +3438,7 @@ class SubagentManager:
 # Component implementations deliberately resolve globals through this module:
 # existing integrations patch ``kiro_crew.subagent.*`` after manager creation.
 _COMPONENT_GLOBAL_BINDINGS = (
+    A2A_PROVIDER_LABEL,
     AcpSessionProvider,
     Any,
     CONTEXT_GROUP_LESSONS,

@@ -33,6 +33,16 @@ def main(argv: list[str] | None = None) -> int:
         "--member", action="append", default=[], help="crew member slug to add (repeatable)"
     )
     p.add_argument(
+        "--remote-agent",
+        action="append",
+        default=[],
+        metavar="NAME=CARD_URL",
+        help=(
+            "register a remote A2A agent in config.a2a_agents (repeatable); the GUI "
+            "user test points this at the packaged fake A2A server"
+        ),
+    )
+    p.add_argument(
         "--print-fake-backend",
         action="store_true",
         help="print the path of the packaged fake ACP backend (for KIROCREW_KIRO_BIN) and exit",
@@ -44,6 +54,18 @@ def main(argv: list[str] | None = None) -> int:
 
         print(fake_acp_backend.__file__)
         return 0
+
+    remote_agents: list[tuple[str, str]] = []
+    for spec in args.remote_agent:
+        name, sep, card_url = spec.partition("=")
+        if not sep or not name or not card_url.startswith("http://127.0.0.1"):
+            print(
+                f"--remote-agent must be NAME=http://127.0.0.1:<port>/... (got {spec!r}); "
+                "the fixture is loopback-only",
+                file=sys.stderr,
+            )
+            return 2
+        remote_agents.append((name, card_url))
 
     home = os.environ.get("KIROCREW_HOME")
     if not home:
@@ -74,7 +96,19 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    print(f"seeded {args.fixture} into {home} with members {args.member or '[]'}")
+    if remote_agents:
+        existing = {a.get("name") for a in cfg.get("a2a_agents", []) if isinstance(a, dict)}
+        cfg.setdefault("a2a_agents", [])
+        for name, card_url in remote_agents:
+            if name not in existing:
+                cfg["a2a_agents"].append(
+                    {"name": name, "agent_card_url": card_url, "auth": {"scheme": "none"}}
+                )
+        cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"seeded {args.fixture} into {home} with members {args.member or '[]'}"
+        + (f" and remote agents {[n for n, _ in remote_agents]}" if remote_agents else "")
+    )
     return 0
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .. import subagent_persistence as persistence
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
         _CONVERSATION_TTL_SECS,
         _STEER_STARTUP_POLL_SECS,
         _STEER_STARTUP_WAIT_SECS,
+        A2A_PROVIDER_LABEL,
         CONTEXT_GROUP_LESSONS,
         CONTEXT_GROUP_MEMORY,
         CONTEXT_GROUP_PROJECT,
@@ -30,6 +32,22 @@ if TYPE_CHECKING:
         update_state,
         uuid,
     )
+
+
+@dataclass(frozen=True)
+class RecordedA2A:
+    """What a conversation's ``state.json`` recorded about its remote (A2A) run.
+
+    ``agent`` is the registry name the run was spawned with; ``context_id`` is the
+    A2A ``contextId`` the remote minted, persisted in the ``session_id`` field
+    (see ``A2AProvider.session_id``). Built by :meth:`recorded_a2a_impl`, the ONE
+    read of these facts: ``run.py`` takes the ``context_id`` to rebuild the
+    provider, and the continue callers take the ``agent`` so a continuation
+    stays with the agent that owns the conversation.
+    """
+
+    agent: str
+    context_id: str
 
 
 class ContinuationCoordinator(ManagerComponent):
@@ -297,6 +315,7 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        a2a_record: RecordedA2A | None = None,
     ) -> SubagentInfo | None:
         """Dispatch a follow-up *task* into conversation *conv_id* (sync callers).
 
@@ -327,6 +346,7 @@ class ContinuationCoordinator(ManagerComponent):
             cwd,
             _preassigned_id,
             _memory_mode,
+            a2a_record=a2a_record,
         )
         if not isinstance(prelude, dict):
             return prelude
@@ -343,6 +363,7 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        a2a_record: RecordedA2A | None = None,
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
@@ -357,6 +378,7 @@ class ContinuationCoordinator(ManagerComponent):
             cwd,
             _preassigned_id,
             _memory_mode,
+            a2a_record=a2a_record,
         )
         if not isinstance(prelude, dict):
             return prelude
@@ -373,6 +395,7 @@ class ContinuationCoordinator(ManagerComponent):
         cwd: str = "",
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
+        a2a_record: RecordedA2A | None = None,
     ) -> "SubagentInfo | dict[str, Any] | None":
         """Dispatch a follow-up *task* into conversation *conv_id*.
 
@@ -380,6 +403,12 @@ class ContinuationCoordinator(ManagerComponent):
         dispatch identity BEFORE the side effect (so a crash in between is
         recoverable rather than ambiguous) supplies the id it already wrote
         down, instead of discovering the minted one only on return.
+
+        ``a2a_record`` is what :meth:`recorded_a2a_impl` returned for this
+        conversation, resolved by the async caller off the event loop (this
+        method is synchronous and never reads ``state.json`` itself, like
+        ``cwd``). For a remote conversation it fixes the agent: an empty *agent*
+        inherits the recorded one, and a different one is refused.
 
         Retain-by-default: works on ANY completed run whose session files are
         still on disk — no keep flag needed at spawn time. Every run's sid /
@@ -396,8 +425,28 @@ class ContinuationCoordinator(ManagerComponent):
         Typed failures (returned as a done SubagentInfo with ``error``):
         - ``conversation_busy`` — a run is in flight; use spawn_steer.
         - ``conversation_gone`` — no resumable session files remain.
+        - ``agent_mismatch`` — a remote conversation named for another agent.
         """
         conv_key = f"subagent:{conv_id}"
+        # A remote conversation belongs to the agent that minted its contextId:
+        # A2A has no notion of handing a context to another agent, and sending
+        # agent A's handle to agent B would mix two conversations. Decided first,
+        # before any side effect (promotion, session seeding).
+        if a2a_record is not None:
+            if not agent:
+                agent = a2a_record.agent
+            elif agent != a2a_record.agent:
+                return SubagentInfo(
+                    id=_preassigned_id or uuid.uuid4().hex[:8],
+                    task=_redact(task),
+                    done=True,
+                    parent_session_key=parent_session_key,
+                    error=(
+                        f"agent_mismatch: conversation {conv_id} belongs to remote agent "
+                        f"{a2a_record.agent!r}; a continuation cannot name a different "
+                        f"agent ({agent!r})"
+                    ),
+                )
         try:
             memory_store = self._manager._inherited_memory_store(conv_id)
         except (OSError, ValueError) as exc:
@@ -542,6 +591,10 @@ class ContinuationCoordinator(ManagerComponent):
             # follow-up reads the global store -- a split nothing reports.
             memory_store=memory_store,
             _memory_mode=_memory_mode,
+            # The contextId the caller resolved and this method admitted (agent
+            # check above) travels WITH the run: the provider is built from it,
+            # never from a second read of state.json that could disagree.
+            _a2a_context=a2a_record.context_id if a2a_record is not None else "",
         )
 
     def _inherited_memory_store_impl(self, conv_id: str) -> str:
@@ -571,6 +624,24 @@ class ContinuationCoordinator(ManagerComponent):
         the pool default is correct, because there is no project to miss.
         """
         return str((read_state(conv_id) or {}).get("cwd") or "")
+
+    def recorded_a2a_impl(self, conv_id: str) -> RecordedA2A | None:
+        """The remote-agent facts run *conv_id* recorded, or None for a local run.
+
+        Same contract as :meth:`recorded_cwd_impl`: a blocking ``state.json`` read
+        kept out of the synchronous ``continue_conversation`` so async callers
+        resolve it under ``asyncio.to_thread`` and pass the result in. None unless
+        the run recorded provider ``a2a``; an A2A run that never adopted a
+        ``contextId`` yields an empty ``context_id``, which makes the rebuilt
+        provider report ``_resumed=False`` and fires the ``resume_failed`` guard.
+        """
+        state = read_state(conv_id) or {}
+        if str(state.get("provider") or "") != A2A_PROVIDER_LABEL:
+            return None
+        return RecordedA2A(
+            agent=str(state.get("agent") or ""),
+            context_id=str(state.get("session_id") or ""),
+        )
 
     def _inherited_context_groups_impl(self, conv_id: str) -> tuple[bool, bool, bool]:
         """Recover the context scope of the run being continued.
@@ -624,10 +695,32 @@ class ContinuationCoordinator(ManagerComponent):
         def _resolve_provider() -> Any:
             if info._session_sharing and info._shared_provider is not None:  # type: ignore[union-attr]
                 return info._shared_provider  # type: ignore[union-attr]
+            # Direct-constructed providers (A2A remote agents) never register
+            # in the session manager — resolve them off the run info.
+            direct = getattr(info, "_direct_provider", None)
+            if direct is not None:
+                return direct
             session_key = info.conversation_key or f"subagent:{info.id}"  # type: ignore[union-attr]
             return self._manager._sessions.get_provider(session_key)
 
         provider: Any = _resolve_provider()
+        # A directly-constructed (A2A) provider that declares it cannot steer
+        # gets the typed rejection IMMEDIATELY — polling the startup-grace
+        # window cannot change a capability, and without this a remote run
+        # reported a misleading session_starting for its entire life. Scoped to
+        # the direct-provider branch: how a local backend outside
+        # ACP_BACKENDS_STEER answers a steer is that backend's contract, not
+        # this change's.
+        if (
+            provider is not None
+            and provider is getattr(info, "_direct_provider", None)
+            and not getattr(provider, "supports_steer", True)
+        ):
+            return False, (
+                "steer_unsupported: this run's backend does not support "
+                "mid-turn interrupt — use spawn_steer mode='follow_up' "
+                "(delivered after the current turn) or spawn_continue"
+            )
         if provider is None or not hasattr(provider, "steer"):
             # Bounded wait for session registration on a run that is still
             # alive. Re-checks done-ness each tick: a run finishing while we

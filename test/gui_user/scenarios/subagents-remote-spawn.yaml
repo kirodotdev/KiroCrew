@@ -1,0 +1,33 @@
+# Nightly: the core promise of remote agents -- a remote worker appears on the
+# subagent board and finishes exactly like a local one.
+#
+# Test-mode mechanism: the primary agent is the canned fake ACP backend, which
+# does not reason, so it cannot DECIDE to delegate. The `[[SPAWN:remote-demo]]`
+# directive in the message is the test-mode stand-in for that decision: the fake
+# backend spawns a subagent on the named agent with the rest of the message as
+# the task, the same call the real agent makes through spawn_run. `remote-demo`
+# is the fake A2A server the `rich` seed registers under a2a_agents. A real user
+# never types the directive; they ask a question and their agent chooses.
+name: subagents-remote-spawn
+tier: nightly
+feature: subagents
+user_story: >-
+  As a user, I want to ask my agent something that it delegates to a remote
+  agent, so that I see the remote worker stream and finish on the subagent
+  board exactly like a local one.
+docs_url: docs/system-specs/modules/a2a-subagents.md
+summary: Delegate a task to the remote agent and watch it complete on the subagent board
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Start a new chat from the sidebar.
+  - In the message box type exactly "[[SPAWN:remote-demo]] Reply with the codeword OSPREY-3 and nothing else" and send it with Enter.
+  - Wait until a subagent indicator appears near the conversation (a progress bar, chip or count of agents working). Open the Subagents panel from it.
+  - Wait about five seconds for the subagent to show as finished (a check mark or "completed" state). If it has not, wait five more.
+expectations:
+  - The Subagents panel lists exactly one subagent for this conversation, and it is marked completed, not failed.
+  - The subagent's output contains "OSPREY-3".
+  - The subagent entry names the agent it ran on, and that name is "remote-demo".
+max_steps: 16
+max_seconds: 420

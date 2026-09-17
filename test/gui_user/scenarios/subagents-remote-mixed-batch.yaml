@@ -1,0 +1,32 @@
+# Nightly: local and remote workers compose. One fan-out puts a local worker and
+# a remote worker on the same board, in the same batch, and both results come
+# back through the one completion the user already understands.
+#
+# Test-mode mechanism: `[[SPAWN:remote-demo]]` and `[[SPAWN:local]]` in one
+# message make the fake ACP backend issue a single two-task spawn (one on the
+# remote agent, one on the default local agent), the same batch shape the real
+# agent produces with spawn_run(tasks=[...]). `local` is the seed's default
+# agent, itself backed by the fake ACP backend.
+name: subagents-remote-mixed-batch
+tier: nightly
+feature: subagents
+user_story: >-
+  As a user, I want one request to fan out to a local and a remote worker at
+  once, so that I get both results in a single completion without having to
+  choose a backend.
+docs_url: docs/system-specs/modules/a2a-subagents.md
+summary: Fan one message out to a local and a remote subagent and see both finish together
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Start a new chat from the sidebar.
+  - Type exactly "[[SPAWN:remote-demo]] Reply with only the word FROM-REMOTE [[SPAWN:local]] Reply with only the word FROM-LOCAL" and send it with Enter.
+  - Wait about five seconds for the subagent indicator to show both runs finished, then open the Subagents panel.
+expectations:
+  - The Subagents panel shows exactly two runs for this conversation, both completed, neither failed.
+  - One run names the agent "remote-demo" and its output contains "FROM-REMOTE".
+  - The other run names a different (local) agent and its output contains "FROM-LOCAL".
+  - The chat shows a single "Sub-agents finished" card covering both runs, not one card per run.
+max_steps: 16
+max_seconds: 480

@@ -163,6 +163,207 @@ class TestSpawnGate:
         assert subagent._vet_spawn_governance("cli_chat", "anything") is None
 
 
+# ── remote (A2A) spawn capability gate (capabilities.remote_spawn) ──
+
+
+class TestRemoteSpawnGate:
+    """Delegating to an ``a2a_agents`` entry is a SECOND gate over spawn: an
+    enterprise POLICY can allow local sub-agents while forbidding or scoping
+    off-box delegation. Registry membership is the predicate, the same one the
+    run path routes on.
+    """
+
+    @staticmethod
+    def _remote(monkeypatch, *names: str, origin: str = "https://agents.example") -> None:
+        from kiro_crew import subagent
+
+        monkeypatch.setattr(subagent, "_a2a_agent_names", lambda: frozenset(names))
+        monkeypatch.setattr(subagent, "_a2a_card_origin", lambda n: origin if n in names else "")
+
+    def test_ungoverned_permits_remote(self, monkeypatch):
+        self._remote(monkeypatch, "remote-demo")
+        _install(None)
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "remote-demo") is None
+
+    def test_degraded_evaluator_denies_remote_but_not_local(self, monkeypatch):
+        """``governance_permits`` swallows an evaluator error and degrades to
+        PERMIT unless ``fail_closed=True``; off-box egress is an authorization
+        decision (like publish and messaging), so the remote gate must pass it
+        and a degraded evaluator must deny the remote spawn. The local gate keeps
+        its availability posture, so the same failure still permits a local one."""
+        self._remote(monkeypatch, "remote-demo")
+        _install(None)
+        from kiro_crew import subagent
+        from kiro_crew.platform import governance_profiles as gp
+
+        real = gp.governance_permits
+        seen: list[tuple[str, str, bool]] = []
+
+        def _raise(*_a, **_k):
+            raise RuntimeError("profile store unavailable")
+
+        def flaky(scope, item, **kw):
+            seen.append((scope, item, bool(kw.get("fail_closed", False))))
+            if scope == "capabilities.remote_spawn":
+                # governance_permits resolves the profile inside its own try:
+                # break that so the degrade path is what decides.
+                monkeypatch.setattr(gp, "resolve_active_scope", _raise)
+            return real(scope, item, **kw)
+
+        monkeypatch.setattr(gp, "governance_permits", flaky)
+        assert subagent._vet_spawn_governance("cli_chat", "local-worker") is None
+        assert all(fc is False for s, _i, fc in seen if s == "capabilities.spawn")
+        reason = subagent._vet_spawn_governance("cli_chat", "remote-demo")
+        assert reason is not None and "remote" in reason
+        assert all(fc is True for s, _i, fc in seen if s == "capabilities.remote_spawn")
+
+    def test_decision_without_permitted_denies_remote(self, monkeypatch):
+        # A decision object missing the attribute is denied, never assumed.
+        self._remote(monkeypatch, "remote-demo")
+        _install(None)
+        from kiro_crew import subagent
+        from kiro_crew.platform import governance_profiles as gp
+
+        monkeypatch.setattr(gp, "governance_permits", lambda *a, **k: object())
+        reason = subagent._vet_spawn_governance("cli_chat", "remote-demo")
+        assert reason is not None and "remote-demo" in reason
+
+    def test_policy_silent_on_remote_spawn_permits(self, monkeypatch):
+        # Unnamed key is ungoverned (CAPABILITY-DEFAULT CONTRACT): a policy that
+        # governs spawn but never mentions remote_spawn leaves delegation on.
+        self._remote(monkeypatch, "remote-demo")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"spawn": {"enabled": True}},
+            }
+        )
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "remote-demo") is None
+
+    def test_remote_denied_while_local_allowed(self, monkeypatch):
+        self._remote(monkeypatch, "remote-demo")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "spawn": {"enabled": True},
+                    "remote_spawn": {"enabled": False},
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "researcher") is None
+        reason = subagent._vet_spawn_governance("cli_chat", "remote-demo")
+        assert reason is not None and "remote" in reason.lower()
+
+    def test_named_without_enabled_is_denied(self, monkeypatch):
+        # Opt-in posture (capability_default=False), like publish/messaging: a
+        # policy that names the key only to scope it has NOT turned it on.
+        self._remote(monkeypatch, "remote-demo")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "remote_spawn": {
+                        "scopes": {"agents": {"mode": "allow", "allow": ["remote-demo"]}}
+                    }
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "remote-demo") is not None
+
+    def test_remote_agents_scope_limits(self, monkeypatch):
+        self._remote(monkeypatch, "remote-demo", "other-remote")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "remote_spawn": {
+                        "enabled": True,
+                        "scopes": {"agents": {"mode": "allow", "allow": ["remote-demo"]}},
+                    }
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "remote-demo") is None
+        assert subagent._vet_spawn_governance("cli_chat", "other-remote") is not None
+
+    def test_origins_scope_pins_the_destination(self, monkeypatch):
+        # The exfiltration shape a name-only policy cannot stop: config keeps an
+        # ALLOWED name and points its URL at another host. A policy that pins
+        # origins refuses it; the same name at the pinned origin is permitted.
+        self._remote(monkeypatch, "remote-demo", origin="https://evil.example")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "remote_spawn": {
+                        "enabled": True,
+                        "scopes": {
+                            "agents": {"mode": "allow", "allow": ["remote-demo"]},
+                            "origins": {"mode": "allow", "allow": ["https://agents.example*"]},
+                        },
+                    }
+                },
+            }
+        )
+        from kiro_crew import subagent
+
+        reason = subagent._vet_spawn_governance("cli_chat", "remote-demo")
+        assert reason is not None and "origins" in reason and "evil.example" in reason
+        # The admitted origin (what admission stashes) is what is judged.
+        ok = subagent._vet_spawn_governance(
+            "cli_chat", "remote-demo", remote=True, remote_origin="https://agents.example:8443"
+        )
+        assert ok is None
+        # No parsable origin can route nowhere: refused.
+        reason = subagent._vet_spawn_governance(
+            "cli_chat", "remote-demo", remote=True, remote_origin=""
+        )
+        assert reason is not None and "origin" in reason
+
+    def test_gate_judges_the_admitted_decision_not_a_fresh_registry_read(self, monkeypatch):
+        # Admission resolves local-vs-remote ONCE and passes it in. The gate must
+        # follow that decision: a name the registry now lists is still LOCAL if
+        # admission classified it so (and vice versa), because the run path
+        # routes on the same stashed decision -- vet and route cannot disagree.
+        self._remote(monkeypatch, "remote-demo")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {"spawn": {"enabled": True}, "remote_spawn": {"enabled": False}},
+            }
+        )
+        from kiro_crew import subagent
+
+        assert subagent._vet_spawn_governance("cli_chat", "remote-demo") is not None
+        assert subagent._vet_spawn_governance("cli_chat", "remote-demo", remote=False) is None
+        reason = subagent._vet_spawn_governance("cli_chat", "not-in-registry", remote=True)
+        assert reason is not None and "remote_spawn" in reason
+
+    def test_catalog_row_is_opt_in(self):
+        from kiro_crew.platform.governance import SCOPE_CATALOG
+
+        spec = SCOPE_CATALOG["capabilities.remote_spawn"]
+        assert spec.capability_default is False
+        assert spec.scope_matchers == {"agents": "identifier", "origins": "host"}
+
+
 # ── shared helpers ──
 class TestHelpers:
     def test_governance_permits_capability(self):

@@ -1,0 +1,32 @@
+# Nightly: the honesty invariant, and the CI form of the shim-kill test that
+# found two bugs during the proof of concept. When a remote agent's stream dies
+# mid-turn the run must show as FAILED with whatever output arrived, never as a
+# clean completion with an empty result.
+#
+# Test-mode mechanism: a task containing `[[DROP]]` makes the fake A2A server
+# stream several output chunks and then close the connection without ever
+# sending a terminal task state, which is exactly what a network failure or a
+# crashed remote agent looks like on the wire. `[[SPAWN:remote-demo]]` is the
+# test-mode delegation directive described in subagents-remote-spawn.yaml.
+name: subagents-remote-connection-lost
+tier: nightly
+feature: subagents
+user_story: >-
+  As a user, I want a remote subagent whose connection drops to show as failed
+  together with the output it managed to produce, so that I never mistake a
+  dead worker for a finished one.
+docs_url: docs/system-specs/modules/a2a-subagents.md
+summary: Drop the remote connection mid-stream and confirm the run is marked failed, output kept
+preconditions:
+  seed: rich
+  start_url: /
+steps:
+  - You are on the chat page. Start a new chat from the sidebar.
+  - Type exactly "[[SPAWN:remote-demo]] [[DROP]] Write ten numbered facts about bridges." and send it with Enter.
+  - Wait about five seconds for the subagent indicator to show the run has ended, then open the Subagents panel and open that run.
+expectations:
+  - The run is marked failed (an error state or a red/cross marker), NOT completed and NOT still running.
+  - The failure message mentions that the remote agent's stream ended or the connection was lost; it does not say the agent produced no response.
+  - Whatever output arrived before the drop (at least one numbered fact) is still visible in the run's output.
+max_steps: 16
+max_seconds: 480

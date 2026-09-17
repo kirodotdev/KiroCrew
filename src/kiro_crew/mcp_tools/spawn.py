@@ -32,6 +32,7 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent import (
     AGENT_NOT_FOUND_CODE,
+    _a2a_agent_names,
     resolve_max_subagents,
     visible_agent_names,
 )
@@ -51,6 +52,20 @@ from kiro_crew.validation import (
 # a tool description is always-on context in every session, so this buys
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
+
+
+def _a2a_roster_names() -> frozenset[str]:
+    """A2A remote-agent names for the subagent-facing rosters.
+
+    Reuses ``subagent._a2a_agent_names`` (the single source shared with
+    ``_validate_agent``) so the advertised roster and the accepted set cannot
+    drift. Best-effort — never lets a config read break tool advertisement.
+    """
+    try:
+        return _a2a_agent_names()
+    except Exception:  # pragma: no cover - defensive
+        return frozenset()
+
 
 # Owner recorded on an audit record when the resolver named no session. An empty
 # owner is ambiguous by construction: a resolver whose every identity source
@@ -127,7 +142,12 @@ def _agent_roster_hint() -> str:
         # refusal roster's and a credential-shaped name is rewritten in place
         # rather than re-sorted into a different slot.
         shown, withheld = visible_agent_names(
-            sorted(a.name for a in mcp_core.list_agents() if a.name),
+            sorted(
+                set(a.name for a in mcp_core.list_agents() if a.name)
+                # A2A remote agents are spawnable subagents but invisible to
+                # list_agents(); include them in this subagent-facing roster.
+                | set(_a2a_roster_names())
+            ),
             limit=_MAX_ROSTER_NAMES,
         )
     except Exception:
@@ -319,6 +339,8 @@ def schemas() -> list[dict[str, Any]]:
                 "arrives as a normal [Subagent completion event]. Typed "
                 "failures: conversation_busy (run in flight — use spawn_steer), "
                 "conversation_gone (files expired — re-spawn with a summary), "
+                "agent_mismatch (a remote agent's conversation was named for a "
+                "different agent — omit agent to inherit it), "
                 "resume_failed (session could not be restored; never executes "
                 "context-free). Context scope is inherited from the run being "
                 "continued, so the include_* flags are not accepted here."
@@ -937,7 +959,10 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     # elsewhere because it is reached by omitting ``agent`` -- but it is still a
     # name the gateway accepts, so a full listing shows it.
     try:
-        names, _ = visible_agent_names((a.name or "" for a in mcp_core.list_agents()), exclude=())
+        names, _ = visible_agent_names(
+            list(a.name or "" for a in mcp_core.list_agents()) + list(_a2a_roster_names()),
+            exclude=(),
+        )
         if names:
             lines.append(f"\nAvailable agents: {', '.join(names)}")
     except Exception:
