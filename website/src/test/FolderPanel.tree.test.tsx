@@ -42,7 +42,7 @@ vi.mock('../pierre/tree', () => ({
 }))
 
 import FolderPanel from '../pages/chat/FolderPanel'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const ROOT = '/repo'
 
@@ -155,6 +155,77 @@ describe('FolderPanel — project-root workspace tree', () => {
     expect(api.browseFiles).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByLabelText('Refresh'))
     await waitFor(() => expect(api.browseFiles).toHaveBeenCalledTimes(2))
+  })
+
+  it('refreshes the tree read as well while a RECOVERABLE tree failure holds', async () => {
+    // A recoverable failure leaves tree mode (it needs 'ready'), so Refresh took the listing
+    // branch and never re-read the tree — the one button offered could not restore it.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    const tree = vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    const before = tree.mock.calls.length
+    fireEvent.click(screen.getByLabelText('Refresh'))
+    await waitFor(() => expect(tree.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('names Refresh on the tree-timeout notice, since Refresh re-reads the tree in that arm', async () => {
+    // The search and listing notices already point at the header Refresh; the tree notice was
+    // the one recoverable arm that stated the cause without the remedy, while the button beside
+    // it stayed an unlabelled icon.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    const label = screen.getByRole('button', { name: 'Refresh' }).querySelector('span')
+    expect(label).not.toBeNull()
+    expect(label).not.toHaveClass('invisible')
+  })
+
+  it('withholds the Refresh hint when the tree endpoint REFUSES the root', async () => {
+    // Control: a refusal is not recoverable, so it renders no tree notice at all and the header
+    // control stays compact — the hint above must be keyed on the recoverable arm, not on any error.
+    vi.spyOn(api, 'projectTree').mockRejectedValue(
+      new ApiError(403, 'unknown', JSON.stringify({ code: 'unknown_project_dir' })) as never,
+    )
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toHaveClass('w-[26px]')
+  })
+
+  it('does not stack "Empty folder" under the tree-timeout notice', async () => {
+    // The listing that loaded is a FALLBACK for the tree that did not; with both on screen the
+    // panel made two claims about one directory, and the second read as the reason for the
+    // first.
+    const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+    vi.spyOn(api, 'projectTree').mockRejectedValue(timeout as never)
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(
+      { path: ROOT, parent: '/', dirs: [], files: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent("Couldn't load the file tree — Refresh to retry")
+    // The listing HAS settled (its parent row is up), so the absence is the gate, not a pending read.
+    await screen.findByText('Parent folder')
+    expect(screen.queryByText('Empty folder')).toBeNull()
+  })
+
+  it('still says "Empty folder" when no tree notice is up', async () => {
+    // Control: the same empty listing under a REFUSED tree renders no tree notice, so the line
+    // must come back -- the suppression above is keyed on the notice, not on being at the root.
+    vi.spyOn(api, 'projectTree').mockRejectedValue(
+      new ApiError(403, 'unknown', JSON.stringify({ code: 'unknown_project_dir' })) as never,
+    )
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(
+      { path: ROOT, parent: '/', dirs: [], files: [] } as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+
+    expect(await screen.findByText('Empty folder')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('opens a file through the normal file tab without re-targeting the folder tab', async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { renderWithProviders } from './helpers'
 import FolderConfigModal from '../components/FolderConfigModal'
 import { ChatFolder } from '../types'
 
@@ -19,7 +20,7 @@ const AGENTS = [{ name: 'kirocrew' }, { name: 'kirocrew-dev' }]
 function open(props: Partial<React.ComponentProps<typeof FolderConfigModal>> = {}) {
   const onSubmit = vi.fn().mockResolvedValue(undefined)
   const onClose = vi.fn()
-  const utils = render(
+  const utils = renderWithProviders(
     <FolderConfigModal
       open={true}
       mode="create"
@@ -269,7 +270,7 @@ describe('FolderConfigModal', () => {
     it('stays open and keeps every field when the save is rejected', async () => {
       const onSubmit = reject()
       const onClose = vi.fn()
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
           installedAgents={AGENTS} onClose={onClose} onSubmit={onSubmit} />
       )
@@ -288,7 +289,7 @@ describe('FolderConfigModal', () => {
     })
 
     it("surfaces the backend's reason verbatim", async () => {
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={reject()} />
       )
@@ -303,7 +304,7 @@ describe('FolderConfigModal', () => {
     it('closes only after the save resolves', async () => {
       const onSubmit = vi.fn().mockResolvedValue(undefined)
       const onClose = vi.fn()
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
           installedAgents={AGENTS} onClose={onClose} onSubmit={onSubmit} />
       )
@@ -317,7 +318,7 @@ describe('FolderConfigModal', () => {
     it('does not double-submit while a save is in flight', async () => {
       let release: (() => void) | undefined
       const onSubmit = vi.fn(() => new Promise<void>(res => { release = res }))
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -334,7 +335,7 @@ describe('FolderConfigModal', () => {
       const onSubmit = vi.fn()
         .mockRejectedValueOnce(new Error('project_dir must be an existing directory'))
         .mockResolvedValueOnce(undefined)
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -355,7 +356,7 @@ describe('FolderConfigModal', () => {
       // keep-open-on-error fix exists to preserve.
       const f = () => folder('f1', { name: 'Payments', project_dir: '/repo/pay' })
       const first = f()
-      const { rerender } = render(
+      const { rerender } = renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={first} folders={[first]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={vi.fn().mockResolvedValue(undefined)} />
       )
@@ -373,7 +374,7 @@ describe('FolderConfigModal', () => {
     it('still re-seeds when it retargets to a different folder', async () => {
       const a = folder('a', { name: 'Alpha' })
       const b = folder('b', { name: 'Beta' })
-      const { rerender } = render(
+      const { rerender } = renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={a} folders={[a, b]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={vi.fn().mockResolvedValue(undefined)} />
       )
@@ -435,7 +436,7 @@ describe('FolderConfigModal', () => {
 
     it('a name-only edit reports name alone', async () => {
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={seedFolder} folders={[seedFolder]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -448,7 +449,7 @@ describe('FolderConfigModal', () => {
 
     it('reports nothing when the user opens and saves without editing', async () => {
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={seedFolder} folders={[seedFolder]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -459,7 +460,7 @@ describe('FolderConfigModal', () => {
 
     it('reports each field the user actually edited', async () => {
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={seedFolder} folders={[seedFolder]}
           installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -566,7 +567,7 @@ describe('FolderConfigModal', () => {
   it('does not leak a draft between openings', async () => {
     const a = folder('a', { name: 'Alpha' })
     const b = folder('b', { name: 'Beta' })
-    const { rerender } = render(
+    const { rerender } = renderWithProviders(
       <FolderConfigModal open={true} mode="edit" folder={a} folders={[a, b]}
         installedAgents={AGENTS} onClose={vi.fn()} onSubmit={vi.fn()} />
     )
@@ -660,7 +661,7 @@ describe('FolderConfigModal', () => {
       // PATCH never sends the stale reference that would 400.
       const f = folder('f1', { name: 'Payments', tags: ['gone'] })
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
           installedAgents={AGENTS} availableTags={TAGS} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -678,7 +679,7 @@ describe('FolderConfigModal', () => {
       // preserve the persisted ids.
       const f = folder('f1', { name: 'Payments', tags: ['t1'] })
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      const { rerender } = render(
+      const { rerender } = renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
           installedAgents={AGENTS} availableTags={undefined} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -703,7 +704,7 @@ describe('FolderConfigModal', () => {
       // can never 400 the folder.
       const f = folder('f1', { name: 'Payments', tags: ['gone', 't1'] })
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      const { rerender } = render(
+      const { rerender } = renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
           installedAgents={AGENTS} availableTags={undefined} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -726,7 +727,7 @@ describe('FolderConfigModal', () => {
       // sat open — vocabulary pruning is not a user edit.
       const f = folder('f1', { name: 'Payments', tags: ['gone', 't1'] })
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      const { rerender } = render(
+      const { rerender } = renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
           installedAgents={AGENTS} availableTags={undefined} onClose={vi.fn()} onSubmit={onSubmit} />
       )
@@ -786,7 +787,7 @@ describe('FolderConfigModal', () => {
     it('reports tags in touched only when the selection changed', async () => {
       const f = folder('f1', { name: 'Payments', tags: ['t1'] })
       const onSubmit = vi.fn().mockResolvedValue(undefined)
-      render(
+      renderWithProviders(
         <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
           installedAgents={AGENTS} availableTags={TAGS} onClose={vi.fn()} onSubmit={onSubmit} />
       )

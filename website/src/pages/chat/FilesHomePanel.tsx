@@ -44,6 +44,11 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
   // header; askAgent on — the Files panel holds no draft.
   const reveal = useRevealFailure(projectDir ?? undefined)
   const treeState = useTreeState(projectDir)
+  // Every failed read lands in this panel's own error arm below, whichever of `useTreeState`'s
+  // two failure states names it. The `recoverable` split exists for the FILE-TAB rail, which has
+  // no notice of its own to fall back on; this surface already states the failure and carries a
+  // labelled Refresh, so it keeps the one arm it always had.
+  const treeFailed = treeState === 'error' || treeState === 'recoverable'
   const treeAvailable = treeState === 'ready'
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['project-tree', projectDir] })
@@ -63,7 +68,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
                 own, so mounting this unconditionally would put two
                 identically-named controls in one view. It covers only the state
                 that has neither: a directory whose tree has not resolved yet. */}
-            {!treeAvailable && treeState !== 'error' && (
+            {!treeAvailable && !treeFailed && (
               <button onClick={refresh} className={iconBtn} title={t('pages.chat.filesHome.refresh')} aria-label={t('pages.chat.filesHome.refresh')}>
                 <RotateCw size={14} />
               </button>
@@ -84,7 +89,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 flex flex-col items-center justify-center gap-2 text-muted px-6 text-center">
           <FileText size={22} className="opacity-40" />
-          {treeState === 'error' ? (
+          {treeFailed ? (
             <>
               {/* A failed fetch is not a missing setting: the directory is set
                   (the header is naming it), the tree endpoint just would not
