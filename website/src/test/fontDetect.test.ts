@@ -6,6 +6,8 @@ import {
   isFontInstalled,
   isLocalFontAccessSupported,
   isMonospaceFamily,
+  proportionalFontStack,
+  queryLocalFonts,
   queryLocalMonospaceFonts,
   __resetFontProbe,
   type MeasureText,
@@ -172,6 +174,36 @@ describe('queryLocalMonospaceFonts', () => {
     const win = { queryLocalFonts: () => Promise.resolve([{ family: 'Georgia' }, { family: 'Hack' }]) }
     await expect(queryLocalMonospaceFonts(win, proportional)).resolves.toEqual({
       ok: true, families: ['Hack'],
+    })
+  })
+})
+
+describe('proportionalFontStack', () => {
+  it('quotes the family and ends in a proportional generic', () => {
+    expect(proportionalFontStack('Comic Sans MS')).toBe("'Comic Sans MS', sans-serif")
+  })
+})
+
+describe('queryLocalFonts', () => {
+  it('reports unsupported without calling anything', async () => {
+    await expect(queryLocalFonts({})).resolves.toEqual({ ok: false, reason: 'unsupported' })
+  })
+
+  it('reports denied when the permission prompt rejects', async () => {
+    const win = { queryLocalFonts: vi.fn(() => Promise.reject(new Error('blocked'))) }
+    await expect(queryLocalFonts(win)).resolves.toEqual({ ok: false, reason: 'denied' })
+  })
+
+  it('keeps EVERY family, proportional included, unlike the monospace query', async () => {
+    const win = {
+      queryLocalFonts: () => Promise.resolve([
+        { family: 'Georgia' }, { family: 'Hack' }, { family: 'Georgia' }, { family: '  ' },
+      ]),
+    }
+    // No monospace filter: the proportional Georgia is retained, families are
+    // collapsed and sorted, and blanks dropped.
+    await expect(queryLocalFonts(win)).resolves.toEqual({
+      ok: true, families: ['Georgia', 'Hack'],
     })
   })
 })

@@ -1,10 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { safeSetItem } from '../utils/safeStorage'
 import { OPENDYSLEXIC_BODY_STACK, OPENDYSLEXIC_MONO_STACK } from '../utils/fontFamilyOptions'
+import { resolveCustomFontFamily, CUSTOM_FONT_STORAGE_KEY, CUSTOM_FONT_LIGATURES_STORAGE_KEY } from '../utils/customFont'
 
-export type FontFamily = 'sans' | 'mono' | 'system' | 'opendyslexic'
+export type FontFamily = 'sans' | 'mono' | 'system' | 'opendyslexic' | 'custom'
 
-const FAMILIES: FontFamily[] = ['sans', 'mono', 'system', 'opendyslexic']
+// The keyboard font-cycle rotates only the four presets — 'custom' is excluded
+// on purpose: it is meaningless without a font chosen in the picker (it would
+// land on a Sans look-alike dead stop), mirroring the DisplayTab quick-toggle
+// filter. Cycling while family === 'custom' falls through to 'sans' (indexOf
+// returns -1), a sensible exit back to the presets.
+const FAMILIES: Exclude<FontFamily, 'custom'>[] = ['sans', 'mono', 'system', 'opendyslexic']
 // The two theme-able options read a role token an installed pack can fill, so a
 // pack's proportional face reaches Sans and its monospace face reaches Mono. An
 // unfilled token falls through to Kiro Crew's own stack, which is what leaves a
@@ -16,7 +22,9 @@ const FAMILIES: FontFamily[] = ['sans', 'mono', 'system', 'opendyslexic']
 // declaring its own proportional face. The CSS stack itself lives in
 // utils/fontFamilyOptions.ts so the ESLint i18n exemption covers only that one
 // file rather than this hook.
-const FAMILY_MAP: Record<FontFamily, string> = {
+// 'custom' is intentionally absent: its stack is resolved at apply time from the
+// user's typed family (resolveCustomFontFamily), not a fixed literal.
+const FAMILY_MAP: Record<Exclude<FontFamily, 'custom'>, string> = {
   sans: "var(--theme-font-sans, var(--script-fallbacks),'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif)",
   mono: "var(--theme-font-mono, var(--script-fallbacks-mono),'JetBrains Mono',ui-monospace,SFMono-Regular,monospace)",
   system: "var(--script-fallbacks),-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
@@ -62,6 +70,17 @@ export function useZoom() {
   const [family, setFamily] = useState<FontFamily>(
     () => (localStorage.getItem('mc-font-family') as FontFamily) || 'sans'
   )
+  // The family named by the 'custom' option. Persisted separately so switching
+  // Custom → Sans → Custom keeps the typed family, and applied to --font-body
+  // only while `family === 'custom'`.
+  const [customFontFamily, setCustom] = useState<string>(
+    () => localStorage.getItem(CUSTOM_FONT_STORAGE_KEY) || ''
+  )
+  // Whether the Custom font shows ligatures. Default on (only the explicit
+  // string 'false' disables), so existing custom users keep today's behaviour.
+  const [customFontLigatures, setLigatures] = useState<boolean>(
+    () => localStorage.getItem(CUSTOM_FONT_LIGATURES_STORAGE_KEY) !== 'false'
+  )
 
   useEffect(() => {
     const api = zoomAPI()
@@ -79,6 +98,7 @@ export function useZoom() {
     window.addEventListener('resize', sync)
     return () => { alive = false; window.removeEventListener('resize', sync) }
   }, [])
+
 
   const applyResult = useCallback((p: Promise<number>) => {
     void p.then(f => setZoomPct(Math.round(f * 100))).catch(() => {})
@@ -123,7 +143,12 @@ export function useZoom() {
       const cliOpenDyslexicMono = ui === 'cli' && family === 'opendyslexic'
 
       let bodyStack: string
-      if (cliDefaultAutoMono) {
+      if (family === 'custom') {
+        // The user's typed family, app-wide. Empty (Custom selected but nothing
+        // typed yet) falls back to the default Sans stack rather than an empty
+        // value, so the surface never renders in the browser default serif.
+        bodyStack = resolveCustomFontFamily(customFontFamily) || FAMILY_MAP.sans
+      } else if (cliDefaultAutoMono) {
         bodyStack = FAMILY_MAP.mono
       } else if (cliOpenDyslexicMono) {
         bodyStack = OPENDYSLEXIC_MONO_STACK
@@ -141,6 +166,10 @@ export function useZoom() {
       const effectiveDataAttr: FontFamily = cliDefaultAutoMono ? 'mono' : family
       html.dataset.fontFamily = effectiveDataAttr
 
+      // Gate for the custom-font ligature rule in index.css. Read together with
+      // data-font-family="custom", so it only takes effect in Custom mode.
+      html.dataset.customLigatures = customFontLigatures ? 'on' : 'off'
+
       // Apply or clear the --mono inline override. Only opendyslexic overrides
       // today, so the branch is explicit rather than table-driven — a future
       // a11y font with its own mono variant becomes a second `||` in the
@@ -157,18 +186,31 @@ export function useZoom() {
     const obs = new MutationObserver(apply)
     obs.observe(html, { attributes: true, attributeFilter: ['data-ui'] })
     return () => obs.disconnect()
-  }, [family])
+  }, [family, customFontFamily, customFontLigatures])
 
   const setFontFamily = useCallback((f: FontFamily) => {
     safeSetItem('mc-font-family', f)
     setFamily(f)
   }, [])
 
+  // Set the family the 'custom' option uses. Persisted always; it only reaches
+  // --font-body while `family === 'custom'` (the apply effect re-runs on this dep).
+  const setCustomFontFamily = useCallback((value: string) => {
+    safeSetItem(CUSTOM_FONT_STORAGE_KEY, value)
+    setCustom(value)
+  }, [])
+
+  const setCustomFontLigatures = useCallback((on: boolean) => {
+    safeSetItem(CUSTOM_FONT_LIGATURES_STORAGE_KEY, String(on))
+    setLigatures(on)
+  }, [])
+
   const cycleFamily = useCallback(() => {
-    const next = FAMILIES[(FAMILIES.indexOf(family) + 1) % FAMILIES.length]
+    // 'custom' is not in FAMILIES → indexOf returns -1 → next falls to FAMILIES[0] ('sans').
+    const next = FAMILIES[(FAMILIES.indexOf(family as Exclude<FontFamily, 'custom'>) + 1) % FAMILIES.length]
     safeSetItem('mc-font-family', next)
     setFamily(next)
   }, [family])
 
-  return { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, cycleFamily }
+  return { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, cycleFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures }
 }

@@ -3,10 +3,20 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   detectInstalledFonts,
   isLocalFontAccessSupported,
+  queryLocalFonts,
   queryLocalMonospaceFonts,
 } from '../utils/fontDetect'
+import { CUSTOM_FONT_CANDIDATES } from '../utils/customFontCandidates'
+import type { LocalFontQuery } from '../utils/fontDetect'
 
-/* ── Installed monospace families for the terminal font picker ──────────────
+/* ── Installed families for a font picker ───────────────────────────────────
+ *
+ * `mode` chooses the scope and nothing else about the hook changes: 'mono' (the
+ * default) probes the monospace candidate list and enumerates only monospace
+ * families, for the terminal picker where xterm lays glyphs on a fixed grid;
+ * 'all' probes the broader custom-font candidate list and enumerates every
+ * family, for the "Custom" Font Family picker, which is prose and wants
+ * proportional faces too.
  *
  * Two detection layers, because neither alone is enough. The candidate probe
  * (`detectInstalledFonts`) needs no permission and works in every browser, but
@@ -39,7 +49,7 @@ export interface FontOptionsState {
   enumerate: () => void
 }
 
-export function useFontOptions(): FontOptionsState {
+export function useFontOptions(mode: 'mono' | 'all' = 'mono'): FontOptionsState {
   const [families, setFamilies] = useState<string[]>([])
   const [lastResult, setLastResult] = useState<FontOptionsState['lastResult']>('idle')
   const [accessSupported] = useState(() => isLocalFontAccessSupported())
@@ -47,7 +57,10 @@ export function useFontOptions(): FontOptionsState {
   useEffect(() => {
     let cancelled = false
     const probe = () => {
-      if (!cancelled) setFamilies(prev => (prev.length ? prev : detectInstalledFonts()))
+      // 'all' probes the custom-font candidate list (proportional + mono); 'mono'
+      // uses detectInstalledFonts' default monospace list.
+      const detected = mode === 'all' ? detectInstalledFonts(CUSTOM_FONT_CANDIDATES) : detectInstalledFonts()
+      if (!cancelled) setFamilies(prev => (prev.length ? prev : detected))
     }
     // Wait for web fonts before measuring. The dashboard loads its own monospace
     // face, which resolves AFTER first paint, so a probe that runs immediately
@@ -59,14 +72,15 @@ export function useFontOptions(): FontOptionsState {
     if (fonts) void fonts.ready.then(probe)
     else probe()
     return () => { cancelled = true }
-  }, [])
+  }, [mode])
 
   const enumerate = useCallback(() => {
     // Set before awaiting: where permission was already granted the query
     // resolves without a prompt and the list may not change at all, so the click
     // would otherwise have no visible effect while it ran.
     setLastResult('checking')
-    void queryLocalMonospaceFonts().then(result => {
+    const query: Promise<LocalFontQuery> = mode === 'all' ? queryLocalFonts() : queryLocalMonospaceFonts()
+    void query.then(result => {
       if (!result.ok) {
         // `unsupported` cannot reach here (the action is not offered), so this is
         // a block or a dismissed prompt: say so and keep the probed list.
@@ -83,7 +97,7 @@ export function useFontOptions(): FontOptionsState {
         return added.length ? [...prev, ...added] : prev
       })
     })
-  }, [])
+  }, [mode])
 
   return { families, accessSupported, lastResult, enumerate }
 }

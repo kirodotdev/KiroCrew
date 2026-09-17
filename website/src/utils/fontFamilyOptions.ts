@@ -31,6 +31,7 @@ export const FONT_FAMILY_OPTIONS: FontFamilyOption[] = [
   { value: 'mono', label: 'Mono' },
   { value: 'system', label: 'System' },
   { value: 'opendyslexic', labelKey: 'pages.settings.displayPanel.font_family_option_opendyslexic' },
+  { value: 'custom', labelKey: 'pages.settings.displayPanel.font_family_option_custom' },
 ]
 
 /**

@@ -1617,6 +1617,29 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
   100%{transform:rotate(360deg)}
 }
 
+/* ── Custom font ligatures ──
+   The "Custom" Font Family option sets --font-body to the user's installed
+   family app-wide (useZoom), so chat prose, the composer, and sidebar session
+   and folder names pick it up by inheritance — no per-surface font-family rule
+   is needed, and a Nerd Font's glyphs render from the family alone. This turns
+   on ligatures app-wide ONLY while Custom is active AND the "Enable ligatures"
+   toggle is on (html[data-font-family="custom"][data-custom-ligatures="on"], both
+   set by useZoom), so a programming font (Fira Code, Cascadia Code, …) shows its
+   ligatures on demand without changing how the built-in Sans/Mono presets render.
+   Code and diffs inside messages keep --mono via the more-specific rules below
+   AND reset ligatures to normal, so a custom font never turns on calt ligatures
+   in code that did not have them. */
+html[data-font-family="custom"][data-custom-ligatures="on"] body{font-variant-ligatures:common-ligatures contextual}
+/* OFF must be explicit `none`, not the absence of the rule above: contextual
+   (calt) and common (liga) ligatures are ON by default in CSS, so a font like
+   JetBrains Mono keeps rendering =>/!=/-> under the initial `normal` value —
+   only `none` actually turns them off. */
+html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-ligatures:none}
+/* Also cover Pierre's .code-block / .diff-block hosts: their lines are not
+   always <pre>, so without these selectors the OFF rule's `none` would leak
+   into rendered code and diffs by inheritance. */
+.msg-content code,.msg-content pre,.msg-content .code-block,.msg-content .diff-block{font-variant-ligatures:normal}
+
 /* ── Code in messages ── */
 .msg-content code{font-family:var(--mono);font-size:.9em}
 .msg-content :not(pre)>code{background:rgba(0,0,0,.15);padding:.15em .4em;border-radius:4px;overflow-wrap:break-word;word-break:break-all}
