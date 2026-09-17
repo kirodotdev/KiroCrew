@@ -1,10 +1,10 @@
 ---
 title: Agent self-tagging on the board — governed self-tagging via a protected grants store
-status: in-progress
+status: partial
 author: jeeshofone
 created: 2026-09-16
-last-audited: 2026-09-16
-audited-at: 69aeb2803
+last-audited: 2026-09-17
+audited-at: 780e75e2d
 doc-pr: null
 implementation-prs: [7779]
 tracking-issues: [7774]
@@ -57,10 +57,8 @@ agent cannot write. The positions this RFC takes, one line each:
 
 ### Current state
 
-Verified against the board branch at [#7779](https://github.com/kirodotdev/KiroCrew/pull/7779);
-none of it is on origin/main (`chat_tag` has no hit in
-`src/kiro_crew/mcp_tools/control.py`, and `src/kiro_crew/dashboard/chat_tag_grants.py`
-does not exist on main).
+The state before #7779, verified on `main` at `69aeb2803`; #7779 merged as
+`780e75e2d` on 2026-09-16 and is what this document records.
 
 - The board vocabulary and slot assignment live in
   `dashboard/chat_tags.py`: tags are user-defined `{id, name, color, status}`
@@ -98,11 +96,10 @@ Defaults) is precisely the reversible-once-shipped product decision that lane
 asks to see agreed before it ships, which is why this document exists even
 though the mechanism is small. The scoping comment on
 [#7774](https://github.com/kirodotdev/KiroCrew/issues/7774) records the same
-requirement from the review of #7779. This document is filed `in-progress` — the
-index's term for a design whose implementation is live in an open PR (the
-`rfc-append-only-ledger` precedent) — and the maintainers' merge of it is the
-acceptance of the default it records; the lane reads any non-`draft` status from
-the base branch.
+requirement from the review of #7779. This document is filed `partial`: v1 (#7779) is on
+`main`, and the tag-manager policy control, provenance-required minting and the
+v2 scope remain open; the maintainers' merge of this RFC records the default the
+lane reads from the base branch.
 
 ## Goals
 
