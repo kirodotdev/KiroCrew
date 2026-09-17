@@ -71,6 +71,21 @@ class CronStoreUnreadable(ValueError):
     """
 
 
+class CronProjectBoundDenied(RuntimeError):
+    """A non-owner tried to update a job that carries a project binding.
+
+    Raised inside the locked update when the ``refuse_project_bound``
+    precondition finds a non-empty ``project_path``. It is a precondition rather
+    than a caller-side check for two reasons: a project-bound job's message,
+    schedule and agent can all be rewritten and later fired with that binding as
+    the execution cwd, so the refusal has to cover the update AS A WHOLE, and
+    deciding it from a separate read would both re-open the race the locked
+    write closes and add a query the store's own update already reports (see
+    ``dashboard/handlers/cron.py``'s no-extra-read note). Its one handler
+    surfaces it as HTTP 403 ``project_bound_job_owner_required``.
+    """
+
+
 class CronPendingMismatch(RuntimeError):
     """The job's pending secret request changed after the caller read it.
 
@@ -304,6 +319,25 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
             return default
         return value
 
+    def _guard_disclosure_bool(field: str) -> bool:
+        # A DISCLOSURE flag, so its malformed answer is the withholding one.
+        # `bool()` alone is not enough: a JSON string survives it, and the
+        # string "false" is truthy, so a stored `"false"` would withhold an
+        # unbound result -- harmless but wrong. `is True` is not enough
+        # either, and fails the other way: every malformed value then reads
+        # False and SERVES text this flag exists to withhold. So only a real
+        # boolean is taken at face value; absent means never set (the key
+        # arrives with `project_path`, so a record without it cannot have
+        # fired bound), and anything else present is named in `coerced` and
+        # read as bound.
+        if field not in j:
+            return False
+        value = j[field]
+        if isinstance(value, bool):
+            return value
+        coerced.append(field)
+        return True
+
     # Schedule sub-fields decide WHEN the job fires and feed format_schedule
     # on the listing path unguarded, so like the execution selectors they fail
     # CLOSED: a mistyped value skips the record whole. The kind subscript runs
@@ -364,6 +398,12 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_result=_guard_opt_str("last_result"),
         last_result_ts=_guard_num("last_result_ts", 0.0),
         last_result_stamp=_guard_str("last_result_stamp"),
+        # Disclosure provenance: it MUST round-trip, or a restart answers
+        # "not bound" for a retained project-bound reply. Read through a guard
+        # that takes only a real boolean at face value: see
+        # `_guard_disclosure_bool` for why neither `bool()` nor `is True` is
+        # the right coercion for a flag whose malformed answer must withhold.
+        last_result_project_bound=_guard_disclosure_bool("last_result_project_bound"),
         context_enabled=j.get("context_enabled", False),
         agent_id=_selector_str("agent_id"),
         # member_id / memory_store are memory-identity selectors: they decide
@@ -390,6 +430,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         consecutive_failures=_guard_num("consecutive_failures", 0),
         skip_dates=_str_list("skip_dates"),
         timezone=_guard_str("timezone"),
+        project_path=_guard_str("project_path"),
         persistent_session=j.get("persistent_session", True),
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
@@ -563,6 +604,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "last_result": j.last_result,
         "last_result_ts": j.last_result_ts,
         "last_result_stamp": j.last_result_stamp,
+        "last_result_project_bound": j.last_result_project_bound,
         "context_enabled": j.context_enabled,
         "agent_id": j.agent_id,
         "member_id": j.member_id,
@@ -583,6 +625,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "consecutive_failures": j.consecutive_failures,
         "skip_dates": j.skip_dates,
         "timezone": j.timezone,
+        "project_path": j.project_path,
         "persistent_session": j.persistent_session,
         "minimal_context": j.minimal_context,
         "hide_in_chat": j.hide_in_chat,

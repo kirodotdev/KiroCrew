@@ -284,6 +284,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     apply_skill_mapping,
     enumerate_skill_catalog,
     read_bounded_json,
+    requesting_slot_project,
 )
 from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     TEMPLATE_DEFINITION_KEYS,
@@ -318,6 +319,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import resolve_project_path
 from kiro_crew.user_json import loads_user_json  # noqa: F401
 from kiro_crew.validation import TEMPLATE_NAME_RE  # noqa: F401
 
@@ -1466,9 +1468,13 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     Also surfaces the requesting session's project-scope agents
     (``<project>/.kiro/agents``, resolved via ``X-Session-Key``) tagged
     ``scope="project"`` — these dispatch from that slot because kiro-cli runs
-    with the slot's project as cwd, so the picker must offer them. A config
-    alias of the same name is listed once, as the alias:
-    dispatch resolves aliases first, so the alias is what would answer.
+    with the slot's project as cwd, so the picker must offer them. A name
+    declared by BOTH the project and ``config.agents`` is listed once, as the
+    PROJECT row, and its global row is dropped: a project definition shadows a
+    same-named config alias in dispatch (``_resolve_agent_selection``'s
+    project-override step, mirroring kiro-cli's own project-first lookup in
+    that cwd), so the project row is what would answer and the alias row would
+    advertise a definition that cannot run here.
     """
     cfg = KiroCrewConfig.load()
     # Caller class, resolved once for the whole response. It decides only VALUE
@@ -1501,7 +1507,155 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
     # event loop. Failure costs only the project rows, never the roster.
-    project_dir = active_project_dir(state, _read_session_key(request)) if state else ""
+    #
+    # Two sources of a project scope, in precedence order:
+    #   1. sessionKey -> the live in-memory slot's own .project. This is the
+    #      ONLY source for a real chat session, and it must win when present:
+    #      the slot is the thing that will actually run in that directory, so
+    #      its own project is authoritative over anything a caller separately
+    #      claims. Deliberately `requesting_slot_project`, NOT
+    #      `active_project_dir`: the latter's step 2 falls back to "the single
+    #      project shared by every open slot" for ANY session key, including
+    #      the dashboard-wide `dashboard:ui` sentinel every client call sends
+    #      when it has no real chat slot to name (see api/client.ts's `_sk`
+    #      fallback). That fallback silently won here whenever exactly one
+    #      chat tab happened to have a project bound, hijacking every caller
+    #      of THIS raw-path fallback (the cron job form's picker) regardless
+    #      of which project it actually asked for.
+    #   2. project_path query param -> a raw path with NO live slot behind it
+    #      (e.g. the Schedule page's job form, populating a project-scoped
+    #      agent picker for a cron job that has no session to key off of).
+    #      Falls back to this ONLY when sessionKey resolved to no project, so
+    #      a caller cannot override a real slot's project by also passing a
+    #      stale project_path.
+    slot_project = requesting_slot_project(state, _read_session_key(request)) if state else None
+    project_dir = str(slot_project) if slot_project else ""
+    if not project_dir and redact:
+        # A non-owner passing project_path gets no fallback and no error --
+        # audited here for the same reason the sensitive-path denial below
+        # is: a silently-ignored parameter on an owner-gated fallback is
+        # exactly the shape a probe for the gate's edges looks like.
+        raw_project_path = (request.query.get("project_path") or "").strip()
+        if raw_project_path:
+            try:
+                _sel().log_api_access(
+                    caller="dashboard",
+                    operation="api_kirocrew_agents.project_path",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=raw_project_path,
+                    error="not owner",
+                )
+            except Exception:
+                logger.debug(
+                    "SEL logging failed for agents project_path non-owner denial",
+                    exc_info=True,
+                )
+    if not project_dir and not redact:
+        # Owner-gated: this fallback lets a caller with no live slot name an
+        # arbitrary absolute path, and the only checks on that path
+        # (realpath/is_sensitive_path/isdir) guard credential homes, not the
+        # multi-human authorization boundary. `redact` is already this
+        # function's one deny-by-default owner signal, so gating on it here
+        # keeps the read and write sides of this fallback agreeing on who the
+        # owner is.
+        raw_project_path = (request.query.get("project_path") or "").strip()
+        if raw_project_path:
+
+            def _resolve_agents_project_path(raw: str) -> tuple[str, bool]:
+                """Resolve+validate a raw ``project_path`` query value off the event loop.
+
+                Returns ``(resolved_path, denied)``: ``denied=True`` means the path was
+                rejected as sensitive (the caller logs the SEL denial itself, since this
+                function runs in a worker thread and must not touch ``sel()`` there).
+                ``resolved_path`` is ``""`` when the path is neither denied nor a valid
+                existing directory. The realpath/sensitivity/isdir core is
+                :func:`security.resolve_project_path`, shared with
+                :meth:`CronService._validate_project_path`; no ``~``/absolute-path gate
+                here, since a query param is not held to the cron create-time bar.
+
+                Nested rather than module-level: the agents facade is a patch surface
+                whose top-level definitions ``_FACADE_DEFS`` pins, and this helper has
+                exactly one caller.
+
+                ``resolve_project_path`` calls ``os.path.realpath(os.path.expanduser(raw))``
+                with no guard of its own, and ``os.path.realpath`` raises ``ValueError`` on
+                an embedded null byte (GPT 5.6 Review F3) -- an owner-authored
+                ``?project_path=`` value the legitimate caller (JobForm's ProjectPicker)
+                can never emit, but a raw query string can. Caught here so a malformed
+                value degrades to "not a usable directory" -- the same outcome an
+                ordinary nonexistent path already gets -- rather than an uncaught
+                exception escaping this executor call and turning into a bare 500.
+                """
+                try:
+                    verdict = resolve_project_path(raw)
+                except (ValueError, OSError):
+                    return "", False
+                if verdict.sensitive:
+                    return verdict.resolved, True
+                if verdict.is_dir:
+                    return verdict.resolved, False
+                return "", False
+
+            # Same off-loop treatment as CronService._validate_project_path_async:
+            # realpath/is_sensitive_path/isdir are real filesystem syscalls, and
+            # this handler runs on the gateway's sole event loop.
+            resolved, denied = await asyncio.get_running_loop().run_in_executor(
+                discovery_executor(),
+                _resolve_agents_project_path,
+                raw_project_path,
+            )
+            if denied:
+                try:
+                    _sel().log_api_access(
+                        caller="dashboard",
+                        operation="api_kirocrew_agents.project_path",
+                        outcome="denied",
+                        source="dashboard",
+                        resources=resolved,
+                        error="sensitive path",
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed for agents project_path sensitive-path denial",
+                        exc_info=True,
+                    )
+            elif resolved:
+                try:
+                    _sel().log_api_access(
+                        caller="dashboard",
+                        operation="api_kirocrew_agents.project_path",
+                        outcome="allowed",
+                        source="dashboard",
+                        resources=resolved,
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed for agents project_path allow",
+                        exc_info=True,
+                    )
+                # Outside the try: a best-effort audit blip must not silently
+                # drop the resolved project the caller is entitled to.
+                project_dir = resolved
+            else:
+                # Neither denied (sensitive) nor resolved (a valid existing
+                # directory): a nonexistent path, a non-directory, or a
+                # malformed value caught by _resolve_agents_project_path's own
+                # ValueError/OSError guard -- GPT 5.6 Review F1.
+                try:
+                    _sel().log_api_access(
+                        caller="dashboard",
+                        operation="api_kirocrew_agents.project_path",
+                        outcome="denied",
+                        source="dashboard",
+                        resources=raw_project_path,
+                        error="not a usable directory",
+                    )
+                except Exception:
+                    logger.debug(
+                        "SEL logging failed for agents project_path unusable-directory denial",
+                        exc_info=True,
+                    )
     if project_dir:
         try:
             project_names = await asyncio.get_running_loop().run_in_executor(
@@ -1519,10 +1673,32 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
         # One shared default record for every project row — they carry no
         # per-agent config of their own (nothing on disk to read without a
         # second scan), so the row is the default record under a project tag.
+        # On a collision this is deliberately NOT the shadowed alias's record:
+        # the winner lands on ``default_agent``'s bindings like any project-only
+        # agent, because letting a ``<project>/.kiro/agents/*.json`` inherit the
+        # shadowed crew's private memory store would turn "land a branch" into a
+        # read of that crew's memory.
         project_default = KiroCrewAgentConfig()
+        # A name declared BOTH in cfg.agents and by the project is emitted as the
+        # PROJECT row, and its global row is dropped. The project definition is
+        # what a fire in this directory actually resolves -- kiro-cli searches
+        # ``<project>/.kiro/agents`` before the user-level directory and the fire
+        # runs with the bound folder as cwd -- so emitting the global row would
+        # advertise an agent that cannot run here.
+        #
+        # Re-derived from ``cfg.agents`` instead of filtering ``agents`` in
+        # place: ``redact`` masks a row's ``name`` for an app token, so a row
+        # name cannot be compared against a raw project name.
+        shadowed = project_names & set(cfg.agents.keys())
+        if shadowed:
+            agents = [
+                _agent_roster_row(name, "global", agent_cfg, redact=redact)
+                for name, agent_cfg in cfg.agents.items()
+                if name not in shadowed
+            ]
         agents.extend(
             _agent_roster_row(name, "project", project_default, redact=redact)
-            for name in sorted(project_names - set(cfg.agents.keys()))
+            for name in sorted(project_names)
         )
 
     # Reorder by usage frequency (most-used first). Derived read-only from chat

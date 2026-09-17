@@ -151,6 +151,13 @@ _SEAMS = frozenset(
         "_record_is_enabled",
         "sel",
         "_JOB_TIMEOUT_SECS",
+        # `CronService._validate_project_path` is a staticmethod that stays on
+        # the facade rather than moving into `fields`: four call sites and two
+        # test modules address it as `CronService._validate_project_path`, so
+        # moving it would have meant editing tests to fit the split. Both
+        # `build_job` and `apply_job_update` reach it through the alias, which
+        # also keeps the patch seam intact for the tests that stub it.
+        "CronService",
     }
 )
 
@@ -557,8 +564,18 @@ class TestAPatchUndoesCleanly:
 
 
 _BASE_STORE_SHA256 = {
-    "minimal": "4d60217b5d73a346618967791e75a15cef9d046b75e910a8eaa284fa0cbde2a1",
-    "rich": "efcd7d48f3e1f1124c9f3bbb0c0110aef37344317b631655cf748de9b2cd3553",
+    # Recomputed when `project_path` joined `job_record` between `timezone` and
+    # `persistent_session`: the key is emitted for every job, so each record
+    # carries one more line and both shipped fixtures hash differently. The
+    # bytes this pins are still the whole document `_save` writes, so the
+    # guarantee is unchanged -- only the field list it covers grew.
+    # Recomputed again when `last_result_project_bound` joined `job_record`
+    # directly after `last_result_stamp`: the stamp has to round-trip or a
+    # restart answers "not bound" for a retained project-bound reply, so the key
+    # is emitted for every job and each record carries one more line. The bytes
+    # this pins are still the whole document `_save` writes.
+    "minimal": "62e2438a3682cd5493b861bb2b29ef9dc61623036586d92bb55b4399a4892911",
+    "rich": "c6f99a9c419df8533526e8819ddbe07a72aa88b6b684915ec3302210464328be",
 }
 
 
@@ -582,6 +599,7 @@ def _full_record() -> dict[str, object]:
         "last_result": "result text",
         "last_result_ts": 1772860001.0,
         "last_result_stamp": " | 2026-03-07 03:00:00 UTC",
+        "last_result_project_bound": True,
         "context_enabled": True,
         "agent_id": "helper",
         "member_id": "member-1",
@@ -602,6 +620,7 @@ def _full_record() -> dict[str, object]:
         "consecutive_failures": 3,
         "skip_dates": ["2026-12-25"],
         "timezone": "America/New_York",
+        "project_path": "/srv/projects/nightly",
         "persistent_session": False,
         "minimal_context": True,
         "hide_in_chat": True,

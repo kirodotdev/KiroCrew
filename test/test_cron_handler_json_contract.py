@@ -78,9 +78,14 @@ async def test_cron_update_refuses_a_non_object_body(payload) -> None:
 
 async def test_cron_update_keeps_the_object_path() -> None:
     """The guard must refuse only non-objects: a real patch still reaches the store."""
-    job = SimpleNamespace(id="job-1", agent_id="", to_dict=lambda: {"id": "job-1"})
+    job = SimpleNamespace(id="job-1", agent_id="", project_path="", to_dict=lambda: {"id": "job-1"})
     update = AsyncMock(return_value=job)
-    app = _cron_app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+    # The job-level owner gate fetches the job first via get_job_async;
+    # project_path="" (unbound) makes it pass through unconditionally.
+    get_job = AsyncMock(return_value=job)
+    app = _cron_app(
+        api_cron_update, "/api/crons/{job_id}", update_job_async=update, get_job_async=get_job
+    )
 
     async with TestClient(TestServer(app)) as client:
         response = await client.patch("/api/crons/job-1", json={"name": "renamed"})
@@ -125,24 +130,77 @@ async def test_cron_enable_treats_an_absent_body_as_defaults() -> None:
     """No body at all still means the route's defaults -- the tolerant half
     of the old contract that ``allow_absent`` preserves."""
     enable = AsyncMock(return_value=True)
-    app = _cron_app(api_cron_enable, "/api/crons/{job_id}/enable", enable_job_async=enable)
+    # The re-enable owner gate fetches the job first via get_job_async;
+    # project_path="" (unbound) makes it pass through unconditionally.
+    job = SimpleNamespace(id="job-1", project_path="")
+    get_job = AsyncMock(return_value=job)
+    app = _cron_app(
+        api_cron_enable,
+        "/api/crons/{job_id}/enable",
+        enable_job_async=enable,
+        get_job_async=get_job,
+    )
 
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/api/crons/job-1/enable")
 
     assert response.status == 200
-    enable.assert_awaited_once_with("job-1", enabled=True)
+    # expect_project_path="" is passed because this request resolves as
+    # non-owner (a plain TestClient call carries no owner markers) against
+    # an unbound job's TOCTOU precondition.
+    enable.assert_awaited_once_with("job-1", enabled=True, expect_project_path="")
 
 
 async def test_cron_enable_still_reads_an_object_body() -> None:
     enable = AsyncMock(return_value=True)
-    app = _cron_app(api_cron_enable, "/api/crons/{job_id}/enable", enable_job_async=enable)
+    job = SimpleNamespace(id="job-1", project_path="")
+    get_job = AsyncMock(return_value=job)
+    app = _cron_app(
+        api_cron_enable,
+        "/api/crons/{job_id}/enable",
+        enable_job_async=enable,
+        get_job_async=get_job,
+    )
 
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/api/crons/job-1/enable", json={"enabled": False})
 
     assert response.status == 200
-    enable.assert_awaited_once_with("job-1", enabled=False)
+    # expect_project_path is always passed (as the _UNSET sentinel for the
+    # disable direction, which never fetches the job) -- assert on the
+    # positional/enabled args and check the kwarg is present rather than
+    # importing the sentinel object to match it exactly.
+    enable.assert_awaited_once()
+    call_args = enable.await_args
+    assert call_args.args == ("job-1",)
+    assert call_args.kwargs["enabled"] is False
+    assert "expect_project_path" in call_args.kwargs
+
+
+@pytest.mark.parametrize("bad_enabled", ["false", "true", 0, 1, None, [], {}])
+async def test_cron_enable_refuses_a_non_boolean_enabled_value(bad_enabled) -> None:
+    """A JSON string ``"false"`` (or any other non-bool) is truthy in Python's
+    ``if enabled:`` -- without an explicit type check, a client mistake here
+    silently follows the RE-ENABLE branch (including its owner gate) instead
+    of disabling. Reject any non-bool ``enabled`` before that branch runs,
+    matching the existing convention in security.py/hooks.py/mcp.py."""
+    enable = AsyncMock(return_value=True)
+    get_job = AsyncMock()
+    app = _cron_app(
+        api_cron_enable,
+        "/api/crons/{job_id}/enable",
+        enable_job_async=enable,
+        get_job_async=get_job,
+    )
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/crons/job-1/enable", json={"enabled": bad_enabled})
+        body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "enabled must be a boolean", "code": "invalid_enabled"}
+    enable.assert_not_awaited()
+    get_job.assert_not_awaited()
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_BODIES)

@@ -148,7 +148,6 @@ src/kiro_crew/config/validation.py
 src/kiro_crew/connections/alias_record.py
 src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/tool_aliases.py
-src/kiro_crew/cron_history.py
 src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/chat_auto_tag.py
 src/kiro_crew/dashboard/chat_folder_suggest.py
@@ -295,7 +294,6 @@ test/test_ai_agent_runner_coverage.py
 test/test_ai_backend_routes_coverage.py
 test/test_ai_pr_watchers_coverage.py
 test/test_api_agent_config_put_succeeds.py
-test/test_api_agents_order.py
 test/test_api_file_diff.py
 test/test_api_input_validation.py
 test/test_api_kiro_hooks.py
@@ -420,7 +418,6 @@ test/test_consolidate_cmd.py
 test/test_continuable_followups.py
 test/test_crash_dump_store.py
 test/test_crash_guard.py
-test/test_cron.py
 test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
 test/test_cron_arbiter_items.py
@@ -445,7 +442,6 @@ test/test_dashboard.py
 test/test_dashboard_branding.py
 test/test_dashboard_config_gitlab_hosts.py
 test/test_dashboard_cron_batch_delete_handler.py
-test/test_dashboard_cron_concurrent_create.py
 test/test_dashboard_file_io.py
 test/test_dashboard_files_coverage.py
 test/test_dashboard_no_legacy.py

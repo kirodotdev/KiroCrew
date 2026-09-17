@@ -1434,6 +1434,12 @@ class TestRestList:
         state.crons.list_jobs_async = AsyncMock(return_value=[job])
         state.crons.is_running.return_value = False
         state.crons.running_since.return_value = None
+        # The non-owner disclosure gate asks each retained reply's own run
+        # whether it fired project-bound (`_live_job_result_is_project_bound`),
+        # so the history reader is awaited on this path and a bare MagicMock
+        # cannot stand in for it. No rows: this job is unbound, so the gate
+        # withholds nothing and the field assertions below are unaffected.
+        state.crons.get_history.return_value.get_job_history = AsyncMock(return_value=([], 0))
         request = MagicMock()
         request.app = {"state": state}
 
