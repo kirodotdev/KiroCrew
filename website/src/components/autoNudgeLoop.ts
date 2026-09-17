@@ -24,9 +24,11 @@ export interface AutoNudgeLoop {
   next_due_ts: number
   /** Why the loop last went inactive: '' while active or never stopped,
    *  otherwise one of the service's terminal codes (`cycle_cap`,
-   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Only
-   *  the REST list carries it; the websocket frame for a plain loop does not,
-   *  so a consumer merging frames over a fetched record must keep it. */
+   *  `runtime_budget`, `approval_stalled`, `autonudge_stop`, `manual`). Carried
+   *  by the REST list and by the `autonudge_state` frame alike, so a record
+   *  built from either source can tell a manual pause (resumable in place) from
+   *  a stop. `undefined` means the source did not carry it -- read that as
+   *  "not known here", never as paused. */
   stopped_reason?: string
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string

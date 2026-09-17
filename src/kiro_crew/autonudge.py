@@ -3220,9 +3220,10 @@ class AutoNudgeService:
                 # budget-revivable against an explicit pause. Both transitions
                 # serialize on _lock, so re-checking here closes the race: the
                 # bound's deactivation degrades to a no-op when the loop is
-                # already inactive. The reverse order is already safe — a
-                # manual pause overwriting a bound tag only ever NARROWS
-                # revivability ("manual" never auto-revives).
+                # already inactive. The reverse order -- a reasonless pause
+                # arriving after the bound -- is closed two branches down: the
+                # bound stands, because "manual" over it would read as Paused
+                # and offer a resume the still-spent bound turns away.
                 elif (
                     not active
                     and stopped_reason is None
@@ -3237,6 +3238,26 @@ class AutoNudgeService:
                         "AutoNudge: loop %s retains its source stop reason on "
                         "reasonless inactive update",
                         loop.id,
+                    )
+                elif (
+                    not active
+                    and stopped_reason is None
+                    and not loop.active
+                    and loop.stopped_reason in _TERMINAL_BOUND_REASONS
+                ):
+                    # The MIRROR of the race above: the bound landed first, and
+                    # the reasonless deactivation arrives second -- the goal
+                    # popover's Pause, pressed off a record that still read
+                    # running because the frame carrying the stop had not
+                    # reached it. A repeat of an inactive state is not a new
+                    # stop transition, so the bound stands. Stamping "manual"
+                    # over it would read as Paused and offer a resume the timer
+                    # turns away before the nudge (the bound is still spent),
+                    # and the record would lose why it ended.
+                    logger.info(
+                        "AutoNudge: loop %s keeps its %s stop on reasonless inactive update",
+                        loop.id,
+                        loop.stopped_reason,
                     )
                 elif stopped_reason in _TERMINAL_BOUND_REASONS and not active and not loop.active:
                     logger.info(
