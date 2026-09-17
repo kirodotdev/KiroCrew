@@ -1280,6 +1280,7 @@ export default function ChatPane({
                 images={pinnedState.images}
                 bodyBeyondPreview={pinnedState.bodyBeyondPreview}
                 pushUp={pinnedState.push}
+                liveH={pinnedState.liveH}
                 bannerH={pinnedState.bannerH}
                 expanded={pin.pinExpanded}
                 onToggleExpanded={() => setPinExpanded(p => !p)}
@@ -1289,6 +1290,7 @@ export default function ChatPane({
                 })}
                 cardRef={pin.pinCardRef}
                 onCollapsedHeight={pin.onPinCollapsedHeight}
+                scrollTranscriptBy={pin.scrollTranscriptBy}
               />
             </div>
           )}
