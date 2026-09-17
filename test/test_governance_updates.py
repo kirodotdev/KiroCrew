@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
+import sys
 
 import pytest
 
@@ -805,7 +806,10 @@ class TestRepoExecConfigRefusal:
         gitdir = out[:-1] if out.endswith("\n") else out
         assert pathlib.Path(gitdir).is_dir()
 
-    @pytest.mark.skipif(os.name == "nt", reason="non-UTF-8 bytes are not legal NTFS name units")
+    @pytest.mark.skipif(
+        os.name == "nt" or sys.platform == "darwin",
+        reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+    )
     def test_probe_hands_a_non_utf8_git_dir_to_the_classifier_round_trippable(self, tmp_path):
         """Decode fidelity is the CR test's sibling: a repo-path byte that is
         not valid UTF-8 must survive the probe's decode as a PEP 383 surrogate

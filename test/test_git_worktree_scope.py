@@ -10,6 +10,7 @@ other stat outcome fails closed, keeping the caller's refusal.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -27,7 +28,10 @@ def test_absent_file_is_the_empty_scope(tmp_path):
     assert worktree_probe_failure_is_empty_scope(str(d), str(tmp_path)) is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason="non-UTF-8 bytes are not legal NTFS name units")
+@pytest.mark.skipif(
+    os.name == "nt" or sys.platform == "darwin",
+    reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+)
 def test_surrogate_decoded_non_utf8_gitdir_finds_the_existing_config(tmp_path):
     """A gitdir whose path holds a byte that is not valid UTF-8 must still
     fail closed when ``config.worktree`` EXISTS.

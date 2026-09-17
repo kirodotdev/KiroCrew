@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -2552,7 +2553,10 @@ async def test_probe_refuses_worktree_driver_under_valueless_extension(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(os.name == "nt", reason="non-UTF-8 bytes are not legal NTFS name units")
+@pytest.mark.skipif(
+    os.name == "nt" or sys.platform == "darwin",
+    reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+)
 async def test_run_git_surrogateescape_round_trips_a_non_utf8_path(tmp_path) -> None:
     """`errors="surrogateescape"` is the decode the gitdir probe passes: a
     path byte that is not valid UTF-8 must survive as a PEP 383 surrogate the

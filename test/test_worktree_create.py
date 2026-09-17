@@ -15,6 +15,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -1266,7 +1267,10 @@ class TestLauncherAdvisoryIsNotARefusal:
         proc = _run_git(["rev-parse", "--absolute-git-dir"], str(tmp_path))
         assert proc.stdout == "/repo/wt\rcr/.git\n"
 
-    @pytest.mark.skipif(os.name == "nt", reason="non-UTF-8 bytes are not legal NTFS name units")
+    @pytest.mark.skipif(
+        os.name == "nt" or sys.platform == "darwin",
+        reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+    )
     def test_probe_finds_config_worktree_behind_a_non_utf8_path(self, tmp_path, monkeypatch):
         """The decode's sibling defect to the newline rewrite: a gitdir byte
         that is not valid UTF-8 must reach the classifier as a PEP 383

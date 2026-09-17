@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -510,7 +511,10 @@ class TestWorktreeConfigScopeGate:
         (repo / ".git" / "config.worktree").write_text("[broken\n")
         assert self._guard(repo) is True
 
-    @pytest.mark.skipif(os.name == "nt", reason="non-UTF-8 bytes are not legal NTFS name units")
+    @pytest.mark.skipif(
+        os.name == "nt" or sys.platform == "darwin",
+        reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
+    )
     def test_oversized_config_worktree_in_a_non_utf8_repo_path_stays_refused(self, tmp_path):
         """The reviewer's exact kill chain, end to end with real git.
 
