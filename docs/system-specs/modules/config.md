@@ -246,6 +246,43 @@ The parent directory is created on first call if it doesn't exist.
 
 The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 
+## Folder steering directories (`dashboard/chat_folders.py`)
+
+A chat folder record in `folders.json` may carry an optional `steering_dirs`
+list of absolute (or `~`-prefixed) directories, alongside its existing
+`project_dir`/`default_agent`/`color`/`tags`. Every chat in the folder's subtree
+loads each directory's `**/*.md` as steering, in addition to global and project
+steering. The key is omitted when empty (like `color`/`tags`), so "absent means
+none" is the single on-disk representation and a PATCH with `[]` clears it.
+
+- **Validation** (`_validate_steering_dirs`) reuses the `_validate_project_dir`
+  contract per entry — absolute or `~`-prefixed, `expanduser` + `realpath`,
+  `is_sensitive_path()` rejection (SEL-logged), and must be an existing
+  directory — plus a `MAX_FOLDER_STEERING_DIRS` (16) list cap and rejection of
+  duplicates within one folder (compared by resolved realpath). Failures return
+  `400` with code `steering_dirs_invalid`.
+- **Resolution** (`_resolve_folder_steering_dirs`) is ACCUMULATIVE up the
+  `parent_id` chain (root ancestor first, then descendants), unlike the
+  nearest-wins `project_dir` resolver: an org-standards folder above a per-repo
+  folder contributes both sets. The walk is cycle-guarded, re-validates each
+  stored path (never trusting `folders.json`, which can list a directory since
+  moved or made sensitive), and dedups by resolved realpath keeping the first
+  occurrence.
+- **Live resolution, no slot field.** The effective list is never cached on the
+  chat slot: `_ChatSlot` carries no steering field, and neither slot create nor
+  agent switch resolves one. The dashboard turn path
+  (`dashboard/chat_runner.py`) resolves it live from the slot's current
+  `folder_id` against the committed folder tree, on every fresh session and
+  every post-compaction reinjection turn. So editing a folder's `steering_dirs`
+  reaches the chats already filed in it at their next fresh session, with no
+  cache to invalidate; a slot with no `folder_id` contributes nothing. A
+  resolver error logs a warning naming the slot and the turn proceeds with no
+  folder steering, and a directory that has since disappeared is skipped at read
+  time rather than failing the turn. Delivery is performed once by the context
+  builder (`kiro_crew.context.ContextBuilder`) reading through
+  `kiro_crew.folder_steering` — the one layer every backend passes through, so
+  no provider can silently drop it. See [providers](providers.md).
+
 ## Named Memory Stores (`memory_stores.py`)
 
 The reserved `agents.default` assistant uses the existing Global Memory **V1**.

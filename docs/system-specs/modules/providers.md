@@ -163,6 +163,27 @@ global steering directories also belong to that launch contract, even when no
 resource glob declares them. SOUL is native-owned only when explicitly declared.
 The mirrored steering reference records engine/version differences for conditional
 modes, so Kiro uses the fallback selector instead of claiming full native support.
+
+Folder steering is deliberately NOT part of that launch contract. A chat filed
+into a folder that declares `steering_dirs` (see [config](config.md)) has those
+directories read by `kiro_crew.folder_steering.collect_folder_steering` and the
+resulting documents placed into session-start context by the context builder, for
+EVERY provider — kiro-cli, Claude Code, Codex, KAS, and any config-authored
+harness — with no provider branch on that path. `SpawnContext`, `AcpRuntime` and
+the harnesses carry no folder-steering field, so every harness produces an
+identical `SpawnPlan` for a folder chat and a non-folder chat; delivery cannot be
+lost by adding a provider. A file whose realpath lies under the chat project's
+`.kiro/steering` or under `~/.kiro/steering` is skipped, because every provider
+path already delivers project and global steering. Documents honor the steering
+`inclusion` frontmatter (`always`, or absent, is included; `manual`, `auto` and
+`fileMatch` are skipped and left to their native trigger), and each file is
+admitted against its own declared directory as the trust base, so a symlink can
+never read outside the root the operator pointed at. The non-member section is
+capped like the existing steering section; a member (private-memory) chat carries
+the documents inside its essentials envelope instead, which applies its own
+document-count and per-source byte bounds. After provider compaction the section
+is re-injected under a `[REINJECTED AFTER COMPACTION — folder steering]` line.
+
 KAS inline prompts and file resources come from the actual `customAgents`
 definition sent by `session/new`. File expansion uses that definition, not a
 reread of a possibly different project template. Successful activation publishes

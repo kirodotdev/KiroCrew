@@ -2118,6 +2118,25 @@ def _load_steering_resources() -> str:
         return ""
 
 
+def _render_folder_steering_section(
+    steering_dirs: tuple[str, ...], project: str | None, cap: int | None
+) -> str:
+    """The folder-steering prompt section, capped like the steering section.
+
+    One helper for the fresh-session path and the post-compaction reinjection
+    path so the two cannot drift in what they read or how they truncate. The
+    reader itself lives in :mod:`kiro_crew.folder_steering`; ``cap`` is
+    ``caps.steering`` when ``skills.lazy_load`` is on and ``None`` otherwise
+    (the shared context ceiling then bounds it, as for every other section).
+    """
+    from kiro_crew.folder_steering import collect_folder_steering, render_folder_steering
+
+    section = render_folder_steering(collect_folder_steering(steering_dirs, project=project))
+    if section and cap is not None and len(section) > cap:
+        section = section[:cap] + "\n...[steering truncated]\n"
+    return section
+
+
 # Critical rules reinforced every session (supplements the system prompt).
 # The diff-block rule is RUNTIME-SELECTED server-side (_critical_rules_for):
 # the trusted runtime resolution already exists for the [RUNTIME] line, so
@@ -3383,6 +3402,7 @@ class ContextBuilder:
         execution_template: str = "",
         conditional_index: bool = False,
         trigger_text: str = "",
+        steering_dirs: tuple[str, ...] = (),
     ) -> str:
         """Refresh complete private-member anchors without a retrieval/model call."""
         from kiro_crew.member_essential_context import (
@@ -3424,6 +3444,28 @@ class ContextBuilder:
                     )
                 sources[source] = body
             documents = list(sources.items())
+        # Folder-inherited steering rides INSIDE the essentials envelope for a
+        # member chat (the envelope IS its session-start context), through the
+        # same reader the non-member path uses. After the template/project
+        # documents so global and project steering keep precedence; before the
+        # memory files. None of these sources is declared host-native
+        # (kiro_launch_documents never sees the folder dirs), so the native
+        # envelope keeps their bodies. The envelope's own document-count bound
+        # applies exactly as documents_for_member applies it.
+        if (
+            steering_dirs
+            and not blocks_reads
+            and _group_included(context_groups, CONTEXT_GROUP_PROJECT)
+        ):
+            from kiro_crew.folder_steering import collect_folder_steering
+            from kiro_crew.member_essential_context import _MAX_DOCUMENTS
+
+            for source, body in collect_folder_steering(steering_dirs, project=project):
+                documents.append((source, body))
+                if len(documents) > _MAX_DOCUMENTS:
+                    raise MemberEssentialContextError(
+                        f"Essential source {source}: too many documents"
+                    )
         if reads:
             memory = self.get_memory_for(workspace, memory_store)
             for path, empty in (
@@ -3490,6 +3532,7 @@ class ContextBuilder:
         query_text: str = "",
         project: str | None = None,
         member: str = "",
+        steering_dirs: tuple[str, ...] = (),
         _v2_essentials: str | None = None,
     ) -> str:
         """Build context for a new session (memory + skills + history).
@@ -3553,6 +3596,7 @@ class ContextBuilder:
                 workspace=workspace,
                 blocks_reads=blocks_reads,
                 context_groups=context_groups,
+                steering_dirs=steering_dirs,
             )
 
         # Minimal V1 stays date/time + agent identity. Private V2 also carries
@@ -3796,6 +3840,24 @@ class ContextBuilder:
                 if lazy_skills and len(steering_ctx) > caps.steering:
                     steering_ctx = steering_ctx[: caps.steering] + "\n...[steering truncated]\n"
                 parts.append(steering_ctx)
+        # Folder-inherited steering: the ONE delivery seam for every provider.
+        # No is_cc / is_custom gate on purpose -- kiro-cli, Claude Code, Codex,
+        # KAS and any config-authored harness all receive this identically,
+        # because it is prompt text, not a launch document some hosts consume
+        # and others drop. Member chats carry it inside the essentials envelope
+        # (built above), hence ``not essentials``. This section sits inside the
+        # session-context tail the caller scrubs with
+        # _neutralize_structural_markers.
+        if (
+            steering_dirs
+            and not essentials
+            and _group_included(context_groups, CONTEXT_GROUP_PROJECT)
+        ):
+            folder_ctx = _render_folder_steering_section(
+                steering_dirs, project, caps.steering if lazy_skills else None
+            )
+            if folder_ctx:
+                parts.append(folder_ctx)
         _mark("steering")
 
         # Thread conversation history — highest priority context.
@@ -4163,6 +4225,7 @@ class ContextBuilder:
         context_groups: frozenset[str] | None = None,
         member: str = "",
         context_provider: "ContextPromptProvider | None" = None,
+        steering_dirs: tuple[str, ...] = (),
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -4275,6 +4338,7 @@ class ContextBuilder:
                 conditional_index=context_provider is not None
                 and delivery is not None
                 and not context_provider.native_steering,
+                steering_dirs=steering_dirs,
             )
         if _essentials and not is_new_session:
             parts.append(_essentials)
@@ -4369,6 +4433,7 @@ class ContextBuilder:
                     query_text=text,
                     project=project,
                     member=member,
+                    steering_dirs=steering_dirs,
                     _v2_essentials=_essentials,
                 )
             if session_ctx:
@@ -4542,6 +4607,27 @@ class ContextBuilder:
             )
             if _prefs:
                 parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
+            # Folder steering is session-start context too, and unlike kiro's
+            # native project steering it has no host-side persistence across a
+            # compaction -- it was prompt text, and the compaction dropped it.
+            # Re-read the CURRENT folder documents (a folder edit lands here as
+            # well). Member chats re-receive the essentials envelope on every
+            # non-fresh turn above, so they need no separate block. The payload
+            # is operator-authored files, so scrub structural markers as the
+            # skills block does: this path has no session-context tail scrub.
+            if steering_dirs and not _essentials:
+                _cfg_fs = KiroCrewConfig.load()
+                _lazy_fs = bool(getattr(_cfg_fs.skills, "lazy_load", False))
+                _caps_fs = _resolve_caps(model_window)
+                _folder_ctx = _render_folder_steering_section(
+                    steering_dirs, project, _caps_fs.steering if _lazy_fs else None
+                )
+                if _folder_ctx:
+                    parts.append(
+                        "[REINJECTED AFTER COMPACTION — folder steering]\n"
+                        + _neutralize_structural_markers(_folder_ctx)
+                        + "\n[END REINJECTED]\n\n"
+                    )
             # Member identity is session-start context too, so a compaction
             # dropped it along with the skills index: without this, the next
             # turn of a member DM thread runs with no identity, no working

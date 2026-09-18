@@ -5487,13 +5487,14 @@ function ChatSidebar({
 
   // Folder mutations
   const createFolderMutation = useMutation({
-    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string; icon?: string; tags?: string[] }) =>
+    mutationFn: (v: { name: string; parentId?: string; projectDir?: string; defaultAgent?: string; color?: string; icon?: string; tags?: string[]; steeringDirs?: string[] }) =>
       api.createChatFolder(v.name.trim(), v.parentId, {
         project_dir: v.projectDir || undefined,
         default_agent: v.defaultAgent || undefined,
         color: v.color || undefined,
         icon: v.icon || undefined,
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
+        steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
     onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
@@ -9446,6 +9447,7 @@ function ChatSidebar({
                 color: draft.color,
                 icon: draft.icon,
                 tags: draft.tags,
+                steeringDirs: draft.steeringDirs,
               })
               // Creating a folder while flat view is on would otherwise appear
               // to do nothing (flat rendering skips folder blocks in both the
@@ -9479,6 +9481,10 @@ function ChatSidebar({
               // An empty array is a legitimate instruction too: it clears the
               // folder's tags.
               if (touched.has('tags')) body.tags = draft.tags
+              // '' / [] clears here as well: PATCH steering_dirs:[] removes the
+              // folder's extra steering directories (server resolves effective
+              // dirs from folder_id, so nothing resolved is sent).
+              if (touched.has('steeringDirs')) body.steering_dirs = draft.steeringDirs
               if (Object.keys(body).length > 0) {
                 await updateFolderMutation.mutateAsync({ id: folderModal.folderId, body })
               }

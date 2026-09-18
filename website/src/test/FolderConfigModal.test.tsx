@@ -684,6 +684,31 @@ describe('FolderConfigModal', () => {
     await waitFor(() => expect(api.recentProjects).toHaveBeenCalled())
   })
 
+  it('routes a Browse pick to projectDir even after a steering pick armed the target', async () => {
+    // Regression (GPT review F2): the steering "Add directory" button sets the
+    // shared picker target to 'steering'; if Project Browse does not reset it,
+    // the project selection is appended to steeringDirs and projectDir stays
+    // empty. Open steering first, then Project Browse, and assert the pick
+    // lands in projectDir with steeringDirs untouched.
+    const { onSubmit } = open()
+    fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+    // Arm the steering target, then close the picker without selecting.
+    fireEvent.click(screen.getByTestId('folder-config-steering-add'))
+    const { api } = await import('../api/client')
+    await waitFor(() => expect(api.browseDirs).toHaveBeenCalled())
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    // Now open Project Browse and commit a path.
+    fireEvent.click(screen.getByTestId('folder-config-browse'))
+    const combo = await screen.findByRole('combobox', { name: /project directory path/i })
+    fireEvent.change(combo, { target: { value: '/proj/root' } })
+    fireEvent.mouseDown(screen.getByText('Select'))
+    fireEvent.click(screen.getByTestId('folder-config-submit'))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    const submitted = onSubmit.mock.calls[0][0]
+    expect(submitted.projectDir).toBe('/proj/root')
+    expect(submitted.steeringDirs).toEqual([])
+  })
+
   describe('tag picker', () => {
     const TAGS = [
       { id: 't1', name: 'Payments', color: '#ef4444', order: 0 },
@@ -910,6 +935,160 @@ describe('FolderConfigModal', () => {
       fireEvent.keyDown(window, { key: 'Escape' })
       // Order-insensitive set equality means Escape still dismisses cleanly.
       expect(onClose).toHaveBeenCalled()
+    })
+  })
+
+  describe('steering directories', () => {
+    // The "Add directory" button opens the SAME ProjectPicker the project-dir
+    // Browse button uses, routed to push into an ordered array. The mock picker
+    // (recentProjects/browseDirs above) resolves the Browse tab at path '/', so
+    // clicking its "Select" button commits a path we can assert on.
+    const addDir = async (path: string) => {
+      fireEvent.click(screen.getByTestId('folder-config-steering-add'))
+      const { api } = await import('../api/client')
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalled())
+      // Type an absolute path into the picker's combobox and commit it.
+      const combo = await screen.findByRole('combobox', { name: /project directory path/i })
+      fireEvent.change(combo, { target: { value: path } })
+      fireEvent.mouseDown(screen.getByText('Select'))
+    }
+
+    it('renders no directory rows for a folder with none', () => {
+      open()
+      expect(screen.queryByTestId('folder-config-steering-dirs')).toBeNull()
+      expect(screen.getByTestId('folder-config-steering-add')).toBeTruthy()
+    })
+
+    it('prefills existing steering dirs in edit mode', () => {
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/std/a', '/std/b'] })
+      open({ mode: 'edit', folder: f, folders: [f] })
+      const list = screen.getByTestId('folder-config-steering-dirs')
+      expect(list.textContent).toContain('/std/a')
+      expect(list.textContent).toContain('/std/b')
+    })
+
+    it('adds a directory via the picker and submits it under steering_dirs', async () => {
+      const { onSubmit } = open()
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Standards' } })
+      await addDir('/org/standards')
+      await waitFor(() =>
+        expect(screen.getByTestId('folder-config-steering-dir-0').textContent).toContain('/org/standards'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        steeringDirs: ['/org/standards'],
+        touched: expect.arrayContaining(['steeringDirs']),
+      }))
+    })
+
+    it('removes a directory row', async () => {
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/std/a', '/std/b'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      fireEvent.click(screen.getByTestId('folder-config-steering-dir-remove-0'))
+      // /std/a removed, /std/b shifts to index 0.
+      await waitFor(() =>
+        expect(screen.getByTestId('folder-config-steering-dir-0').textContent).toContain('/std/b'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        steeringDirs: ['/std/b'],
+        touched: expect.arrayContaining(['steeringDirs']),
+      }))
+    })
+
+    it('clearing every directory submits an empty array (PATCH [] clears)', async () => {
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/only'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      fireEvent.click(screen.getByTestId('folder-config-steering-dir-remove-0'))
+      await waitFor(() => expect(screen.queryByTestId('folder-config-steering-dirs')).toBeNull())
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        steeringDirs: [],
+        touched: expect.arrayContaining(['steeringDirs']),
+      }))
+    })
+
+    it('does not report steeringDirs in touched when unchanged', async () => {
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/std/a'] })
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} onRetryTags={vi.fn()} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Renamed' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0].touched).not.toContain('steeringDirs')
+    })
+
+    it('shows ancestor steering dirs read-only, accumulative and root-first', () => {
+      // A parent folder's dirs are always in effect for a child; the modal
+      // shows them read-only so the effective set is visible without letting
+      // the child edit the parent's contribution.
+      const folders = [
+        folder('org', { name: 'Org', steering_dirs: ['/org/standards'] }),
+        folder('repo', { name: 'Repo', parent_id: 'org' }),
+      ]
+      open({ folders, parentId: 'repo' })
+      const inherited = screen.getByTestId('folder-config-steering-inherited')
+      expect(inherited.textContent).toContain('/org/standards')
+      // Read-only: no editable control (remove button) inside the inherited group.
+      expect(inherited.querySelector('button')).toBeNull()
+    })
+
+    it('adding a steering dir arms the dismiss guard', async () => {
+      const { onClose } = open()
+      await addDir('/org/standards')
+      await waitFor(() =>
+        expect(screen.getByTestId('folder-config-steering-dir-0')).toBeTruthy())
+      fireEvent.keyDown(window, { key: 'Escape' })
+      expect(onClose).not.toHaveBeenCalled()
+    })
+
+    it('closing the picker without a selection leaves the list unchanged', async () => {
+      // Req 8.2: a cancelled pick must neither add a row nor mark the field
+      // touched. Escape on the picker's path field is its no-selection close.
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/std/a'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      fireEvent.click(screen.getByTestId('folder-config-steering-add'))
+      const { api } = await import('../api/client')
+      await waitFor(() => expect(api.browseDirs).toHaveBeenCalled())
+      const combo = await screen.findByRole('combobox', { name: /project directory path/i })
+      fireEvent.change(combo, { target: { value: '/never/picked' } })
+      fireEvent.keyDown(combo, { key: 'Escape' })
+      await waitFor(() =>
+        expect(screen.queryByRole('combobox', { name: /project directory path/i })).toBeNull())
+      const list = screen.getByTestId('folder-config-steering-dirs')
+      expect(list.textContent).toContain('/std/a')
+      expect(list.textContent).not.toContain('/never/picked')
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Renamed' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+      expect(onSubmit.mock.calls[0][0].steeringDirs).toEqual(['/std/a'])
+      expect(onSubmit.mock.calls[0][0].touched).not.toContain('steeringDirs')
+    })
+
+    it('surfaces the server steering_dirs_invalid message in the error area', async () => {
+      // Req 8.5: the server's own wording reaches the modal so the user learns
+      // WHICH directory was refused, not just that the save failed.
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/std/a'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      onSubmit.mockRejectedValueOnce(
+        new Error('Steering directory must be an existing directory: /std/a'))
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Renamed' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      const err = await screen.findByTestId('folder-config-error')
+      expect(err.textContent).toContain('Steering directory must be an existing directory: /std/a')
+    })
+
+    it('falls back to the generic save-failed string when the rejection carries no message', async () => {
+      // Req 8.5: a bare rejection (no message) must still tell the user the
+      // save did not land, via the modal's generic string.
+      const f = folder('f1', { name: 'Payments', steering_dirs: ['/std/a'] })
+      const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f] })
+      onSubmit.mockRejectedValueOnce(new Error(''))
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Renamed' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      const err = await screen.findByTestId('folder-config-error')
+      expect(err.textContent).toContain('Could not save the folder.')
     })
   })
 })

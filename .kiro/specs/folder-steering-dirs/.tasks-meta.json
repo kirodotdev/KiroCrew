@@ -1,0 +1,90 @@
+{
+  "statuses": {
+    "1.1": "completed",
+    "2.1": "completed",
+    "3.1": "completed",
+    "4.1": "completed",
+    "5.1": "completed",
+    "6.1": "completed",
+    "7.1": "completed"
+  },
+  "pbt": {},
+  "history": [
+    {
+      "ts": "2026-09-18T14:41:02",
+      "taskId": "*",
+      "status": "queued",
+      "count": 7
+    },
+    {
+      "ts": "2026-09-18T14:43:03",
+      "taskId": "1.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T14:43:03",
+      "taskId": "2.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T14:43:03",
+      "taskId": "3.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T14:44:20",
+      "taskId": "5.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T14:44:20",
+      "taskId": "6.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T15:06:43",
+      "taskId": "1.1",
+      "status": "completed"
+    },
+    {
+      "ts": "2026-09-18T15:06:43",
+      "taskId": "2.1",
+      "status": "completed"
+    },
+    {
+      "ts": "2026-09-18T15:06:43",
+      "taskId": "3.1",
+      "status": "completed"
+    },
+    {
+      "ts": "2026-09-18T15:06:43",
+      "taskId": "5.1",
+      "status": "completed"
+    },
+    {
+      "ts": "2026-09-18T15:08:53",
+      "taskId": "6.1",
+      "status": "completed"
+    },
+    {
+      "ts": "2026-09-18T15:09:37",
+      "taskId": "4.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T15:15:28",
+      "taskId": "4.1",
+      "status": "completed"
+    },
+    {
+      "ts": "2026-09-18T15:15:28",
+      "taskId": "7.1",
+      "status": "in_progress"
+    },
+    {
+      "ts": "2026-09-18T15:17:38",
+      "taskId": "7.1",
+      "status": "completed"
+    }
+  ]
+}

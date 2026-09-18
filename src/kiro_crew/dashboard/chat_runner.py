@@ -91,6 +91,7 @@ from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
 )
+from kiro_crew.dashboard.chat_folders import _resolve_folder_steering_dirs
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_grants_cache
@@ -9590,6 +9591,32 @@ async def _run_chat(
             # context, taking the skills index with it. Read-and-clear the flag
             # here so this turn re-injects the index exactly once.
             _needs_reinjection = consume_reinjection(state.sessions, session_key)
+            # Folder steering directories, resolved LIVE from the committed
+            # folder tree rather than from a value cached on the slot, so a
+            # folder edit or a re-file reaches the chats already inside it at
+            # their next session-start context with no cache to invalidate.
+            # Only the two turns that carry session-start context read the tree
+            # (a fresh provider session, or a reinjection after compaction);
+            # warm turns never touch it. The resolver re-validates every stored
+            # path — stat calls and realpath — so it runs off-loop. A resolution
+            # error degrades to no folder steering and a warning naming the
+            # slot; it must never fail the turn.
+            _folder_steering_dirs: tuple[str, ...] = ()
+            if slot.folder_id and (
+                (_context_is_new and not _provider_has_history) or _needs_reinjection
+            ):
+                _folder_snapshot = await state.read_folders(
+                    lambda folders: [dict(folder) for folder in folders]
+                )
+                _resolved_dirs, _steering_err = await asyncio.to_thread(
+                    _resolve_folder_steering_dirs, _folder_snapshot, slot.folder_id
+                )
+                if _steering_err:
+                    logger.warning(
+                        "Folder steering unavailable for slot %s: %s", slot.key, _steering_err
+                    )
+                else:
+                    _folder_steering_dirs = tuple(_resolved_dirs)
             # Stand up this crew's OWN vector store before the offloaded build.
             # It has to happen here, on the loop, because init() is blocking file
             # IO (sqlite connect, migrations, a FAISS load) that build_message's
@@ -9634,6 +9661,7 @@ async def _run_chat(
                 ),
                 user_span_out=_user_span,
                 needs_reinjection=_needs_reinjection,
+                steering_dirs=_folder_steering_dirs,
                 context_provider=client,
             )
             # The reported span is valid for the message as build_message

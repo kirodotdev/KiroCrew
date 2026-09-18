@@ -480,6 +480,89 @@ def _resolve_folder_project_dir(
     return "", None
 
 
+#: Ceiling on the extra steering directories one folder may declare. Small on
+#: purpose: these are org-standard/repo-standard roots, not a general file list,
+#: and each one is globbed and read at every chat launch in the subtree, so the
+#: bound is a cost ceiling as much as a config one. Accumulative inheritance can
+#: still stack several folders' lists past this per-folder cap; the resolver's
+#: own dedup and the collector's ``_MAX_DOCUMENTS`` bound the total.
+MAX_FOLDER_STEERING_DIRS = 16
+
+
+def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
+    """Validate a folder's ``steering_dirs`` list. Returns (resolved, error_msg).
+
+    Reuses the ``_validate_project_dir`` contract per entry: absolute or
+    ``~``-prefixed, ``expanduser`` + ``realpath``, sensitive-path rejection
+    (SEL-logged like ``project_dir``), and must be an existing directory. Adds
+    two list-level rules a single project path does not need: a ``16``-entry
+    cap and rejection of duplicates within one folder (compared by the resolved
+    realpath, so two spellings of one directory are still a duplicate). An empty
+    or absent list is valid and resolves to ``[]``.
+    """
+    if value is None:
+        return [], None
+    if not isinstance(value, list) or any(not isinstance(entry, str) for entry in value):
+        return [], "steering_dirs must be a list of strings"
+    if len(value) > MAX_FOLDER_STEERING_DIRS:
+        return [], f"steering_dirs may list at most {MAX_FOLDER_STEERING_DIRS} directories"
+    resolved: list[str] = []
+    for entry in value:
+        one, err = _validate_project_dir(entry.strip())
+        if err:
+            # Reword project_dir's message so the modal's error area names the
+            # steering field, keeping the same rejection semantics.
+            return [], err.replace("Project directory", "Steering directory").replace(
+                "project_dir", "steering_dirs"
+            )
+        if not one:
+            return [], "steering directory must not be empty"
+        if one in resolved:
+            return [], "steering_dirs must not repeat a directory"
+        resolved.append(one)
+    return resolved, None
+
+
+def _resolve_folder_steering_dirs(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[list[str], str | None]:
+    """Return the steering directories a folder inherits, ACCUMULATIVELY.
+
+    Unlike ``_resolve_folder_project_dir`` (nearest ancestor wins), steering
+    directories accumulate up the ``parent_id`` chain root-first: an
+    org-standards folder above a per-repo folder contributes both sets. The walk
+    is cycle-guarded exactly like the project resolver; each folder's stored
+    value is RE-VALIDATED (not trusted from ``folders.json``, which can list a
+    directory that has since been moved or become sensitive) and deduped by
+    resolved realpath, keeping the first occurrence. A malformed stored value
+    fails the whole resolution, matching the project resolver's contract.
+    """
+    by_id = {str(folder.get("id") or ""): folder for folder in folders if isinstance(folder, dict)}
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    current_id = folder_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        folder = by_id.get(current_id)
+        if folder is None:
+            break
+        chain.append(folder)
+        current_id = str(folder.get("parent_id") or "")
+    # Root-first so an ancestor's standards land ahead of a child's additions.
+    result: list[str] = []
+    for folder in reversed(chain):
+        raw = folder.get("steering_dirs")
+        if not raw:
+            continue
+        resolved, err = _validate_steering_dirs(raw)
+        if err:
+            return [], err
+        for one in resolved:
+            if one not in result:
+                result.append(one)
+    return result, None
+
+
 def _refuse_unattributable_caller(
     state: DashboardState, request: web.Request
 ) -> web.Response | None:
@@ -616,6 +699,7 @@ async def create_folder_record(
     icon: str = "",
     request_app: str = "",
     tags: list[str] | None = None,
+    steering_dirs: list[str] | None = None,
     unique_project_dir: bool = False,
     require_resolved_project_dir: bool = False,
 ) -> dict[str, Any]:
@@ -720,6 +804,15 @@ async def create_folder_record(
         # Same contract shape as ``color``: a stored icon is always a single
         # grapheme-exact emoji, whichever caller created the folder.
         raise FolderCreateError("icon must be a single emoji", "icon_invalid")
+    # Off-loop like project_dir: each entry's realpath + isdir + sensitive-path
+    # scan touches the filesystem, and the scaffold calls this once per folder.
+    resolved_steering: list[str] = []
+    if steering_dirs:
+        resolved_steering, steering_err = await asyncio.to_thread(
+            _validate_steering_dirs, steering_dirs
+        )
+        if steering_err:
+            raise FolderCreateError(steering_err, "steering_dirs_invalid")
     folder: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
@@ -734,6 +827,10 @@ async def create_folder_record(
         folder["color"] = color
     if icon:
         folder["icon"] = icon
+    if resolved_steering:
+        # Omitted when empty, like ``color``/``tags``: "absent means none" stays
+        # the single on-disk representation.
+        folder["steering_dirs"] = resolved_steering
     if request_app:
         folder["owner_app"] = request_app
 
@@ -854,6 +951,23 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
                 {"error": tags_err or "tags invalid", "code": "tags_invalid"}, status=400
             )
         folder_tags = clean_tags
+    # Shape-checked here (request-facing) so a non-array/ non-string payload is
+    # refused before any folder work; the authoritative path validation runs in
+    # ``create_folder_record`` off the loop.
+    steering_dirs: list[str] = []
+    if "steering_dirs" in body:
+        raw_steering = body.get("steering_dirs")
+        if not isinstance(raw_steering, list) or any(
+            not isinstance(entry, str) for entry in raw_steering
+        ):
+            return web.json_response(
+                {
+                    "error": "steering_dirs must be a list of strings",
+                    "code": "steering_dirs_invalid",
+                },
+                status=400,
+            )
+        steering_dirs = raw_steering
     # Never from the body: a caller that could name its own owner could name
     # someone else's. Written only when an app is calling, so the person's rows
     # keep the shape they have on disk today and "absent means the person"
@@ -871,6 +985,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             icon=icon_val,
             request_app=request_app,
             tags=folder_tags,
+            steering_dirs=steering_dirs,
         )
     except FolderOwnershipError as exc:
         sel().log_api_access(
@@ -1049,6 +1164,19 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 status=400,
             )
         changes["icon"] = icon_val
+    if "steering_dirs" in body:
+        # A list of directories loaded as steering for every chat in this
+        # folder's subtree. An empty list clears them; anything else is
+        # validated per entry (absolute/sensitive/isdir), capped at 16, and
+        # deduped. Off the loop, like project_dir, since each entry stats disk.
+        resolved_steering, steering_err = await asyncio.to_thread(
+            _validate_steering_dirs, body["steering_dirs"]
+        )
+        if steering_err:
+            return web.json_response(
+                {"error": steering_err, "code": "steering_dirs_invalid"}, status=400
+            )
+        changes["steering_dirs"] = resolved_steering
     if "tags" in body:
         # Vocabulary-constrained tag list. An empty list clears the folder's
         # tags; anything else must be ids that exist in the tag vocabulary.
@@ -1104,6 +1232,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # default glyph" stays the single on-disk representation
             # (mirrors color above).
             target.pop("icon", None)
+        if not target.get("steering_dirs"):
+            # Empty list clears the key entirely, so "absent means none" stays
+            # the single on-disk representation (mirrors color/tags). PATCH with
+            # ``[]`` therefore clears a folder's steering directories.
+            target.pop("steering_dirs", None)
         if not target.get("tags"):
             # Empty list clears the key entirely, so "absent means no tags"
             # stays the single on-disk representation (mirrors color above).

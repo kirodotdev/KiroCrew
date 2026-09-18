@@ -55,3 +55,47 @@ export function resolveFolderProjectDir(
 ): string | undefined {
   return nearestFolderValue(folders, folderId, f => f.project_dir)
 }
+
+/**
+ * Resolve the extra steering directories for a folder.
+ *
+ * Unlike `resolveFolderProjectDir` (nearest-wins), steering dirs ACCUMULATE up
+ * the parent_id chain: an org-standards folder above a per-repo folder must
+ * contribute both sets. The result is ordered ROOT-FIRST — the outermost
+ * ancestor's dirs precede the folder's own — and de-duplicated, keeping the
+ * FIRST occurrence so the root-most contribution wins its position.
+ *
+ * Cycle-guarded like `nearestFolderValue`: a corrupt `parent_id` chain (a
+ * folder revisited on the way up, or a parent that no longer exists) ends the
+ * walk rather than spinning.
+ */
+export function resolveFolderSteeringDirs(
+  folders: ChatFolder[],
+  folderId: string
+): string[] {
+  // Walk UP collecting each level's dirs, then reverse so the root ancestor
+  // comes first — the walk itself is leaf-to-root.
+  const levels: string[][] = []
+  let current: ChatFolder | undefined = folders.find(f => f.id === folderId)
+  const seen = new Set<string>()
+  while (current) {
+    if (seen.has(current.id)) break // cycle guard
+    seen.add(current.id)
+    if (Array.isArray(current.steering_dirs) && current.steering_dirs.length) {
+      levels.push(current.steering_dirs)
+    }
+    const parentId = current.parent_id
+    current = parentId ? folders.find(f => f.id === parentId) : undefined
+  }
+  levels.reverse() // root-first
+  const out: string[] = []
+  const dedup = new Set<string>()
+  for (const level of levels) {
+    for (const dir of level) {
+      if (dedup.has(dir)) continue
+      dedup.add(dir)
+      out.push(dir)
+    }
+  }
+  return out
+}
