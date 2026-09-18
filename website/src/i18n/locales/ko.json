@@ -9257,7 +9257,12 @@
       "your_artifacts": "내 아티팩트",
       "local_preview": "Local preview",
       "more_actions": "추가 작업",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "preview_read_network_error": "이 문서를 읽을 수 없습니다. 요청이 서버에 도달하지 못했습니다. 연결을 확인하고 다시 시도하세요.",
+      "preview_read_server_error": "이 문서를 읽을 수 없습니다. 서버가 오류를 반환했습니다.",
+      "preview_relative_path_body": "이 문서의 위치는 원래 프로젝트를 기준으로 기록되어 여기에서 안전하게 열 수 없습니다. 문서를 만든 세션에서 여세요.",
+      "save_to_artifacts": "아티팩트에 저장",
+      "saved_to_library_notice": "‘{{name}}’을(를) 아티팩트에 저장했습니다."
     },
     "capabilitiesPage": {
       "agent_capabilities": "에이전트 기능",

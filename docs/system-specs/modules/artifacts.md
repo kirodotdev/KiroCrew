@@ -580,10 +580,30 @@ inputs, distinguished by the leading **star** column:
   `PATCH /api/artifacts/{slug}/pin` (metadata-only, no version bump).
 - **Session documents** — a *virtual* firehose of non-code documents the agent
   produced across chats (from message `file_changes`), surfaced only in the
-  **All** view via `GET /api/artifacts/session-docs`. Nothing is written to disk
-  for these until the user stars one, which **materializes** it into a real,
+  **All** view via `GET /api/artifacts/session-docs`. Clicking a row opens a
+  **read-only preview** (`SessionDocPreview`) that fetches the file through the
+  redacting `GET /api/file-read` endpoint — a pure read that registers nothing.
+  A document recorded with a **relative path is refused client-side** (no
+  request is sent): `resolve=1` would resolve it against the gateway's
+  *current* project directory, not the project it was recorded under, so a
+  project switch would silently read a same-named file from the wrong project.
+  An unresolved **`~name` tilde form is refused the same way** — `expanduser`
+  leaves an unknown account name unchanged and the backend then anchors it to
+  the process CWD, the same wrong-project read; only the gateway user's own
+  `~`/`~/…` (deterministic, project-independent) counts as absolute. The
+  refusal renders as a **status, not an error** (nothing failed — the feature
+  is declining an unsafe read), and the preview header's save button is
+  **disabled in the refusal state**, mirroring the backend materialize
+  allowlist, which only trusts paths absolute after expansion.
+  Nothing is written to disk
+  for these until the user stars one (from the row or from the preview
+  header's labeled **Save to artifacts** button — named after the surface the
+  save lands on, not the Apps "Library"), which **materializes** it into
+  a real,
   pinned, file-backed artifact via `POST /api/artifacts/materialize`
-  ("Virtual All + materialize-on-save"). Search matches name/source (incl. the
+  ("Virtual All + materialize-on-save"); a clean save is acknowledged by a
+  transient status notice on the page (a colliding slug shows the collision
+  banner instead). Search matches name/source (incl. the
   originating session title); the file-type filter applies to both inputs.
 
 The page opens on the **All** view by default. The Starred/All selection is

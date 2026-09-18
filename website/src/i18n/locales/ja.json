@@ -9257,7 +9257,12 @@
       "your_artifacts": "あなたのアーティファクト",
       "local_preview": "Local preview",
       "more_actions": "その他のアクション",
-      "retry": "再試行"
+      "retry": "再試行",
+      "preview_read_network_error": "このドキュメントを読み込めませんでした。リクエストがサーバーに届きませんでした。接続を確認して再試行してください。",
+      "preview_read_server_error": "このドキュメントを読み込めませんでした。サーバーがエラーを返しました。",
+      "preview_relative_path_body": "このドキュメントの場所は元のプロジェクトからの相対パスで記録されているため、ここから安全に開くことができません。作成したセッションから開いてください。",
+      "save_to_artifacts": "アーティファクトに保存",
+      "saved_to_library_notice": "「{{name}}」をアーティファクトに保存しました。"
     },
     "capabilitiesPage": {
       "agent_capabilities": "エージェント機能",

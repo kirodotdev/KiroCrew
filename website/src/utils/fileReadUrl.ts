@@ -3,7 +3,7 @@ import { i18nT } from '../i18n/t'
 /** Append resolve=1 for relative paths. The backend resolves such paths
  * against KIROCREW_PROJECT_DIR; absolute and ~-paths pass through unchanged. */
 function withResolve(url: string, filePath: string): string {
-  return isAbsolute(filePath) ? url : url + '&resolve=1'
+  return isAbsolutePath(filePath) ? url : url + '&resolve=1'
 }
 
 /** Is this path already absolute, i.e. NOT to be resolved against the project dir?
@@ -12,9 +12,29 @@ function withResolve(url: string, filePath: string): string {
  * (`C:\x`, `C:/x`) and a UNC path (`\\host\share\x`) are absolute, and marking
  * them `resolve=1` mislabels them. The backend currently passes drive and UNC
  * shapes through its resolver untouched, so the flag is inert today — but the
- * classification is what the caller is asserting, so it should be true. */
-function isAbsolute(filePath: string): boolean {
-  return /^([~/]|[A-Za-z]:[\\/]|\\\\)/.test(filePath)
+ * classification is what the caller is asserting, so it should be true.
+ *
+ * Exported because it is also a SECURITY predicate: `resolve=1` resolves a
+ * relative path against the gateway's CURRENT project directory at request
+ * time, not against whatever project the path was recorded under. A caller
+ * showing a stored path from another context (e.g. the session-doc preview)
+ * must refuse a relative path outright rather than send it with `resolve=1`,
+ * or a project switch turns the read into a same-named file in the newly
+ * active project — silent cross-project disclosure.
+ *
+ * Tilde forms are split, not blanket-accepted: `~` and `~/...` expand
+ * deterministically to the gateway user's OWN home (project-independent, so
+ * absolute in the sense this predicate asserts), but `~name/...` expands only
+ * if `name` is a real account — the backend's `expanduser` leaves an unknown
+ * `~name` UNCHANGED and its resolver then anchors it to the process CWD,
+ * which re-opens the exact cross-project disclosure above. `~name` (and the
+ * POSIX-ambiguous `~\`) are therefore classified NOT absolute: the preview
+ * refuses them, and resolve=1 callers get the backend's project-dir
+ * resolution, which is bounded (it errors on escape) rather than CWD-anchored.
+ * This mirrors the backend materialize allowlist, which trusts only paths
+ * that are absolute AFTER expansion. */
+export function isAbsolutePath(filePath: string): boolean {
+  return /^(?:\/|~(?:$|\/)|[A-Za-z]:[\\/]|\\\\)/.test(filePath)
 }
 
 /** Build the /api/file-read URL, appending resolve=1 for relative paths. */

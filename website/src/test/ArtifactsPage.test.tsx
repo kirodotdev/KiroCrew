@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
@@ -429,6 +429,224 @@ describe('ArtifactsPage', () => {
     await user.click(screen.getByLabelText('Star document'))
 
     await waitFor(() => expect(materializeSpy).toHaveBeenCalledWith('/ws/research/FINDINGS.md', 'dashboard_chat-1'))
+  })
+
+  // Session-doc rows used to be dead on click — the ONLY affordance was the
+  // star, which SAVES the document into the library. Clicking a row now opens
+  // a read-only preview (via the redacting /api/file-read), so the user can
+  // read a document before deciding to keep it.
+  describe('session-doc preview', () => {
+    const stubFileRead = (text: string) =>
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: () => Promise.resolve(text),
+      }))
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('opens a read-only preview on row click, and its star saves then closes', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      const materializeSpy = vi.fn().mockResolvedValue({})
+      vi.mocked(api).materializeArtifact = materializeSpy
+      stubFileRead('# Findings headline')
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('FINDINGS.md'))
+      const dialog = await screen.findByRole('dialog')
+      // Content comes from the same redacting file-read the chat panel uses.
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        '/api/file-read?path=' + encodeURIComponent('/ws/research/FINDINGS.md'),
+      )
+      await waitFor(() => expect(within(dialog).getByText('Findings headline')).toBeInTheDocument())
+
+      // The header save button is the same materialize affordance the row's
+      // star carries — now with its name visible ("Save to artifacts", named
+      // after the surface it writes to, not the Apps "Library"); a
+      // successful save closes the preview (the doc is a real artifact now)
+      // and announces itself in the page's status notice.
+      await user.click(within(dialog).getByRole('button', { name: /Save to artifacts/ }))
+      await waitFor(() => expect(materializeSpy).toHaveBeenCalledWith('/ws/research/FINDINGS.md', 'dashboard_chat-1'))
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      // The save's only other effects are removals (row unmounts, modal
+      // closes) — the acknowledgment is what says "saved", not "vanished".
+      expect(screen.getByText('Saved “FINDINGS.md” to your artifacts.')).toBeInTheDocument()
+    })
+
+    it('starring a row saves without opening the preview', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      stubFileRead('# Findings headline')
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      // The star sits inside the clickable row: saving must not ALSO open the
+      // preview (SessionDocStar stops propagation).
+      await user.click(screen.getByLabelText('Star document'))
+      await waitFor(() => expect(vi.mocked(api).materializeArtifact).toHaveBeenCalled())
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    // The preview shares `['file-read', path]` with the chat side panel, whose
+    // cold-tab hydration reads `{ text, ok, status }` from the same entry
+    // within staleTime. A divergent shape here (say `{ text, missing }`) would
+    // poison that consumer: preview a doc, open it in chat within 10s, and the
+    // panel sees an entry with `ok`/`status` undefined.
+    it('populates the shared file-read cache with the chat panel contract shape', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      stubFileRead('# Findings headline')
+      const { queryClient } = renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('FINDINGS.md'))
+      const dialog = await screen.findByRole('dialog')
+      await waitFor(() => expect(within(dialog).getByText('Findings headline')).toBeInTheDocument())
+      expect(queryClient.getQueryData(['file-read', '/ws/research/FINDINGS.md']))
+        .toEqual({ text: '# Findings headline', ok: true, status: 200 })
+    })
+
+    // The row is a keyboard target too — and the star nested inside it bubbles
+    // its own Enter/Space keydown up to the row. Keyboard-starring must save
+    // WITHOUT opening the preview (and without the row's preventDefault
+    // cancelling the star's native activation).
+    it('opens the preview on row Enter; keyboard-starring saves without opening it', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      const materializeSpy = vi.fn().mockResolvedValue({})
+      vi.mocked(api).materializeArtifact = materializeSpy
+      stubFileRead('# Findings headline')
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      // Keyboard-activate the star first: materializes, no preview.
+      screen.getByLabelText('Star document').focus()
+      await user.keyboard('{Enter}')
+      await waitFor(() => expect(materializeSpy).toHaveBeenCalledWith('/ws/research/FINDINGS.md', 'dashboard_chat-1'))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+      // Then Enter on the row itself opens the preview.
+      const row = screen.getByText('FINDINGS.md').closest('[role="button"]') as HTMLElement
+      row.focus()
+      await user.keyboard('{Enter}')
+      await screen.findByRole('dialog')
+    })
+
+    // SECURITY: fileReadUrl appends `resolve=1` to a relative path, and the
+    // backend resolves that against the CURRENT project directory at request
+    // time — not the project the path was recorded under. A relative doc
+    // previewed after a project switch would silently read a same-named file
+    // in the newly active project. The preview must refuse: no request may
+    // leave the browser for a relative path.
+    it('refuses to preview a relative-path document without fetching', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('notes/relative-plan.md', 'relative-plan.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('relative-plan.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('relative-plan.md'))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(/can't be opened safely from here/)).toBeInTheDocument()
+      // The refusal is client-side and absolute: nothing was requested.
+      expect(fetchSpy).not.toHaveBeenCalled()
+      // Not retryable — retrying cannot make the path safe.
+      expect(within(dialog).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+      // A refusal is not a failure: it renders as a status, not an alert
+      // (review r3: danger dress on a deliberate refusal misreports it).
+      expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument()
+      expect(within(dialog).getByRole('status')).toBeInTheDocument()
+      // And the save is withheld too: the backend materialize allowlist only
+      // trusts paths absolute after expansion, and offering a save beside
+      // refusal copy invites committing a document sight-unseen.
+      expect(within(dialog).getByRole('button', { name: /Save to artifacts/ })).toBeDisabled()
+    })
+
+    // SECURITY: `~name` is only absolute if `name` is a real account —
+    // expanduser leaves an unknown `~name` unchanged and the backend's
+    // resolver then anchors it to the process CWD, the same cross-project
+    // disclosure the refusal exists to prevent. Only `~` / `~/` (the
+    // gateway user's own home, project-independent) may pass.
+    it('refuses a ~name path like a relative one, without fetching', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('~nosuchuser/plan.md', 'plan.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('plan.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('plan.md'))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText(/can't be opened safely from here/)).toBeInTheDocument()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    // The two failure branches must name what actually happened. An HTTP
+    // error response means the request DID reach the server — copy blaming
+    // the network there names exactly the cause the code has excluded (the
+    // defect that got the previous shared copy blocked in review).
+    it('names a server error as a server error', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: false, status: 500, statusText: 'Internal Server Error',
+        text: () => Promise.resolve(''),
+      }))
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('FINDINGS.md'))
+      const dialog = await screen.findByRole('dialog')
+      await waitFor(() => expect(within(dialog).getByText(/the server reported an error/)).toBeInTheDocument())
+      expect(within(dialog).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    })
+
+    it('names a network failure as a network failure', async () => {
+      const user = userEvent.setup()
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
+      // fetch REJECTING (not an error status) is the network-failure shape.
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByText('FINDINGS.md'))
+      const dialog = await screen.findByRole('dialog')
+      await waitFor(() => expect(within(dialog).getByText(/didn't reach the server/)).toBeInTheDocument())
+      expect(within(dialog).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    })
   })
 
   // The star is the section's ONLY action; a failed materialize used to stop
