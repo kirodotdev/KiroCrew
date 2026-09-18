@@ -494,6 +494,12 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
         store: VectorMemoryStore | None = None
         published = False
         try:
+            # Admit BEFORE resolving or opening. init() creates whatever is
+            # missing (owner-only parents, then an empty database), so a store
+            # whose directory was lost would be recreated empty here and the
+            # refusal that keeps the loss visible would then find a directory
+            # to admit. Same order as the `kirocrew memory` verbs.
+            require_memory_store(name)
             mem = KiroCrewConfig.load().memory
             store = VectorMemoryStore(
                 db_path=resolve_store_path(name),
@@ -515,6 +521,10 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
                 logger.debug(
                     "could not stamp the embedding space for store %r", name, exc_info=True
                 )
+            # Admit again at the publication edge: the early check keeps a lost
+            # store from being recreated, this one refuses a store that was
+            # retired or removed while init() ran, before the cache can hand
+            # it out. The `finally` below closes the unpublished store.
             require_memory_store(name)
             with _stores_lock:
                 if cancelled.is_set():
