@@ -1287,7 +1287,10 @@ steer handler calls it right BEFORE `slot.append("user", …, meta={"steer": Tru
 the send-identity paragraph below),
 so the accumulated segment text is flushed as its own assistant message and the
 persisted order is `[assistant(pre-steer), user(steer), assistant(post-steer)]`
-— identical to the live view. The cut persists SILENTLY: `broadcast=False`
+— identical to the live view. If a regeneration recovery owns an older selector,
+the cut settles and file-flushes that selector before inserting the steer row,
+then clears the owner: later output is ordinary post-steer history and cannot
+rewrite the older variant. The cut persists SILENTLY: `broadcast=False`
 (no `chat_segment`), `quiet_persist=True` (no per-message `chat_message` from
 the append), and the wire redactor's withheld tail is dropped via
 `_wsred.reset()` rather than emitted (no late `chat_chunk`). At the cut

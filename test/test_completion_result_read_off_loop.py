@@ -67,6 +67,7 @@ def _stage_texts(monkeypatch, texts):
         stage_box["n"] += 1
         if idx < len(texts):
             slot.append("assistant", texts[idx], "msg msg-a")
+        slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
 
@@ -85,6 +86,7 @@ async def _run_plan(monkeypatch, titles, texts):
 
     state = _make_state()
     slot = _make_slot(titles)
+    state._slots = {slot.key: slot}
     _stage_texts(monkeypatch, texts)
     await _stage_loop(state, slot, auto_run=True)
     return slot
@@ -209,6 +211,7 @@ async def test_completion_summary_survives_a_deleted_result_file(monkeypatch, tm
 
     state = _make_state()
     slot = _make_slot(["First", "Second"])
+    state._slots = {slot.key: slot}
     _stage_texts(monkeypatch, ["alpha done", "beta done"])
 
     real_write = None
@@ -266,6 +269,7 @@ async def test_no_worker_hop_when_no_stage_results_were_captured(monkeypatch):
 
     state = _make_state()
     slot = _make_slot(["First", "Second"])
+    state._slots = {slot.key: slot}
     _stage_texts(monkeypatch, ["alpha done", "beta done"])
 
     await _stage_loop(state, slot, auto_run=True)

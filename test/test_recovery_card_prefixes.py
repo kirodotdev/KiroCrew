@@ -86,20 +86,25 @@ def test_card_prefixes_all_exist_in_python() -> None:
 
 
 def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
-    """Every synthetic prompt the runner injects must open with a card-known marker.
+    """Every fixed recovery prompt must open with a card-known marker.
 
-    They are built from the prefixes rather than hardcoding the marker, so this
-    guards the composition (a lost f-string prefix) as well as the marker set.
+    Discover compositions from their marker line rather than maintaining a
+    production-only aggregate with no runtime consumer.
     """
-    from kiro_crew.dashboard.chat_utils import _SYNTHETIC_RECOVERY_MSGS
+    from kiro_crew.dashboard import chat_utils
 
+    python_markers = set(_state_prefixes().values())
+    messages = {
+        name: value
+        for name, value in vars(chat_utils).items()
+        if isinstance(value, str) and "\n" in value and value.split("\n", 1)[0] in python_markers
+    }
+    assert messages, "no fixed recovery prompt compositions found"
     known = set(_card_prefixes().values())
-    for msg in _SYNTHETIC_RECOVERY_MSGS:
-        marker = msg.split("\n", 1)[0]
-        assert (
-            marker in known
-        ), f"synthetic recovery prompt opens with {marker!r}, which no card matches"
-        assert msg.split("\n", 1)[1].strip(), "marker line is not followed by a body"
+    for name, msg in messages.items():
+        marker, body = msg.split("\n", 1)
+        assert marker in known, f"{name} opens with {marker!r}, which no card matches"
+        assert body.strip(), f"{name} marker line is not followed by a body"
 
 
 @pytest.mark.parametrize(

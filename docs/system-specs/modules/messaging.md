@@ -1459,11 +1459,21 @@ All of that, including both reply strings, is
 surface)`; a dispatcher supplies the session key and its bound `ReceiptSurface`
 and sends the returned text.
 
-**Cancel is cooperative before it is fatal.** The shared handler calls
-`provider.cancel(wait_ack_timeout=0)`, which writes an ACP `session/cancel`
-notification and returns without waiting, so the acknowledgement to the user is
-immediate; the turn stops at its next safe point. Per the ACP spec the ack is
-not a response to that notification, it arrives as `stopReason: "cancelled"` on
+**Cancel is cooperative before it is fatal.** The shared handler first calls
+`SessionManager.record_stop(session_key)` synchronously, before even deciding
+whether the session is busy, then calls `provider.cancel(wait_ack_timeout=0)`
+when an active turn exists. A stage has an intentional idle gap between provider
+turns; recording first makes a Stop in that gap revoke the old stage's recovery
+lease even though there is no prompt to cancel at that instant. The dispatcher
+passes its already-resolved effective session key, so a resumed conversation
+revokes its dashboard stage lease rather than the channel's native session, and
+an unrelated session's generation remains untouched. Webex's native command
+handler preserves this same ordering. Dashboard and Slack route through
+`SessionManager.stop_turn`, whose session-owned path records before provider
+cancellation. The cancellation notification returns without waiting, so the
+channel acknowledgement remains immediate.
+Per the ACP spec, that terminal acknowledgement is not a response to the
+notification; it arrives as `stopReason: "cancelled"` on
 the `session/prompt` response. The client arms a cancel grace window
 (`_CANCEL_GRACE_SECS`, 10s floor, raised to the caller's budget when larger) and
 only treats the agent as unresponsive after it elapses. The dashboard and Slack

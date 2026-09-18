@@ -362,6 +362,7 @@ class FakeSessions:
         self._busy = False
         self._has = True
         self.queued: list = []
+        self.recorded_stops: list[str] = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
         self.origin_links: dict[str, Any] = {}
@@ -520,6 +521,10 @@ class FakeSessions:
 
     def dequeue(self, key: str) -> Any:
         return self.queued.pop(0) if self.queued else None
+
+    def record_stop(self, key: str) -> int:
+        self.recorded_stops.append(key)
+        return len(self.recorded_stops)
 
     def clear_queue(self, key: str) -> None:
         self.queued.clear()
@@ -3255,7 +3260,23 @@ class TestDispatcher:
         await d.handle_message(self._msg("!stop"))
         assert sess._gp.cancelled == 1
         assert sess.queued == []
+        assert sess.recorded_stops == [d._session_key("u1")]
         assert "Stopped" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_stop_on_a_resumed_session_revokes_only_the_dashboard_key(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        native_key = d._session_key("u1")
+        linked_key = "dashboard:linked-session"
+        d._session_resume.route = mock.AsyncMock(
+            return_value=td_mod.RoutingDecision(resumed_key=linked_key)
+        )
+        sess._busy = True
+
+        await d.handle_message(self._msg("!stop"))
+
+        assert sess.recorded_stops == [linked_key]
+        assert native_key not in sess.recorded_stops
 
     @pytest.mark.asyncio
     async def test_compact_uses_try_acquire_and_releases(self) -> None:

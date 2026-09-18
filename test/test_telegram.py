@@ -371,6 +371,7 @@ class FakeSessions:
         self._busy = False
         self._has = True
         self.queued: list = []
+        self.recorded_stops: list[str] = []
         self._gp = FakeProvider()
         self.mirror_links: dict[str, Any] = {}
         self.inbound_keys: set[str] = set()
@@ -431,6 +432,10 @@ class FakeSessions:
 
     def is_busy(self, key: str) -> bool:
         return self._busy
+
+    def record_stop(self, key: str) -> int:
+        self.recorded_stops.append(key)
+        return len(self.recorded_stops)
 
     def max_generation(self, bucket: str) -> int:
         return -1
@@ -3777,6 +3782,7 @@ class TestTelegramMidTurn:
 
         asyncio.run(_go())
         assert sess._gp.cancelled == 1  # in-flight turn aborted
+        assert sess.recorded_stops == ["telegram:kirocrew:direct:7"]
         assert sess.queued == []  # pending queue cleared
         assert any("Stopped" in t for t, _ in cli.sent)
 

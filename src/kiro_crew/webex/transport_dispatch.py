@@ -1269,6 +1269,11 @@ class WebexDispatcher:
         so it stays snappy.
         """
         session_key = self._session_key(_route_of(inbound))
+        # Webex has no inbound dashboard-resume route: this route-derived key is
+        # the exact session the turn owns and the surfaced dashboard slot links
+        # back to. Record before the busy check so a Stop in the stage idle gap
+        # still revokes result capture and provider recovery.
+        self.sessions.record_stop(session_key)
         cancelled_turn = False
         if self.sessions.is_busy(session_key):
             provider = self.sessions.get_provider(session_key)

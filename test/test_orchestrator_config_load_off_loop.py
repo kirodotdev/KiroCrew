@@ -328,6 +328,7 @@ async def test_plan_cancel_during_the_config_load_does_not_start_the_plan(
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
         turns.append(context)
+        _slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -396,6 +397,7 @@ async def test_a_plan_started_after_a_cancel_still_runs(monkeypatch: Any) -> Non
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
         turns.append(context)
+        _slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -443,6 +445,7 @@ async def test_stop_during_the_config_load_does_not_start_the_plan(monkeypatch: 
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
         turns.append(context)
+        _slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -515,6 +518,7 @@ async def test_a_message_queued_during_the_config_load_is_still_handed_off(
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
         turns.append(context)
+        _slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -608,6 +612,7 @@ async def test_a_round_recorded_during_the_config_load_cannot_skip_a_stage(
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
         turns.append(context)
+        _slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -640,17 +645,16 @@ async def test_a_round_recorded_during_the_config_load_cannot_skip_a_stage(
 
 
 @pytest.mark.asyncio
-async def test_a_round_recorded_before_loop_entry_does_skip_a_stage(
+async def test_a_completed_stage_before_loop_entry_does_skip_that_stage(
     monkeypatch: Any,
 ) -> None:
-    """The positive control for the test above -- the arithmetic IS real.
+    """The positive control for the config-load race uses completion evidence.
 
-    A tracker that already carries a round at loop ENTRY makes ``start_idx``
-    non-zero and stage 1 is skipped. That is the resume path: ``_orch_tracker``
-    is already set, so nothing is published, and because that tracker already
-    carries its budgets (``budgets_unset`` is False) no config load runs at all.
-    Keeping this here is what stops the test above from reading as "record_round
-    does nothing".
+    A tracker with a recorded Stage 1 result starts at Stage 2. A round or stage
+    key alone is deliberately insufficient: those survive refusal, cancellation,
+    provider failure, and incomplete continuation exits. ``_orch_tracker`` is
+    already set here, and because it already carries its budgets
+    (``budgets_unset`` is False) no config load runs at all.
     """
     threads: list[int] = []
     _record_config_loads(monkeypatch, threads)
@@ -660,6 +664,7 @@ async def test_a_round_recorded_before_loop_entry_does_skip_a_stage(
 
     async def _fake_run_chat(_state: Any, _slot: Any, context: str, **_kwargs: Any) -> None:
         turns.append(context)
+        _slot._last_turn_stage_answer = True
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _fake_run_chat)
 
@@ -672,11 +677,11 @@ async def test_a_round_recorded_before_loop_entry_does_skip_a_stage(
 
     # Budgets passed explicitly, because that is what an in-process resume
     # actually holds: the FIRST loop entry loaded them onto this same object, so
-    # entry two owes nothing. A tracker built with no budgets at all is the
-    # restart-resume shape instead, and it does owe one load -- see
-    # test_plan_duration_watchdog's restored-tracker case.
+    # entry two owes nothing. The captured result is the durable completion
+    # signal; entering or recording a round without it must retry Stage 1.
     resumed = OrchestrationTracker(stage_timeout_seconds=1800)
-    resumed.record_round(resumed.current_stage)
+    resumed.start_stage(1)
+    resumed.record_stage_result(1, "/missing/stage_1_result.md")
     slot._orch_tracker = resumed
 
     await _stage_loop(state, slot, auto_run=True)

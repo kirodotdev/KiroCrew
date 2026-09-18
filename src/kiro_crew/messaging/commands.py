@@ -110,6 +110,12 @@ async def stop_running_turn(
     queue is still cleared, so claiming a stop that did not happen would be the
     worse lie.
     """
+    # Revoke recovery ownership before ANY idle/busy decision. A stage loop has
+    # an intentional idle gap between provider turns; the addressed Stop must
+    # fence that stage's continuation even though there is no active provider
+    # prompt to cancel at this instant. The dispatcher already resolved the exact
+    # effective session, including a resumed dashboard conversation.
+    sessions.record_stop(session_key)
     cancelled_turn = False
     if sessions.is_busy(session_key):
         provider = sessions.get_provider(session_key)

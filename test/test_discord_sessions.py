@@ -132,6 +132,7 @@ class _Sessions:
         self.unbind_reasons: list[str] = []
         self.last_key = ""
         self.targeted: list[tuple[str, str]] = []
+        self.stop_generations: dict[str, int] = {}
         self.channel_keys: set[str] = set()
         self.reserved_generations: set[str] = set()
         self.provider = _Provider()
@@ -238,6 +239,12 @@ class _Sessions:
 
     def is_busy(self, key: str) -> bool:
         return False
+
+    def record_stop(self, key: str) -> int:
+        generation = self.stop_generations.get(key, 0) + 1
+        self.stop_generations[key] = generation
+        self.targeted.append(("record_stop", key))
+        return generation
 
     async def try_acquire(self, key: str) -> bool:
         self.targeted.append(("try_acquire", key))

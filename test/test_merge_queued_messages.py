@@ -54,36 +54,34 @@ class TestDequeueNextMessage:
         assert len(slot._queue) == 0
 
     def test_synthetic_recovery_entry_breaks_merge(self):
-        """A runner-injected synthetic recovery instruction (empty-response
-        nudge / post-transient CONTINUE) must NEVER be folded into a
-        "[N queued messages merged]" user turn: merged, the internal text
-        would drain with the user role (persisted as user-authored history and
-        mirrored to linked channels). Classification is STRUCTURAL — the
-        entry's kind tag set at queue_insert time — so it drains ALONE,
-        exactly like sub-agent and cron injections."""
+        """A runner-injected synthetic recovery instruction must NEVER be
+        folded into a "[N queued messages merged]" user turn: merged, the
+        internal text would drain with the user role (persisted as user-authored
+        history and mirrored to linked channels). Classification is STRUCTURAL —
+        the entry's kind tag set at queue_insert time — so one representative
+        fixed recovery prompt drains ALONE, exactly like sub-agent and cron
+        injections."""
         from kiro_crew.dashboard.chat_utils import (
-            _SYNTHETIC_RECOVERY_MSGS,
+            _EMPTY_AUTO_CONTINUE_MSG,
             SYNTHETIC_RECOVERY_KIND,
         )
 
-        for synthetic in _SYNTHETIC_RECOVERY_MSGS:
-            slot = _ChatSlot("s1")
-            slot.queue_insert(0, "a genuine user message")
-            slot.queue_insert(0, synthetic, kind=SYNTHETIC_RECOVERY_KIND)
-            next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
-            assert next_msg == synthetic
-            assert [c["content"] for c in consumed] == [synthetic]
-            # The user message stays queued for its own (user-role) turn.
-            assert [i["content"] for i in slot._queue] == ["a genuine user message"]
+        slot = _ChatSlot("s1")
+        slot.queue_insert(0, "a genuine user message")
+        slot.queue_insert(0, _EMPTY_AUTO_CONTINUE_MSG, kind=SYNTHETIC_RECOVERY_KIND)
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert next_msg == _EMPTY_AUTO_CONTINUE_MSG
+        assert [c["content"] for c in consumed] == [_EMPTY_AUTO_CONTINUE_MSG]
+        # The user message stays queued for its own (user-role) turn.
+        assert [i["content"] for i in slot._queue] == ["a genuine user message"]
 
     def test_refusal_recovery_entry_breaks_merge(self):
-        """A tool-refusal recovery injection (built dynamically, not a constant
-        in _SYNTHETIC_RECOVERY_MSGS) must carry the structural kind tag so it
-        drains ALONE rather than folding into a user-role merged turn — the
-        regression behind the composer leak, where an untagged refusal-recovery
-        entry classified as user speech AND rendered as an editable queue card.
-        Mirrors the chat_runner call site, which now passes
-        kind=SYNTHETIC_RECOVERY_KIND."""
+        """A dynamically built tool-refusal recovery injection must carry the
+        structural kind tag so it drains ALONE rather than folding into a
+        user-role merged turn — the regression behind the composer leak, where
+        an untagged refusal-recovery entry classified as user speech AND rendered
+        as an editable queue card. Mirrors the chat_runner call site, which now
+        passes kind=SYNTHETIC_RECOVERY_KIND."""
         from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND
         from kiro_crew.dashboard.state import (
             REFUSAL_RECOVERY_PREFIX,

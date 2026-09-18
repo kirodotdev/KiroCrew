@@ -245,8 +245,41 @@ entry.
    (completed / execute-now / pending), previous stage results, the current
    stage's title and bullets, and an explicit "execute Stage N of M now"
    instruction. It is appended as a hidden user message (`auto-go` class) and
-   passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
-   posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
+   passed to `_run_chat`. Stage lifecycle is not banner provenance: an exact
+   banner-shaped stage answer with no independent artifact evidence remains visible
+   and can complete the stage. Exact grammar, including a line break before
+   semantic answer text, proves only that the prefix is banner-shaped; an ordinary
+   turn preserves the complete model answer because it cannot prove who authored
+   those bytes. A banner-only terminal tail after the turn already delivered
+   visible model output is independently attributable and is removed. A banner-only
+   artifact stop reason gets one bounded synchronous continuation under the same
+   absolute stage deadline. The initial stage turn carries no recovery provenance;
+   only that second turn receives typed provider-budget provenance from the
+   controller, so it may remove a repeated banner prefix while preserving any
+   semantic tail, rather than accepting the artifact as the stage answer. The
+   controller lease is bound to the currently registered slot
+   object, tracker object, stage number, and monotonic Stop generation. The
+   controller snapshots the lease before the stage awaits, revalidates it after each
+   turn, and checks it once more inside the bounded child task with no suspension
+   before `_run_chat`. A Stop that presses and resolves back to idle while the stage
+   is responding, after its terminal banner, or in the parent-to-child scheduling
+   gap therefore fences recovery before dispatch. The recovery budget is spent only
+   after that final check, so a fenced attempt does not consume it. Replacing the
+   slot, tracker, or stage likewise revokes the old controller's authorization.
+   A second banner, or an initial or recovery turn without a completed stage answer,
+   stops auto-run before result capture. The runner publishes one boolean
+   `_last_turn_stage_answer`: it requires a raw ACP `end_turn` with model answer
+   text, with no provider refusal, runner-recorded tool-permission denial, or
+   synthetic terminal. Refusal/deny prose still appears in ordinary chat, but
+   cannot complete the stage. This uses terminal and permission provenance rather
+   than interpreting sentiment, so concise answers and answers after successful
+   tools remain valid. Host errors, notices, and synthetic file-change rows
+   likewise cannot complete a stage. Provider/auth/process recovery and
+   cancellation remain available because the stage stays unrecorded. A later Go
+   resumes from the first stage without a recorded result; entered-stage and round
+   keys are not completion evidence, while successfully captured stages remain
+   skipped. An exception from `_run_chat` clears `_auto_run`, posts a stage-error
+   notice, logs `auto_run_stage_error`, and breaks.
 7. **Wait for the stage's sub-agents.** Polls
    `state.subagents.running_agents_for("dashboard:<slot>")` every 2s, up to 150
    rounds (5 minutes), broadcasting a `chat_status` count every 10 polls. This
@@ -254,7 +287,11 @@ entry.
    `None` either before or during polling, stops auto-run with a notice and a
    `auto_run_subagent_check_failed` SEL event rather than silently skipping
    verification. Exhausting the 150 rounds stops auto-run with
-   `auto_run_subagent_timeout`.
+   `auto_run_subagent_timeout`. When polling exits, the controller revalidates
+   the captured slot, tracker, stage, slot-generation, exact session key, and
+   session-generation lease before result capture. A linked-channel Stop during
+   the wait therefore fences the stage even after its provider turn finished;
+   a Stop on an unrelated session does not.
 8. **Capture the stage result**, split across the thread boundary.
    `_collect_stage_result_parts` walks the assistant messages back to this
    stage's separator **on the loop**, because `slot.messages` is live state the
@@ -264,7 +301,12 @@ entry.
    is recorded on the tracker. Redaction is re-applied here even though both
    upstream sources are already clean, because
    this writes a NEW file outside the history log's own redaction pass
-   (redaction is idempotent, so the common case is a no-op).
+   (redaction is idempotent, so the common case is a no-op). The worker return
+   is the final suspension before result recording, attended pause, round-cap
+   handling, or auto-run advancement, so the same full controller lease is
+   revalidated once more before any of those synchronous decisions. A Stop
+   landing during the write may leave an unrecorded file for a later retry to
+   overwrite, but it cannot record or advance the stopped stage.
 9. **Round cap after the wave — auto-run only.** Break if the stage has spent
    `MAX_STAGE_ROUNDS`, clearing `_auto_run` and logging `auto_run_round_cap` /
    `stage_round_cap` — a request for guidance, not a terminal verdict. Gated on
