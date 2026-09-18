@@ -127,18 +127,56 @@ def test_detect_reports_absent_when_binary_missing(monkeypatch: pytest.MonkeyPat
     assert d["node_ok"] is True
 
 
-def test_detect_reports_version_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    _wire(
+def test_detect_reports_version_when_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "node_modules" / "@playwright" / "cli"
+    package.mkdir(parents=True)
+    entry = package / "playwright-cli.js"
+    entry.write_text("", encoding="utf-8")
+    (package / "package.json").write_text(
+        json.dumps({"name": "@playwright/cli", "version": "0.1.18"}),
+        encoding="utf-8",
+    )
+    calls = _wire(
         monkeypatch,
         {"node": "/n/node", "playwright-cli": "/n/playwright-cli"},
-        {"/n/node": (0, "v22.1.0", ""), "/n/playwright-cli": (0, "0.1.18\n", "")},
+        {"/n/node": (0, "v22.1.0", "")},
     )
+    monkeypatch.setattr(mod, "cli_command", lambda cli=None: ["/n/node", str(entry)])
 
     d = mod.detect()
 
     assert d["installed"] is True
     assert d["cli_path"] == "/n/playwright-cli"
     assert d["cli_version"] == "0.1.18"
+    assert calls == [["/n/node", "--version"]]
+
+
+def test_installed_cli_version_reads_package_metadata_each_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "node_modules" / "@playwright" / "cli"
+    package.mkdir(parents=True)
+    entry = package / "playwright-cli.js"
+    entry.write_text("", encoding="utf-8")
+    manifest = package / "package.json"
+    manifest.write_text(json.dumps({"version": "0.1.21"}), encoding="utf-8")
+    real_read_text = Path.read_text
+    reads: list[Path] = []
+
+    def _read_text(path: Path, *args, **kwargs) -> str:
+        if path == manifest:
+            reads.append(path)
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+    command = ["/n/node", str(entry)]
+
+    assert mod.installed_cli_version(command) == "0.1.21"
+    manifest.write_text(json.dumps({"version": "0.1.22"}), encoding="utf-8")
+    assert mod.installed_cli_version(command) == "0.1.22"
+    assert reads == [manifest, manifest]
 
 
 def test_detect_reports_a_launcher_without_a_safe_runtime_as_absent(
