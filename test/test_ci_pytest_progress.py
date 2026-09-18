@@ -54,6 +54,9 @@ class TestCIProgress(unittest.TestCase):
         # No inherited CLI options, plugins, application home, or checkout conftest.
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTEST_PLUGINS", None)
+        # Synthetic child suites do not contribute to the outer coverage data.
+        env.pop("COV_CORE_DATAFILE", None)
+        env.pop("COVERAGE_PROCESS_START", None)
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONPATH"] = str(ROOT)
@@ -297,15 +300,17 @@ class TestCIProgress(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["backend-test-windows"]
         self.assertEqual(job["timeout-minutes"], 60)
-        self.assertEqual(job["strategy"]["matrix"]["group"], [1, 2, 3, 4])
-        self.assertEqual(job["env"]["SHARD_COUNT"], 4)
+        count = job["env"]["SHARD_COUNT"]
+        self.assertEqual(count, 8)
+        self.assertEqual(job["strategy"]["matrix"]["group"], list(range(1, count + 1)))
         command = next(s["run"] for s in job["steps"] if s.get("name", "").startswith("Run tests"))
         for flag in [
             "-n auto",
             "--timeout=180",
             "--no-cov",
             "--max-worker-restart=0",
-            '--splits "$SHARD_COUNT"',
+            '--file-shards "$SHARD_COUNT"',
+            "-p scripts.ci_file_shards",
         ]:
             self.assertIn(flag, command)
         self.assertIn("-p scripts.ci_pytest_progress", command)

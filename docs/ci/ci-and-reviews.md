@@ -290,8 +290,8 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one that completes non-success. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One extra ~1-minute job buys the whole matrix the right to not start |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `backend-test` | 4 pytest-split shards on Python 3.12, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Stays on `ubuntu-latest`: the CodeBuild runner runs jobs as root and this suite asserts permission semantics root does not have (pilot, below) |
-| `backend-test-windows` | windows-latest, 4 shards, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
+| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Runner routing is unchanged by file sharding (pilot, below) |
+| `backend-test-windows` | windows-latest, 8 whole-file shards assigned before import, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-windows-fail-closed` | windows-latest, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It is the only lane that boots a real gateway and drives one ACP prompt turn on Windows, against real filesystem state instead of a `sys.platform` mock: the pair of assertions [PR #8117](https://github.com/kirodotdev/KiroCrew/pull/8117) broke and no test could see |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
 | `backend-test-crew-container` | "Backend Tests (crew container)". The only lane that runs the crew container image's suite (`aws_control/crew/runtime/container_tests/`, 327 tests). It is separate from the shards because it installs the image's own runtime pins (`container/requirements.txt`: fastapi, uvicorn, httpx, boto3), which that file's header forbids becoming dependencies of the application, and the shards' environment IS the application's, so there the suite's conftest collects nothing. Sets `CREW_CONTAINER_TESTS_REQUIRED=1`, which turns every reason that conftest would decline to collect into a hard error and checks the collection against the tree |
@@ -305,6 +305,71 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
 | `e2e` | The i18n render-time gate, then `python setup.py test_e2e` |
+
+### Backend file sharding
+
+The Linux and Windows matrices assign whole files before pytest imports their
+items. `scripts/ci_file_shards.py` is an opt-in pytest plugin, loaded only by
+those matrix commands. It uses SHA-256 of the root-relative POSIX path to choose
+one of `SHARD_COUNT` owners. Each xdist worker reaches the same assignment.
+Adding a file does not move existing files between shards.
+
+Pytest still walks its configured roots, applies its filename patterns and
+platform-specific conftest ignores, and creates its normal file collectors.
+The plugin returns an empty collection report for files owned by another shard,
+before their collector imports them. It does not rewrite discovery into explicit
+file arguments, which would bypass `collect_ignore`. The owning shard retains
+all of a file's tests and parameters. Explicit reduced-scope targets keep their
+existing discovery semantics and are partitioned at the same file boundary.
+Leaf-test repeat runs do not load the plugin and remain unsharded.
+
+The root conftest's import-time telemetry guard fails the offending module's
+collection report on every worker, so pytest/xdist fails the job even when the
+shard does not own `test_host_isolation_floor.py`. The process-wide telemetry-off
+pin, per-module emitter attribution and recorder reset remain in force; a test
+on one shard is not the enforcement point for other shards' collection state.
+
+The union of the shards must equal the original suite, with no duplicates.
+Invalid shard options fail as usage errors. A shard collecting no tests retains
+pytest's nonzero exit; it never falls back to the whole suite or reports success.
+`loadgroup` still serializes marked tests within a job. Like the former item
+split, this is not a cross-runner serialization mechanism. Namespace jobs and
+macOS keep their existing collection; `pytest-split` remains installed for macOS
+and the optional duration-recording workflow.
+
+This reduces repeated test-module imports and item collection. It does not avoid
+shared conftest/package imports or imports made by another test. Hashing does not
+balance duration, and one large test file is indivisible. The eight shards per OS
+trade more runner slots and repeated setup for less work per shard. Keep runner
+routing, timeout values and coverage gates fixed when comparing CI runs; report
+the shard count alongside queue, collection and execution timings.
+Use actual phase timing rather than buffered log timestamps to measure collection.
+Full-suite throughput and the five-minute goal require remote evidence, not an
+extrapolation from shard count. Coverage upload and combine stay unchanged.
+
+The Linux coverage command retains the `kiro_crew` and `sage_lib` package-name
+boundary. It additionally selects only the AWS Control crew packaging directory
+and the Sage tests directory: both contain source already included in that
+boundary's reports, but synthetic builder module names and app-local fixture
+imports can otherwise lose executed lines depending on import order. Selecting
+all of `src/kiro_crew` instead also admits vendored libraries, standalone skill
+scripts and container code outside the package-name boundary. No new exclusions
+or baseline entries are needed; omit rules, branch measurement and floors stay
+unchanged. Sage's path alias remains in place. Combined data can contain both
+native separators and POSIX remapped keys: comparisons normalize separators,
+while coverage queries use the exact recorded key and reject duplicate identities.
+
+The coverage regression checks nonzero expected lines and equal branch arcs for
+an unsharded run and four file shards, including exec variants and both Sage
+import spellings. It stages each shard's data outside the active `.coverage.*`
+glob, which pytest-cov erases at the next run's start. Variants compiled with the
+original filename contribute to that file's coverage; this is not proof that each
+recorded line ran in the unmodified variant. Whole-suite coverage and baseline
+graduations still require the resulting CI artifact.
+
+Rollback: replace the plugin and `--file-shards` / `--file-shard` flags in the
+three matrix invocations with the previous `--splits` / `--group` flags. No
+infrastructure, worker-count or privilege change is needed.
 
 ### macOS is not a pull-request gate any more
 

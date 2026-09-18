@@ -1116,8 +1116,10 @@ tests; the classes below are what the rest was made of.
   `KIROCREW_TELEMETRY=0` for the whole PROCESS, so even an emitter nobody has named
   yet builds a no-op recorder; and `pytest_make_collect_report` records every module
   whose collection flipped `metrics.provider._ever_built` into
-  `IMPORT_TIME_METRIC_EMITTERS`, asserted empty by
-  `TestNoMetricIsEmittedAtImport`. Build such values inside the test or fixture.
+  `IMPORT_TIME_METRIC_EMITTERS`, resets the recorder for the next module, and fails
+  that module's collection report. Pytest/xdist therefore fails the job on every
+  file shard, independently of where `TestNoMetricIsEmittedAtImport` runs. That
+  test also asserts the record is empty. Build such values inside the test or fixture.
 - **A maintenance-pool job resolved its path when it RAN.** `cleanup_stale_sandbox_profiles`
   ran on the `mc-maint` executor and called `config_dir()` there; the test that queued
   it had torn down its pin by the time the thread was scheduled, so the sweep `mkdir`ed
@@ -2000,11 +2002,13 @@ The knobs, tightest-wins:
 If the suite is slow on your machine, the answer is usually not a bigger `-n`: run
 the slice you are working on. A full-suite checkpoint is what CI is for.
 
-**Narrow by FILE, not by `--splits`.** `--splits/--group` — pytest-split, which CI
-uses to spread the suite across runners — deselects *after* the session has collected
-everything, so a 1-of-4 shard still pays the whole floor in every worker while running
-a quarter of the tests. Measured: 14,237 of 56,946 items selected, 744 MiB peak, which
-is the unsharded floor. It buys wall time across runners, never memory on one machine.
+**Narrow by FILE, not by `--splits`.** `--splits/--group` — pytest-split, retained
+for macOS — deselects *after* the session has collected everything, so a 1-of-4
+item shard still pays the whole floor in every worker while running a quarter of
+the tests. Measured: 14,237 of 56,946 items selected, 744 MiB peak, which is the
+unsharded floor. Linux and Windows CI instead use `scripts.ci_file_shards` to
+assign whole files before import; each worker collects only its shard's files.
+For local work, pass the specific files relevant to the change.
 
 What the floor actually tracks is the FILES a process is given. Measured on one
 worker: 1,540 files → ~745 MiB, 770 → 477, 385 → 332, 193 → 226–252. So at equal
@@ -2424,8 +2428,9 @@ Mutate process globals through `monkeypatch`, which reverts on teardown even whe
 test fails. Raw assignment does not.
 
 **Sharding does not just scatter this class, it hides it — so a full-suite run is the wrong
-place to be finding it.** `ci.yml` slices the suite into duration-balanced `pytest-split`
-groups, and a leaker only damages tests that land in the *same process*, so a leak whose
+place to be finding it.** `ci.yml` assigns whole files to Linux/Windows shards
+before import (macOS retains `pytest-split` groups), and a leaker only damages tests
+that land in the *same process*, so a leak whose
 victim sits in another shard is not observable in PR CI at all. The release job runs the
 suite whole and is therefore the first place it appears — as failures in files that have
 nothing to do with the cause, at a point where the diff that introduced it is long merged.
@@ -2740,31 +2745,32 @@ git diff --stat "$f"                     # should show only what you had before
 
 ### Shard balance
 
-`ci.yml` splits the backend suite into 4 `pytest-split` groups on Linux and Windows,
-and 3 on macOS. Splitting is balanced by
-recorded runtime **only when a `.test_durations` file is committed**; without one
-pytest-split falls back to an even split by test *count*. No such file is committed here:
-`test-durations.yml` would generate one weekly but has failed on a transient `git push`
-502 both times it ran, so it has never landed. So every OS splits by count today, and
-there is no Linux-recorded duration file that could mis-balance the Windows or macOS
-shards. If one is ever committed, note that it is recorded on Linux: check the macOS
-shard spread afterwards rather than assuming it improved.
+`ci.yml` assigns the backend suite to eight whole-file shards on Linux and Windows
+using `scripts.ci_file_shards`. Ownership is SHA-256 of the root-relative POSIX
+path, not a duration or test-count balance. Other shards skip the file before
+import, while discovery patterns and platform ignores remain pytest's own.
 
-**Measure a shard by running it, not by summing durations.** Each shard runs its own
-tests at `-n 4`, so per-test times from a `--store-durations` run include worker
-contention and do not add up to a shard's wall clock. Summing them predicted a 3× spread
-here. Running the four shards the way CI does,
+macOS retains three `pytest-split` groups. That plugin uses recorded runtime only
+when `.test_durations` is available, otherwise it falls back to test count.
+`test-durations.yml` remains the optional duration-recording workflow; its output
+does not affect Linux/Windows file ownership. Linux-recorded durations must not be
+assumed to balance macOS.
+
+**Measure a shard by running it, not by summing durations.** Per-test times from
+`--store-durations` include worker contention and do not add up to shard wall time.
+A bounded local reproduction of file shard `<N>` is:
 
 ```bash
-pytest -q -n 4 --no-cov --splits 4 --group <N>
+python -m pytest -q -n 2 --dist loadgroup --no-cov \
+  -p scripts.ci_file_shards --file-shards 8 --file-shard <N>
 ```
 
-measures **54.8 / 59.9 / 81.1 / 62.4s**, a 1.5× spread. Count-based splitting is
-already close enough that committing `.test_durations` would save on the order of
-seconds, so it is not the lever it looks like. The lever is the outliers: a single file
-paying a 2s production poll 119 times moves a shard far more than the split ever does,
-and it was the two files carrying that kind of cost that sat on the shards which failed
-most.
+Keep CI's selectors, ignores and coverage settings when comparing actual CI runs.
+A hash partition does not promise equal runtime: one slow file is indivisible,
+and shared conftest/package imports still cost every worker. Use collection-phase
+progress and completed shard timings; measurements from item-split runs do not
+establish the balance of file shards. Fix measured test outliers rather than
+assuming a duration file changes this partition.
 
 ## Exploratory Testing via Manual Command Execution
 

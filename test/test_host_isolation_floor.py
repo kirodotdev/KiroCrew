@@ -316,8 +316,12 @@ class TestNoMetricIsEmittedAtImport:
         next(wrapper)
         ToolHookResult.allow()  # the import-time emission, with the process pin in force
         assert provider._ever_built, "the emission did not build a recorder; control is vacuous"
+        report = pytest.CollectReport(module.nodeid, "passed", None, [])
+        from pluggy import Result
+
         with pytest.raises(StopIteration):
-            next(wrapper)
+            wrapper.send(Result.from_call(lambda: report))
+        assert report.failed
 
         assert _root.IMPORT_TIME_METRIC_EMITTERS == [module.nodeid]
         assert not provider._ever_built, "the guard must undo the build it recorded"
@@ -336,8 +340,12 @@ class TestNoMetricIsEmittedAtImport:
 
         wrapper = _root.pytest_make_collect_report(module)
         next(wrapper)
+        report = pytest.CollectReport(module.nodeid, "passed", None, [])
+        from pluggy import Result
+
         with pytest.raises(StopIteration):
-            next(wrapper)
+            wrapper.send(Result.from_call(lambda: report))
+        assert report.failed
 
         assert _root.IMPORT_TIME_METRIC_EMITTERS == [f"conftest import (before {module.nodeid})"]
         assert not provider._ever_built

@@ -1481,11 +1481,13 @@ def pytest_make_collect_report(collector):
     above turns it into, so an emitter is caught whether or not it reached the host.
     ``reset_for_testing()`` then drops what was built (stopping an exporter thread if
     one exists), so the next module starts clean and the attribution stays per-module.
-    Recorded per worker under xdist: every worker collects the whole tree.
+    Fail the collection report on the detecting worker: file shards do not all
+    collect the test that asserts the record, and xdist forwards collection errors
+    to the controller even when that worker executes no tests.
     """
     provider = _metrics_provider_module()
     built_before = bool(provider is not None and getattr(provider, "_ever_built", False))
-    yield
+    outcome = yield
     if not isinstance(collector, pytest.Module):
         return
     provider = _metrics_provider_module()
@@ -1499,6 +1501,13 @@ def pytest_make_collect_report(collector):
         IMPORT_TIME_METRIC_EMITTERS.append(collector.nodeid)
     with contextlib.suppress(Exception):
         provider.reset_for_testing()
+    report = outcome.get_result()
+    if not report.failed:
+        report.outcome = "failed"
+        report.longrepr = (
+            f"Import-time metric emission: {IMPORT_TIME_METRIC_EMITTERS[-1]}. "
+            "Build the value inside the test or fixture instead."
+        )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -2070,8 +2079,9 @@ def _restore_log_record_factory():
     installing over the already-installed wrapper captured it as its own base factory.
 
     **Sharding hides this class, so the floor cannot rely on a full-suite run to find it.**
-    ``ci.yml`` slices the suite into duration-balanced pytest-split groups and a leak only
-    damages tests in the SAME process, so PR CI usually cannot observe it at all; the
+    ``ci.yml`` assigns whole files to Linux/Windows shards before import (macOS keeps
+    pytest-split groups), and a leak only damages tests in the SAME process, so PR CI
+    usually cannot observe it at all; the
     release job runs the suite whole and is otherwise the first place it appears -- as
     failures in files unrelated to the cause, long after the diff merged. Restoring here
     removes the class outright rather than improving the odds of noticing it.

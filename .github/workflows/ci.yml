@@ -558,13 +558,8 @@ jobs:
     # move once a non-root custom image exists -- see docs/ci/ci-and-reviews.md,
     # "CodeBuild-hosted runner (pilot)".
     runs-on: ubuntu-latest
-    # Per-shard time is NOT balanced: with no committed .test_durations file
-    # pytest-split falls back to an even-by-count split, so the slowest shard
-    # can ride the cap. A cap that a green shard can hit kills the job at the
-    # coverage step with every test passed, and Coverage Gate then reds on the
-    # missing artifact. The cap is 60 (was 50) so the worst count-split shard
-    # has ~2x headroom over its expected ~25 min; pytest-timeout still bounds
-    # every individual test regardless of this number.
+    # Keep the existing wall-clock budget; individual tests still time out at
+    # 120 seconds. File sharding reduces repeated collection, not test coverage.
     timeout-minutes: 60
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
@@ -572,28 +567,12 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12"]
-        # Shards split by pytest-split. With no committed .test_durations file
-        # (a durations file was declined in #8506 over its rewrite-every-refresh
-        # cost) the split falls back to even-by-COUNT, so per-shard time is not
-        # balanced. 4 groups x 1 Python = 4 parallel jobs, each on its own
-        # runner (-n auto across cores).
-        #
-        # Why 4, not 8: #11528 went to 8 because every shard paid a ~33-min FIXED
-        # cost before its first test ran -- run 35279898889: 23:25 -> 23:58 of
-        # collection, then ~10 min of tests -- and a fixed cost does not divide,
-        # so only more runners could clear the 50-min cap. That cost was
-        # pytest-asyncio 0.20.3 rescanning every fixture for every test function
-        # (O(tests x fixtures), 85% of collection under cProfile), multiplied by
-        # coverage's tracer. The rootdir conftest now gates that scan
-        # (_AsyncFixtureScanGate): collection measured 478 s -> 68 s locally for
-        # the same 112,246 node ids. With the fixed cost gone, 8 shards would
-        # mostly buy 8 x setup and 8 x (partial) collection, and at peak they
-        # queue the runner pool for every other PR. To add shards, extend this
-        # list AND bump SHARD_COUNT to match -- mind the ~20 concurrent-job
-        # ceiling for public repos.
-        group: [1, 2, 3, 4]
+        # Eight runners reduce per-shard work at the cost of more runner slots.
+        # Whole files are assigned before import; -n auto parallelizes within
+        # each shard. To change the count, update this list and SHARD_COUNT.
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -660,17 +639,19 @@ jobs:
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
-        # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
-        # committed .test_durations file the split is balanced by *recorded time*,
-        # and brand-new tests are auto-assigned the average duration (distributed
-        # with no manual work); without that file it falls back to an even split
-        # by test count. -n auto still parallelizes within each shard across the
-        # runner's cores -- sharding scales across runners, -n auto across cores.
+        # scripts.ci_file_shards assigns each file to one shard before pytest
+        # imports it. Discovery and platform ignores remain pytest's own; files
+        # are never promoted to explicit arguments just to partition the suite.
+        # Hash assignment is stable, not duration-balanced. Every file's tests
+        # and parameters stay together; xdist still uses loadgroup within a job.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
         # shard emits a partial data file merged later by the coverage-combine
-        # job.
+        # job. Keep the package-name boundary: a whole source-directory selector
+        # also measures vendored and standalone scripts outside that boundary.
+        # The two explicit directories contain already-measured source whose
+        # synthetic/app-local module names otherwise make tracing import-order dependent.
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
           LEAF: ${{ steps.scope.outputs.leaf }}
@@ -738,15 +719,17 @@ jobs:
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            pytest -q -n auto --timeout=120 \
-              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+              --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
               "${TARGETS[@]}"
             exit 0
           fi
-          pytest -q -n auto --timeout=120 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-            --cov=kiro_crew --cov=sage_lib
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --cov=kiro_crew --cov=sage_lib \
+            --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
         # Nothing is deselected. The eleven files that used to be -- the two sandbox
         # suites, the two ops git/gh suites, and the seven auto_improvement suites --
         # each carry `skipif(not userns_available())` on the tests that need a namespace
@@ -781,39 +764,23 @@ jobs:
   # Windows wheel), trace-free (--no-cov: the coverage-combine job merges
   # ubuntu shards only).
   #
-  # SHARD COUNT (4, same as POSIX): pytest-split finds no .test_durations in CI
-  # (it is generated by test-durations.yml but not committed -- declined on
-  # POSIX grounds in #8506), so it splits by test COUNT on every platform. A
-  # count split assumes every test costs the same, and across platforms it
-  # assumes both platforms cost the same per test. They do not: measured on one
-  # commit (PR #10804), Windows ran ~101.8 ms/test against the POSIX ~56.9 ms,
-  # about 2x, and #10868 went from 4 to 8 shards when the worst 4-shard shard
-  # ran 2355 s of pytest against the 40-min cap. ~10 min of that was collection
-  # (run 35279898889, shard 1: workers ready 23:12, collected 23:22) -- the
-  # pytest-asyncio per-test fixture rescan the rootdir conftest now gates
-  # (_AsyncFixtureScanGate, ~7x faster collection). MEASURED on this PR's
-  # first 4-shard run (35296375366): shards 1/2/4 at 21-29 min, shard 3 at
-  # 39 min of pytest -- the count split hands shard 3 the slow files, and
-  # collection was only ~4 of its minutes, so the imbalance, not collection,
-  # sets the Windows wall. Hence a 60-min cap (was 40): ~20 min of headroom.
-  # 4 shards halves the Windows runners a full-matrix PR holds at peak. The
-  # real long-term fix for the imbalance is still a Windows-recorded durations
-  # file once the 11.7 MB rewrite-every-refresh cost that #8506 was declined
-  # over is solved. See #10523.
+  # Whole-file shards, assigned before import using the same plugin as POSIX.
+  # Eight runners share the work; the per-job timeout remains unchanged.
+  # File hashing avoids full-suite item collection in every worker, but does not
+  # claim equal durations across files or platforms.
   backend-test-windows:
     name: Backend Tests (Windows)
     needs: [await-fast-gate]
     runs-on: windows-latest
-    # Windows shards omit coverage. 60 (was 40): the worst count-split shard
-    # measured 39 min of pytest at 4 shards; see the SHARD COUNT note above.
+    # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 8
       # windows-latest subprocess spawn + filesystem latency is slow and
       # highly variable; the md_notebook git-ops default (30s) intermittently
       # times out on plain `git add` here (#1673). Give git invocations a
@@ -885,10 +852,10 @@ jobs:
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -p scripts.ci_pytest_progress \
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
             --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
             -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }}
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
         # namespace sandbox at all, so `userns_available()` is False and every
         # sandbox-dependent test skips. Residual POSIX assumptions in

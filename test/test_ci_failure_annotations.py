@@ -314,7 +314,25 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
 
     @staticmethod
     def _runs_pytest(step: dict) -> bool:
-        return re.search(r"(?m)^\s*pytest\s", str(step.get("run", ""))) is not None
+        return (
+            re.search(r"(?m)^\s*(?:python(?:3)?\s+-m\s+)?pytest(?:\s|$)", str(step.get("run", "")))
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("pytest -q", True),
+            ("pytest", True),
+            ("python -m pytest -q", True),
+            ("  python3 -m pytest --collect-only", True),
+            ("echo pytest", False),
+            ("# python -m pytest -q", False),
+            ("python -m pytest_helper", False),
+        ],
+    )
+    def test_recognizes_direct_and_module_invocations(self, command, expected) -> None:
+        assert self._runs_pytest({"run": command}) is expected
 
     @classmethod
     def _pytest_jobs(cls) -> dict[str, list[dict]]:
