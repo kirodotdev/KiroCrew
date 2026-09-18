@@ -23,6 +23,9 @@ vi.mock('../api/client', () => ({
   api: {
     crons: vi.fn(),
     cronFolders: vi.fn().mockResolvedValue([]),
+    // The job form also lists the chat sidebar's folders; an unmocked endpoint
+    // would fail that load and put a second Retry on screen beside the roster's.
+    chatFolders: vi.fn().mockResolvedValue([]),
     cronHistoryAll: vi.fn().mockResolvedValue({ runs: [] }),
     models: vi.fn().mockResolvedValue([]),
     updateCron: vi.fn().mockResolvedValue({}),
@@ -52,6 +55,7 @@ describe('SchedulePage roster failure wiring (#5990)', () => {
     vi.clearAllMocks()
     const { api } = await import('../api/client')
     vi.mocked(api).cronFolders.mockResolvedValue([])
+    vi.mocked(api).chatFolders.mockResolvedValue([])
     vi.mocked(api).cronHistoryAll.mockResolvedValue({ runs: [] })
     vi.mocked(api).models.mockResolvedValue([])
     vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'kirocrew' })

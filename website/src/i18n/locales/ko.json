@@ -6572,7 +6572,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "이 작업이 실행될 때 에이전트에게 전송되는 프롬프트 또는 작업",
       "timezone": "시간대",
       "weekly_schedule": "주간 스케줄",
-      "which_agent_handles_this_job_leave_default_for_t": "이 작업을 처리할 에이전트입니다. 기본 에이전트를 사용하려면 기본값으로 두세요."
+      "which_agent_handles_this_job_leave_default_for_t": "이 작업을 처리할 에이전트입니다. 기본 에이전트를 사용하려면 기본값으로 두세요.",
+      "chat_folder": "채팅 폴더",
+      "chat_folder_none": "실행을 정리하지 않음",
+      "chat_folder_description": "이 작업의 채팅 탭을 채팅 사이드바의 폴더 아래에 두어, 실행 기록을 함께 찾기 쉽게 합니다. 정리해도 아무것도 숨기지 않습니다. 알림과 Slack 전달은 그대로입니다.",
+      "chat_folder_hidden_in_chat": "이 기능을 쓰려면 ‘채팅에서 숨기기’를 끄세요. 숨긴 작업의 실행에는 채팅 세션이 만들어지지 않으므로 정리할 대상이 없습니다. 선택한 폴더는 유지됩니다.",
+      "chat_folder_needs_persistent_session": "실행을 폴더에 정리하려면 지속 세션이 필요합니다. 이 작업은 실행마다 새 세션을 시작하도록 만들어졌으므로 정리할 탭이 없습니다. 이 선택은 작업을 만들 때 정해지며, 이 양식에서는 바꿀 수 없습니다.",
+      "chat_folder_list_unavailable": "채팅 폴더를 불러오지 못해 이 목록이 비어 있습니다. 이 양식의 나머지 내용은 그대로 저장됩니다.",
+      "chat_folder_retry": "다시 시도",
+      "chat_folder_retrying": "다시 시도 중…",
+      "chat_folder_none_yet": "아직 폴더가 없습니다. 이 작업을 먼저 저장한 뒤, 채팅 사이드바에서 폴더를 만들고 작업을 다시 열어 선택하세요.",
+      "chat_folder_was_deleted": "이 작업이 정리하던 폴더가 삭제되었습니다. 다른 폴더를 선택하거나, 저장해 실행을 정리하지 않도록 하세요."
     },
     "jobLogsView": {
       "cancel": "취소",

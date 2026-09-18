@@ -7,15 +7,19 @@ gateway.py and dashboard.handlers.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
 from kiro_crew.history import append_rows_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronJob
+
+logger = logging.getLogger(__name__)
 
 
 def context_meter_reading(client: object) -> dict[str, Any] | None:
@@ -368,6 +372,153 @@ def _safe_job_name(job: "CronJob") -> str:
     return safe_name
 
 
+def chat_folder_exists(state: DashboardState, folder_id: str) -> bool:
+    """Whether *folder_id* names a folder in the chat sidebar's tree right now.
+
+    Read off the loaded store rather than through the folder API: this runs on
+    the event loop inside the delivery window, and the question is a membership
+    test on a list the same loop owns.
+    """
+    if not folder_id:
+        return False
+    return any(str(f.get("id")) == folder_id for f in getattr(state, "_folders", None) or ())
+
+
+def chat_folder_for_minted_tab(state: DashboardState, job: "CronJob") -> str:
+    """The chat folder a JUST-MINTED ``cron-{id}`` tab belongs in, or ``""``.
+
+    A decision, not a placement: the injection publishes the slot table
+    synchronously right after the mint, so a folder assigned here would be
+    broadcast before any write. The assignment belongs to
+    :func:`_commit_cron_tab_placement`.
+
+    Asked only when the tab is minted, never for one that already exists. An
+    existing tab with no folder may be one the reader dragged out to the root
+    -- indistinguishable from never-filed -- and filing on "unfiled" would drag
+    it back on every run. A freshly minted tab has no placement history, so
+    filing it cannot undo anyone's. Later transitions belong to the save
+    (:func:`move_cron_job_tab`).
+
+    A folder the reader deleted while the job still names it leaves the tab
+    unfiled and the run otherwise untouched: the run has already delivered, the
+    placement is the whole cost, and the skip is recorded once so "why is this
+    run not in my folder?" has an answer without a repro. A rename needs no
+    branch: the job stores the folder's id.
+    """
+    target = job.chat_folder_id
+    if not target:
+        return ""
+    if not chat_folder_exists(state, target):
+        logger.info("Cron '%s': chat folder %s is gone; tab lands unfiled", job.name, target)
+        try:
+            sel().log_tool_invocation(
+                session_key=f"cron:{job.id}",
+                tool_name="cron_chat_folder_missing",
+                outcome="skipped",
+                downstream_service="none",
+            )
+        except Exception:
+            logger.debug("SEL logging failed for a missing cron chat folder", exc_info=True)
+        return ""
+    return target
+
+
+async def _commit_cron_tab_placement(
+    state: DashboardState, job: "CronJob", slot: Any, *, placed: str, restore_to: str
+) -> bool:
+    """Assign ``slot.folder_id``, commit it to disk, or roll it back; then publish.
+
+    The one path every placement of a cron tab takes -- the filing of a minted
+    tab and the move of an existing one -- so "publish only what is on disk" is
+    a property of this function. The assignment precedes the write it feeds
+    (``save_slot_off_loop`` serializes the folder off the slot); the broadcast
+    waits for the write's VERDICT, since a save can refuse without raising, and
+    ``best_effort=False`` asks for a confirmed write. Both pins are passed so a
+    tab the reader closes and archives -- or a same-name recreate -- while the
+    write is in flight refuses rather than overwriting the closed session's
+    metadata. A write that did not commit restores *restore_to*, unless the
+    reader moved the tab meanwhile: their placement stands. Exception-contained,
+    because a placement must never fail the run or the save that asked for it.
+
+    The whole span -- the assignment, the write, the rollback and the broadcast
+    -- is held under the state-wide slot-metadata transaction lock, the same
+    lock the sidebar's folder endpoint takes. That lock is what makes the cron
+    writer and that endpoint take turns: neither one's rollback can undo the
+    other's write, and a save from this side cannot land over a newer manual
+    move a person made while it was in flight.
+    """
+    from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+
+    async with _slot_meta_txn_lock(state):
+        slot.folder_id = placed
+        authorized_history_key = slot_history_key(slot)
+        committed = False
+        try:
+            from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+
+            committed = bool(
+                await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=False,
+                    expected_history_key=authorized_history_key,
+                    expected_slot_name=slot.key,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Cron '%s': persisting %s's folder failed", job.name, slot.key, exc_info=True
+            )
+        if not committed:
+            if getattr(slot, "folder_id", "") == placed:
+                slot.folder_id = restore_to
+            logger.warning("Cron '%s': folder placement of %s did not commit", job.name, slot.key)
+        state.push_slots_update()
+        return committed
+
+
+def persist_cron_chat_folder(state: DashboardState, job: "CronJob", slot: Any) -> None:
+    """Schedule the filing of a just-minted tab into the job's chat folder.
+
+    Synchronous, with the placement on a tracked background task: awaiting the
+    write inside the delivery sequence would put a suspension point between the
+    run's result and its notification, and a cancellation landing there escapes
+    ``except Exception`` -- a torn-down run would lose its bell and Slack post.
+    """
+    target = chat_folder_for_minted_tab(state, job)
+    if not target:
+        return
+    task = asyncio.create_task(
+        _commit_cron_tab_placement(state, job, slot, placed=target, restore_to="")
+    )
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+async def move_cron_job_tab(
+    state: DashboardState, job: "CronJob", previous_folder_id: str, new_folder_id: str
+) -> None:
+    """Apply a SAVED change of ``chat_folder_id`` to the job's existing tab.
+
+    Called on a real transition only -- the store reports the prior value, ``""``
+    included, and only when the update changed the field -- because the form
+    submits the field on every save. The prior value is then checked AGAINST THE
+    TAB: it moves only when it sits where the setting last left it. A reader who
+    dragged it elsewhere has said where they want it, and their placement
+    outranks a setting they are editing.
+    """
+    if previous_folder_id == new_folder_id:
+        return
+    slot = state.get_slot(f"cron-{job.id}")
+    if slot is None or getattr(slot, "folder_id", "") != previous_folder_id:
+        return
+    await _commit_cron_tab_placement(
+        state, job, slot, placed=new_folder_id, restore_to=previous_folder_id
+    )
+
+
 def _bind_cron_slot(
     state: DashboardState,
     job: "CronJob",
@@ -384,6 +535,10 @@ def _bind_cron_slot(
     the one unlink guard makes every caller after the first an idempotent
     no-op, which is what lets the injection run unchanged after a pre-create.
     """
+    # Whether this call MINTS the tab decides whether it is filed into the job's
+    # chat folder (see the end): a tab found in the table -- filed, unfiled or
+    # dragged somewhere by the reader -- is left exactly where it is.
+    minted = state.get_slot(f"cron-{job.id}") is None
     slot = state.get_or_create_slot(
         name=f"cron-{job.id}",
         agent=job.member_id or job.agent_id or "",
@@ -411,6 +566,8 @@ def _bind_cron_slot(
     from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots
 
     _sync_dashboard_slots(state)
+    if minted:
+        persist_cron_chat_folder(state, job, slot)
     return slot
 
 

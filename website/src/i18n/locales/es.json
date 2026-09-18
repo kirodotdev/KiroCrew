@@ -6778,7 +6778,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "El prompt o la tarea que se envía al agente cuando se dispara este trabajo",
       "timezone": "Zona horaria",
       "weekly_schedule": "Programación semanal",
-      "which_agent_handles_this_job_leave_default_for_t": "Qué agente se encarga de este trabajo. Deja el valor predeterminado para el agente principal."
+      "which_agent_handles_this_job_leave_default_for_t": "Qué agente se encarga de este trabajo. Deja el valor predeterminado para el agente principal.",
+      "chat_folder": "Carpeta de chat",
+      "chat_folder_none": "No archivar las ejecuciones",
+      "chat_folder_description": "Coloca la pestaña de chat de esta tarea bajo una carpeta de la barra lateral del chat, para encontrar sus ejecuciones juntas con facilidad. Archivar no oculta nada: las notificaciones y la entrega por Slack no cambian.",
+      "chat_folder_hidden_in_chat": "Desactiva «Ocultar en el chat» para usar esto. Las ejecuciones de una tarea oculta no crean ninguna sesión de chat, así que no hay nada que archivar. La carpeta que elijas se conserva.",
+      "chat_folder_needs_persistent_session": "Archivar ejecuciones en una carpeta necesita una sesión persistente. Esta tarea se creó para iniciar una sesión nueva en cada ejecución, así que no hay pestaña que archivar. Esa elección se hace al crear la tarea, no en este formulario.",
+      "chat_folder_list_unavailable": "No se pudieron cargar tus carpetas de chat, así que esta lista está vacía. Todo lo demás de este formulario se guarda igualmente.",
+      "chat_folder_retry": "Reintentar",
+      "chat_folder_retrying": "Reintentando…",
+      "chat_folder_none_yet": "Aún no hay carpetas. Guarda esta tarea ahora; crea una carpeta en la barra lateral del chat y vuelve a abrir la tarea para elegirla.",
+      "chat_folder_was_deleted": "La carpeta en la que archivaba esta tarea se eliminó. Elige otra o guarda para dejar las ejecuciones sin archivar."
     },
     "jobLogsView": {
       "cancel": "Cancelar",

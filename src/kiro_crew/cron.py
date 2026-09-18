@@ -73,6 +73,13 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──
 
+# Shown verbatim under the Schedule form's Save button, so it names the rule
+# and the next step rather than only the refusal.
+_CHAT_FOLDER_NEEDS_PERSISTENT = (
+    "Filing runs into a chat folder needs a persistent session: a stateless job "
+    "has no job-wide tab to file. Clear the chat folder, or keep the session."
+)
+
 # Table-driven string-field caps for the persistence chokepoint. Every
 # caller-supplied string field persisted by _build_job/_update_job_locked
 # is listed here with its cap matching the REST/MCP boundary schemas
@@ -89,6 +96,7 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("source_preset", MAX_SHORT_STRING),
     ("source_template_prompt", MAX_CRON_MESSAGE),
     ("folder_id", MAX_SHORT_STRING),
+    ("chat_folder_id", MAX_SHORT_STRING),
     ("session_key", MAX_SHORT_STRING),
     ("model", MAX_SHORT_STRING),
     ("command", 5000),
@@ -770,6 +778,32 @@ class CronJob:
     # benign (they self-heal on the job's next folder move).
     folder_id: str = ""
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
+    # The CHAT (sidebar) folder the job's ``cron-{id}`` tab is filed into; "" =
+    # not filed, which is what every job predating the field keeps doing. Its
+    # run stamps and markers already make that one tab the job's timeline.
+    #
+    # Distinct from ``folder_id`` above, and the two are never interchangeable:
+    # ``folder_id`` groups the job's ROW on the Schedule page
+    # (``cron_folders.json``), while this names a folder in the chat sidebar's
+    # own tree (``folders.json``) and decides where the job's TAB lands. A job
+    # may carry either, both or neither, and one is never derived from the other.
+    #
+    # PERSISTENT jobs only: a stateless job (``persistent_session=False``) has
+    # no job-wide tab to file, so the store refuses the pair at save time rather
+    # than accepting a setting with no observable effect.
+    #
+    # Filing SUPPLEMENTS delivery, never replaces it: a run with a chat folder
+    # still reaches its Slack DM, its dashboard notification and its origin
+    # session exactly as it did before.
+    #
+    # CONTRACT for consumers, matching ``folder_id``'s: an id that does not
+    # match a folder in ``folders.json`` MUST be treated as "not filed". A chat
+    # folder can be deleted while a job still names it, and a dangling id must
+    # cost the tab its place in the sidebar and nothing else -- the run still
+    # delivers, and the skip is recorded once (see
+    # ``cron_inject.chat_folder_for_minted_tab``). A RENAME is a no-op: ids
+    # are stable, so the job follows the folder under its new name.
+    chat_folder_id: str = ""
     # Transient-retry telemetry for the LAST completed run. Both fields are
     # written in ONE place, `CronService._execute`, right after it stamps
     # `last_run_ts`: it reads the in-flight `_transient_attempts` counter the
@@ -1980,6 +2014,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         minimal_context=j.get("minimal_context", False),
         hide_in_chat=j.get("hide_in_chat", False),
         folder_id=_guard_str("folder_id"),
+        chat_folder_id=_guard_str("chat_folder_id"),
         model=_guard_str("model"),
         last_retry_count=_guard_num("last_retry_count", 0),
         last_retry_run_ts=_guard_num("last_retry_run_ts", 0.0),
@@ -2636,6 +2671,7 @@ class CronService:
         strict_schedule: bool = False,
         hide_in_chat: bool = False,
         folder_id: str = "",
+        chat_folder_id: str = "",
         command: str = "",
         script: str = "",
         agent_sequence: list[str] | None = None,
@@ -2696,6 +2732,7 @@ class CronService:
             strict_schedule=strict_schedule,
             hide_in_chat=hide_in_chat,
             folder_id=folder_id,
+            chat_folder_id=chat_folder_id,
             command=command,
             script=script,
             agent_sequence=agent_sequence,
@@ -2825,6 +2862,7 @@ class CronService:
         strict_schedule: bool = False,
         hide_in_chat: bool = False,
         folder_id: str = "",
+        chat_folder_id: str = "",
         command: str = "",
         script: str = "",
         agent_sequence: list[str] | None = None,
@@ -2882,6 +2920,7 @@ class CronService:
                 "member_id": member_id,
                 "created_by": created_by,
                 "folder_id": folder_id,
+                "chat_folder_id": chat_folder_id,
                 "session_key": session_key,
                 "model": model,
                 "command": command,
@@ -2890,6 +2929,8 @@ class CronService:
             },
             required=frozenset({"name", "message"}),
         )
+        if chat_folder_id and not persistent_session:
+            raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
         if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
             raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
         if timeout_secs and (command or script):
@@ -2947,6 +2988,7 @@ class CronService:
             strict_schedule=strict_schedule,
             hide_in_chat=hide_in_chat,
             folder_id=folder_id,
+            chat_folder_id=chat_folder_id,
             command=command,
             script=script,
             agent_sequence=list(agent_sequence) if agent_sequence else [],
@@ -2998,6 +3040,7 @@ class CronService:
         strict_schedule: bool = False,
         hide_in_chat: bool = False,
         folder_id: str = "",
+        chat_folder_id: str = "",
         command: str = "",
         script: str = "",
         agent_sequence: list[str] | None = None,
@@ -3048,6 +3091,7 @@ class CronService:
             strict_schedule=strict_schedule,
             hide_in_chat=hide_in_chat,
             folder_id=folder_id,
+            chat_folder_id=chat_folder_id,
             command=command,
             script=script,
             agent_sequence=agent_sequence,
@@ -3094,6 +3138,11 @@ class CronService:
         Offloads the lock/reload/mutate/save core to a worker thread, then
         re-arms the timer on the loop. Raises :class:`CronStoreBusy` (retryable)
         on sustained contention.
+
+        ``chat_folder_transition_out``: pass a dict to learn the folder
+        ``chat_folder_id`` held before this call replaced it. Filled under the
+        store's file lock, so it is atomic with the write; owned by the caller, so
+        concurrent callers cannot see or overwrite each other's answer.
         """
         job = await asyncio.to_thread(self._update_job_locked_kw, job_id, kwargs)
         if job is not None:
@@ -3122,6 +3171,21 @@ class CronService:
         # instead of resurrecting state the operator withdrew.
         expect_active = kwargs.pop("expect_secret_env", None)
         expect_active_pin = kwargs.pop("expect_secret_env_pin", None)
+        # Optional OUT-parameter, owned by the caller: a dict this pass fills with
+        # ``{"chat_folder_was": <prior folder, possibly "">}`` when the update
+        # actually changes ``chat_folder_id``.
+        #
+        # An out-parameter rather than a field on the job, and the distinction is
+        # the whole reason this exists. The dashboard must move the job's chat tab
+        # out of its previous folder, and may only do so when the tab is still
+        # sitting where this feature put it -- so it needs the PRIOR value, read
+        # atomically with the write that replaces it. Reading it with a separate
+        # query is a read-then-write race. Stamping it on the ``CronJob`` closes
+        # that race and opens another: ``self._jobs`` holds ONE object per job, so
+        # concurrent callers share the attribute and each one's answer is visible
+        # to, and clobberable by, the others. A dict the caller allocated is seen
+        # by that caller alone.
+        chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -3149,6 +3213,19 @@ class CronService:
                 _validate_cron_string_fields(
                     {f: kwargs[f] for f, _ in _CRON_STRING_FIELD_CAPS if f in kwargs},
                 )
+                # Cross-field: only a persistent job has a job-wide tab to file,
+                # so a request that itself names a folder for a job this update
+                # leaves stateless is refused. Turning persistence off on a filed
+                # job is NOT refused: MCP/CLI ``cron_update`` exposes
+                # ``persistent_session`` without ``chat_folder_id``, so a refusal
+                # there would be a dead end; the assignment below clears the
+                # folder instead and reports it through the transition sink.
+                # Read the flag through the same coercion the assignment below
+                # applies, so the guard judges the value that gets stored.
+                if (kwargs.get("chat_folder_id") or "") and not bool(
+                    kwargs.get("persistent_session", job.persistent_session)
+                ):
+                    raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
                 if (
                     "cron_expr" in kwargs
                     and kwargs["cron_expr"]
@@ -3319,6 +3396,30 @@ class CronService:
                     job.hide_in_chat = bool(kwargs["hide_in_chat"])
                 if "folder_id" in kwargs:
                     job.folder_id = kwargs["folder_id"] or ""
+                if "chat_folder_id" in kwargs:
+                    # Reported only on a REAL change: the caller moves a chat tab on
+                    # the strength of this, and the dashboard form submits the field
+                    # on every save, so "unchanged" must not read as "cleared".
+                    #
+                    # An empty prior value IS reported: filing a job that was unfiled
+                    # is the transition that puts an existing tab into its folder,
+                    # and the save is the one moment where that placement is asked
+                    # for explicitly (the mint files only a tab that did not exist).
+                    _chat_folder_next = kwargs["chat_folder_id"] or ""
+                    if chat_folder_out is not None and job.chat_folder_id != _chat_folder_next:
+                        chat_folder_out["chat_folder_was"] = job.chat_folder_id
+                    job.chat_folder_id = _chat_folder_next
+                elif (
+                    "persistent_session" in kwargs
+                    and not job.persistent_session
+                    and job.chat_folder_id
+                ):
+                    # Un-persisting takes the job-wide tab away, so the folder goes
+                    # with it: cleared here and reported exactly as an explicit
+                    # clear is, so the caller moves the tab the same way.
+                    if chat_folder_out is not None:
+                        chat_folder_out["chat_folder_was"] = job.chat_folder_id
+                    job.chat_folder_id = ""
                 if "model" in kwargs:
                     job.model = str(kwargs["model"] or "").strip()
                 if "secret_env" in kwargs and kwargs["secret_env"] is not None:
@@ -6121,6 +6222,7 @@ class CronService:
                     "minimal_context": j.minimal_context,
                     "hide_in_chat": j.hide_in_chat,
                     "folder_id": j.folder_id,
+                    "chat_folder_id": j.chat_folder_id,
                     "model": j.model,
                     "last_retry_count": j.last_retry_count,
                     "last_retry_run_ts": j.last_retry_run_ts,

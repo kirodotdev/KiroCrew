@@ -2214,7 +2214,17 @@
       "save": "Save",
       "saving": "Saving...",
       "select_at_least_one_day": "Select at least one day",
-      "timezone": "Timezone"
+      "timezone": "Timezone",
+      "chat_folder": "Chat folder",
+      "chat_folder_none": "Do not file runs",
+      "chat_folder_description": "Put this job's chat tab under a folder in the chat sidebar, so its runs are easy to find together. Filing does not hide anything: notifications and Slack delivery are unchanged.",
+      "chat_folder_hidden_in_chat": "Turn off “Hide in chat” to use this. A hidden job's runs get no chat session, so there is nothing to file. The folder you pick is kept.",
+      "chat_folder_needs_persistent_session": "Filing runs into a folder needs a persistent session. This job was created to start a fresh session every run, so there is no tab to file. That choice is made when a job is created, not on this form.",
+      "chat_folder_list_unavailable": "Could not load your chat folders, so this list is empty. Everything else on this form still saves.",
+      "chat_folder_retry": "Retry",
+      "chat_folder_retrying": "Retrying…",
+      "chat_folder_none_yet": "No folders yet. Save this job now; create a folder in the chat sidebar, then reopen the job to pick it.",
+      "chat_folder_was_deleted": "The folder this job filed into was deleted. Pick another, or save to leave runs unfiled."
     },
     "jobLogsView": {
       "failed_to_load_history": "Failed to load history"

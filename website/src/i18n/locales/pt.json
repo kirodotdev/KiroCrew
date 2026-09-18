@@ -6778,7 +6778,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "O prompt ou a tarefa enviado ao agente quando este job dispara",
       "timezone": "Fuso horário",
       "weekly_schedule": "Agendamento semanal",
-      "which_agent_handles_this_job_leave_default_for_t": "Qual agente cuida deste job. Deixe como padrão para o agente principal."
+      "which_agent_handles_this_job_leave_default_for_t": "Qual agente cuida deste job. Deixe como padrão para o agente principal.",
+      "chat_folder": "Pasta de conversa",
+      "chat_folder_none": "Não arquivar as execuções",
+      "chat_folder_description": "Coloque a aba de conversa desta tarefa sob uma pasta na barra lateral de conversa, para encontrar suas execuções juntas com facilidade. Arquivar não esconde nada: notificações e entrega no Slack seguem iguais.",
+      "chat_folder_hidden_in_chat": "Desative “Ocultar na conversa” para usar isto. As execuções de uma tarefa oculta não criam nenhuma sessão de conversa, então não há nada para arquivar. A pasta escolhida é mantida.",
+      "chat_folder_needs_persistent_session": "Arquivar execuções em uma pasta exige uma sessão persistente. Esta tarefa foi criada para iniciar uma sessão nova a cada execução, então não há aba para arquivar. Essa escolha é feita ao criar a tarefa, não neste formulário.",
+      "chat_folder_list_unavailable": "Não foi possível carregar suas pastas de conversa, então esta lista está vazia. Todo o resto deste formulário é salvo normalmente.",
+      "chat_folder_retry": "Tentar novamente",
+      "chat_folder_retrying": "Tentando novamente…",
+      "chat_folder_none_yet": "Ainda não há pastas. Salve esta tarefa agora; crie uma pasta na barra lateral de conversa e reabra a tarefa para escolhê-la.",
+      "chat_folder_was_deleted": "A pasta em que esta tarefa arquivava foi excluída. Escolha outra ou salve para deixar as execuções sem arquivar."
     },
     "jobLogsView": {
       "cancel": "Cancelar",

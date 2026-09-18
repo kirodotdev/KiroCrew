@@ -3,11 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
-import { Input, SendBtn } from './ui'
+import { Btn, Input, SendBtn } from './ui'
 import { SettingsToggle } from './settings'
 import AgentSelector, { type KiroCrewAgent } from './AgentSelector'
 import SimpleSelect from './SimpleSelect'
-import type { CronJob } from '../types'
+import type { ChatFolder, CronJob } from '../types'
+import { orderFoldersWithPaths } from '../utils/folderTree'
 import type { CronPrefill } from '../utils/schedulePresets'
 import { SaveCreateLabel, expandDow } from '../utils/cronUtils'
 import { adviseCronMode } from '../utils/cronModeAdvice'
@@ -64,7 +65,7 @@ export function jobKindOf(job?: CronJob): JobKind {
 
 /** Parse a CronJob into initial form state */
 function parseJobDefaults(job?: CronJob) {
-  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
+  if (!job) return { name: '', message: '', agent: '', model: '', channel: '', approvalMode: '', silent: false, strictSchedule: false, hideInChat: false, minimalContext: false, chatFolderId: '', jobKind: 'message' as JobKind, schedMode: 'interval' as const, intVal: 1, intUnit: 'hours' as const, weekDays: [] as number[], weekTime: '09:00', cronExpr: '' }
   const isInterval = !!(job.every_secs || (job.schedule || '').match(/^every\s+\d+/))
   const secs = job.every_secs || (() => { const m = (job.schedule || '').match(/^every\s+(\d+)\s*([smh])/); if (!m) return 3600; return parseInt(m[1]) * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1) })()
   // Largest unit that divides `secs` EVENLY, not the largest unit that is merely
@@ -111,7 +112,7 @@ function parseJobDefaults(job?: CronJob) {
     weekDays = expandDow(cronParts[4]).map(d => CRON_DOW_TO_GRID[d] || 1)
     weekTime = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
   }
-  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
+  return { name: job.name, message: job.message, agent: job.agent || '', model: job.model || '', channel: job.channel || '', approvalMode: job.approval_mode || '', silent: job.silent || false, strictSchedule: job.strict_schedule || false, hideInChat: job.hide_in_chat || false, minimalContext: job.minimal_context || false, chatFolderId: job.chat_folder_id || '', jobKind: jobKindOf(job), schedMode, intVal, intUnit, weekDays, weekTime, cronExpr: cronRaw }
 }
 
 /** Build the API body from form state. Returns null if validation fails (sets error). */
@@ -147,6 +148,23 @@ function buildBody(
   body.silent = f.silent
   body.strict_schedule = f.strictSchedule
   body.hide_in_chat = f.hideInChat
+  // Always sent for a job that can HAVE a tab, create and edit alike: "" is the
+  // real value for "do not file this job's runs", so omitting it when empty would
+  // make clearing the picker a no-op on the PATCH and leave the job filed into a
+  // folder the user just unset. The backend refuses an id naming no folder, which
+  // is why the picker only ever offers folders the sidebar currently has.
+  //
+  // A script/command job sends "" because it never gets a tab for a folder to
+  // point at, and storing a setting that cannot do anything is how a setting
+  // starts lying -- the same reason `minimal_context` is omitted for it.
+  //
+  // `hide_in_chat` is deliberately NOT in that list. It SUSPENDS filing rather
+  // than cancelling it: the runtime already ignores the folder for a hidden job
+  // (`cron_run_gets_tab`), so keeping the value costs nothing, and wiping it would
+  // make the form's own hint false -- "turn off Hide in chat to use this" promises
+  // that unchecking restores what was there, and a reader who checks the box,
+  // saves, and unchecks it later would instead find the folder silently gone.
+  body.chat_folder_id = isLlmless ? '' : f.chatFolderId
   if (f.schedMode === 'interval') {
     body.every = f.intVal * (f.intUnit === 'minutes' ? 60 : f.intUnit === 'hours' ? 3600 : 86400)
   } else if (f.schedMode === 'weekly') {
@@ -285,6 +303,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   const [strictSchedule, setStrictSchedule] = useState(defaults.strictSchedule)
   const [hideInChat, setHideInChat] = useState(defaults.hideInChat)
   const [minimalContext, setMinimalContext] = useState(defaults.minimalContext)
+  const [chatFolderId, setChatFolderId] = useState(defaults.chatFolderId)
   const [schedMode, setSchedMode] = useState(init.schedMode)
   const [intVal, setIntVal] = useState(init.intVal)
   const [intUnit, setIntUnit] = useState(init.intUnit)
@@ -306,6 +325,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     silent !== init.silent || strictSchedule !== defaults.strictSchedule ||
     hideInChat !== defaults.hideInChat || schedMode !== init.schedMode ||
     minimalContext !== defaults.minimalContext ||
+    chatFolderId !== defaults.chatFolderId ||
     intVal !== init.intVal || intUnit !== init.intUnit ||
     weekTime !== init.weekTime || cronExpr !== init.cronExpr ||
     weekDays.length !== init.weekDays.length || weekDays.some((d, i) => d !== init.weekDays[i])
@@ -342,6 +362,83 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
   // reader has acted on it.
   const advice = useMemo(() => privateMember ? 'none' : adviseCronMode(msg, minimalContext), [msg, minimalContext, privateMember])
 
+  /** The sidebar's own folder tree, for the "file runs in" picker.
+   *
+   *  Read through the shared `['chat-folders']` query key the sidebar already
+   *  owns, so opening this form costs no extra request when the sidebar is
+   *  mounted (which is the ordinary case) and one when it is not. A folder
+   *  created or renamed while the form is open arrives through the same cache
+   *  invalidation the sidebar listens to. */
+  const {
+    data: chatFolders = [],
+    isError: chatFoldersFailed,
+    isSuccess: chatFoldersLoaded,
+    refetch: refetchChatFolders,
+  } = useQuery<ChatFolder[]>({
+    queryKey: ['chat-folders'],
+    queryFn: () => api.chatFolders(),
+    enabled: !isLlmless,
+  })
+  /** Held here rather than read off `isFetching`: a query with no data goes back
+   *  to `pending` while it refetches, so `isError` drops and the notice would
+   *  vanish mid-retry, leaving nothing on screen to say a retry is happening.
+   *  Same shape as `rosterFailure.reloading`, which the parent holds for the
+   *  agent roster's retry above. */
+  const [chatFoldersRetrying, setChatFoldersRetrying] = useState(false)
+  const retryChatFolders = () => {
+    setChatFoldersRetrying(true)
+    void refetchChatFolders().finally(() => setChatFoldersRetrying(false))
+  }
+  const chatFoldersFailure = chatFoldersFailed || chatFoldersRetrying
+  /** A job may name a folder that has since been deleted -- the backend treats a
+   *  dangling id as "not filed" rather than failing the run. Showing the picker
+   *  as empty in that state would be accurate, so it is left to resolve to the
+   *  clear row: re-saving then clears the stale id, which is the outcome the
+   *  reader is looking at the form to get.
+   *
+   *  `orderFoldersWithPaths` is the sidebar's own ordering helper, shared with the
+   *  move-to-folder submenu and the launcher's folder rows, so this picker lists
+   *  folders in the order and with the ancestry labels the reader already knows --
+   *  and a fix to either (a cycle guard, a non-string name off disk) reaches all
+   *  of them at once. */
+  const folderOptions = useMemo(() => {
+    const ordered = orderFoldersWithPaths(chatFolders)
+    return { values: ordered.map(f => f.folder.id), labels: ordered.map(f => f.path) }
+  }, [chatFolders])
+  /** `hide_in_chat` is the explicit "this job gets no tab" opt-out, and a run with
+   *  no tab has nothing to file -- so with it on the picker cannot do anything.
+   *  Saying that and refusing input beats accepting a setting whose only
+   *  observable effect would be a folder that never fills up.
+   *
+   *  The stored folder is KEPT while the flag is on, not wiped: the runtime already
+   *  ignores it, so suspending the setting costs nothing, and the hint says
+   *  "turn off Hide in chat to use this" -- which would be a lie if unchecking
+   *  came back to an empty picker. */
+  const chatFolderUnavailable = hideInChat || job?.persistent_session === false
+  /** Which of the two reasons the picker is refusing input. A stateless job
+   *  (`persistent_session=false`, set from the API or CLI -- this form never
+   *  edits it) has no job-wide tab to file, so the backend refuses the pair at
+   *  save time; saying so here is cheaper than a 400 under Save. */
+  const chatFolderHint = hideInChat
+    ? i18nT('components.jobForm.chat_folder_hidden_in_chat')
+    : job?.persistent_session === false
+      ? i18nT('components.jobForm.chat_folder_needs_persistent_session')
+      : i18nT('components.jobForm.chat_folder_description')
+  /** The job's saved folder has been DELETED since it was saved (the list loaded,
+   *  and does not offer that id).
+   *
+   *  The backend treats a dangling id as "not filed" at run time, but REFUSES one
+   *  at save time -- so left in state it would ride along on the next unrelated
+   *  edit and turn a rename into a 400 the reader cannot act on. The trigger
+   *  already reads "Do not file runs" in this state, because `SimpleSelect` falls
+   *  back to `clearLabel` for a value it has no option for, so submitting `''`
+   *  makes the request agree with what the reader is looking at. Gated on a
+   *  SUCCESSFUL load: while the fetch is in flight or failed, every id looks
+   *  missing, and clearing on that would unfile a job for being offline. */
+  const savedFolderIsGone =
+    !!chatFolderId && chatFoldersLoaded && !folderOptions.values.includes(chatFolderId)
+  const submittedChatFolderId = savedFolderIsGone ? '' : chatFolderId
+
   /** Model-override rows as the two parallel arrays `SimpleSelect` takes.
    *
    *  "" (inherit) is the `clearLabel` row rather than an option, so `options`
@@ -358,7 +455,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
   const submit = async () => {
     setError(''); setSaving(true)
-    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
+    const f = { name, message: msg, agent: locked ?? agent, model, channel, approvalMode, silent, strictSchedule, hideInChat, minimalContext, chatFolderId: submittedChatFolderId, jobKind, schedMode, intVal, intUnit, weekDays, weekTime, cronExpr }
     const body = buildBody(f, tz, setError, !!job, job ? undefined : prefill)
     if (!body) { setSaving(false); return }
     if (privateMember && !isLlmless) {
@@ -394,7 +491,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         setSaving(false)
         return
       }
-      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false) }
+      if (!job) { setName(''); setMsg(''); setWeekDays([]); setIntVal(1); setChannel(''); setModel(''); setApprovalMode(''); setSilent(false); setStrictSchedule(false); setHideInChat(false); setMinimalContext(false); setChatFolderId('') }
       // Cleared BEFORE onSaved, so `onSavingChange` is symmetric: it reports
       // false on EVERY outcome, not only on failure. An asymmetric version made
       // the flag a host's problem to unlearn — a host that lifts it out of its
@@ -494,6 +591,15 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <label htmlFor="jobform-strict-schedule" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-strict-schedule" aria-label={i18nT('components.jobForm.strict_schedule')} type="checkbox" checked={strictSchedule} onChange={e => setStrictSchedule(e.target.checked)} /> {i18nT('components.jobForm.strict_schedule')}</label>
           <label htmlFor="jobform-hide-in-chat" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-hide-in-chat" aria-label={i18nT('components.jobForm.hide_in_chat')} type="checkbox" checked={hideInChat} onChange={e => setHideInChat(e.target.checked)} /> {i18nT('components.jobForm.hide_in_chat')}</label>
           <label htmlFor="jobform-minimal-context" className="flex items-center gap-1.5 text-muted text-[13px] cursor-pointer"><input id="jobform-minimal-context" aria-label={i18nT('components.jobForm.minimal_context')} type="checkbox" checked={minimalContext} onChange={e => setMinimalContext(e.target.checked)} /> {i18nT('components.jobForm.minimal_context')}</label>
+          <SimpleSelect
+            options={folderOptions.values}
+            optionLabels={folderOptions.labels}
+            value={submittedChatFolderId}
+            onChange={setChatFolderId}
+            disabled={chatFolderUnavailable}
+            clearLabel={i18nT('components.jobForm.chat_folder_none')}
+            aria-label={i18nT('components.jobForm.chat_folder')}
+          />
         </div>
       )}
 
@@ -599,6 +705,72 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           checked={hideInChat}
           onChange={setHideInChat}
         />
+        {!isLlmless && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.chat_folder')}</span>
+          <span className="text-[11px] text-muted/70">{chatFolderHint}</span>
+          <SimpleSelect
+            options={folderOptions.values}
+            optionLabels={folderOptions.labels}
+            /* Shows the KEPT folder while disabled rather than the clear row: the
+               hint under it says the folder is kept, and a trigger reading "Do not
+               file runs" would contradict it on the one screen where both are
+               visible at once. `disabled` already greys it, which is what says the
+               setting is suspended. */
+            value={submittedChatFolderId}
+            onChange={setChatFolderId}
+            disabled={chatFolderUnavailable}
+            clearLabel={i18nT('components.jobForm.chat_folder_none')}
+            aria-label={i18nT('components.jobForm.chat_folder')}
+          />
+          {/* A failed folder load renders an empty list, which reads as "you have
+              no folders" -- indistinguishable from the real empty tree, and the
+              reader would conclude the feature needs a folder they already have.
+              The retry refetches the ONE query in place, the same shape as the agent
+              roster's `rosterFailure.onReload` above it: no page reload and no
+              hand-off, because the notice sits beside unsaved form input and either
+              of those would discard what they typed. */}
+          {chatFoldersFailure && !chatFolderUnavailable && (
+            <div className="flex items-center justify-between gap-2">
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('components.jobForm.chat_folder_list_unavailable')}
+              />
+              <Btn
+                type="button"
+                onClick={retryChatFolders}
+                disabled={chatFoldersRetrying}
+                aria-busy={chatFoldersRetrying}
+                className="text-[12px] px-2 py-1 shrink-0"
+              >
+                {chatFoldersRetrying
+                  ? i18nT('components.jobForm.chat_folder_retrying')
+                  : i18nT('components.jobForm.chat_folder_retry')}
+              </Btn>
+            </div>
+          )}
+          {/* A genuinely empty tree is not an error, but it IS a dead end without
+              this: the picker offers nothing and says nothing about where folders
+              come from. */}
+          {chatFoldersLoaded && folderOptions.values.length === 0 && !chatFolderUnavailable && (
+            <span className="text-[11px] text-muted/70">
+              {i18nT('components.jobForm.chat_folder_none_yet')}
+            </span>
+          )}
+          {/* The trigger reads "Do not file runs" here, because the saved id names
+              no folder the list offers. Without this line a reader who opened the
+              job to change something unrelated sees a setting they never cleared
+              and concludes they cleared it. Styled as a warning and announced as a
+              status, not dressed as the hint under the picker: the system made this
+              reversion, and a line in the hint's own muted grey reads as the reader's
+              own choice. */}
+          {savedFolderIsGone && !chatFolderUnavailable && (
+            <span role="status" className="text-[11px] text-warn">
+              {i18nT('components.jobForm.chat_folder_was_deleted')}
+            </span>
+          )}
+        </div>
+        )}
         {!isLlmless && (
           <div className="flex flex-col gap-1">
             {/* Advice, not a warning, so accent rather than warn. Sits directly

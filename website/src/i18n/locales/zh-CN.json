@@ -6572,7 +6572,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "此任务触发时发送给代理的提示词或任务",
       "timezone": "时区",
       "weekly_schedule": "每周计划",
-      "which_agent_handles_this_job_leave_default_for_t": "由哪个代理处理此任务。保持默认则使用主代理。"
+      "which_agent_handles_this_job_leave_default_for_t": "由哪个代理处理此任务。保持默认则使用主代理。",
+      "chat_folder": "聊天文件夹",
+      "chat_folder_none": "不归档运行记录",
+      "chat_folder_description": "把此任务聊天标签页放进聊天侧边栏某个文件夹，方便集中查找它的运行记录。归档不会隐藏任何内容：通知和 Slack 投递均不受影响。",
+      "chat_folder_hidden_in_chat": "请先关闭“在聊天中隐藏”。已隐藏任务的运行不会生成聊天会话，因此没有可归档的内容。所选文件夹会保留。",
+      "chat_folder_needs_persistent_session": "把运行归档到文件夹需要持久会话。此任务创建时被设为每次运行都新建会话，因此没有可归档的标签页。这个选择在创建任务时决定，不在此表单中。",
+      "chat_folder_list_unavailable": "无法加载你的聊天文件夹，因此该列表为空。此表单中的其他内容仍可保存。",
+      "chat_folder_retry": "重试",
+      "chat_folder_retrying": "正在重试…",
+      "chat_folder_none_yet": "还没有文件夹。请先保存此任务；在聊天侧边栏中创建一个文件夹，然后重新打开此任务再选择它。",
+      "chat_folder_was_deleted": "此任务原先归档的文件夹已被删除。请另选一个，或直接保存以不再归档运行记录。"
     },
     "jobLogsView": {
       "cancel": "取消",

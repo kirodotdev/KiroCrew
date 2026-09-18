@@ -6572,7 +6572,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "このジョブが実行するときエージェントに送信されるプロンプトまたはタスク",
       "timezone": "タイムゾーン",
       "weekly_schedule": "週次スケジュール",
-      "which_agent_handles_this_job_leave_default_for_t": "このジョブを処理するエージェント。プライマリエージェントの場合はデフォルトのままにしてください。"
+      "which_agent_handles_this_job_leave_default_for_t": "このジョブを処理するエージェント。プライマリエージェントの場合はデフォルトのままにしてください。",
+      "chat_folder": "チャットフォルダー",
+      "chat_folder_none": "実行を振り分けない",
+      "chat_folder_description": "このジョブのチャットタブをチャットサイドバーのフォルダーにまとめて、実行をあとで探しやすくします。振り分けても何かが隠れることはありません。通知と Slack への配信は変わりません。",
+      "chat_folder_hidden_in_chat": "これを使うには「チャットで非表示」をオフにしてください。非表示のジョブの実行にはチャットセッションが作られないため、振り分けるものがありません。選んだフォルダーは保持されます。",
+      "chat_folder_needs_persistent_session": "実行をフォルダーに振り分けるには、持続セッションが必要です。このジョブは実行ごとに新しいセッションを開始するように作成されているため、振り分けるタブがありません。この選択はジョブの作成時に行われ、このフォームでは変更できません。",
+      "chat_folder_list_unavailable": "チャットフォルダーを読み込めなかったため、この一覧は空です。このフォームの他の項目はそのまま保存できます。",
+      "chat_folder_retry": "再試行",
+      "chat_folder_retrying": "再試行中…",
+      "chat_folder_none_yet": "フォルダーはまだありません。まずこのジョブを保存し、チャットサイドバーでフォルダーを作成してから、ジョブを開き直して選んでください。",
+      "chat_folder_was_deleted": "このジョブが振り分けていたフォルダーは削除されました。別のフォルダーを選んでください。保存すれば振り分けなくなります。"
     },
     "jobLogsView": {
       "cancel": "キャンセル",

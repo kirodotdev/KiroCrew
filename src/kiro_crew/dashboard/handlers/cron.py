@@ -38,8 +38,10 @@ from kiro_crew.cron_script import (
     validate_secret_env_grant,
 )
 from kiro_crew.dashboard.cron_inject import (
+    chat_folder_exists,
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
+    move_cron_job_tab,
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -568,6 +570,51 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     return web.json_response({"result": result})
 
 
+def _resolve_chat_folder_id(
+    state: DashboardState, value: object
+) -> tuple[str, web.Response | None]:
+    """Validate a submitted ``chat_folder_id``: ``(id, None)`` or ``("", 400)``.
+
+    ONE validator for create and update, because the two halves of the check
+    answer different questions and only one of them is a type check:
+
+    * shape -- ``None`` means "not filed" (so a client can clear the field by
+      sending null), anything non-string or over-cap is a 400, matching how
+      ``folder_id`` is handled two fields over;
+    * EXISTENCE -- an id naming no folder in the sidebar's tree is refused here,
+      at save time. The runtime treats a dangling id as "not filed" by contract
+      (a folder can be deleted after the job is saved, and a run must not fail
+      over that), but a save is the one moment a person is present to be told.
+      Accepting an unknown id would persist a setting whose only observable
+      behaviour is a log line nobody reads.
+    """
+    if value is None:
+        return "", None
+    if not isinstance(value, str) or len(value) > MAX_SHORT_STRING:
+        return "", web.json_response(
+            {"error": "invalid chat_folder_id format", "code": "invalid_chat_folder_id"},
+            status=400,
+        )
+    folder_id = value.strip()
+    if not folder_id:
+        return "", None
+    if not chat_folder_exists(state, folder_id):
+        # Shown verbatim under the Schedule form's Save button, so it names the
+        # next step rather than only the fact: the reader picked a folder that
+        # has since been deleted, and the list they picked from is stale.
+        return "", web.json_response(
+            {
+                "error": (
+                    "That chat folder does not exist. Retry the folder list and pick "
+                    "another, or choose not to file runs."
+                ),
+                "code": "unknown_chat_folder",
+            },
+            status=400,
+        )
+    return folder_id, None
+
+
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     state: DashboardState = request.app["state"]
@@ -643,6 +690,11 @@ async def api_crons_create(request: web.Request) -> web.Response:
             {"error": "invalid folder_id format", "code": "invalid_folder_id"},
             status=400,
         )
+    # The CHAT folder the job's tab is filed into -- a different tree from
+    # folder_id's, which groups the job's row on the Schedule page.
+    chat_folder_id, chat_folder_err = _resolve_chat_folder_id(state, body.get("chat_folder_id"))
+    if chat_folder_err is not None:
+        return chat_folder_err
     # Validate model BEFORE add_job so an invalid value never leaves an
     # orphaned job behind (a retried create would then duplicate it).
     model_raw = body.get("model")
@@ -682,6 +734,7 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "minimal_context": bool(minimal_context),
         "persistent_session": bool(persistent_session),
         "folder_id": folder_id,
+        "chat_folder_id": chat_folder_id,
         # Dashboard-only template provenance (see CronJob.source_preset). The
         # prompt SNAPSHOT is what makes the Schedule-page "template updated"
         # hint attributable: comparing it against the template's current prompt
@@ -853,6 +906,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "minimal_context",
         "persistent_session",
         "folder_id",
+        "chat_folder_id",
     ):
         if key in body:
             kwargs[key] = body[key]
@@ -885,6 +939,20 @@ async def api_cron_update(request: web.Request) -> web.Response:
                 {"error": "invalid folder_id format", "code": "invalid_folder_id"},
                 status=400,
             )
+    # Filled by the store, under the same lock as the write, with the folder
+    # `chat_folder_id` held before this request replaced it -- and owned by THIS
+    # request, so a concurrent update cannot clobber the answer. The job's chat tab
+    # follows the change below on the strength of it.
+    chat_folder_transition: dict[str, str] = {}
+    if "chat_folder_id" in kwargs:
+        resolved, chat_folder_err = _resolve_chat_folder_id(state, kwargs["chat_folder_id"])
+        if chat_folder_err is not None:
+            return chat_folder_err
+        kwargs["chat_folder_id"] = resolved
+    if "chat_folder_id" in kwargs or "persistent_session" in kwargs:
+        # Turning persistence off clears a filed job's folder in the store, so
+        # that edit moves the tab through the same path an explicit clear does.
+        kwargs["chat_folder_transition_out"] = chat_folder_transition
     # UI sends "agent"; internal kwarg is "agent_id". Accept "agent_id" for scripted callers.
     if "member_id" in body:
         try:
@@ -944,6 +1012,19 @@ async def api_cron_update(request: web.Request) -> web.Response:
         return web.json_response({"error": str(e)}, status=400)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
+    # The job's chat tab follows a folder change, AFTER the store commits -- so a
+    # refused or busy save never moves a tab for a change that did not land. The
+    # sink is filled only when this update actually changed the field, so an
+    # unrelated edit -- which the form still submits the field on -- moves nothing.
+    # Presence is the signal, not truthiness: the prior folder is "" when an
+    # unfiled job is being filed, and that transition moves the tab too.
+    if "chat_folder_was" in chat_folder_transition:
+        await move_cron_job_tab(
+            state,
+            job,
+            chat_folder_transition["chat_folder_was"],
+            getattr(job, "chat_folder_id", ""),
+        )
     state.push_refresh("crons")
     return web.json_response({"ok": True, "id": job.id})
 
@@ -2837,6 +2918,7 @@ async def api_crons(request: web.Request) -> web.Response:
             # persistent session on a job the user set to ephemeral.
             "persistent_session": j.persistent_session,
             "folder_id": j.folder_id,
+            "chat_folder_id": j.chat_folder_id,
             # The Schedule-page template this job was seeded from, or None. A
             # stable catalog id (e.g. "error-digest"), not user free-text, so
             # it is returned as-is; the frontend matches it against the live

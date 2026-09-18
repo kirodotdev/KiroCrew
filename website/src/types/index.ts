@@ -444,6 +444,15 @@ export interface CronJob {
   secret_env_pending?: Record<string, string> | null
   secret_env_pending_ts?: number | null
   folder_id?: string
+  /** Sidebar chat folder this job's `cron-{id}` tab is filed into, or ""/absent
+   *  for a job that is not filed. Persistent jobs only: a stateless job has no
+   *  job-wide tab, and the backend refuses the pair at save time. A different
+   *  tree from `folder_id` directly above, which groups this job's ROW on the
+   *  Schedule page — the two are never read off each other. */
+  chat_folder_id?: string
+  /** False for a job that runs on a fresh session every fire. The form does not
+   *  edit it; it only reads it to disable the chat-folder picker. */
+  persistent_session?: boolean
   /** Chat session that owns this job — ownership decides chat-side reachability
    * (cron_list only lists a session its own jobs). Null for an ownerless job,
    * which is invisible to every chat session and manageable only from the

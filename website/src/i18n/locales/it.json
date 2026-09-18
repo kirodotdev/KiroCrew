@@ -6778,7 +6778,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "Il prompt o l'attività inviata all'agente quando questo job si attiva",
       "timezone": "Fuso orario",
       "weekly_schedule": "Pianificazione settimanale",
-      "which_agent_handles_this_job_leave_default_for_t": "Quale agente gestisce questo job. Lascia il valore predefinito per l'agente principale."
+      "which_agent_handles_this_job_leave_default_for_t": "Quale agente gestisce questo job. Lascia il valore predefinito per l'agente principale.",
+      "chat_folder": "Cartella della chat",
+      "chat_folder_none": "Non archiviare le esecuzioni",
+      "chat_folder_description": "Metti la scheda chat di questa attività sotto una cartella della barra laterale della chat, così le sue esecuzioni sono facili da trovare insieme. Archiviare non nasconde nulla: notifiche e consegna su Slack restano invariate.",
+      "chat_folder_hidden_in_chat": "Disattiva «Nascondi nella chat» per usare questa opzione. Le esecuzioni di un'attività nascosta non creano nessuna sessione di chat, quindi non c'è nulla da archiviare. La cartella scelta viene mantenuta.",
+      "chat_folder_needs_persistent_session": "Archiviare le esecuzioni in una cartella richiede una sessione persistente. Questa attività è stata creata per avviare una nuova sessione a ogni esecuzione, quindi non c'è una scheda da archiviare. Quella scelta si fa alla creazione dell'attività, non in questo modulo.",
+      "chat_folder_list_unavailable": "Non è stato possibile caricare le tue cartelle della chat, quindi questo elenco è vuoto. Tutto il resto di questo modulo viene salvato comunque.",
+      "chat_folder_retry": "Riprova",
+      "chat_folder_retrying": "Nuovo tentativo…",
+      "chat_folder_none_yet": "Nessuna cartella per ora. Salva questa attività adesso; crea una cartella nella barra laterale della chat, poi riapri l'attività per sceglierla.",
+      "chat_folder_was_deleted": "La cartella in cui questa attività archiviava è stata eliminata. Scegline un'altra, o salva per lasciare le esecuzioni non archiviate."
     },
     "jobLogsView": {
       "cancel": "Annulla",

@@ -6778,7 +6778,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "Le prompt ou la consigne envoyé à l'agent lorsque cette tâche se déclenche",
       "timezone": "Fuseau horaire",
       "weekly_schedule": "Planification hebdomadaire",
-      "which_agent_handles_this_job_leave_default_for_t": "Quel agent traite cette tâche. Laissez la valeur par défaut pour l'agent principal."
+      "which_agent_handles_this_job_leave_default_for_t": "Quel agent traite cette tâche. Laissez la valeur par défaut pour l'agent principal.",
+      "chat_folder": "Dossier de discussion",
+      "chat_folder_none": "Ne pas classer les exécutions",
+      "chat_folder_description": "Placez l'onglet de discussion de cette tâche sous un dossier de la barre latérale de discussion, pour retrouver ses exécutions ensemble facilement. Classer ne masque rien : les notifications et la livraison Slack sont inchangées.",
+      "chat_folder_hidden_in_chat": "Désactivez « Masquer dans la discussion » pour utiliser cette option. Les exécutions d'une tâche masquée ne créent aucune session de discussion, il n'y a donc rien à classer. Le dossier choisi est conservé.",
+      "chat_folder_needs_persistent_session": "Classer les exécutions dans un dossier demande une session persistante. Cette tâche a été créée pour démarrer une nouvelle session à chaque exécution, il n'y a donc aucun onglet à classer. Ce choix se fait à la création de la tâche, pas dans ce formulaire.",
+      "chat_folder_list_unavailable": "Impossible de charger vos dossiers de discussion, cette liste est donc vide. Tout le reste de ce formulaire s'enregistre quand même.",
+      "chat_folder_retry": "Réessayer",
+      "chat_folder_retrying": "Nouvelle tentative…",
+      "chat_folder_none_yet": "Aucun dossier pour l'instant. Enregistrez cette tâche maintenant ; créez un dossier dans la barre latérale de discussion, puis rouvrez la tâche pour le choisir.",
+      "chat_folder_was_deleted": "Le dossier dans lequel cette tâche classait ses exécutions a été supprimé. Choisissez-en un autre, ou enregistrez pour ne plus les classer."
     },
     "jobLogsView": {
       "cancel": "Annuler",

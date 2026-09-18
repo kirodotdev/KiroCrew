@@ -6675,7 +6675,17 @@
       "the_prompt_or_task_sent_to_the_agent_when_this_j": "Der Prompt oder die Aufgabe, die an den Agenten gesendet wird, wenn dieser Job ausgelöst wird",
       "timezone": "Zeitzone",
       "weekly_schedule": "Wöchentlicher Zeitplan",
-      "which_agent_handles_this_job_leave_default_for_t": "Welcher Agent diesen Job bearbeitet. Für den primären Agenten auf Standard belassen."
+      "which_agent_handles_this_job_leave_default_for_t": "Welcher Agent diesen Job bearbeitet. Für den primären Agenten auf Standard belassen.",
+      "chat_folder": "Chat-Ordner",
+      "chat_folder_none": "Ausführungen nicht einsortieren",
+      "chat_folder_description": "Lege den Chat-Tab dieses Auftrags unter einen Ordner in der Chat-Seitenleiste, damit seine Ausführungen leicht zusammen zu finden sind. Ablegen versteckt nichts: Benachrichtigungen und Slack-Zustellung bleiben unverändert.",
+      "chat_folder_hidden_in_chat": "Schalte „Im Chat ausblenden“ aus, um das zu nutzen. Die Ausführungen eines ausgeblendeten Auftrags erhalten keine Chat-Sitzung, es gibt also nichts abzulegen. Der gewählte Ordner bleibt erhalten.",
+      "chat_folder_needs_persistent_session": "Ausführungen in einen Ordner zu legen braucht eine dauerhafte Sitzung. Dieser Auftrag wurde so angelegt, dass er bei jeder Ausführung eine neue Sitzung startet, also gibt es keinen Tab zum Ablegen. Diese Wahl wird beim Anlegen eines Auftrags getroffen, nicht in diesem Formular.",
+      "chat_folder_list_unavailable": "Deine Chat-Ordner konnten nicht geladen werden, daher ist diese Liste leer. Alles andere in diesem Formular wird trotzdem gespeichert.",
+      "chat_folder_retry": "Wiederholen",
+      "chat_folder_retrying": "Wird wiederholt…",
+      "chat_folder_none_yet": "Noch keine Ordner. Speichere diesen Auftrag jetzt; lege in der Chat-Seitenleiste einen Ordner an und öffne den Auftrag dann erneut, um ihn zu wählen.",
+      "chat_folder_was_deleted": "Der Ordner, in den dieser Auftrag ablegte, wurde gelöscht. Wähle einen anderen, oder speichere, damit die Ausführungen nicht abgelegt werden."
     },
     "jobLogsView": {
       "cancel": "Abbrechen",
