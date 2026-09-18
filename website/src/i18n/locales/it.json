@@ -4970,7 +4970,7 @@
       "leave_scope": "Torna a tutti i comandi",
       "manifest": {
         "display_name": "Barra dei comandi",
-        "description": "Sostituisce la ricerca rapida (Cmd+K / Ctrl+K) con un launcher: digita un comando, non una ricerca. La prima pagina contiene comandi delle app, destinazioni e impostazioni di sistema e non invia richieste, quindi digitare non costa nulla. Le sessioni diventano una riga in cui si entra; mentre e attivo non si può cercare in conoscenza, artefatti, competenze e prompt: disattivalo per riaverlo.",
+        "description": "Sostituisce la ricerca rapida (Cmd+K / Ctrl+K) con un launcher: digita un comando, non una ricerca. La prima pagina contiene comandi delle app, destinazioni e impostazioni di sistema e non invia richieste, quindi digitare non costa nulla. Le sessioni e gli artefatti salvati diventano una riga in cui si entra; mentre e attivo non si può cercare in conoscenza, competenze e prompt: disattivalo per riaverlo.",
         "use_case_1": "Passa ad app, impostazioni, sessioni che richiedono attenzione o a una nuova richiesta per l'agente senza lasciare la tastiera.",
         "configuration_1": "È attiva per impostazione predefinita: premi Cmd+K o Ctrl+K ovunque, digita un comando e usa l'ambito Sessions per le conversazioni recenti o corrispondenti."
       },
@@ -4982,9 +4982,8 @@
       "title": "Barra dei comandi",
       "action_failed": "Non e stato possibile completare \"{{action}}\". Premi Invio per riprovare.",
       "working": "In corso…",
-      "other_search_hint": "Per cercare in conoscenza, artefatti, competenze o prompt, disattiva Command Bar nell App Store — questo launcher raggiunge solo le sessioni",
+      "other_search_hint": "Conoscenza, competenze e prompt non sono ricercabili qui — apri Command Bar in App per riattivare la ricerca completa",
       "cmd_toggle_theme": "Cambia tema",
-      "search_failed": "Ricerca non riuscita",
       "retry": "Riprova",
       "kind": {
         "app": "App",
@@ -4998,7 +4997,20 @@
       "argument_withdrawn": "Questo comando non è più disponibile.",
       "argument_changed": "Questo comando è cambiato. Controlla cosa verrà inviato, poi premi di nuovo Invio.",
       "will_send": "Verrà inviato",
-      "will_send_clipped": "Scorri per leggere il resto: questa istruzione continua più sotto."
+      "will_send_clipped": "Scorri per leggere il resto: questa istruzione continua più sotto.",
+      "cmd_search_artifacts": "Cerca artefatti",
+      "action_open_artifact": "Apri artefatto",
+      "placeholder_artifacts": "Cerca artefatti per nome…",
+      "no_artifact_match_show_recent": "Nessun artefatto corrisponde a «{{query}}» — mostra recenti",
+      "no_artifacts_yet": "Ancora nessun artefatto. Salva un grafico, un documento o un widget da una chat e apparirà qui.",
+      "group_recent": "Recenti",
+      "cmd_search_artifacts_sub": "Sfoglia e apri i grafici, i documenti e i widget che hai salvato.",
+      "artifact_search_failed": "Ricerca di artefatti non riuscita. Riprova.",
+      "search_failed": "Ricerca non riuscita",
+      "artifacts_more_keep_typing": "+{{count}} altri — continua a digitare per restringere",
+      "fallback_artifacts": "Cerca «{{query}}» negli artefatti",
+      "fallback_artifacts_sub": "Cerca grafici, documenti e widget salvati che corrispondono a quel testo.",
+      "action_search_artifacts": "Cerca artefatti"
     },
     "awsControl": {
       "manifest": {

@@ -1375,9 +1375,8 @@
       "title": "Command Bar",
       "action_failed": "Could not complete {{action}}. Press Enter to try again.",
       "working": "Working…",
-      "other_search_hint": "To search knowledge, artifacts, skills or prompts, disable Command Bar in the App Store — this launcher reaches sessions only",
+      "other_search_hint": "Knowledge, skills and prompts aren't searchable here — open Command Bar under Apps to turn full search back on",
       "cmd_toggle_theme": "Toggle Theme",
-      "search_failed": "Search failed",
       "retry": "Retry",
       "action_enter": "Open View",
       "action_continue": "Continue",
@@ -1403,7 +1402,20 @@
       "argument_withdrawn": "That command is no longer available.",
       "argument_changed": "This command changed. Check what will be sent, then press Enter again.",
       "will_send": "Will send",
-      "will_send_clipped": "Scroll to read the rest — this instruction continues below."
+      "will_send_clipped": "Scroll to read the rest — this instruction continues below.",
+      "cmd_search_artifacts": "Search Artifacts",
+      "action_open_artifact": "Open Artifact",
+      "placeholder_artifacts": "Search artifacts by name…",
+      "no_artifact_match_show_recent": "No artifacts match “{{query}}” — show recent instead",
+      "no_artifacts_yet": "No artifacts yet. Save a chart, document or widget from a chat and it shows up here.",
+      "group_recent": "Recent",
+      "cmd_search_artifacts_sub": "Browse and open the charts, documents and widgets you saved.",
+      "artifact_search_failed": "Artifact search failed. Try again.",
+      "search_failed": "Search failed",
+      "artifacts_more_keep_typing": "+{{count}} more — keep typing to narrow",
+      "fallback_artifacts": "Search artifacts for “{{query}}”",
+      "fallback_artifacts_sub": "Finds saved charts, documents and widgets matching that text.",
+      "action_search_artifacts": "Search Artifacts"
     },
     "papyrus": {
       "workspace": {

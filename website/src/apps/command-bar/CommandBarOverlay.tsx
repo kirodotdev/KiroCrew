@@ -8,6 +8,7 @@ import {
   Clock,
   Command,
   Cog,
+  Component,
   Folder,
   GitMerge,
   Loader2,
@@ -30,6 +31,8 @@ import { appNavTargets } from '../../appNav'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput, switchSlot, requestFolderReveal } from '../../store/chatSlice'
 import { orderFoldersWithPaths, FOLDER_PATH_SEP, folderNameText } from '../../utils/folderTree'
+import { findReport } from '../../utils/errorReport'
+import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
@@ -39,6 +42,8 @@ import { settingsSubtitle } from '../../components/commandPalette/settingsTabLab
 import { usePaletteActions } from '../../components/commandPalette/paletteActions'
 import { appIcon } from '../../components/commandPalette/providers/appsProvider'
 import { sessionStatus, useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
+import { createArtifactsProvider } from '../../components/commandPalette/providers/artifactsProvider'
+import type { ArtifactsResponse } from '../../components/commandPalette/providers/artifactsProvider'
 import { useSessionsProvider } from '../../components/commandPalette/providers/sessionsProvider'
 import type { Result } from '../../components/commandPalette/types'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -77,9 +82,30 @@ import { useImeGuard } from '../../hooks/useImeGuard'
  */
 
 /** Scoped views the bar can enter. Each one owns its own engine. */
-type Scope = null | 'sessions'
+type Scope = null | 'sessions' | 'artifacts'
 
 const SESSIONS_MIN_CHARS = 2
+/**
+ * Shortest query the artifacts view will send.
+ *
+ * Two characters for a different reason than the sessions threshold above, which
+ * mirrors a backend floor that returns nothing below it. The artifacts endpoint
+ * answers a one-character name query perfectly well — what it costs is a scan over
+ * every artifact's metadata to return most of the corpus, which is what the view
+ * already shows for free when the query is empty. So the floor buys a cheaper
+ * keystroke, not a correct answer.
+ */
+const ARTIFACTS_MIN_CHARS = 2
+/**
+ * Rows the artifacts view renders, listing and search alike.
+ *
+ * The endpoint returns the whole matching set with no page size, so this is the
+ * only thing between a heavy instance and a thousand-row option list inside a
+ * dialog. Sized to the list's own height rather than to the corpus: a name search
+ * that needs more than this many rows to find its artifact needs a narrower query,
+ * and the listing state is a shortcut to something recent, not an inventory.
+ */
+const ARTIFACTS_ROW_LIMIT = 12
 const DEBOUNCE_MS = 150
 
 function groupLabel(group: RootGroup): string {
@@ -202,12 +228,22 @@ type Slot =
   | { key: string; tag: 'result'; row: Result }
   /** Carry the typed text into the sessions view. */
   | { key: string; tag: 'fallback' }
+  /**
+   * Carry the typed text into the artifacts view.
+   *
+   * A separate tag rather than a scope field on `fallback` so the footer's action
+   * name, the rendered row and activation each switch on the tag and cannot
+   * disagree about which corpus the Enter reaches.
+   */
+  | { key: string; tag: 'fallback-artifacts' }
   /** Hand the typed text to an agent — the active session, or a new one. */
   | { key: string; tag: 'ask' }
   /** The dead end's way out: the corpora this surface does not reach. */
   | { key: string; tag: 'recovery' }
   /** Re-run a scoped search that failed. */
   | { key: string; tag: 'retry' }
+  /** Re-run an artifact search that failed. */
+  | { key: string; tag: 'retry-artifacts' }
   /** Drop the query and fall back to the recent sessions listing. */
   | { key: string; tag: 'clear-query' }
 
@@ -242,14 +278,24 @@ function actionLabel(slot: Slot): string {
       if (slot.row.group === 'folders') return i18nT('apps.commandBar.action_open')
       return i18nT('apps.commandBar.action_run')
     case 'result':
-      return i18nT('apps.commandBar.action_open_session')
+      // An artifact row and a session row are the same SHAPE and a different
+      // promise, and the footer names the promise. Keyed off the producing provider
+      // rather than the live scope because this function is pure over the slot — and
+      // because the row carries where it came from, while the scope is state next to
+      // it that a future view could disagree with.
+      return slot.row.providerId === 'artifacts'
+        ? i18nT('apps.commandBar.action_open_artifact')
+        : i18nT('apps.commandBar.action_open_session')
     case 'fallback':
       return i18nT('apps.commandBar.action_search_sessions')
+    case 'fallback-artifacts':
+      return i18nT('apps.commandBar.action_search_artifacts')
     case 'ask':
       return i18nT('apps.commandBar.action_ask')
     case 'recovery':
       return i18nT('apps.commandBar.action_open_app')
     case 'retry':
+    case 'retry-artifacts':
       return i18nT('apps.commandBar.retry')
     case 'clear-query':
       return i18nT('apps.commandBar.action_show_recent')
@@ -463,6 +509,40 @@ export default function CommandBarOverlay({
   chatFoldersRef.current = chatFolders
   const queryClient = useQueryClient()
 
+  /**
+   * The artifacts view's engine.
+   *
+   * Built here from the palette provider's factory rather than taken from its hook,
+   * for two reasons that both matter to this surface. The request is ours: the hook
+   * asks for `content=1` and `snippet=1`, and `snippet=1` alone makes the server
+   * read every listed artifact's body to build a preview — so a name search that
+   * left it on would pay for the full-corpus content read it was avoiding. And the
+   * navigation is ours: every other row in this file leaves through
+   * `usePaletteActions().navigate`, and the hook would bring a second router
+   * mechanism in beside it.
+   *
+   * What IS reused is the part worth reusing: how an artifact becomes a row, so a
+   * result here and a result in the palette are the same row built by the same code.
+   *
+   * Inert on construction, like the two engines above — `fetchQuery` runs from
+   * `search()`, and the only call site is gated on the artifacts scope.
+   *
+   * Content search is the next step, and it is this one request that changes.
+   */
+  const artifacts = useMemo(
+    () =>
+      createArtifactsProvider({
+        fetchArtifacts: q =>
+          queryClient.fetchQuery<ArtifactsResponse>({
+            queryKey: ['artifacts', 'command-bar', 'name', q],
+            queryFn: () => api.artifacts({ q: q || undefined }),
+            staleTime: 15_000,
+          }),
+        openArtifact: slug => navigate(`/artifacts/${slug}`),
+      }),
+    [navigate, queryClient],
+  )
+
   useEffect(() => {
     if (!open) return
     setQuery('')
@@ -624,6 +704,25 @@ export default function CommandBarOverlay({
         icon: <Search size={14} className="lucide-inline" />,
         keywords: ['history', 'chat', 'conversation'],
       },
+      {
+        id: 'command:search-artifacts',
+        title: i18nT('apps.commandBar.cmd_search_artifacts'),
+        // "Artifacts" is this product's word, not the reader's: a first-time reader
+        // called them "whatever they are". The subtitle names the things instead of
+        // the category, which is what the settings rows in this same list do. The
+        // sessions row above needs none, because "Sessions" already says it.
+        subtitle: i18nT('apps.commandBar.cmd_search_artifacts_sub'),
+        group: 'commands',
+        kind: 'view',
+        view: 'artifacts',
+        // The glyph artifacts carry everywhere else in the product — the side
+        // panel's view and the opened-artifact tab both use this one.
+        icon: <Component size={14} className="lucide-inline" />,
+        // `widget` earns its place: what the user saved is usually an mcwidget, and
+        // that is the word they watched the chat call it. The rest are the nouns the
+        // artifact list itself is filed under.
+        keywords: ['widget', 'html', 'saved', 'document', 'chart'],
+      },
     )
     // Commands contributed by installed apps. This is the seam that lets a row live
     // outside this repository: the app declares the row and what it does, and the
@@ -744,7 +843,13 @@ export default function CommandBarOverlay({
   const scopedQuery = scope === 'sessions' ? debounced.trim() : ''
   /** The scoped SEARCH is armed only once the query is long enough to answer. */
   const searchArmed = scope === 'sessions' && scopedQuery.length >= SESSIONS_MIN_CHARS
-  const { data: scopedResults, isFetching, isError, refetch: refetchSessions } = useQuery({
+  const {
+    data: scopedResults,
+    error: sessionsSearchError,
+    isFetching,
+    isError,
+    refetch: refetchSessions,
+  } = useQuery({
     queryKey: ['command-bar', 'sessions', scopedQuery],
     queryFn: () => Promise.resolve(sessions.search(scopedQuery)) as Promise<Result[]>,
     enabled: searchArmed,
@@ -772,6 +877,52 @@ export default function CommandBarOverlay({
     enabled: listingArmed,
     staleTime: 15_000,
   })
+
+  /**
+   * Artifacts view. ONE query for both of its states, unlike the sessions view
+   * above.
+   *
+   * The sessions view needs two engines because its listing is a different thing
+   * from its search — live slots and history buckets, not a query with no words in
+   * it. Artifacts has no such split: the list endpoint with no `q` already answers
+   * "the newest ones", which is exactly the listing, so an empty query is a
+   * narrowing of zero rather than a second mode. Sending it through one query keeps
+   * the two states on one cache key and removes the window where a view could show
+   * a listing and a search at once.
+   */
+  const artifactsQuery =
+    scope === 'artifacts' && debounced.trim().length >= ARTIFACTS_MIN_CHARS ? debounced.trim() : ''
+  const {
+    data: artifactRows,
+    error: artifactsSearchError,
+    isFetching: artifactsFetching,
+    isError: artifactsError,
+    refetch: refetchArtifacts,
+  } = useQuery({
+    // Distinct from the provider's own `['artifacts', 'command-bar', 'name', q]`
+    // key, which caches the RESPONSE. This one caches the mapped rows. Both live
+    // under `['artifacts']` so artifact mutations invalidate them, while the
+    // `view` discriminator keeps their different response shapes on separate keys.
+    queryKey: ['artifacts', 'command-bar', 'view', artifactsQuery],
+    queryFn: () => artifacts.search(artifactsQuery) as Promise<Result[]>,
+    enabled: scope === 'artifacts',
+    staleTime: 15_000,
+  })
+  /**
+   * The rows the view may render, capped — see {@link ARTIFACTS_ROW_LIMIT}.
+   *
+   * The LISTING state carries a group label, so the list says what it is. Without
+   * one the view opened on five unexplained rows: a reader can guess they are the
+   * recent ones, but nothing on screen said so, while every group in the root
+   * announces itself with a header. A filtered list gets no header — what those
+   * rows are is the word the reader just typed.
+   */
+  const artifactSlotRows = useMemo(
+    () => (artifactRows ?? [])
+      .slice(0, ARTIFACTS_ROW_LIMIT)
+      .map(row => (artifactsQuery ? row : { ...row, groupLabel: i18nT('apps.commandBar.group_recent') })),
+    [artifactRows, artifactsQuery],
+  )
 
   const use = useCallback((id: string) => setUsage(prev => recordUse(id, Date.now(), prev)), [])
 
@@ -1000,6 +1151,19 @@ export default function CommandBarOverlay({
       }
       return out
     }
+    if (scope === 'artifacts') {
+      const out: Slot[] = artifactSlotRows.map(row => ({ key: row.id, tag: 'result' as const, row }))
+      if (artifactsError) {
+        out.push({ key: 'slot:retry', tag: 'retry-artifacts' })
+      } else if (!artifactsFetching && out.length === 0 && artifactsQuery) {
+        // A name that matched nothing still has somewhere to go — back to the
+        // listing — so the view never bottoms out with nothing selectable. Gated on
+        // there BEING a query: an instance with no artifacts at all has no listing
+        // to return to, and offering one would be a row that does nothing.
+        out.push({ key: 'slot:clear-query', tag: 'clear-query' })
+      }
+      return out
+    }
     const out: Slot[] = ranked.map(row => ({ key: row.id, tag: 'root' as const, row }))
     if (query.trim().length > 0) {
       // The agent goes FIRST among the tail rows. Every other surface in this
@@ -1008,6 +1172,13 @@ export default function CommandBarOverlay({
       // the general case, and the command list above it is the shortcut layer.
       out.push({ key: ASK_SLOT_KEY, tag: 'ask' })
       out.push({ key: 'slot:fallback', tag: 'fallback' })
+      // Typed text that is an ARTIFACT's name matched nothing above it: the root
+      // ranks launcher rows on their own vocabulary, so "Q3 Revenue Chart" reaches
+      // the artifacts view only by first typing a word like "artifact". This row is
+      // the same way out the sessions corpus already had. Placed after it rather
+      // than before so the row the sessions fallback has always occupied does not
+      // move under a reader who navigates by position.
+      out.push({ key: 'slot:fallback-artifacts', tag: 'fallback-artifacts' })
       // The recovery row exists for the dead end — a typed query that matched
       // nothing — not for every keystroke. Riding the fallback's own condition put a
       // row about switching the feature off under every successful search, and
@@ -1015,7 +1186,7 @@ export default function CommandBarOverlay({
       if (ranked.length === 0) out.push({ key: 'slot:recovery', tag: 'recovery' })
     }
     return out
-  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed])
+  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery])
 
   const rowCount = slots.length
   /**
@@ -1027,7 +1198,9 @@ export default function CommandBarOverlay({
    * landed.
    */
   const scopeLoading =
-    scope === 'sessions' && rowCount === 0 && (isFetching || (listingArmed && recentRows === undefined))
+    rowCount === 0 &&
+    ((scope === 'sessions' && (isFetching || (listingArmed && recentRows === undefined))) ||
+      (scope === 'artifacts' && (artifactsFetching || artifactRows === undefined)))
 
   useEffect(() => {
     if (selected >= rowCount) setSelected(Math.max(0, rowCount - 1))
@@ -1047,6 +1220,9 @@ export default function CommandBarOverlay({
           return
         case 'fallback':
           enterScope('sessions', query)
+          return
+        case 'fallback-artifacts':
+          enterScope('artifacts', query)
           return
         case 'ask': {
           // Stops at a FILLED composer rather than sending: the user wrote this
@@ -1068,6 +1244,9 @@ export default function CommandBarOverlay({
         case 'retry':
           void refetchSessions()
           return
+        case 'retry-artifacts':
+          void refetchArtifacts()
+          return
         case 'clear-query':
           // Emptying the query is what re-arms the listing; the debounced copy has to
           // go with it or the view stays on the failed search for one more tick.
@@ -1078,7 +1257,7 @@ export default function CommandBarOverlay({
           return
       }
     },
-    [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchSessions, seedNewSession, slots],
+    [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchArtifacts, refetchSessions, seedNewSession, slots],
   )
 
   /**
@@ -1226,7 +1405,51 @@ export default function CommandBarOverlay({
     ? argCommand.title
     : scope === 'sessions'
       ? i18nT('apps.commandBar.cmd_search_sessions')
-      : ''
+      : scope === 'artifacts'
+        ? i18nT('apps.commandBar.cmd_search_artifacts')
+        : ''
+  /**
+   * The failure this change is responsible for, and the only one that gets a notice.
+   *
+   * Each scope's retry ROW is pushed by that scope's own branch in the slot builder
+   * above, so there is no shared failure flag to key this on: the notice belongs to
+   * the artifacts scope alone.
+   */
+  const artifactsFailed = scope === 'artifacts' && !!artifactsError
+  const searchError =
+    scope === 'sessions'
+      ? sessionsSearchError
+      : scope === 'artifacts'
+        ? artifactsSearchError
+        : undefined
+  /**
+   * What the failure SAYS, for the scope this change adds.
+   *
+   * ARTIFACTS ONLY. The sessions scope keeps the failure row it already had: its
+   * text was the static `search_failed`, never a backend string, so nothing about
+   * it misled the reader whose report motivated the wording here -- that reader met
+   * this view. Reshaping it would have been this PR changing a surface it does not
+   * own, on a symmetry argument.
+   *
+   * The concrete rejection is deliberately NOT rendered. Reading it off the error
+   * yielded backend wording like "gateway unavailable", which a first-time reader
+   * read as the "Run a local gateway" setting and then would not touch -- at the
+   * moment of failure that is a cause they cannot interpret next to a fix they are
+   * afraid of. Its structured journal report is resolved from the raw rejection
+   * and passed directly to `ErrorNotice` below rather than recovered from the
+   * friendly rendered sentence. That preserves the endpoint, status, and backend
+   * code without exposing backend wording in visible text, a tooltip, or an aria
+   * label.
+   */
+  const searchFailedText = artifactsFailed ? i18nT('apps.commandBar.artifact_search_failed') : ''
+  /**
+   * How many name matches the cap is hiding.
+   *
+   * The endpoint returns every match, so this count is the real remainder rather
+   * than a page boundary. Without it the cap was the one silent state left in the
+   * view: a name matching thirty artifacts drew twelve rows and said nothing.
+   */
+  const artifactOverflow = Math.max(0, (artifactRows?.length ?? 0) - ARTIFACTS_ROW_LIMIT)
   const listId = 'command-bar-list'
   const rowId = (i: number) => `command-bar-row-${i}`
 
@@ -1240,7 +1463,7 @@ export default function CommandBarOverlay({
    */
   const slotParts = (
     slot: Slot,
-  ): { icon: ReactNode; title: ReactNode; subtitle?: ReactNode; accessory?: ReactNode; arrow?: boolean; dim?: boolean } => {
+  ): { icon: ReactNode; title: ReactNode; subtitle?: ReactNode; accessory?: ReactNode; arrow?: boolean; dim?: boolean; wrap?: boolean } => {
     switch (slot.tag) {
       case 'root': {
         const row = slot.row
@@ -1333,15 +1556,63 @@ export default function CommandBarOverlay({
           arrow: true,
           dim: true,
         }
+      case 'fallback-artifacts':
+        // Named with the query so the row states which text it carries, the same way
+        // the sessions row above it does. Both are dim: they are ways out of the
+        // root, not results, and a reader scanning for a match should read past them.
+        //
+        // Its subtitle is its OWN, not the view row's. It needs a gloss at all because
+        // "artifact" is our word and a reader who arrives here by typing a name has
+        // not necessarily read the view row. But when the typed word also matches the
+        // command ("widget", "saved"), both rows are on screen at once, and sharing
+        // one subtitle made them read as duplicates -- a reader could not tell how
+        // their results would differ. So this one names what it does with the text
+        // that is already typed, while the view row still describes the corpus.
+        return {
+          icon: <Package size={13} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.fallback_artifacts', { query }),
+          subtitle: i18nT('apps.commandBar.fallback_artifacts_sub'),
+          arrow: true,
+          dim: true,
+        }
       case 'recovery':
-        // Sessions is the only corpus this surface reaches. Naming the ones it does
-        // not -- at the moment the user is looking for them -- is what keeps a typed
-        // artifact name from being a silent dead end.
+        // Naming the corpora this surface does NOT reach -- at the moment the user is
+        // looking for them -- is what keeps a typed knowledge or skill name from being
+        // a silent dead end. Artifacts is no longer among them: it has a view of its
+        // own now, so the string stopped listing it.
+        //
+        // The second clause names what CLICKING does, not what the user must switch
+        // off, and names it without implying a transaction. Three readers in sequence
+        // failed it. "disable Command Bar" described the end state, so the row itself
+        // read as the thing that would disable their search box. Naming the App Store
+        // fixed that and introduced a cost: "App Store sounds like it might want me to
+        // install or buy something." The destination is neither -- it is AppDetailPage
+        // at `/apps/detail/command-bar`, this app's OWN page under Apps, carrying its
+        // Enabled switch. So the row names that section. Wording that blocks the users
+        // a row exists for is not a smaller bug than a broken link.
+        //
+        // What is NOT solvable here: the same reader did not know what "Command Bar"
+        // is. They are inside it. A row cannot teach the name of the app it lives in,
+        // and the instruction is unactionable without naming the app to turn off.
+        //
+        // This is the one row that WRAPS. Every other row is a short label, but this
+        // one is a sentence, and a sentence truncated mid-clause loses exactly the
+        // half that explains itself, so the row is allowed two lines to finish. The
+        // capture harness measures that: it asserts this row renders with no ellipsis
+        // and that the clamp still engages when the text is longer than two lines.
         return {
           icon: <Package size={13} className="lucide-inline" />,
           title: i18nT('apps.commandBar.other_search_hint'),
           arrow: true,
           dim: true,
+          wrap: true,
+        }
+      case 'retry-artifacts':
+        // Separate tags keep the sessions row byte-identical to main, so this change
+        // does not reshape a surface it does not own.
+        return {
+          icon: <RotateCcw size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.retry'),
         }
       case 'retry':
         return {
@@ -1354,7 +1625,10 @@ export default function CommandBarOverlay({
         // to read; as a row it is one thing to do.
         return {
           icon: <Clock size={14} className="lucide-inline" />,
-          title: i18nT('apps.commandBar.no_match_show_recent', { query: scopedQuery }),
+          title:
+            scope === 'artifacts'
+              ? i18nT('apps.commandBar.no_artifact_match_show_recent', { query: artifactsQuery })
+              : i18nT('apps.commandBar.no_match_show_recent', { query: scopedQuery }),
           dim: true,
         }
     }
@@ -1366,7 +1640,7 @@ export default function CommandBarOverlay({
       <>
         <span className="shrink-0 w-4 flex justify-center text-muted">{parts.icon}</span>
         <span className="flex-1 min-w-0">
-          <span className={`block truncate${parts.dim ? ' text-muted' : ''}`}>{parts.title}</span>
+          <span className={`block ${parts.wrap ? 'line-clamp-2' : 'truncate'}${parts.dim ? ' text-muted' : ''}`}>{parts.title}</span>
           {parts.subtitle && (
             <span className="block truncate text-[11px] text-muted">{parts.subtitle}</span>
           )}
@@ -1504,9 +1778,11 @@ export default function CommandBarOverlay({
             placeholder={
               argCommand
                 ? argCommand.argument?.placeholder || i18nT('apps.commandBar.placeholder_argument')
-                : scope
-                  ? i18nT('apps.commandBar.placeholder_sessions')
-                  : i18nT('apps.commandBar.placeholder')
+                : scope === 'artifacts'
+                  ? i18nT('apps.commandBar.placeholder_artifacts')
+                  : scope
+                    ? i18nT('apps.commandBar.placeholder_sessions')
+                    : i18nT('apps.commandBar.placeholder')
             }
             aria-label={i18nT('apps.commandBar.title')}
             // Selection stays on the input and is announced through
@@ -1543,6 +1819,22 @@ export default function CommandBarOverlay({
         {actionError && (
           <div className="px-3 py-2 border-t border-border">
             <ErrorNotice message={actionError} variant="inline" />
+          </div>
+        )}
+
+        {/* ARTIFACTS ONLY: the sessions scope keeps the failure row it already had.
+            No hand-off: the combobox query is unsaved local state, and the
+            hand-off navigation would unmount the command bar and discard it.
+            Keep the notice outside the listbox so ErrorNotice can never put an
+            interactive control inside an option; Retry remains a separate option
+            on the combobox's Arrow/Enter path. */}
+        {artifactsFailed && (
+          <div className="px-3 py-2 border-b border-border">
+            <ErrorNotice
+              message={searchFailedText}
+              report={findReport(errMessage(searchError))}
+              variant="inline"
+            />
           </div>
         )}
 
@@ -1639,8 +1931,19 @@ export default function CommandBarOverlay({
             ) : (
               // Every other state now carries rows of its own, so this is the one
               // case left: a corpus that is genuinely empty.
+              //
+              // In the artifacts view that is the ONLY way to reach this branch, and
+              // the copy depends on it: a query that matched nothing pushes the
+              // clear-query row, a failure pushes the retry row, and a load in
+              // flight renders the skeleton above. So an empty list here means the
+              // user has saved nothing yet, and the string says that instead of
+              // reporting a failed match against a query they never typed.
               <div role="status" className="px-3 py-6 text-center text-[12px] text-muted">
-                {scope ? i18nT('apps.commandBar.no_sessions') : i18nT('apps.commandBar.no_matches')}
+                {scope === 'artifacts'
+                  ? i18nT('apps.commandBar.no_artifacts_yet')
+                  : scope
+                    ? i18nT('apps.commandBar.no_sessions')
+                    : i18nT('apps.commandBar.no_matches')}
               </div>
             )
           ) : (
@@ -1671,6 +1974,15 @@ export default function CommandBarOverlay({
             })
           )}
         </div>
+
+        {/* What the row cap is hiding. Outside the listbox on purpose: it is a fact
+            about the list, not a row in it, and as an option it would be the one
+            Enter did nothing to. Only in the artifacts view, where the cap exists. */}
+        {scope === 'artifacts' && artifactOverflow > 0 && (
+          <div className="px-3 py-1.5 border-t border-border text-[11px] text-muted">
+            {i18nT('apps.commandBar.artifacts_more_keep_typing', { count: artifactOverflow })}
+          </div>
+        )}
 
         {/* What Enter does, named. The bar's promise is that Enter does something
             specific to the highlighted row, and nothing said what: the row carried

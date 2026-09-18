@@ -29,6 +29,12 @@ import type { Result, ResourceProvider } from '../types'
  * strings). Title matches additionally bias the client-side ordering; non-title
  * (body-only) matches are kept with a neutral score so backend hits are never
  * dropped.
+ *
+ * WHICH fields the server matches is the caller's call, not this module's: the
+ * request is built in the injected `fetchArtifacts`, so the row mapping below is
+ * shared while the query is not. {@link useArtifactsProvider} is the palette tab's
+ * content search; the Command Bar builds the same provider around a name-only
+ * request.
  */
 
 const PROVIDER_ID = 'artifacts'
@@ -96,8 +102,13 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
 
       const results: Result[] = artifacts.map((a) => {
         const title = a.name || a.slug
-        // Highlight + client-side rank bias; never used to drop backend hits.
+        // `fuzzyMatch` is kept for the client-side RANK bias only; it never drops a
+        // backend hit. It must not drive the highlight: the server matches a plain
+        // substring, so a fuzzy highlight bolds letters the match never used --
+        // query "revenue" drew "**Re**port 1 Re**venue**", and a reader cannot tell
+        // why "Re" is bold. The highlight now shows the substring the server found.
         const match = fuzzyMatch(q, title)
+        const titleIdx = q ? substringIndices(q, title) : []
         const subtitle = a.snippet || a.description || a.kind
         // Highlight the query within the snippet/description (content match).
         const subIdx = q ? substringIndices(q, subtitle) : []
@@ -109,7 +120,7 @@ export function createArtifactsProvider(deps: ArtifactsProviderDeps): ResourcePr
           subtitleIndices: subIdx.length ? subIdx : undefined,
           icon: artifactIcon(),
           score: match ? match.score : 0,
-          indices: match ? match.indices : [],
+          indices: titleIdx,
           // Not yet ported to the declarative §2 Enter matrix — the central
           // dispatcher falls back to onActivate. Enter opens the artifact.
           onActivate: () => openArtifact(a.slug),

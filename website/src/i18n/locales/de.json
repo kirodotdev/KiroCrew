@@ -1158,7 +1158,7 @@
       "leave_scope": "Zurück zu allen Befehlen",
       "manifest": {
         "display_name": "Befehlsleiste",
-        "description": "Ersetzt die Schnellsuche (Cmd+K / Ctrl+K) durch einen Starter: einen Befehl eingeben, keine Suchanfrage. Die erste Seite enthaelt App-Befehle, Ziele und Systemeinstellungen und stellt keine Anfrage, sodass Tippen nichts kostet. Sitzungen werden eine Zeile, die man betritt; die Suche in Wissen, Artefakten, Skills und Prompts ist bei aktivierter App nicht verfuegbar -- deaktivieren, um sie zurueckzuholen.",
+        "description": "Ersetzt die Schnellsuche (Cmd+K / Ctrl+K) durch einen Starter: einen Befehl eingeben, keine Suchanfrage. Die erste Seite enthaelt App-Befehle, Ziele und Systemeinstellungen und stellt keine Anfrage, sodass Tippen nichts kostet. Sitzungen und gespeicherte Artefakte werden eine Zeile, die man betritt; die Suche in Wissen, Skills und Prompts ist bei aktivierter App nicht verfuegbar -- deaktivieren, um sie zurueckzuholen.",
         "use_case_1": "Wechsle ohne Griff zur Maus zu Apps, Einstellungen, Sitzungen mit Handlungsbedarf oder einer neuen Agentenanfrage.",
         "configuration_1": "Die App ist standardmäßig aktiviert: Drücke überall Cmd+K oder Ctrl+K, gib einen Befehl ein und nutze den Bereich Sessions für aktuelle oder passende Unterhaltungen."
       },
@@ -1170,9 +1170,8 @@
       "title": "Befehlsleiste",
       "action_failed": "\"{{action}}\" konnte nicht abgeschlossen werden. Zum erneuten Versuch Enter druecken.",
       "working": "Wird ausgefuehrt…",
-      "other_search_hint": "Um Wissen, Artefakte, Skills oder Prompts zu durchsuchen, deaktiviere Command Bar im App Store — dieser Starter erreicht nur Sitzungen",
+      "other_search_hint": "Wissen, Skills und Prompts sind hier nicht durchsuchbar — öffne Command Bar unter Apps, um die vollständige Suche wieder einzuschalten",
       "cmd_toggle_theme": "Theme wechseln",
-      "search_failed": "Suche fehlgeschlagen",
       "retry": "Erneut versuchen",
       "kind": {
         "app": "App",
@@ -1186,7 +1185,20 @@
       "argument_withdrawn": "Dieser Befehl ist nicht mehr verfügbar.",
       "argument_changed": "Dieser Befehl hat sich geändert. Prüfe, was gesendet wird, und drücke erneut die Eingabetaste.",
       "will_send": "Wird gesendet",
-      "will_send_clipped": "Zum Weiterlesen scrollen — diese Anweisung geht unten weiter."
+      "will_send_clipped": "Zum Weiterlesen scrollen — diese Anweisung geht unten weiter.",
+      "cmd_search_artifacts": "Artefakte durchsuchen",
+      "action_open_artifact": "Artefakt öffnen",
+      "placeholder_artifacts": "Artefakte nach Name durchsuchen…",
+      "no_artifact_match_show_recent": "Keine Artefakte passen zu „{{query}}“ — kürzliche anzeigen",
+      "no_artifacts_yet": "Noch keine Artefakte. Speichere ein Diagramm, Dokument oder Widget aus einem Chat, dann erscheint es hier.",
+      "group_recent": "Zuletzt",
+      "cmd_search_artifacts_sub": "Diagramme, Dokumente und Widgets ansehen und öffnen, die du gespeichert hast.",
+      "artifact_search_failed": "Artefaktsuche fehlgeschlagen. Versuchen Sie es erneut.",
+      "search_failed": "Suche fehlgeschlagen",
+      "artifacts_more_keep_typing": "+{{count}} weitere — weiter tippen, um einzugrenzen",
+      "fallback_artifacts": "Artefakte nach „{{query}}“ durchsuchen",
+      "fallback_artifacts_sub": "Findet gespeicherte Diagramme, Dokumente und Widgets, die zu diesem Text passen.",
+      "action_search_artifacts": "Artefakte durchsuchen"
     },
     "crewCompanion": {
       "accessory": {

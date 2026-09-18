@@ -321,7 +321,7 @@ describe('CommandBarOverlay rows', () => {
     // the App Store, find the app and disable it by hand.
     const onClose = mount()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'zzzznomatch' } })
-    const hint = await screen.findByText(/disable Command Bar in the App Store/)
+    const hint = await screen.findByText(/turn full search back on/)
     fireEvent.mouseDown(hint.closest('[role="option"]') as HTMLElement)
     expect(navigate).toHaveBeenCalledWith('/apps/detail/command-bar')
     expect(onClose).toHaveBeenCalled()
@@ -338,10 +338,10 @@ describe('CommandBarOverlay rows', () => {
         screen.getAllByRole('option').some(o => o.textContent?.includes('Toggle Theme')),
       ).toBe(true),
     )
-    expect(screen.queryByText(/disable Command Bar in the App Store/)).toBeNull()
+    expect(screen.queryByText(/turn full search back on/)).toBeNull()
     // With nothing matched, the dead end is real and the row appears.
     fireEvent.change(input, { target: { value: 'zzzznomatch' } })
-    expect(await screen.findByText(/disable Command Bar in the App Store/)).toBeTruthy()
+    expect(await screen.findByText(/turn full search back on/)).toBeTruthy()
   })
 
   it('Escape dismisses from a focusable sibling, not only from the input', async () => {
@@ -465,6 +465,21 @@ describe('CommandBarOverlay rows', () => {
     const before = sessionSearch.mock.calls.length
     fireEvent.mouseDown(row)
     await waitFor(() => expect(sessionSearch.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('leaves the sessions failure a row, with none of the artifacts scope notice', async () => {
+    // Guard on a deliberate boundary. The artifacts scope renders its failure through
+    // ErrorNotice above the list, and it would have been easy to reach that surface for
+    // both scopes on the grounds that they should match. They should not: the sessions
+    // row's text was never a backend string, so nothing about it misled anyone, and
+    // changing it would mean a feature PR reshaping a surface it does not own. Without
+    // this, the gate can be removed and every other test here still passes.
+    sessionSearch.mockRejectedValue(new Error('gateway down'))
+    mount()
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'quarterly' } })
+    await screen.findByText('Search failed')
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('opens the sessions view on its recents listing, not on an empty screen', async () => {

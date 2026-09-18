@@ -4814,7 +4814,7 @@
         "use_case_1": "无需离开键盘，即可跳转到应用、设置、需要处理的会话，或发起新的代理请求。",
         "configuration_1": "默认已启用：在任意位置按 Cmd+K 或 Ctrl+K，输入命令；使用“会话”范围可查找最近或匹配的对话。",
         "display_name": "命令栏",
-        "description": "接管快捷搜索（Cmd+K / Ctrl+K）界面，改成启动器：输入命令，而不是搜索词。第一页只有应用命令、去处和系统设置，且不发任何请求，所以打字没有成本。会话变成一个需要进入的条目；启用期间无法搜索知识库、产物、技能和提示词——想要回来就把它关掉。"
+        "description": "接管快捷搜索（Cmd+K / Ctrl+K）界面，改成启动器：输入命令，而不是搜索词。第一页只有应用命令、去处和系统设置，且不发任何请求，所以打字没有成本。会话和保存的产物变成需要进入的条目；启用期间无法搜索知识库、技能和提示词——想要回来就把它关掉。"
       },
       "no_matches": "没有匹配项",
       "no_sessions": "没有匹配会话",
@@ -4824,9 +4824,8 @@
       "title": "命令栏",
       "action_failed": "无法完成\"{{action}}\"。按 Enter 重试。",
       "working": "处理中…",
-      "other_search_hint": "要搜索知识库、产物、技能或提示词，请在应用商店中停用 Command Bar — 这个启动器只能到达会话",
+      "other_search_hint": "这里搜不到知识库、技能和提示词 — 在应用中打开 Command Bar 即可恢复完整搜索",
       "cmd_toggle_theme": "切换主题",
-      "search_failed": "搜索失败",
       "retry": "重试",
       "kind": {
         "app": "应用",
@@ -4840,7 +4839,20 @@
       "argument_withdrawn": "该命令已不可用。",
       "argument_changed": "该命令已变更。请确认将要发送的内容，然后再次按 Enter。",
       "will_send": "将发送",
-      "will_send_clipped": "该指令下方还有内容，请滚动查看完整文本。"
+      "will_send_clipped": "该指令下方还有内容，请滚动查看完整文本。",
+      "cmd_search_artifacts": "搜索产物",
+      "action_open_artifact": "打开产物",
+      "placeholder_artifacts": "按名称搜索产物…",
+      "no_artifact_match_show_recent": "没有产物匹配“{{query}}”——显示最近",
+      "no_artifacts_yet": "还没有产物。在聊天里保存一个图表、文档或 widget，它就会出现在这里。",
+      "group_recent": "最近",
+      "cmd_search_artifacts_sub": "浏览并打开你保存过的图表、文档和 widget。",
+      "artifact_search_failed": "搜索产物失败，请重试。",
+      "search_failed": "搜索失败",
+      "artifacts_more_keep_typing": "还有 {{count}} 个——继续输入以缩小范围",
+      "fallback_artifacts": "在产物中搜索“{{query}}”",
+      "fallback_artifacts_sub": "按这段文字查找你保存过的图表、文档和 widget。",
+      "action_search_artifacts": "搜索产物"
     },
     "awsControl": {
       "manifest": {

@@ -101,6 +101,48 @@ describe('createArtifactsProvider — search mapping', () => {
     expect((cr?.indices.length ?? 0)).toBeGreaterThan(0)
   })
 
+  it('highlights the substring the server matched, not a fuzzy spread', async () => {
+    // The server matches a plain substring. A fuzzy highlight bolds letters the
+    // match never used: "revenue" against "Report 1 Revenue" lit up "Re" at the
+    // front as well, and nothing on screen explained why.
+    const { d } = deps()
+    d.fetchArtifacts = async () => ({
+      artifacts: [{ slug: 'r1', name: 'Report 1 Revenue', kind: 'widget', description: '', tags: [] }],
+    })
+    const results = await run(createArtifactsProvider(d), 'revenue')
+    const idx = results[0]?.indices ?? []
+    // Contiguous, and exactly the run of characters the query occupies.
+    expect(idx).toEqual([9, 10, 11, 12, 13, 14, 15])
+    expect('Report 1 Revenue'.slice(9, 16).toLowerCase()).toBe('revenue')
+  })
+
+  it('puts no title highlight on a body-only match, and highlights the snippet instead', async () => {
+    // The palette tab's own search is a CONTENT search, so the server can return a
+    // row whose name does not contain the query at all. Before the highlight was
+    // keyed on the substring, `fuzzyMatch` still found a scattered subsequence in
+    // such a title and bolded letters the match never used. There must be no
+    // highlight on a title the query is absent from -- and the snippet, which is
+    // where the match actually happened, must carry it.
+    //
+    // "cost" is a subsequence of "Customer Support Tracker" (C-o-s-t across three
+    // words) but not a substring of it, which is what makes this fixture able to
+    // tell the two highlight sources apart.
+    const { d } = deps([
+      artifact({
+        slug: 'plan',
+        name: 'Customer Support Tracker',
+        snippet: 'cost breakdown by region',
+      }),
+    ])
+    const results = await run(createArtifactsProvider(d), 'cost')
+    const row = results[0]
+    expect('Customer Support Tracker'.toLowerCase()).not.toContain('cost')
+    expect(row?.indices).toEqual([])
+    expect(row?.subtitleIndices?.length ?? 0).toBeGreaterThan(0)
+    // Kept, not dropped: a body-only hit is still a hit.
+    expect(row?.id).toBe('artifacts:plan')
+  })
+
   it('preserves backend order on an empty query (no client re-rank)', async () => {
     const p = createArtifactsProvider(deps().d)
     const results = await run(p, '')

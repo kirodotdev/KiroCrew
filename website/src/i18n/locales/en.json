@@ -873,7 +873,7 @@
     "commandBar": {
       "manifest": {
         "display_name": "Command Bar",
-        "description": "Replaces the quick-search (Cmd+K / Ctrl+K) surface with a launcher: type a command, not a query. The first page carries app commands, destinations and system settings and issues no request, so typing costs nothing. Sessions become a row you enter; searching knowledge, artifacts, skills and prompts is not available while this is enabled — disable it to get that back.",
+        "description": "Replaces the quick-search (Cmd+K / Ctrl+K) surface with a launcher: type a command, not a query. The first page carries app commands, destinations and system settings and issues no request, so typing costs nothing. Sessions and saved artifacts become a row you enter; searching knowledge, skills and prompts is not available while this is enabled — disable it to get that back.",
         "use_case_1": "Jump to apps, settings, sessions that need attention, or a new agent request without leaving the keyboard.",
         "configuration_1": "It is enabled by default: press Cmd+K or Ctrl+K anywhere, type a command, and use the Sessions scope for recent or matching conversations."
       }

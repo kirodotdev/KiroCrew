@@ -4970,7 +4970,7 @@
       "leave_scope": "Voltar para todos os comandos",
       "manifest": {
         "display_name": "Barra de comandos",
-        "description": "Substitui a busca rapida (Cmd+K / Ctrl+K) por um lancador: digite um comando, nao uma busca. A primeira pagina traz comandos de aplicativos, destinos e configuracoes do sistema e nao faz nenhuma requisicao, entao digitar nao custa nada. As sessoes passam a ser uma linha em que voce entra; enquanto estiver ativo nao e possivel buscar em conhecimento, artefatos, habilidades e prompts -- desative para recuperar.",
+        "description": "Substitui a busca rapida (Cmd+K / Ctrl+K) por um lancador: digite um comando, nao uma busca. A primeira pagina traz comandos de aplicativos, destinos e configuracoes do sistema e nao faz nenhuma requisicao, entao digitar nao custa nada. As sessoes e os artefatos salvos passam a ser uma linha em que voce entra; enquanto estiver ativo nao e possivel buscar em conhecimento, habilidades e prompts -- desative para recuperar.",
         "use_case_1": "Acesse apps, configurações, sessões que precisam de atenção ou uma nova solicitação para o agente sem tirar as mãos do teclado.",
         "configuration_1": "O app vem ativado por padrão: pressione Cmd+K ou Ctrl+K em qualquer lugar, digite um comando e use o escopo Sessions para conversas recentes ou correspondentes."
       },
@@ -4982,9 +4982,8 @@
       "title": "Barra de comandos",
       "action_failed": "Nao foi possivel concluir \"{{action}}\". Pressione Enter para tentar de novo.",
       "working": "Processando…",
-      "other_search_hint": "Para buscar em conhecimento, artefatos, habilidades ou prompts, desative o Command Bar na App Store — este lancador alcanca apenas sessoes",
+      "other_search_hint": "Conhecimento, habilidades e prompts não podem ser buscados aqui — abra o Command Bar em Aplicativos para reativar a busca completa",
       "cmd_toggle_theme": "Alternar tema",
-      "search_failed": "A busca falhou",
       "retry": "Tentar novamente",
       "kind": {
         "app": "Aplicativo",
@@ -4998,7 +4997,20 @@
       "argument_withdrawn": "Esse comando já não está disponível.",
       "argument_changed": "Este comando mudou. Verifique o que será enviado e prima Enter novamente.",
       "will_send": "Será enviado",
-      "will_send_clipped": "Percorra para ler o resto — esta instrução continua abaixo."
+      "will_send_clipped": "Percorra para ler o resto — esta instrução continua abaixo.",
+      "cmd_search_artifacts": "Pesquisar artefatos",
+      "action_open_artifact": "Abrir artefato",
+      "placeholder_artifacts": "Pesquisar artefatos por nome…",
+      "no_artifact_match_show_recent": "Nenhum artefato corresponde a “{{query}}” — mostrar recentes",
+      "no_artifacts_yet": "Ainda não há artefatos. Salve um gráfico, documento ou widget de um chat e ele aparece aqui.",
+      "group_recent": "Recentes",
+      "cmd_search_artifacts_sub": "Explore e abra os gráficos, documentos e widgets que você salvou.",
+      "artifact_search_failed": "A pesquisa de artefatos falhou. Tente novamente.",
+      "search_failed": "A busca falhou",
+      "artifacts_more_keep_typing": "+{{count}} mais — continue digitando para filtrar",
+      "fallback_artifacts": "Pesquisar “{{query}}” nos artefatos",
+      "fallback_artifacts_sub": "Encontra gráficos, documentos e widgets salvos que correspondem a esse texto.",
+      "action_search_artifacts": "Pesquisar artefatos"
     },
     "awsControl": {
       "manifest": {

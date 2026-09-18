@@ -1191,7 +1191,7 @@
       "leave_scope": "Retour à toutes les commandes",
       "manifest": {
         "display_name": "Barre de commandes",
-        "description": "Remplace la recherche rapide (Cmd+K / Ctrl+K) par un lanceur : saisissez une commande, pas une requete. La premiere page contient les commandes d applications, les destinations et les parametres systeme et n emet aucune requete, donc la saisie ne coute rien. Les sessions deviennent une ligne dans laquelle on entre ; la recherche dans les connaissances, les artefacts, les competences et les prompts est indisponible tant que c est actif -- desactivez-le pour la retrouver.",
+        "description": "Remplace la recherche rapide (Cmd+K / Ctrl+K) par un lanceur : saisissez une commande, pas une requete. La premiere page contient les commandes d applications, les destinations et les parametres systeme et n emet aucune requete, donc la saisie ne coute rien. Les sessions et les artefacts enregistres deviennent une ligne dans laquelle on entre ; la recherche dans les connaissances, les competences et les prompts est indisponible tant que c est actif -- desactivez-le pour la retrouver.",
         "use_case_1": "Accède aux apps, aux paramètres, aux sessions qui demandent ton attention ou à une nouvelle requête d'agent sans quitter le clavier.",
         "configuration_1": "L'app est activée par défaut : appuie sur Cmd+K ou Ctrl+K où que tu sois, saisis une commande et utilise la section Sessions pour les conversations récentes ou correspondantes."
       },
@@ -1203,9 +1203,8 @@
       "title": "Barre de commandes",
       "action_failed": "Impossible de terminer \"{{action}}\". Appuyez sur Entree pour reessayer.",
       "working": "En cours…",
-      "other_search_hint": "Pour rechercher dans les connaissances, artefacts, competences ou prompts, desactivez Command Bar dans l App Store — ce lanceur n atteint que les sessions",
+      "other_search_hint": "Les connaissances, compétences et prompts ne sont pas recherchables ici — ouvrez Command Bar dans Applications pour réactiver la recherche complète",
       "cmd_toggle_theme": "Changer de theme",
-      "search_failed": "Recherche echouee",
       "retry": "Reessayer",
       "kind": {
         "app": "Application",
@@ -1219,7 +1218,20 @@
       "argument_withdrawn": "Cette commande n'est plus disponible.",
       "argument_changed": "Cette commande a changé. Vérifiez ce qui sera envoyé, puis appuyez à nouveau sur Entrée.",
       "will_send": "Sera envoyé",
-      "will_send_clipped": "Faites défiler pour lire la suite — cette instruction continue plus bas."
+      "will_send_clipped": "Faites défiler pour lire la suite — cette instruction continue plus bas.",
+      "cmd_search_artifacts": "Rechercher des artefacts",
+      "action_open_artifact": "Ouvrir l artefact",
+      "placeholder_artifacts": "Rechercher des artefacts par nom…",
+      "no_artifact_match_show_recent": "Aucun artefact ne correspond à « {{query}} » — afficher les récents",
+      "no_artifacts_yet": "Pas encore d'artefacts. Enregistrez un graphique, un document ou un widget depuis un chat et il apparaîtra ici.",
+      "group_recent": "Récents",
+      "cmd_search_artifacts_sub": "Parcourez et ouvrez les graphiques, documents et widgets que vous avez enregistrés.",
+      "artifact_search_failed": "La recherche d’artefacts a échoué. Réessayez.",
+      "search_failed": "Recherche echouee",
+      "artifacts_more_keep_typing": "+{{count}} autres — continuez à taper pour affiner",
+      "fallback_artifacts": "Rechercher « {{query}} » dans les artefacts",
+      "fallback_artifacts_sub": "Trouve les graphiques, documents et widgets enregistrés correspondant à ce texte.",
+      "action_search_artifacts": "Rechercher des artefacts"
     },
     "crewCompanion": {
       "accessory": {

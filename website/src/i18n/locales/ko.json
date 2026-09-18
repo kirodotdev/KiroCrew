@@ -1127,7 +1127,7 @@
         "use_case_1": "키보드에서 손을 떼지 않고 앱, 설정, 주의가 필요한 세션 또는 새 에이전트 요청으로 이동합니다.",
         "configuration_1": "기본으로 활성화되어 있습니다. 어디서든 Cmd+K 또는 Ctrl+K를 누르고 명령을 입력하세요. ‘세션’ 범위에서 최근 대화나 일치하는 대화를 찾을 수 있습니다.",
         "display_name": "커맨드 바",
-        "description": "빠른 검색(Cmd+K / Ctrl+K) 화면을 런처로 대체합니다. 검색어가 아니라 명령을 입력하세요. 첫 페이지에는 앱 명령과 이동 대상, 시스템 설정만 있고 요청을 보내지 않으므로 입력에 비용이 없습니다. 세션은 들어가서 쓰는 행이 됩니다. 활성화된 동안에는 지식, 산출물, 스킬, 프롬프트 검색을 사용할 수 없습니다. 되돌리려면 비활성화하세요."
+        "description": "빠른 검색(Cmd+K / Ctrl+K) 화면을 런처로 대체합니다. 검색어가 아니라 명령을 입력하세요. 첫 페이지에는 앱 명령과 이동 대상, 시스템 설정만 있고 요청을 보내지 않으므로 입력에 비용이 없습니다. 세션과 저장한 아티팩트는 들어가서 쓰는 행이 됩니다. 활성화된 동안에는 지식, 스킬, 프롬프트 검색을 사용할 수 없습니다. 되돌리려면 비활성화하세요."
       },
       "no_matches": "일치하는 항목 없음",
       "no_sessions": "일치하는 세션이 없습니다",
@@ -1137,9 +1137,8 @@
       "title": "커맨드 바",
       "action_failed": "‘{{action}}’을(를) 완료할 수 없습니다. Enter를 눌러 다시 시도하세요.",
       "working": "처리 중…",
-      "other_search_hint": "지식, 산출물, 스킬, 프롬프트를 검색하려면 App Store에서 Command Bar를 비활성화하세요 — 이 런처는 세션만 다룹니다",
+      "other_search_hint": "지식, 스킬, 프롬프트는 여기서 검색할 수 없습니다 — 전체 검색을 다시 켜려면 앱에서 Command Bar를 열어 보세요",
       "cmd_toggle_theme": "테마 전환",
-      "search_failed": "검색 실패",
       "retry": "다시 시도",
       "kind": {
         "app": "앱",
@@ -1153,7 +1152,20 @@
       "argument_withdrawn": "해당 명령을 더 이상 사용할 수 없습니다.",
       "argument_changed": "이 명령이 변경되었습니다. 전송될 내용을 확인한 뒤 Enter를 다시 누르세요.",
       "will_send": "보낼 내용",
-      "will_send_clipped": "이 명령은 아래로 이어집니다. 스크롤하여 나머지를 확인하세요."
+      "will_send_clipped": "이 명령은 아래로 이어집니다. 스크롤하여 나머지를 확인하세요.",
+      "cmd_search_artifacts": "아티팩트 검색",
+      "action_open_artifact": "아티팩트 열기",
+      "placeholder_artifacts": "이름으로 아티팩트 검색…",
+      "no_artifact_match_show_recent": "‘{{query}}’와 일치하는 아티팩트가 없습니다 — 최근 항목 표시",
+      "no_artifacts_yet": "아직 아티팩트가 없습니다. 채팅에서 차트, 문서, 위젯을 저장하면 여기에 표시됩니다.",
+      "group_recent": "최근",
+      "cmd_search_artifacts_sub": "저장한 차트, 문서, 위젯을 살펴보고 엽니다.",
+      "artifact_search_failed": "아티팩트 검색에 실패했습니다. 다시 시도하세요.",
+      "search_failed": "검색 실패",
+      "artifacts_more_keep_typing": "{{count}}개 더 — 계속 입력해 좁히기",
+      "fallback_artifacts": "아티팩트에서 {{query}} 검색",
+      "fallback_artifacts_sub": "저장한 차트, 문서, 위젯을 그 텍스트로 찾습니다.",
+      "action_search_artifacts": "아티팩트 검색"
     },
     "crewCompanion": {
       "accessory": {
