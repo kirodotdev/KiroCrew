@@ -6,8 +6,8 @@ import type { ChatMessage } from '../types'
 // QueueStack renders framer-motion cards; we only exercise the inline
 // EditInput, which is plain DOM and needs no special test polyfill.
 
-function queued(content: string, queueId: string): ChatMessage {
-  return { role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } } as ChatMessage
+function queued(content: string, queueId: string, meta?: Record<string, unknown>): ChatMessage {
+  return { role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId, ...meta } } as ChatMessage
 }
 
 /** Open the inline editor on the single queued card and return its input. */
@@ -153,5 +153,22 @@ describe('isNonInteractiveQueued (composer QueueStack exclusion)', () => {
     expect(isNonInteractiveQueued(queued('please also check the docs', 'q1'))).toBe(false)
     // A user quoting the prefix mid-sentence is still a user message.
     expect(isNonInteractiveQueued(queued('why did I see [Tool refusal — automatic recovery]?', 'q2'))).toBe(false)
+  })
+})
+
+describe('durable: false receipt marker', () => {
+  it('renders the non-durable marker when meta.durable is false', () => {
+    render(<QueueStack messages={[queued('hello', 'q1', { durable: false })]} />)
+    expect(screen.getByTestId('queue-non-durable')).toBeTruthy()
+  })
+
+  it('does NOT render the marker when durable is absent (default/true)', () => {
+    render(<QueueStack messages={[queued('hello', 'q1')]} />)
+    expect(screen.queryByTestId('queue-non-durable')).toBeNull()
+  })
+
+  it('does NOT render the marker when durable is true', () => {
+    render(<QueueStack messages={[queued('hello', 'q1', { durable: true })]} />)
+    expect(screen.queryByTestId('queue-non-durable')).toBeNull()
   })
 })
