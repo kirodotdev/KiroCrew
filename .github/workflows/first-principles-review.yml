@@ -73,7 +73,7 @@ jobs:
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'First Principles Review' || 'First Principles Review (same-repo lane, not applicable to forks)' }}"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # Agentic reviewer reading untrusted PR diff content -- never gets fleet credentials, same isolation as claude-review.yml/codex-review.yml.
     # Consumer counting is grep-heavy, so this lane runs more turns than the
     # other advisory lanes; keep headroom for the model-latency fat tail.
     timeout-minutes: 60

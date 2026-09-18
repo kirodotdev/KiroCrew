@@ -42,7 +42,19 @@ concurrency:
 jobs:
   vendor-manifest:
     name: Vendored Tree Integrity
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner pilot (docs/ci/ci-and-reviews.md), the same
+    # routing decision ci.yml's `changes` job resolves into a `linux_runner`
+    # output -- but every gate job here MUST stay unconditional (no `needs:`,
+    # no `if:`; see test_fast_gate_barrier.py's test_every_gate_is_unconditional),
+    # so the label is computed inline from `github.*` context instead of read
+    # from a sibling job's output. A run in any repository other than
+    # kirodotdev/KiroCrew (a fork's own CI), or a pull_request whose head
+    # repository is not this one, stays on `ubuntu-latest`; everything else
+    # gets the per-run CodeBuild label. The AWS-side webhook independently
+    # allowlists the triggering actor, so this expression is the routing
+    # decision, not the trust boundary. Duplicated verbatim on every job below
+    # rather than factored out, since `runs-on:` accepts no cross-job read.
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     # Deliberately NOT gated behind the `changes` job's surface outputs:
     # everything under src/kiro_crew/_vendor is excluded from semgrep and the
@@ -65,7 +77,7 @@ jobs:
 
   brand-lint:
     name: Brand Name Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: brand-lint/Check the product name on the lines this change adds runs `git fetch origin`
@@ -96,7 +108,7 @@ jobs:
 
   comment-history-lint:
     name: Comment History Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: comment-history-lint/Check comments on the lines this change adds runs `git fetch origin`
@@ -125,7 +137,7 @@ jobs:
 
   focus-cue-lint:
     name: Focus Cue Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: focus-cue-lint/Check the focus cues on the elements this change touches runs `git fetch origin`
@@ -154,7 +166,7 @@ jobs:
 
   feature-map-lint:
     name: Feature Map Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: feature-map-lint/Check the feature map covers the features this change adds runs `git fetch origin`
@@ -185,7 +197,7 @@ jobs:
 
   changelog-history:
     name: Changelog History Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: changelog-history/Check that shipped changelog sections survived this change runs `git fetch origin`
@@ -226,7 +238,7 @@ jobs:
 
   builtin-skill-scope:
     name: Builtin Skill Scope Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -258,7 +270,7 @@ jobs:
 
   loop-bound-locks:
     name: Loop-Bound Locks Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -283,7 +295,7 @@ jobs:
 
   testpaths-coverage:
     name: Testpaths Coverage Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -307,7 +319,7 @@ jobs:
 
   harness-parity:
     name: Harness Parity Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: harness-parity/Check harness identity tests on the lines this change adds runs `git fetch origin`
@@ -342,7 +354,7 @@ jobs:
 
   memory-store-seam:
     name: Memory Store Seam Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     steps:
       # persist-credentials retained: memory-store-seam/Check that memory-context call sites name their store runs `git fetch origin`
@@ -378,7 +390,7 @@ jobs:
 
   docs-lint:
     name: Docs Lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

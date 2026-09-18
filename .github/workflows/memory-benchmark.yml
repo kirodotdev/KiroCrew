@@ -213,7 +213,7 @@ jobs:
     # `always()` so a single failed arm still yields a comparison for the arm
     # that succeeded; the steps below tolerate a missing file.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     timeout-minutes: 15
     permissions:
       contents: write

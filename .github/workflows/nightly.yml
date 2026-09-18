@@ -25,6 +25,19 @@ concurrency:
 jobs:
   version:
     name: Compute Nightly Version
+    # NOT routed to the CodeBuild fleet. This job fires only on `schedule` and
+    # `workflow_dispatch` -- github.actor on a schedule tick is whoever last
+    # edited the workflow file, not a live human triggering the run, and on
+    # workflow_dispatch it's whoever clicked Run, which need not be a
+    # collaborator with fleet access. Either way the AWS webhook's actor
+    # allowlist can reject the request, and this job has no fork check to
+    # fall back to `ubuntu-latest` on: `github.event.pull_request` does not
+    # exist for either trigger, so the routing expression's fork term is
+    # always false and it always requests the fleet -- the same
+    # availability-bug mechanism as issue-summary.yml/issue-triage.yml's
+    # `issues`/`issue_comment` triggers, which have the identical gap. A
+    # scheduled run whose actor the allowlist rejects queues forever
+    # instead of running, so this job stays on `ubuntu-latest`.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

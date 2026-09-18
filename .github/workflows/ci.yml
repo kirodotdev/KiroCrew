@@ -53,7 +53,7 @@ jobs:
   # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
     # dorny/paths-filter runs with `token: ''` (below), so it detects changes
     # with local git instead of the REST API and needs no pull-requests:read.
@@ -311,7 +311,7 @@ jobs:
   # run anyway and the log would claim it was cleared to.
   await-fast-gate:
     name: Await Fast Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 15
     permissions:
       # actions:read is what lets this read another workflow's runs. Job-level
@@ -422,6 +422,17 @@ jobs:
     # positive "python changed" allowlist) so that anything the selector could
     # not classify as frontend -- docs, a new root file, meta -- still runs it.
     if: needs.changes.outputs.only_frontend != 'true'
+    # NOT routed to the CodeBuild fleet: `black --check` over the whole tree
+    # needs more memory than the fleet's default BUILD_GENERAL1_MEDIUM
+    # (4 vCPU / 7 GB) provides, OOM-killing the job (exit 137). The fleet's
+    # `_large` tier (8 vCPU / 16 GB, per `aws codebuild batch-get-builds`)
+    # also fails this job, reproducibly, with "the self-hosted runner lost
+    # communication with the server" -- the signature GitHub documents for a
+    # runner starved of CPU/memory or one whose process gets killed, though
+    # no CodeBuild-side log has yet pinned the exact cause on that tier.
+    # Stays on `ubuntu-latest` (16 GB) until someone can reproduce the
+    # `_large`-tier failure live against the fleet with logs captured before
+    # they rotate out of CloudWatch.
     runs-on: ubuntu-latest
     # The job's floor on today's hosted runners is ~14-15 min (black --check
     # over the whole tree alone takes 7-8 min, flake8 ~2 min, mypy cold ~3 min),
@@ -1456,8 +1467,8 @@ jobs:
 
   backend-test-crew-container:
     name: Backend Tests (crew container)
-    needs: [await-fast-gate]
-    runs-on: ubuntu-latest
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1875,7 +1886,7 @@ jobs:
     # input byte-identical. only_backend is the catch-all side of the same
     # decision, so an unclassifiable path still runs this.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: frontend-lint/Check for new hardcoded UI strings runs `git fetch origin`
@@ -2052,7 +2063,7 @@ jobs:
     needs: [changes, await-fast-gate]
     # Reads website/package.json + website/package-lock.json and nothing else.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2143,8 +2154,8 @@ jobs:
   # packaging/installer-assets/* references it pins.
   electron-test:
     name: Electron Shell Tests
-    needs: [await-fast-gate]
-    runs-on: ubuntu-latest
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

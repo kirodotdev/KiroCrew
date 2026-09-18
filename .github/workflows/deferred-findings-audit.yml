@@ -24,7 +24,7 @@ permissions:
 jobs:
   audit:
     name: Surface overdue deferred findings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     timeout-minutes: 10
     steps:
       - name: List, evaluate, and bump overdue deferrals

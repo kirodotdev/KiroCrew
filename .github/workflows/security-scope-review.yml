@@ -67,6 +67,18 @@ jobs:
   # holds nothing worth reaching.
   generate:
     name: Security scope candidates (Fable 5)
+    # NOT routed to the CodeBuild fleet. The write fence two steps below
+    # hardcodes `Write(//home/runner/work/_actions/**)` -- the GitHub-hosted
+    # runner's action-code path -- to stop the untrusted-diff-driven model step
+    # from overwriting an action that runs later in this job with its live
+    # Bedrock OIDC credentials. CodeBuild relocates that directory (its
+    # actions land under `/codebuild/output/<random>/...`), so the same
+    # absolute-path deny would silently stop matching there and the fence
+    # would fail OPEN instead of closed -- exactly the failure mode the
+    # comment at the fence's definition already names as a known weakness of
+    # a hardcoded path. Revisit once the fence itself is CodeBuild-portable
+    # (an expression, not a literal path) rather than routing this job before
+    # that lands.
     runs-on: ubuntu-latest
     # OIDC for Bedrock, and read-only on the PR: this stage proposes candidates and
     # posts nothing.
@@ -648,6 +660,21 @@ jobs:
       always()
       && needs.generate.outputs.in_scope == 'true'
       && needs.generate.outputs.override != 'true'
+    # NOT routed to the CodeBuild fleet. A diff that touches this workflow's
+    # own `runs-on:` lines (as one that migrates CI runners does) sets
+    # `in_scope=true` above, but carries no shell/flow/cron surface for
+    # `generate`'s model to propose candidates for -- an honest empty
+    # `candidates.json`. `scope_candidates.py validate` treats that the same
+    # as an untrustworthy file (`CandidateError`, exit 2), deliberately: exit
+    # 3 ("nothing new to adjudicate") means the model DID propose candidates
+    # and they are already covered by the committed corpus, which is a
+    # different, stronger claim than "nothing was proposed at all" -- merging
+    # the two would let a failed or empty model call pass as a reviewed,
+    # honest empty set, which is the exact false green this lane exists to
+    # prevent (test_an_untrustworthy_candidate_file_is_exit_2's `empty` case
+    # pins this). Fixing the diff-has-no-surface-for-this-lane case belongs
+    # in a change to this lane's own design, not a CI-runner migration, so
+    # this job stays on `ubuntu-latest` until that lands.
     runs-on: ubuntu-latest
     # `contents: read` and NOTHING else. This job can execute the pull request's own
     # harness, so it must hold nothing worth reaching: no `id-token`, so no AWS
@@ -1255,6 +1282,13 @@ jobs:
     # always(): a leg that reds is exactly the run whose verdict must be
     # published, and the exit-3 short circuit skips `adjudicate` entirely.
     if: always()
+    # NOT routed to the CodeBuild fleet -- same reason as `validate`, above:
+    # a diff limited to this workflow's own `runs-on:` lines gives `generate`
+    # nothing to propose, and `validate` already stays on `ubuntu-latest` for
+    # that diff shape. `publish` is this lane's required check and always
+    # runs downstream of `validate`, so routing it alone would not change
+    # this job's own outcome but would split the two across runner classes
+    # for no reason.
     runs-on: ubuntu-latest
     # Posts, and holds the ONLY write scope in this lane. On a `pull_request`
     # event a bare checkout resolves to the PR MERGE REF, so the workspace below

@@ -66,7 +66,7 @@ env:
 jobs:
   metrics:
     name: Deterministic metrics
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     # Sized for the worst observed week (57 min) twice over: SZZ cost scales
     # with fix volume and `window_days` is a dispatch input.
     timeout-minutes: 120
@@ -149,7 +149,7 @@ jobs:
   analyze:
     name: Classify and narrate
     needs: metrics
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     # The model half alone. 09-07 was cut off two minutes into it because the
     # metrics half had spent 57 of the shared 60.
     timeout-minutes: 40
