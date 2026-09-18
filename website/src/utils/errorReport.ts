@@ -39,6 +39,13 @@ export type ErrorSource =
   /** An uncaught error or unhandled rejection on `window`. */
   | 'window'
   /**
+   * `fetch` itself rejected — no `Response` exists (recorded by `netFetch`).
+   * Distinct from `api` because no HTTP status was ever received: the gateway
+   * is unreachable (gateway down, SSH tunnel drop, machine offline), which
+   * sends a reader to the connection, not to the endpoint's handler.
+   */
+  | 'network'
+  /**
    * A subsystem the backend reports as broken inside a SUCCESSFUL response — a
    * remote crew whose tunnel is down, carried in a 200 status poll. Distinct
    * from `api` because no request failed: publishing it as `api` would name a
