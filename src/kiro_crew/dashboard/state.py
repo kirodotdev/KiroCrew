@@ -1147,17 +1147,54 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 _MAX_PENDING_CONTEXT = 50
 
 
+def _finite_number(value: object) -> bool:
+    """True for a real, finite int/float — excluding bool.
+
+    ``bool`` is an ``int`` subclass, so a bare ``isinstance(v, (int, float))`` admits
+    ``True``/``False`` into arithmetic that then compares as 1/0. NaN and Inf are excluded
+    because they make ``injected_at + max_age`` non-comparable.
+
+    An arbitrary-precision ``int`` passes ``isinstance`` and then raises ``OverflowError``
+    inside ``isfinite``'s float conversion, so a metadata line carrying a 310-digit integer
+    would raise out of the hydrate rather than be rejected. An unconvertible magnitude is
+    not a usable TTL, so it reports False.
+    """
+    if isinstance(value, bool):
+        return False
+    if not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def context_entry_expired(entry: dict, now: float) -> bool:
     """True if a pending-context entry's TTL has elapsed.
 
     Shared by the drain, the per-source cap count, and the deferred-note
     promotion so they cannot disagree about which entries are still live. It
     lives here rather than in chat_runner because ``_ChatSlot`` itself needs it.
+
+    A PRESENT ``maxAge`` that is not a finite number reports EXPIRED rather than doing the
+    arithmetic, which raises ``TypeError`` on ``entry.get("injectedAt", 0) + max_age``
+    (``int + str``). That is reachable from every restore path: the boundary validators
+    guard the LIVE enqueue only, and an entry rehydrated from an operator-editable metadata
+    line never passes through them.
+
+    Reporting EXPIRED, not "never expires", is the deliberate direction: a malformed entry
+    is pruned by the callers that already drop expired ones, whereas treating it as
+    non-expiring would make unparseable data immortal and re-persisted on every save.
     """
     max_age = entry.get("maxAge")
     if max_age is None:
         return False
-    return entry.get("injectedAt", 0) + max_age < now
+    if not _finite_number(max_age):
+        return True
+    injected_at = entry.get("injectedAt", 0)
+    if not _finite_number(injected_at):
+        return True
+    return injected_at + max_age < now
 
 
 def _note_authorized_elsewhere(stamped: object, live_session: str) -> bool:
