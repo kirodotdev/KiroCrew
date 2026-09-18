@@ -32,16 +32,12 @@ LINUX = WORKFLOWS / "publish-linux.yml"
 #: separate job because publish-linux.yml writes one immutable versioned key
 #: per invocation.
 LINUX_LANES = tuple(
-    f"publish-linux-{fmt}-{arch}"
-    for fmt in ("appimage", "deb", "rpm")
-    for arch in ("x64", "arm64")
+    f"publish-linux-{fmt}-{arch}" for fmt in ("appimage", "deb", "rpm") for arch in ("x64", "arm64")
 )
 MAC = WORKFLOWS / "sign-and-notarize.yml"
 DOCKER = WORKFLOWS / "publish-docker.yml"
 PROMOTION_ARTIFACT = "KiroCrew-notarized-stable-${{ needs.version.outputs.version }}"
-PROMOTION_ARTIFACT_FORMAT = (
-    "format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version)"
-)
+PROMOTION_ARTIFACT_FORMAT = "format('KiroCrew-notarized-stable-{0}', needs.version.outputs.version)"
 #: Every lane's ``promote`` input reads promote_mode, never channel, so an
 #: opt-in stable rebuild flips all of them together or none of them.
 PROMOTE_EXPRESSION = "${{ needs.version.outputs.promote_mode == 'true' }}"
@@ -233,9 +229,9 @@ def test_release_page_offers_every_platform_that_publishes() -> None:
     for lane, extensions in lane_extension.items():
         assert lane in jobs, f"{lane} is gone; update this mapping deliberately"
         for extension in extensions:
-            assert f'-name "*{extension}"' in assemble, (
-                f"{lane} publishes {extension} but the release page does not collect it"
-            )
+            assert (
+                f'-name "*{extension}"' in assemble
+            ), f"{lane} publishes {extension} but the release page does not collect it"
 
     # Sidecars and feed pointers are NOT downloadable assets. The blockmap is a
     # differential-update input and latest*.yml are channel pointers published
@@ -389,12 +385,8 @@ def test_file_publishers_verify_manifest_and_prior_provenance() -> None:
     cli_manifest = _step(CLI, "publish-cli", "Verify immutable promotion bundle")
     cli_attest = _step(CLI, "publish-cli", "Attest wheel provenance")
     cli_verify = _step(CLI, "publish-cli", "Verify promoted wheel provenance")
-    cli_promote = (
-        "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}"
-    )
-    cli_fresh = (
-        "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}"
-    )
+    cli_promote = "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && inputs.promote }}"
+    cli_fresh = "${{ env.HAS_PUBLISH_ROLE && env.HAS_MANIFEST_KEY && !inputs.promote }}"
     assert cli_manifest["if"] == cli_promote
     assert cli_attest["if"] == cli_fresh
     assert cli_verify["if"] == cli_promote
@@ -441,3 +433,49 @@ def test_docker_promotion_input_defaults_to_no_promotion() -> None:
     assert "!inputs.promote" in attest["if"]
     assert "inputs.promote" in promote["if"]
     assert '"${IMAGE}@${DIGEST}"' in promote["run"]
+
+
+#: Every lane that must have published before a version is announced. This is
+#: the same set ``record-promotion`` requires, so the release page and the
+#: promotion record cannot disagree about what a complete publication is.
+REQUIRED_PUBLICATION_LANES = (
+    "publish-cli",
+    *LINUX_LANES,
+    "publish-docker",
+    "sign-and-notarize",
+)
+
+
+def test_the_release_page_waits_for_every_required_publication_lane() -> None:
+    """The public marker may not appear while a required lane failed.
+
+    Each stable lane gates only on ``stable-gate``, which is a PRE-FLIGHT
+    (changelog present, bytes actually shipped to insiders), so the lanes
+    publish independently of one another. Gating the release page on macOS alone
+    therefore lets a version become publicly visible with the CLI, a Linux
+    format or the Docker tag missing, and nothing recording which lanes landed.
+
+    Asserted over the required set rather than a hand-written list of job names,
+    so a lane added to ``REQUIRED_PUBLICATION_LANES`` fails here until the page
+    waits for it too.
+    """
+    job = _workflow(RELEASE)["jobs"]["github-release"]
+    for lane in REQUIRED_PUBLICATION_LANES:
+        assert lane in job["needs"], lane
+        assert f"needs.{lane}.result == 'success'" in job["if"], lane
+
+
+def test_the_promotion_record_and_the_release_page_require_the_same_lanes() -> None:
+    """One definition of a complete publication, read from the workflow.
+
+    If the two conditions drift, a version can carry an insider promotion record
+    while the page withheld its announcement, or the reverse, and whichever is
+    laxer silently becomes the real boundary.
+    """
+    jobs = _workflow(RELEASE)["jobs"]
+    page = jobs["github-release"]["if"]
+    record = jobs["record-promotion"]["if"]
+    for lane in REQUIRED_PUBLICATION_LANES:
+        gate = f"needs.{lane}.result == 'success'"
+        assert gate in page, f"release page does not require {lane}"
+        assert gate in record, f"promotion record does not require {lane}"

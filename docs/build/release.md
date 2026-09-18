@@ -351,6 +351,26 @@ marked `prerelease` when the channel is insider, and notes are generated.
 job that has it: the signing jobs hold AWS credentials but never
 `contents: write`. `test_workflow_permissions.py` pins that split.
 
+**The release page is the publication boundary.** Every publish lane gates on
+`stable-gate`, which is a pre-flight (the version is documented in
+`CHANGELOG.md`; for a promotion, bytes insiders actually received), so the lanes
+then publish independently of one another. `github-release` therefore waits on
+the complete required set -- `publish-cli`, all six Linux format/arch lanes,
+`publish-docker` and `sign-and-notarize` -- rather than on macOS alone, so a
+version cannot become publicly visible while a required lane failed. It is the
+same set `record-promotion` requires, and
+`test_release_promotion_contract.py::test_the_promotion_record_and_the_release_page_require_the_same_lanes`
+keeps the two from drifting into two different definitions of "published".
+
+What this does and does not buy: nothing in the workflow can un-publish an OCI
+tag or an npm version, so the boundary withholds the **announcement**, not the
+bytes. A partial run leaves the already-published lanes in place and no release
+page; a rerun after the failing lane is fixed reaches `github-release` again with
+the same immutable artifacts, which is what makes the retry deterministic rather
+than a second, differently-composed release. `build-windows` stays outside the
+condition on purpose -- it is waited on so the installer artifact exists, but its
+result is soft-failed and must not gate the page.
+
 ### There is no PyPI publish
 
 Nothing in the repository publishes to PyPI, and `pip install kirocrew` from

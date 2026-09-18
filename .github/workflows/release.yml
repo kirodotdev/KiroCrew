@@ -791,10 +791,50 @@ jobs:
   # already preserves.
   github-release:
     name: Create GitHub Release
-    needs: [version, stable-gate, sign-and-notarize, build-windows]
+    # The release page is the PUBLICLY VISIBLE marker that a publication
+    # completed, so it waits on every REQUIRED lane and not on macOS alone.
+    # Announcing while a required lane failed leaves users a version that is
+    # visible but only partially promoted: the page offers assets while the CLI,
+    # a Linux format or the Docker tag never received this version, and nothing
+    # records which lanes actually landed. The required set is the same one
+    # record-promotion demands, so the two cannot disagree about what a complete
+    # publication means.
+    #
+    # The boundary is the ANNOUNCEMENT, not the bytes. Nothing here can
+    # un-publish a Docker tag or an npm version, so withholding the release page
+    # is the strongest atomicity this workflow can offer; a rerun after a fixed
+    # lane reaches this job again with the same immutable artifacts.
+    #
+    # build-windows stays in `needs` and out of the condition. Waiting on it
+    # keeps a slow Windows runner from being raced past, while gating on its
+    # result would couple the page to a lane whose soft_fail exists to keep it
+    # optional -- and soft_fail makes that result `success` even on failure, so
+    # the check would assert nothing. Pinned by
+    # test_the_release_page_waits_for_windows_without_depending_on_it.
+    needs:
+      - version
+      - stable-gate
+      - publish-cli
+      - publish-linux-appimage-x64
+      - publish-linux-appimage-arm64
+      - publish-linux-deb-x64
+      - publish-linux-deb-arm64
+      - publish-linux-rpm-x64
+      - publish-linux-rpm-arm64
+      - publish-docker
+      - sign-and-notarize
+      - build-windows
     if: >-
       ${{ always() && needs.version.result == 'success' &&
           needs.stable-gate.result == 'success' &&
+          needs.publish-cli.result == 'success' &&
+          needs.publish-linux-appimage-x64.result == 'success' &&
+          needs.publish-linux-appimage-arm64.result == 'success' &&
+          needs.publish-linux-deb-x64.result == 'success' &&
+          needs.publish-linux-deb-arm64.result == 'success' &&
+          needs.publish-linux-rpm-x64.result == 'success' &&
+          needs.publish-linux-rpm-arm64.result == 'success' &&
+          needs.publish-docker.result == 'success' &&
           needs.sign-and-notarize.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20

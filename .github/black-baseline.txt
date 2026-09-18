@@ -836,7 +836,6 @@ test/test_refresh_tokens.py
 test/test_regex_anchor_contract.py
 test/test_registry_hero_fields.py
 test/test_release_promotion.py
-test/test_release_promotion_contract.py
 test/test_remote_artifacts.py
 test/test_resolve_session_key.py
 test/test_resolve_skill_root_package.py
