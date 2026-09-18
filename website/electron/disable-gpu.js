@@ -31,6 +31,11 @@
 // (mirroring the existing `KIROCREW_*` env conventions: KIROCREW_HOME,
 // KIROCREW_PORT, KIROCREW_DEBUG) or the `--disable-gpu` command-line flag.
 //
+// Note the limit of this switch set: it shortens Chromium's GPU mode chain but
+// a GPU process is still spawned for the display compositor. A Windows host on
+// which every GPU process dies at launch is handled by `gpu-crash-fallback.js`,
+// which relaunches once with `--in-process-gpu` and persists that decision.
+//
 // Pure logic + injected dependencies: Electron main is not exercised by the
 // unit test runner, so the decision has to be testable without a live `app`
 // (same pattern as native-logging.js / renderer-recovery.js / perf-metrics.js).

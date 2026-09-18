@@ -676,6 +676,21 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
 
 ## Troubleshooting
 
+- **The desktop app starts and exits within seconds, no window** — on a host
+  where Chromium cannot run a GPU process (VDI, a remote session, a driver it
+  cannot use), `chromium.log` (next to `gateway-launch.log`) shows `GPU process
+  exited unexpectedly` and ends with `GPU process isn't usable. Goodbye.`, and
+  `gateway-launch.log` shows `renderer died` up to its reload limit. The app now
+  relaunches itself once with software rendering
+  (`--in-process-gpu --use-angle=swiftshader`) when the GPU process dies
+  before the dashboard has loaded, and keeps that choice for the installed
+  version under `gpuSoftwareFallback` in `%APPDATA%\KiroCrew\config.json`; a
+  new version tries hardware rendering again once. The launch log then reads
+  `gpu: software rendering ACTIVE`. `--no-sandbox` is never applied: if the
+  relaunched app still cannot start, every Chromium child is being blocked
+  (typically an endpoint-security DLL injected into every process), which is a
+  different failure and needs a process exclusion for the app, not a rendering
+  switch.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and

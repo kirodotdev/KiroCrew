@@ -177,6 +177,7 @@
       "native-logging.js",
       "crash-collector.js",
       "disable-gpu.js",
+      "gpu-crash-fallback.js",
       "early-boot-guard.js",
       "memory-watch-log.js",
       "frame-load-log.js",
