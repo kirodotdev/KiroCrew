@@ -14,15 +14,23 @@ import { KiroGhostMark } from '../components/KiroGhostMark'
 import { CrewMemberMark } from '../components/CrewMemberMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
 import { selectSubagentActivityCount } from '../store/chatSlice'
+import { isSilencedNote } from '../store/notificationsSlice'
 import { PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import type { RootState } from '../store'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
 // reference (which is the standard Redux Toolkit pattern).
+//
+// Silenced and passive rows are excluded, matching the backend's own
+// `_unread_count` and the rule the bell sheet's badge applies. This sum reaches
+// the user as the browser-tab attention number, and a muted note counted here is
+// a `(n)` in the title that no surface the user can open accounts for: the bell
+// omits it and the feed keeps silenced rows behind the muted disclosure, so
+// there is nothing to click that would clear it.
 const selectUnacknowledgedNotificationCount = createSelector(
   (s: RootState) => s.notifications.items,
-  items => items.filter(n => !n.acked).length,
+  items => items.filter(n => !n.acked && !isSilencedNote(n)).length,
 )
 
 // ── Main ───────────────────────────────────────────────────────────────────

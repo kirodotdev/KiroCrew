@@ -40,6 +40,26 @@ export const NOTIFICATIONS_RING_CAP = 200
 const capped = (items: Notification[]): Notification[] =>
   items.length > NOTIFICATIONS_RING_CAP ? items.slice(items.length - NOTIFICATIONS_RING_CAP) : items
 
+/** True when an attention surface must skip *n*.
+ *
+ *  The backend stamps both halves and states the contract in
+ *  `kiro_crew/notifications/settings.py`: muting a channel keeps the note in
+ *  history but sets `silenced: true` and forces `priority: "passive"`, "so every
+ *  attention surface (badge count, sound, native banner, feed styling) skips
+ *  it". `notification_coordinator.deliver()` holds its own `_unread_count` to
+ *  the priority half of that rule.
+ *
+ *  Both halves are checked, not just `silenced`: a channel default or a
+ *  producer-requested `passive` (a subagent completion, say) is never muted and
+ *  so carries no `silenced` flag, yet the backend already leaves it out of the
+ *  unread count. It lives beside the notifications state rather than inside one
+ *  consumer, so the attention surfaces that read it cannot drift apart: two of
+ *  them disagreeing about what "silenced" means is the class of defect this
+ *  predicate exists to close. */
+export function isSilencedNote(n: Pick<Notification, 'silenced' | 'priority'>): boolean {
+  return !!n.silenced || n.priority === 'passive'
+}
+
 /** Stamp a local ack-state change on `ts`. Called for EVERY ack/unack signal
  *  that reaches an item, including one whose flag already matches: the backend
  *  broadcasts an ack to every socket with no originator exclusion, so the view
