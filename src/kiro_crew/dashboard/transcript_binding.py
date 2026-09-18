@@ -29,16 +29,18 @@ if TYPE_CHECKING:
 class TranscriptBinding:
     """The cells a slot shares with every live alias on its transcript."""
 
-    __slots__ = ("project", "assigned", "_commit", "autocompact_pct", "autocompact_set")
+    __slots__ = ("project", "cleared", "assigned", "_commit", "autocompact_pct", "autocompact_set")
 
     def __init__(
         self,
         project: str = "",
         assigned: bool = False,
+        cleared: bool = False,
         autocompact_pct: float | None = None,
         autocompact_set: bool = False,
     ) -> None:
         self.project = project
+        self.cleared = cleared
         # Whether the group has chosen its directory: it held one, or cleared one it
         # held. A slot born linked and never seeded holds "" without choosing it.
         self.assigned = assigned
@@ -124,7 +126,7 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
             if own.assigned and not shared.assigned:
                 # The peer never chose a directory (born linked, never seeded); the
                 # joiner's own value, often just read from disk, is the group's.
-                shared.project = own.project
+                shared.project, shared.cleared = own.project, own.cleared
                 shared.assigned = True
             if own.autocompact_set and not shared.autocompact_set:
                 # The same rule for the threshold: a peer nothing wrote takes the joiner's.
@@ -147,6 +149,7 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
         slot._binding = TranscriptBinding(
             project=slot._binding.project,
             assigned=slot._binding.assigned,
+            cleared=slot._binding.cleared,
             autocompact_pct=slot._binding.autocompact_pct,
             autocompact_set=slot._binding.autocompact_set,
         )
@@ -238,3 +241,11 @@ def seed_autocompact_from_disk(state: Any, slot: Any, value: float | None) -> No
     if value is None or (_peers(state, slot) and slot._binding.autocompact_set):
         return
     slot.autocompact_pct = value
+
+
+def seed_cleared_from_disk(state: Any, slot: Any, value: bool) -> None:
+    """Restore the stored clear marker unless a live alias's choice outranks disk."""
+    if not live_project_outranks_disk(state, slot):
+        slot.project_cleared = value
+        if value and isinstance(getattr(slot, "_binding", None), TranscriptBinding):
+            slot._binding.assigned = True

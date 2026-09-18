@@ -32,6 +32,7 @@ logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
 
 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
+    from kiro_crew.config.paths import CWD_CLEARED
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.dashboard.transcript_binding import arm_project_reset
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
@@ -41,9 +42,27 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
-        slot.project = ""
+        armed = bound = ""
         if old_project:
-            arm_project_reset(state, slot, effective_session_key(slot))
+            key = effective_session_key(slot)
+            # Resolved BEFORE the slot is touched, so a failure leaves nothing half-cleared.
+            try:
+                agent, kind = getattr(slot, "agent", ""), getattr(slot, "agent_kind", "")
+                armed = await state.sessions.resolve_arm_cwd(key, CWD_CLEARED)
+                bound = await state.sessions.resolve_arm_cwd(key, CWD_CLEARED, agent, kind)
+            except Exception:
+                logger.debug("resolve of the cleared workspace failed", exc_info=True)
+                return "Error: the default workspace could not be resolved."
+            if (getattr(slot, "project", "") or "") is not old_project:
+                return "Error: the project changed while the clear resolved; nothing was cleared."
+            if effective_session_key(slot) != key:
+                return "Error: the session moved while the clear resolved; nothing was cleared."
+        slot.project = ""
+        slot.project_cleared = bool(old_project or getattr(slot, "project_cleared", False))
+        if old_project:
+            arm_project_reset(state, slot, key)
+            state.sessions.mark_retire_on_next_claim(key, armed)
+            state.sessions.drop_resume_outside(key, bound)
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
@@ -84,8 +103,12 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     if overlap is not None:
         return f"Error: {overlap}"
     slot.project = rp
+    slot.project_cleared = False
     if rp != old_project:
-        arm_project_reset(state, slot, effective_session_key(slot))
+        # Armed HERE, or a cwd-less claim before the deferred reset reuses `old_project`.
+        key = effective_session_key(slot)
+        arm_project_reset(state, slot, key)
+        state.sessions.mark_retire_on_next_claim(key, rp)
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project
 
