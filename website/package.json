@@ -42,6 +42,7 @@
     "verify:cron-chat-folder": "node scripts/capture-cron-chat-folder.mjs",
     "verify:flex-input-min-w-0": "node scripts/capture-flex-input-min-w-0.mjs",
     "verify:decision-strip": "node scripts/capture-decision-strip.mjs",
+    "verify:nav-badge-chord": "node scripts/capture-nav-badge-chord.mjs",
     "verify:feature-video-cache-row": "node scripts/capture-feature-video-cache-row.mjs",
     "verify:credit-meter-toggle": "node scripts/capture-credit-meter-toggle.mjs",
     "verify:trackpad-zoom": "node scripts/capture-trackpad-zoom.mjs",

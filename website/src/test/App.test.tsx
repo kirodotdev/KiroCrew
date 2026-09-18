@@ -4,9 +4,10 @@ import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
-import App from '../App'
-import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
+import App, { NavBadge } from '../App'
+import { sseConnected, sseDisconnected, markSlotUnread } from '../store/dashboardSlice'
 import { openActivityPanel, sseSubagentQueued } from '../store/chatSlice'
+import { SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
 import SegmentedControl from '../components/SegmentedControl'
 import { ApiError } from '../api/client'
 import { safeSetItem } from '../utils/safeStorage'
@@ -749,6 +750,92 @@ describe('App routing', () => {
     act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
 
     expect(await screen.findByLabelText('2 subagents in flight')).toBeInTheDocument()
+    // In flow beside the unread badge and the shortcut hint, not `absolute
+    // right-8` layered over them — see the overlap regression test below.
+    expect((await screen.findByLabelText('2 subagents in flight')).className).not.toContain('absolute')
+  })
+
+  it('keeps the expanded unread badge and the row shortcut hint out of each others space', async () => {
+    // Regression: the badge was `absolute right-2`, i.e. OUT of the row's flex
+    // line, while the shortcut hint is an in-flow span at the row's right edge —
+    // so on a Sessions row with one unread the badge painted ON TOP of the chord
+    // and the row advertised a keystroke you could not read.
+    //
+    // Pinned two ways, because either assertion alone still passes against the
+    // bug: the badge must be IN FLOW (an absolute badge overlaps a sibling at any
+    // count width, and jsdom computes no layout so a geometry check would be
+    // vacuous here), AND it must follow the chord in the same flex line, so the
+    // fix is not "the chord is the thing pushed off the right edge instead".
+    localStorage.removeItem('mc-nav')
+    localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
+    const store = createTestStore()
+
+    renderWithProviders(<App />, { route: '/chat', store })
+
+    // The chord's presence is the precondition: with shortcuts off there is
+    // nothing for the badge to cover and the rest of this would pass vacuously.
+    const chord = await screen.findByTestId('nav-shortcut-chat')
+    // Seed the unread AFTER the mount slot fetch settles — `fetchSlots.fulfilled`
+    // drains unread keys naming no live slot, so seeding earlier would race it.
+    await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
+    act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
+
+    const badge = await screen.findByLabelText('1 unread conversations')
+    expect(badge.className).not.toContain('absolute')
+    expect(badge.parentElement).toBe(chord.parentElement)
+    expect(chord.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps an app rows run-state mark in the same flex line as its count pill', async () => {
+    // The count pill moving into the row's line is only a class closure if every
+    // right-edge mark moves with it. This one is the sibling that was left: an app
+    // row renders BOTH this mark and an `appBadges`-driven pill, so while the mark
+    // stayed at a fixed 32px offset a 2-3 digit pill grew left underneath it and
+    // reproduced the original bug one component over. Rendering `NavBadge`
+    // directly rather than staging an installed app keeps the assertion on the
+    // composition, which is where the property lives.
+    const store = createTestStore()
+
+    renderWithProviders(
+      // `NavBadge` strips the `app-` prefix before reading `appBadges`.
+      <NavBadge navId="app-demo" collapsed={false} appBadges={{ demo: 999 }} runState="running" />,
+      { store }
+    )
+
+    const mark = await screen.findByLabelText('A scheduled job of this app is running')
+    const pill = await screen.findByLabelText('999 updates')
+    expect(mark.className).not.toContain('absolute')
+    // Same flex line as the pill, so the two cannot intersect at any digit count.
+    expect(mark.parentElement).toBe(pill.parentElement)
+  })
+
+  it('names what each right-edge count is counting, for sighted users too', async () => {
+    // The two indicators are now reliably CO-VISIBLE (that is the point of the
+    // fix above), so a bare "1" pill beside a bare bot glyph and "2" has to be
+    // tellable apart without a screen reader. Both carry the label as `title`.
+    //
+    // The title is the label ALONE, deliberately: the labels are plural phrases,
+    // so reusing the aria string would render a visible "1 unread conversations"
+    // at count 1. The count is already in the pill, so the title does not repeat
+    // it — asserted below, or the grammar defect returns the moment someone
+    // "helpfully" switches these back to ariaLabel.
+    localStorage.removeItem('mc-nav')
+    const store = createTestStore()
+
+    renderWithProviders(<App />, { route: '/chat', store })
+
+    await waitFor(() => expect(store.getState().dashboard.slotsLoaded).toBe(true))
+    act(() => { store.dispatch(markSlotUnread({ slot: 'background', ts: '2026-01-01T00:00:05Z' })) })
+    act(() => { store.dispatch(sseSubagentQueued({ slot: 'background', queued: 2 })) })
+
+    const badge = await screen.findByLabelText('1 unread conversations')
+    const activity = await screen.findByLabelText('2 subagents in flight')
+    expect(badge).toHaveAttribute('title', 'unread conversations')
+    expect(activity).toHaveAttribute('title', 'subagents in flight')
+    // Count 1 against a plural phrase is the case that reads wrong, so pin that
+    // the title carries no digit rather than only pinning the happy string.
+    expect(badge.getAttribute('title')).not.toMatch(/\d/)
+    expect(activity.getAttribute('title')).not.toMatch(/\d/)
   })
 
   it('surfaces the collapsed hover label on keyboard focus and is Enter-activatable', async () => {
