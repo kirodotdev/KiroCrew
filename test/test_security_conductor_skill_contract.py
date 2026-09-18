@@ -40,16 +40,20 @@ ROE_JSON = SKILL_DIR / "rules-of-engagement.json"
 #: One list, not two. A wider "may ship" set existed while the scripts were landing
 #: one sibling change at a time and a script could be on disk before the clause it
 #: is cited by: ``verify_fix.py`` was the only entry it ever held. Now that the
-#: skill body cites all five, the two lists would answer the same question, and the
+#: skill body cites every one, the two lists would answer the same question, and the
 #: wider one is the weaker contract -- an undocumented script would pass it. A
 #: script that lands ahead of its clause again re-splits this deliberately, in the
 #: change that needs it.
+#:
+#: ``check_fix_contract.py`` is the sixth, and it landed WITH its clause: the skill
+#: body cites it in the tool list, so the single-list contract above still holds.
 BUNDLED_SCRIPTS = (
     "scope_check.py",
     "finding_entry.py",
     "verify_finding.py",
     "ledger.py",
     "verify_fix.py",
+    "check_fix_contract.py",
 )
 
 #: Every field ``scope_check.py`` and the human reviewer read. Pinned as a set so

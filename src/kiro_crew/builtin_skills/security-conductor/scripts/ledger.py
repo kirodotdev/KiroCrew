@@ -147,11 +147,18 @@ FOLD_ORDER = ("auditor", "verifier", "human")
 LESSON_KINDS = ("true-positive", "false-positive", "missed", "out-of-scope")
 # What a golden path IS, which decides what ``verify_fix.py`` can say about it. A
 # ``shell`` row is CHECKED: classified against the fixed worktree's own deny fence,
-# and a refusal rejects the fix. A ``flow`` or ``cron`` row is RECORDED and reported
-# for a human to exercise, and neither is ever executed -- this CLI is not an
-# authentication boundary, so a row is untrusted text, and running one would turn a
-# write to this database into a command with the operator's access.
-GOLDEN_PATH_KINDS = ("shell", "flow", "cron")
+# and a refusal rejects the fix. A ``test`` row is also checked, by being RUN: it
+# names a pytest selector in the worktree under review, which is how the corpus
+# states a behaviour that is not a command line -- "the operator's own env var still
+# reaches the agent child" -- and an over-strict fix that no bash row notices is
+# rejected by one that does. A ``flow`` or ``cron`` row is RECORDED and reported for
+# a human to exercise, and neither is ever executed -- this CLI is not an
+# authentication boundary, so a row is untrusted text, and running one as a command
+# line would turn a write to this database into a command with the operator's
+# access. A ``test`` row is not that: it is handed to pytest as a positional
+# selector, never as argv, and ``verify_fix.py`` refuses one that is absolute,
+# climbs out of the worktree, or could be read as an option.
+GOLDEN_PATH_KINDS = ("shell", "test", "flow", "cron")
 # ``any`` is a stored value rather than a NULL so that the platform filter is one
 # ``IN`` clause: a row that applies everywhere is selected by every host, and a
 # NULL would need every reader to remember a second branch.
@@ -169,6 +176,47 @@ LIST_QUERIES = {
 }
 LIST_TABLES = tuple(LIST_QUERIES)
 
+
+def _sql_literals(values: tuple[str, ...]) -> str:
+    """``('a', 'b')`` as ``"'a', 'b'"``, for one CHECK clause.
+
+    The values are this module's own constants, never caller text, so there is no
+    quoting question to get wrong -- and deriving the clause is what keeps the
+    enumeration in :data:`GOLDEN_PATH_KINDS` from being contradicted by a literal
+    list inside the DDL, which is exactly how a kind the CLI accepts became a kind
+    the table refused.
+    """
+    return ", ".join("'" + value + "'" for value in values)
+
+
+# The golden-path columns, spelled ONCE for the same reason the lessons columns are:
+# :data:`DDL` creates the table with them and :func:`_rebuild_golden_paths` recreates
+# it with them. The ``kind`` and ``platform`` CHECKs are DERIVED from the constants
+# above rather than restated, because a storage constraint that disagrees with the
+# CLI's screen refuses a row the CLI just accepted -- with an IntegrityError
+# traceback, not a sentence.
+GOLDEN_PATHS_COLUMNS = f"""
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL CHECK (kind IN ({_sql_literals(GOLDEN_PATH_KINDS)})),
+        surface TEXT NOT NULL,
+        command_or_flow TEXT NOT NULL,
+        platform TEXT NOT NULL CHECK (platform IN ({_sql_literals(GOLDEN_PATH_PLATFORMS)}))
+            DEFAULT 'any',
+        reason TEXT NOT NULL,
+        source_finding_id INTEGER REFERENCES findings(id),
+        approved_by TEXT,
+        ts TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1
+"""
+
+#: Scratch table for the golden-path rebuild, named like the lessons one.
+GOLDEN_PATHS_REBUILD_TABLE = "golden_paths_rebuild"
+
+# Every ``CHECK (x IN (...))`` below derives its literals from the constant that
+# declares them, through :func:`_sql_literals`. A restated list is the drift that made
+# a golden-path kind the CLI accepted a kind the table refused, and lessons and verdict
+# roles carried the same shape.
+#
 # The lessons columns, spelled ONCE: :data:`DDL` creates the table with them and
 # :func:`_rebuild_lessons` recreates it with them, and two copies of a column list
 # drift the moment one of them gains a column.
@@ -198,11 +246,9 @@ LIST_TABLES = tuple(LIST_QUERIES)
 # made the whole constraint NULL and was stored -- the exact case the first branch
 # exists to catch, readmitted through three-valued logic. Every comparison here is
 # therefore kept on values known to be non-NULL.
-LESSONS_COLUMNS = """
+LESSONS_COLUMNS = f"""
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind TEXT NOT NULL CHECK (
-            kind IN ('true-positive', 'false-positive', 'missed', 'out-of-scope')
-        ),
+        kind TEXT NOT NULL CHECK (kind IN ({_sql_literals(LESSON_KINDS)})),
         surface TEXT NOT NULL,
         pattern TEXT NOT NULL,
         guidance TEXT NOT NULL,
@@ -249,9 +295,9 @@ DDL = (
         created TEXT NOT NULL,
         round_id TEXT
     )""",
-    """CREATE TABLE IF NOT EXISTS verdicts (
+    f"""CREATE TABLE IF NOT EXISTS verdicts (
         finding_id INTEGER NOT NULL REFERENCES findings(id),
-        role TEXT NOT NULL CHECK (role IN ('auditor', 'verifier', 'human')),
+        role TEXT NOT NULL CHECK (role IN ({_sql_literals(ROLES)})),
         verdict TEXT NOT NULL,
         reason TEXT,
         ts TEXT NOT NULL
@@ -266,19 +312,7 @@ DDL = (
         ts TEXT NOT NULL,
         active INTEGER NOT NULL DEFAULT 1
     )""",
-    """CREATE TABLE IF NOT EXISTS golden_paths (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kind TEXT NOT NULL CHECK (kind IN ('shell', 'flow', 'cron')),
-        surface TEXT NOT NULL,
-        command_or_flow TEXT NOT NULL,
-        platform TEXT NOT NULL CHECK (platform IN ('any', 'posix', 'windows'))
-            DEFAULT 'any',
-        reason TEXT NOT NULL,
-        source_finding_id INTEGER REFERENCES findings(id),
-        approved_by TEXT,
-        ts TEXT NOT NULL,
-        active INTEGER NOT NULL DEFAULT 1
-    )""",
+    f"CREATE TABLE IF NOT EXISTS golden_paths ({GOLDEN_PATHS_COLUMNS})",
     # The identity of a golden path, for the same reason findings have one: the
     # shipped corpus is imported by whoever sets a target up, and an import that
     # is not idempotent turns "run it again to be sure" into a duplicated fence
@@ -375,6 +409,92 @@ def _lessons_needs_rebuild(conn: sqlite3.Connection) -> bool:
     return bool(int(columns["source_finding_id"]["notnull"]))
 
 
+def _table_id_high_water(conn: sqlite3.Connection, table: str) -> int | None:
+    """The largest id AUTOINCREMENT has ever issued for *table*, or None if unknown.
+
+    *table* is always a literal from this module, never caller text, which is why it
+    is bound as a parameter for the name column and is safe to trust.
+    """
+    row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone()
+    return None if row is None else int(row["seq"])
+
+
+def _restore_table_id_high_water(
+    conn: sqlite3.Connection, table: str, previous: int | None
+) -> None:
+    """Put *table*'s id counter back where it was before a rebuild.
+
+    See :func:`_restore_lessons_id_high_water` for why both statements are needed and
+    why the UPDATE only ever moves the mark forward.
+    """
+    if previous is None:
+        return
+    conn.execute(
+        "INSERT INTO sqlite_sequence (name, seq) SELECT ?, ?"
+        " WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = ?)",
+        (table, previous, table),
+    )
+    conn.execute(
+        "UPDATE sqlite_sequence SET seq = ? WHERE name = ? AND seq < ?",
+        (previous, table, previous),
+    )
+
+
+def _golden_paths_needs_rebuild(conn: sqlite3.Connection) -> bool:
+    """Does the stored table refuse a kind this module now declares?
+
+    This probe reads the CHECK expression, where :func:`_lessons_needs_rebuild`
+    deliberately does not -- and the difference is the schema change each one is
+    about. A new lesson column is visible in ``PRAGMA table_info``; a new golden-path
+    KIND changes nothing but the constraint text, so a column probe could not see it
+    at all. The test is still not a comparison against this file's SQL: it asks only
+    whether each declared kind appears as a literal in the stored clause, so
+    reindenting the DDL does not trigger a rebuild while adding a kind does.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table'"  # wokeignore:rule=master
+        " AND name = 'golden_paths'"
+    ).fetchone()
+    if row is None or not row["sql"]:
+        return False
+    stored = str(row["sql"])
+    return any("'" + kind + "'" not in stored for kind in GOLDEN_PATH_KINDS)
+
+
+def _rebuild_golden_paths(conn: sqlite3.Connection) -> None:
+    """Copy ``golden_paths`` into the current shape, preserving every row and its id.
+
+    The standard SQLite table rebuild, run inside :func:`init_schema`'s
+    ``BEGIN IMMEDIATE`` for the reasons spelled out there. Ids are carried across
+    explicitly because an approved row is cited by id -- ``approve-golden-path --id``
+    is the human's verb -- and renumbering would point a recorded approval at a
+    different operation. The id COUNTER is carried too, so a rebuilt table cannot
+    reissue an id that a report already named.
+    """
+    high_water = _table_id_high_water(conn, "golden_paths")
+    conn.execute(f"DROP TABLE IF EXISTS {GOLDEN_PATHS_REBUILD_TABLE}")
+    conn.execute(f"CREATE TABLE {GOLDEN_PATHS_REBUILD_TABLE} ({GOLDEN_PATHS_COLUMNS})")
+    conn.execute(
+        f"INSERT INTO {GOLDEN_PATHS_REBUILD_TABLE}"
+        " (id, kind, surface, command_or_flow, platform, reason, source_finding_id,"
+        " approved_by, ts, active)"
+        " SELECT id, kind, surface, command_or_flow, platform, reason, source_finding_id,"
+        " approved_by, ts, active FROM golden_paths"
+    )
+    conn.execute("DROP TABLE golden_paths")
+    conn.execute(f"ALTER TABLE {GOLDEN_PATHS_REBUILD_TABLE} RENAME TO golden_paths")
+    _restore_table_id_high_water(conn, "golden_paths", high_water)
+    # The old table's indexes went with it, so the two :data:`DDL` declares are
+    # recreated here rather than waiting for the next open.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS golden_paths_identity"
+        " ON golden_paths (kind, command_or_flow, platform)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS golden_paths_active ON golden_paths (active, platform)"
+    )
+
+
 def _lessons_id_high_water(conn: sqlite3.Connection) -> int | None:
     """The largest lesson id AUTOINCREMENT has ever issued, or None if unknown.
 
@@ -386,8 +506,7 @@ def _lessons_id_high_water(conn: sqlite3.Connection) -> int | None:
     The sequence table exists whenever this runs: SQLite creates it when the first
     table with an AUTOINCREMENT column is created, and ``lessons`` is one.
     """
-    row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'lessons'").fetchone()
-    return None if row is None else int(row["seq"])
+    return _table_id_high_water(conn, "lessons")
 
 
 def _restore_lessons_id_high_water(conn: sqlite3.Connection, previous: int | None) -> None:
@@ -405,17 +524,7 @@ def _restore_lessons_id_high_water(conn: sqlite3.Connection, previous: int | Non
     and the counter would restart at 1 -- the worst version of the same defect. The
     UPDATE is guarded with ``seq <`` so this can only ever move the mark FORWARD.
     """
-    if previous is None:
-        return
-    conn.execute(
-        "INSERT INTO sqlite_sequence (name, seq) SELECT 'lessons', ?"
-        " WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'lessons')",
-        (previous,),
-    )
-    conn.execute(
-        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'lessons' AND seq < ?",
-        (previous, previous),
-    )
+    _restore_table_id_high_water(conn, "lessons", previous)
 
 
 def _rebuild_lessons(conn: sqlite3.Connection) -> None:
@@ -508,6 +617,13 @@ def init_schema(conn: sqlite3.Connection) -> int:
         # do, and one that already ran must find none.
         if _lessons_needs_rebuild(conn):
             _rebuild_lessons(conn)
+        # The same step for ``golden_paths``, and shape-gated for the same reason: a
+        # CHECK constraint cannot be ALTERed, so a database written before a kind was
+        # declared refuses that kind with an IntegrityError traceback until the table
+        # is rebuilt. Gated on the stored constraint rather than on the version, so an
+        # interrupted upgrade finds the same work to do and a finished one finds none.
+        if _golden_paths_needs_rebuild(conn):
+            _rebuild_golden_paths(conn)
         conn.execute(
             "INSERT INTO schema_version (version)"
             " SELECT ? WHERE NOT EXISTS (SELECT 1 FROM schema_version)",

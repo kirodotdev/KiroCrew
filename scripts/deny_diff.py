@@ -103,9 +103,13 @@ from pathlib import Path
 #: subprocess call, not part of the CLI a caller composes.
 _WORKER_FLAG = "--_classify-worker"
 
-#: Row kinds the seed may carry. Only ``shell`` is classifiable -- see the module
-#: docstring.
-_KINDS = frozenset({"shell", "flow", "cron"})
+#: Row kinds the seed may carry. Only ``shell`` is classifiable HERE -- see the
+#: module docstring. A ``test`` row is a pytest selector the security conductor's
+#: own ``verify_fix.py`` runs; this gate counts it as non-shell and skips it, the
+#: same as ``flow`` and ``cron``. It is listed so a corpus carrying one loads:
+#: an unknown kind is a hard ``DenyDiffError``, which would fail this gate on a
+#: row that is none of its business.
+_KINDS = frozenset({"shell", "test", "flow", "cron"})
 
 #: Platform selectors a row may declare.
 _PLATFORMS = frozenset({"any", "posix", "windows"})

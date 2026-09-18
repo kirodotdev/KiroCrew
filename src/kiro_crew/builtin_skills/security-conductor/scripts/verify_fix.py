@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that a security fix killed the finding and broke nothing legitimate.
+"""Check that a security fix killed the finding, stayed in scope, and broke nothing.
 
 A fix that makes the proof of concept stop reproducing has done half a job. The
 other half is the half a security change actually gets rejected for: the deny
@@ -13,26 +13,59 @@ read-only ``gh pr view --json`` shapes have been refused by a widened rule, and 
 guard written against one host's interpreter path has cost the other host's test
 lane.
 
-So this is a two-step gate, and both steps must hold::
+A third failure mode sits beside those two and is not measured by either: the
+fix **reached further than it was sent to**. A cron-seam fix that also adds a name
+to ``sandbox._AGENT_DENIED_ENV_KEYS`` strips that variable from every agent child,
+so the operator loses their own env-configured governance ceiling -- and the proof
+still stops reproducing, no bash command in the corpus notices, and the gate goes
+green on a change that made the product worse. Scope is knowable BEFORE the fix is
+written, so the conductor declares it in a ``fix-contract.json`` the fixer's
+worktree carries, and ``check_fix_contract.py`` beside this script asserts it.
+
+So this is a three-step gate, and every step must hold::
 
     python3 verify_fix.py [--db PATH] --finding-id N --worktree DIR [--timeout SECONDS]
+                          [--contract PATH]
 
+0. When the caller names a contract with ``--contract PATH``,
+   ``check_fix_contract.py`` checks the changed paths against the blast radius the
+   conductor declared there. A violation is ``broken`` -- the same verdict a refused
+   golden path gets, because it is the same kind of rejection: a named file to put
+   back. The named copy is the ONLY one this gate enforces: a ``fix-contract.json``
+   inside the worktree is a file the fixer can widen, so an unnamed one is
+   ``unverifiable`` rather than a pass, and no contract at all means no contract check.
+   Two things the contract may not decide:
+   the base it is judged against (this script passes :data:`CONTRACT_BASE`, because a
+   ``"base"`` in the file could empty the diff) and which finding it covers (a
+   contract whose ``finding_ids`` exclude ``--finding-id`` is not this dispatch's, and
+   is ``unverifiable``).
 1. ``verify_finding.py`` re-runs the proof. The fix holds ONLY when that pass
    comes back ``rejected`` -- the proof does not reproduce any more.
    ``confirmed`` means the fix did not land, and anything else means the question
    was not settled.
 2. Every ``shell`` golden path in the committed corpus whose platform matches
    the host is re-classified against the FIXED code. None of them may be refused.
+   Every ``test`` row is RUN against the fixed worktree, and must pass: a
+   behaviour like "the operator's own env var still reaches the child" is not a
+   bash command any fence classification can answer, and that is exactly the
+   regression a classification-only corpus let through.
 
 Exit codes, which are the interface::
 
-    0   holds        -- the proof is dead and every shell golden path is permitted
+    0   holds        -- the named contract is honoured, the proof is dead, every
+                        shell golden path is permitted, and every test golden path
+                        passes
     10  reproduces   -- the proof still reproduces; the fix did not land
-    30  broken       -- at least one golden path is refused (the rows are
-                        printed); this is the "tool became unusable" rejection
+    30  broken       -- at least one golden path is refused, at least one test
+                        golden path failed, or the fix contract was violated (the
+                        rows and paths are printed); this is the "tool became
+                        unusable" rejection
     20  unverifiable -- something this script owns could not be settled: the
-                        verifier is absent, the deny composite is not readable, or
-                        the committed corpus is absent, does not load, or is empty
+                        verifier is absent, the deny composite is not readable, the
+                        committed corpus is absent, does not load, or is empty, a
+                        test row collected nothing or had no pytest to run under, a
+                        declared contract could not be read or describes another
+                        dispatch
     2   invalid input -- a bad argument, or a worktree that is not a checkout
 
 Precedence when several apply is ``10 > 30 > 20 > 0``, and it is not arbitrary. A
@@ -86,7 +119,7 @@ where ``kiro_crew.security`` actually came from and reports the composite
 unavailable (exit 20) unless that file resolves beneath the worktree's ``src``.
 A fence borrowed from somewhere else is not a fence that agreed.
 
-**Nothing out of the corpus is ever executed.** That is the load-bearing rule
+**No corpus row is ever run as a command line.** That is the load-bearing rule
 here, and it is what decides how each kind is treated:
 
 ``shell``
@@ -111,6 +144,35 @@ here, and it is what decides how each kind is treated:
     ``--classify-stdin`` -- and there is deliberately no flag to substitute another
     program: one would execute caller-supplied argv with the operator's access,
     outside the tool gate the outer invocation passed.
+
+``test``
+    RUN, as a pytest selector and never as argv. The row names a test node in the
+    worktree under review -- ``test/test_x.py`` or ``test/test_x.py::test_y`` -- and
+    it is handed to ``pytest`` after ``--``, as a positional argument, so a row
+    beginning with a dash cannot become an option and a row cannot name a program.
+    A selector that is absolute, that climbs out with ``..``, or that starts with a
+    dash is refused as ``unverifiable`` rather than run, because none of those is a
+    node of the tree being judged.
+
+    Executing THIS kind and not ``flow`` or ``cron`` is not an inconsistency. What
+    a test row buys is the one thing a classification cannot: a behaviour that is
+    not a bash command -- "the operator's own ``KIROCREW_SECURITY_POLICY`` still
+    reaches the agent child", "a single-tier governance ceiling resolves as it did"
+    -- and the corpus had no way to state one, which is how an over-strict fix
+    passed this gate. What it costs is bounded by what it runs: a test node of the
+    disposable checkout, under the same interpreter and ``PYTHONPATH`` the fence
+    probe already uses, on code the operator chose to run as themselves. A
+    ``flow`` or ``cron`` row instead names an MCP tool or a schedule, where running
+    it would turn a file edit into an arbitrary command line and a schedule into an
+    effect outside the worktree that no deadline bounds.
+
+    A row whose test FAILED is ``broken`` -- the actionable rejection, and the
+    fix's own regression. A row that collected NO test is ``unverifiable`` and
+    never a pass: a selector the fixed tree cannot collect measured nothing, which
+    is the vacuous green this whole script is written against. An absent ``pytest``
+    is the same verdict for the same reason, and so is a run pytest interrupted or
+    aborted internally -- that row was not judged, which is not the same claim as a
+    behaviour that broke.
 
 ``flow`` and ``cron``
     Recorded, reported, and left to a human. Neither is executed and neither
@@ -156,7 +218,7 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 HOLDS = "holds"
@@ -172,13 +234,61 @@ EXIT_INVALID = 2
 #: statements that happen to be written in some order.
 VERDICT_PRECEDENCE = (REPRODUCES, BROKEN, UNVERIFIABLE, HOLDS)
 
-#: The kind whose claim this script can settle by itself. Every other kind is
-#: corpus for a human, so this is the whole of what the exit code covers.
+#: The kind classified against the deny fence, never run.
 CHECKED_KIND = "shell"
+
+#: The kind RUN against the fixed worktree as a pytest selector. Named separately
+#: from :data:`CHECKED_KIND` because the two are settled by different machinery --
+#: one asks the fence, the other asks the tree -- and only the pair of them is what
+#: the exit code covers.
+TEST_KIND = "test"
+
+#: Every kind this script settles by itself. A row of any other kind is corpus for
+#: a human, and the split is made against THIS tuple so adding a kind cannot leave
+#: a row silently reported as needing a human while something also checks it.
+CHECKED_KINDS = (CHECKED_KIND, TEST_KIND)
 
 #: The committed export, one directory up from ``scripts/`` -- beside the skill,
 #: where ``scope_check.py`` finds ``rules-of-engagement.json`` for the same reason.
 CORPUS_FILENAME = "golden-paths.json"
+
+#: The contract the conductor writes into the fixer's worktree, and the sibling
+#: that checks it. Both spelled here rather than at the call site, because "does a
+#: contract apply" is decided by the presence of this exact filename.
+CONTRACT_FILENAME = "fix-contract.json"
+CONTRACT_SCRIPT = "check_fix_contract.py"
+
+#: ``check_fix_contract.py``'s exit codes, which are its interface. Mapped rather
+#: than re-derived, for the reason the verifier's codes are: one opinion about what
+#: a violated contract means, held in the script that owns the check.
+CONTRACT_HONOURED = 0
+CONTRACT_VIOLATED = 30
+CONTRACT_UNREADABLE = 20
+
+#: The revision the contract check is told to measure against, passed EXPLICITLY on
+#: every invocation. The contract file may name its own base, and that file sits in
+#: the worktree under review -- so a ``"base": "HEAD"`` in it would make the judged
+#: diff empty and every scope check trivially honoured. The caller naming the base is
+#: the more specific statement, and here the caller is this gate.
+CONTRACT_BASE = "origin/main"
+
+#: The pytest argv every ``test`` row runs under, before its selector. ``-n 0``
+#: keeps xdist from forking workers for one node, ``-o addopts=`` drops the
+#: repository's own ``addopts`` (coverage gates, ``-n auto``, a ``--splits`` shard)
+#: so a row measures the behaviour rather than the project's CI configuration, and
+#: ``-p no:randomly`` fixes the order. Spelled ONCE and used by both the
+#: availability probe and each row, so the probe proves the argv the rows use.
+PYTEST_ARGS = ("-q", "-n", "0", "-o", "addopts=", "-p", "no:randomly")
+
+#: pytest's documented exit statuses. A row's verdict is read off these, so the
+#: three outcomes that matter -- passed, failed, collected nothing -- are named
+#: rather than being bare integers in a comparison.
+PYTEST_PASSED = 0
+PYTEST_FAILED = 1
+PYTEST_INTERRUPTED = 2
+PYTEST_INTERNAL = 3
+PYTEST_USAGE = 4
+PYTEST_NO_TESTS = 5
 
 DEFAULT_TIMEOUT = 120
 #: How long to wait for a killed child to be reaped. Bounded for the reason
@@ -396,10 +506,13 @@ def run_child(
             stderr=subprocess.DEVNULL,
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         )
-    except OSError as exc:
-        # A missing interpreter raises here rather than returning a status, and
-        # letting it propagate would end the run outside the documented exit
-        # contract with no verdict written at all.
+    except (OSError, ValueError) as exc:
+        # A missing interpreter raises ``OSError`` here rather than returning a status,
+        # and letting it propagate would end the run outside the documented exit
+        # contract with no verdict written at all. ``ValueError`` is the same class of
+        # event one layer in: ``Popen`` raises it for an argument carrying a NUL byte,
+        # which a corpus row can hold, and an uncaught one is exit 1 with no payload --
+        # a crash where this contract promises a verdict.
         return "launch-failed", 0, str(exc)
     try:
         payload = None if stdin_text is None else stdin_text.encode("utf-8")
@@ -409,6 +522,216 @@ def run_child(
         return "timeout", 0, ""
     text = "" if not out else out.decode("utf-8", errors="replace")
     return "ran", int(process.returncode), text
+
+
+# --------------------------------------------------------------------- step 0
+
+
+def contract_script_path() -> Path:
+    return script_dir() / CONTRACT_SCRIPT
+
+
+def contract_file_path(worktree: Path) -> Path:
+    return worktree / CONTRACT_FILENAME
+
+
+def run_contract_check(
+    worktree: Path,
+    timeout: int,
+    *,
+    finding_id: int,
+    contract_path: Path | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """Assert the fix against the conductor's declared blast radius.
+
+    Returns ``(verdict_contribution, report)``. The contribution is ``None`` when there
+    is nothing to fold -- either no contract applies, or the named one was honoured and
+    it covers the finding being verified.
+
+    **Only a contract the CALLER names is enforced.** ``contract_path`` is the
+    conductor's own copy, kept outside the worktree, and it is the one declaration this
+    gate judges against -- because a ``fix-contract.json`` inside the worktree is a file
+    the fixer can widen, and a scope the subject can edit is not a scope. That file
+    still has a job: it is how the fixer reads its own bar. It is simply not evidence.
+
+    So three states, kept separate. A named copy is enforced. Nothing named and nothing
+    in the worktree means no contract applies, which keeps a dispatch made before
+    contracts existed judged exactly as it was. And a file in the worktree that the
+    caller did NOT name is ``unverifiable``, never a silent pass: "the conductor forgot
+    the flag" and "the fixer wrote itself a contract" are indistinguishable from here,
+    so the verdict says so and the message carries the remedy.
+
+    The contract is also checked for WHOSE fix it describes. A file naming other
+    findings is not this dispatch's contract -- most plainly a stale one left by an
+    earlier dispatch -- and enforcing it would report a scope nobody declared for this
+    run, so the mismatch is ``unverifiable``.
+
+    The sibling is invoked BY PATH in a child, the way the verifier is, so there is one
+    implementation of what a violated contract means. An absent sibling is a broken
+    installation, reported as ``unverifiable`` and never as a pass.
+    """
+    in_worktree = contract_file_path(worktree)
+    if contract_path is None:
+        if in_worktree.exists():
+            return UNVERIFIABLE, {
+                "declared": False,
+                "verdict": UNVERIFIABLE,
+                "why": (
+                    f"{in_worktree} exists but no --contract was named. This gate enforces"
+                    " only a copy the caller names: the file in the worktree is one the"
+                    " fixer can widen. Re-run with --contract pointing at the conductor's"
+                    " own copy"
+                ),
+                "report": {},
+            }
+        return None, {"declared": False, "verdict": None, "why": "no fix contract was declared"}
+    contract_file = contract_path
+    if not contract_file.is_file():
+        return UNVERIFIABLE, {
+            "declared": False,
+            "verdict": UNVERIFIABLE,
+            "why": (
+                f"a contract was named for this dispatch but {contract_file} is not a"
+                " file; the declared blast radius was not checked"
+            ),
+            "report": {},
+        }
+    script = contract_script_path()
+    if not script.is_file():
+        return UNVERIFIABLE, {
+            "declared": True,
+            "verdict": UNVERIFIABLE,
+            "why": (
+                f"{CONTRACT_SCRIPT} could not be invoked: {script} is not a file."
+                " It ships beside this script, so this is a broken installation; the"
+                " declared contract was not checked"
+            ),
+            "report": {},
+        }
+    # Both are always passed: the base for the reason :data:`CONTRACT_BASE` gives, and
+    # the contract because by here the caller has named one -- the sibling's own default
+    # would be the worktree copy this gate does not trust.
+    argv = [
+        sys.executable,
+        str(script),
+        "--worktree",
+        str(worktree),
+        "--base",
+        CONTRACT_BASE,
+        "--contract",
+        str(contract_file),
+    ]
+    outcome, code, out = run_child(argv, worktree, timeout, capture=True)
+    if outcome != "ran":
+        return UNVERIFIABLE, {
+            "declared": True,
+            "verdict": UNVERIFIABLE,
+            "why": f"{CONTRACT_SCRIPT} did not complete ({outcome})",
+            "report": {},
+        }
+    report = parse_contract_output(out)
+    # Checked BEFORE the exit code branches: a contract that describes another
+    # dispatch settles nothing either way, so reading its REJECTION as this fix's
+    # would send a fixer to repair a scope nobody declared for this run.
+    if code in (CONTRACT_HONOURED, CONTRACT_VIOLATED):
+        wrong_finding = contract_finding_mismatch(report, finding_id)
+        if wrong_finding is not None:
+            return UNVERIFIABLE, {
+                "declared": True,
+                "verdict": UNVERIFIABLE,
+                "why": wrong_finding,
+                "report": report,
+            }
+    if code == CONTRACT_HONOURED:
+        return None, {
+            "declared": True,
+            "verdict": HOLDS,
+            "why": "every changed path is inside the declared blast radius",
+            "report": report,
+        }
+    if code == CONTRACT_VIOLATED:
+        return BROKEN, {
+            "declared": True,
+            "verdict": BROKEN,
+            "why": describe_contract_violation(report),
+            "report": report,
+        }
+    if code == CONTRACT_UNREADABLE:
+        declared = report.get("problems")
+        problems = declared if isinstance(declared, list) else []
+        detail = "; ".join(str(problem) for problem in problems) or "no reason was printed"
+        return UNVERIFIABLE, {
+            "declared": True,
+            "verdict": UNVERIFIABLE,
+            "why": f"the declared fix contract could not be checked: {detail}",
+            "report": report,
+        }
+    return UNVERIFIABLE, {
+        "declared": True,
+        "verdict": UNVERIFIABLE,
+        "why": f"{CONTRACT_SCRIPT} exited {code}, which is not in its contract",
+        "report": report,
+    }
+
+
+def parse_contract_output(text: str) -> dict[str, Any]:
+    """The sibling's last stdout line as an object, or ``{}``.
+
+    Pure, and forgiving by design: the exit CODE is the verdict, and this payload is
+    only the detail printed beside it. A sibling that printed nothing readable still
+    gets its exit code honoured rather than turning a real violation into a parse
+    error.
+    """
+    lines = text.strip().splitlines()
+    if not lines:
+        return {}
+    try:
+        parsed = json.loads(lines[-1])
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def contract_finding_mismatch(report: dict[str, Any], finding_id: int) -> str | None:
+    """Why this contract is not this run's, or ``None`` when it covers the finding.
+
+    A contract declares the findings it was written for. An absent or unreadable list
+    is a mismatch rather than a wildcard: the field is required by the sibling, so its
+    absence here means the payload could not be read, and a missing declaration is
+    never a permission.
+    """
+    declared = (report.get("contract") or {}).get("finding_ids")
+    if not isinstance(declared, list) or not declared:
+        return (
+            "the fix contract was checked but its payload carried no finding_ids,"
+            " so which dispatch it describes could not be read"
+        )
+    if finding_id not in declared:
+        named = ", ".join(str(item) for item in declared)
+        return (
+            f"the fix contract in the worktree declares finding_ids [{named}], which"
+            f" does not cover finding {finding_id}; it is not this dispatch's contract"
+        )
+    return None
+
+
+def describe_contract_violation(report: dict[str, Any]) -> str:
+    """Why the contract was violated, in the paths a fixer has to act on."""
+    violations = report.get("violations")
+    if not isinstance(violations, dict):
+        return "the fix changed paths outside the declared blast radius"
+    parts: list[str] = []
+    forbidden = violations.get("forbidden")
+    if isinstance(forbidden, list) and forbidden:
+        parts.append("forbidden: " + ", ".join(str(path) for path in forbidden))
+    outside = violations.get("outside_allowed")
+    if isinstance(outside, list) and outside:
+        parts.append("outside the allowed set: " + ", ".join(str(path) for path in outside))
+    count = violations.get("count")
+    if isinstance(count, dict):
+        parts.append(f"changed {count.get('changed')} files, ceiling is {count.get('max')}")
+    joined = "; ".join(parts) or "the declared blast radius was exceeded"
+    return f"the fix left the declared blast radius ({joined})"
 
 
 # --------------------------------------------------------------------- step 1
@@ -713,6 +1036,156 @@ def classify_stdin(stream: Any, out: Any) -> int:
     return 0
 
 
+# --------------------------------------------------- step 2: the test rows
+
+
+def selector_problem(selector: str) -> str | None:
+    """Why this selector is not a node of the tree under review, or ``None``.
+
+    Three refusals, and each one is a shape that would make the run answer a
+    different question than the row asks. A leading dash is an OPTION, and pytest
+    given ``-p evil`` would load a plugin instead of running a test -- refused here
+    as well as neutralised by the ``--`` the argv carries, because a row that wants
+    to be an option is a corpus-authoring mistake worth naming. An absolute path or
+    one that climbs out with ``..`` names a file outside the disposable checkout,
+    and a golden path about some other tree measures nothing about this fix.
+    """
+    text = selector.strip()
+    if not text:
+        return "the row names no pytest selector"
+    if text.startswith("-"):
+        return f"a test selector may not begin with a dash (it would be an option): {text!r}"
+    if text.startswith("@"):
+        # pytest's argparse is configured with ``fromfile_prefix_chars="@"``, and
+        # argparse expands a response file BEFORE it honours ``--`` -- so ``@file`` is
+        # not a positional at all. Its contents become argv, which can name a test
+        # outside the worktree and load that tree's ``conftest.py``.
+        return (
+            "a test selector may not begin with @ (pytest reads it as a response"
+            f" file): {text!r}"
+        )
+    if "\x00" in text:
+        # ``Popen`` raises ``ValueError`` for an argument carrying a NUL, which is not
+        # the launch failure ``run_child`` is shaped for -- and JSON can carry
+        # ``\u0000`` inside a string, so a corpus row can reach here with one.
+        return "a test selector may not contain a NUL byte"
+    path_part = text.split("::", 1)[0].replace("\\", "/")
+    if not path_part:
+        return f"the row names no test file: {text!r}"
+    if path_part.startswith("~") or os.path.isabs(path_part) or path_part.startswith("/"):
+        return f"a test selector must be relative to the worktree: {text!r}"
+    # ``PurePosixPath`` rather than a manual separator split: a corpus selector is
+    # written with forward slashes on every host, and this asks the path library what
+    # its parts are instead of assembling one by hand.
+    if ".." in PurePosixPath(path_part).parts:
+        return f"a test selector may not climb out of the worktree: {text!r}"
+    return None
+
+
+def pytest_available(python: str, worktree: Path, timeout: int) -> tuple[bool, str]:
+    """Can this interpreter run the argv the rows use? ``(available, note)``.
+
+    Probed ONCE, with :data:`PYTEST_ARGS` and ``--version``, for a reason worth
+    stating: ``python -m pytest`` with no pytest installed exits 1, which is also
+    "a test failed". Without this probe the two are indistinguishable, and a
+    worktree with no pytest would report every behaviour row as a REGRESSION the fix
+    caused. The probe carries the same options as a row so an interpreter that has
+    pytest but not the ``-n`` option is reported as unavailable rather than as four
+    broken rows.
+    """
+    argv = [python, "-m", "pytest", *PYTEST_ARGS, "--version"]
+    outcome, code, _ = run_child(
+        argv, worktree, timeout, env_extra={"PYTHONPATH": str(worktree / "src")}
+    )
+    if outcome != "ran":
+        return False, f"pytest could not be started under {python} ({outcome})"
+    if code != 0:
+        return False, (
+            f"pytest is not runnable under {python} with {' '.join(PYTEST_ARGS)}"
+            f" (exit {code}); the behaviour rows were not measured"
+        )
+    return True, ""
+
+
+def run_test_row(
+    selector: str, python: str, worktree: Path, timeout: int
+) -> tuple[str | None, str]:
+    """Run one ``test`` row. ``(verdict_contribution, why)``; ``None`` when it passed.
+
+    The selector goes after ``--`` so pytest reads it as a positional argument and
+    never as an option, and the child runs in the worktree with its ``src`` leading
+    ``PYTHONPATH`` -- the same binding the fence probe uses, so a row measures the
+    FIXED tree rather than an installed copy of the package.
+    """
+    argv = [python, "-m", "pytest", *PYTEST_ARGS, "--", selector]
+    outcome, code, _ = run_child(
+        argv, worktree, timeout, env_extra={"PYTHONPATH": str(worktree / "src")}
+    )
+    if outcome != "ran":
+        return UNVERIFIABLE, f"the behaviour row did not complete ({outcome})"
+    if code == PYTEST_PASSED:
+        return None, ""
+    if code == PYTEST_NO_TESTS:
+        return UNVERIFIABLE, (
+            "pytest collected no test for this selector, so the behaviour was not"
+            " measured; either the fix moved the node or the row names it wrongly"
+        )
+    if code == PYTEST_FAILED:
+        return BROKEN, "the behaviour this row pins fails against the fix (pytest exit 1)"
+    if code in (PYTEST_INTERRUPTED, PYTEST_INTERNAL):
+        # Neither is a behaviour that failed: 2 is an interrupted run and 3 is pytest's
+        # own internal error, so the row was not measured. Reporting them as broken
+        # would send a fixer to repair code that nothing judged.
+        return UNVERIFIABLE, (
+            f"pytest did not finish judging this row (exit {code}: interrupted or"
+            " internal error), so the behaviour was not measured"
+        )
+    if code == PYTEST_USAGE:
+        return BROKEN, (
+            "pytest could not use this selector (exit 4): the fixed tree has no such"
+            " test file or node"
+        )
+    return UNVERIFIABLE, f"pytest exited {code}, which is not in its contract"
+
+
+def check_test_rows(
+    rows: list[dict[str, Any]], worktree: Path, timeout: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """Run the behaviour corpus. ``(broken, unverifiable, checked)``.
+
+    There is deliberately no flag that skips these rows. One would be the same move as
+    a corpus the caller gets to shrink: the fixer running the gate would choose which
+    half of it applies. A row that cannot be run is reported ``unverifiable`` by the
+    paths below, which is a verdict rather than a choice.
+    """
+    broken: list[dict[str, Any]] = []
+    unsettled: list[dict[str, Any]] = []
+    if not rows:
+        return broken, unsettled, 0
+    python = classifier_python(worktree)
+    available, note = pytest_available(python, worktree, timeout)
+    if not available:
+        for row in rows:
+            unsettled.append(describe_row(row, note))
+        return broken, unsettled, 0
+    checked = 0
+    for row in rows:
+        selector = str(row["command_or_flow"])
+        problem = selector_problem(selector)
+        if problem is not None:
+            unsettled.append(describe_row(row, problem))
+            continue
+        verdict, why = run_test_row(selector, python, worktree, timeout)
+        checked += 1
+        if verdict == BROKEN:
+            broken.append(describe_row(row, why))
+        elif verdict == UNVERIFIABLE:
+            unsettled.append(describe_row(row, why))
+            # A row that did not settle was not a row this script checked.
+            checked -= 1
+    return broken, unsettled, checked
+
+
 # -------------------------------------------------------- step 2: the check
 
 
@@ -738,16 +1211,18 @@ def describe_row(row: dict[str, Any], why: str) -> dict[str, Any]:
 def check_golden_paths(
     rows: list[dict[str, Any]], worktree: Path, timeout: int
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
-    """Classify the shell corpus; hand every other kind to a human, unexecuted.
+    """Classify the shell corpus, run the test corpus, hand every other kind to a human.
 
     Returns ``(broken, unverifiable, needs_human, checked)``. The split is the
     design: the first two are verdicts about checks this script makes, and the third
     is corpus it deliberately makes no check about -- see the module docstring for
-    why a corpus row is never run.
+    why a ``flow`` or a ``cron`` row is never run while a ``test`` row is.
 
-    ``checked`` counts the shell rows only, which is the set this script made a
-    claim about. Reporting the whole table there would let a corpus of nothing but
-    human rows describe itself as fully checked.
+    ``checked`` counts the rows this script made a claim about: the shell rows, plus
+    every test row that actually produced a pass or a failure. Reporting the whole
+    table there would let a corpus of nothing but human rows describe itself as
+    fully checked, and counting an unrun test row would do the same thing one kind
+    down.
     """
     broken: list[dict[str, Any]] = []
     unsettled: list[dict[str, Any]] = []
@@ -764,9 +1239,15 @@ def check_golden_paths(
         if refusal is not None:
             broken.append(describe_row(row, f"the deny fence refuses it: {refusal}"))
 
+    test_broken, test_unsettled, test_checked = check_test_rows(
+        [row for row in rows if str(row["kind"]) == TEST_KIND], worktree, timeout
+    )
+    broken.extend(test_broken)
+    unsettled.extend(test_unsettled)
+
     for row in rows:
         kind = str(row["kind"])
-        if kind == CHECKED_KIND:
+        if kind in CHECKED_KINDS:
             continue
         needs_human.append(
             describe_row(
@@ -776,7 +1257,7 @@ def check_golden_paths(
             )
         )
 
-    return broken, unsettled, needs_human, len(shell_rows)
+    return broken, unsettled, needs_human, len(shell_rows) + test_checked
 
 
 def fold_verdict(*candidates: str) -> str:
@@ -809,6 +1290,20 @@ def _build_parser() -> argparse.ArgumentParser:
     # the platform is the host's (:func:`corpus_path`, :func:`host_platform`); a flag
     # for either would let the caller shrink what the gate checks.
     parser.add_argument(CLASSIFY_FLAG, action="store_true", dest="classify_stdin")
+    # The conductor's assertion about its OWN dispatch, which is why it is a flag rather
+    # than something read out of the worktree: the file in there is one the subject can
+    # edit or delete, and naming a copy outside it is the whole point. There is
+    # deliberately no flag that says "trust the worktree's own copy" -- that state is
+    # ``unverifiable``. See :func:`run_contract_check`.
+    parser.add_argument(
+        "--contract",
+        default=None,
+        help=(
+            "path to the conductor's own copy of the fix contract, held outside the"
+            " worktree; the only copy this gate enforces. Resolved to an absolute path"
+            " before use, because the child runs inside the worktree"
+        ),
+    )
     return parser
 
 
@@ -853,6 +1348,12 @@ def main(argv: list[str] | None = None) -> int:
                 "finding_id": args.finding_id,
                 "verdict": UNVERIFIABLE,
                 "platform": host_platform(),
+                "contract": {
+                    "declared": contract_file_path(worktree).is_file(),
+                    "verdict": None,
+                    "why": "the contract was not checked: the ledger would not load",
+                    "report": {},
+                },
                 "poc": {"verdict": UNVERIFIABLE, "reason": problem, "exit": 0},
                 "golden_paths_checked": 0,
                 "corpus": str(corpus_path()),
@@ -867,6 +1368,20 @@ def main(argv: list[str] | None = None) -> int:
     # here rather than defaulted twice, because the child's ``HOME`` is the worktree
     # and the default is ``HOME``-relative.
     db = (Path(args.db) if args.db else ledger.default_db_path()).resolve()
+
+    # The contract is checked FIRST, and the run continues either way. A fix that
+    # left its blast radius AND failed its proof is one round of feedback instead of
+    # two, and the fold below is what decides the verdict -- not the order of these
+    # calls.
+    contract_verdict, contract_report = run_contract_check(
+        worktree,
+        args.timeout,
+        finding_id=args.finding_id,
+        # Resolved HERE, absolutely: the child runs with ``cwd`` inside the worktree,
+        # so a relative path would resolve against the fixer's own tree and enforce a
+        # file it owns at that same relative name.
+        contract_path=Path(args.contract).expanduser().resolve() if args.contract else None,
+    )
 
     poc_verdict, poc_reason, poc_exit = run_verifier(
         db=db, finding_id=args.finding_id, worktree=worktree, timeout=args.timeout
@@ -894,6 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
     corpus_note = [corpus_problem] if corpus_problem else []
     verdict = fold_verdict(
         poc_verdict,
+        *([contract_verdict] if contract_verdict else []),
         *([BROKEN] if broken else []),
         *([UNVERIFIABLE] if unsettled or corpus_note else []),
     )
@@ -901,6 +1417,7 @@ def main(argv: list[str] | None = None) -> int:
         "finding_id": args.finding_id,
         "verdict": verdict,
         "platform": platform,
+        "contract": contract_report,
         "poc": {"verdict": poc_verdict, "reason": poc_reason, "exit": poc_exit},
         "golden_paths_checked": checked,
         "corpus": str(corpus),
@@ -921,6 +1438,10 @@ def emit(payload: dict[str, Any]) -> int:
     a broken installation stopped it before the proof was re-run.
     """
     print(json.dumps(payload, sort_keys=True))
+    contract = payload.get("contract") or {}
+    if contract.get("declared") and contract.get("verdict") in (BROKEN, UNVERIFIABLE):
+        label = "broken" if contract["verdict"] == BROKEN else "unverifiable"
+        print(f"{label}: fix contract: {contract['why']}", file=sys.stderr)
     for note in payload["corpus_problems"]:
         print(f"unverifiable: {note}", file=sys.stderr)
     for row in payload["broken"]:
