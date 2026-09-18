@@ -39,6 +39,13 @@ Missing history must never silently turn a private topic into Global memory.
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 
+Crew creation reports `409 agent_exists` for both an existing name and a
+concurrent name collision. The member-titled form uses its translated duplicate
+message only for that status and code together. Other conflicts, including
+memory and template-ownership failures, retain the API error message; missing
+or malformed codes are not guessed to mean a duplicate. Failed creation leaves
+the form open with its entered name and selected template intact.
+
 ## Owner-reviewed capability inheritance
 
 `agent_capabilities.py` resolves one verified Parent and explicit per-item

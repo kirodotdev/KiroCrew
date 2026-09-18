@@ -1452,8 +1452,39 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?member=staging$/)
   })
 
+  it.each([
+    ['memory unavailable', 409, '{"code":"member_memory_unavailable"}'],
+    ['template lineage', 409, '{"code":"lineage_unverifiable"}'],
+    ['foreign template', 409, '{"code":"foreign_private_copy"}'],
+    ['unknown code', 409, '{"code":"future_conflict"}'],
+    ['uncoded conflict', 409, '{"error":"Creation failed"}'],
+    ['malformed body', 409, 'not JSON'],
+    ['null body', 409, 'null'],
+    ['non-string code', 409, '{"code":409}'],
+    ['non-conflict status', 400, '{"code":"agent_exists"}'],
+  ])('preserves %s instead of reporting a duplicate member', async (_label, status, body) => {
+    const message = 'Creation is unavailable; retry after repairing the configuration.'
+    mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(status, message, body))
+    renderPage('/capabilities?tab=crews&new=1&from=members')
+    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
+    const name = within(sheet).getByPlaceholderText('e.g. oncall')
+    fireEvent.change(name, { target: { value: 'staging' } })
+    const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
+    fireEvent.keyDown(template, { key: 'ArrowDown' })
+    fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create member' }))
+    const err = await screen.findByTestId('crew-sheet-error')
+    expect(err).toHaveTextContent(message)
+    expect(err).not.toHaveTextContent('already exists')
+    expect(name).toHaveValue('staging')
+    expect(template).toHaveTextContent('oncall-agent')
+    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
+    expect(screen.getByTestId('location-pathname')).toHaveTextContent('/capabilities')
+    expect(mockApi.createKirocrewAgent).toHaveBeenCalledTimes(1)
+  })
+
   it('a duplicate name from the Members roster is refused in the form\'s own word', async () => {
-    mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(409, "Agent 'staging' already exists", '{"error":"Agent \'staging\' already exists"}'))
+    mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(409, "Agent 'staging' already exists", '{"error":"Agent \'staging\' already exists","code":"agent_exists"}'))
     renderPage('/capabilities?tab=crews&new=1&from=members')
     const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
     const user = userEvent.setup()

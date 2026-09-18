@@ -473,6 +473,7 @@ class TestAgentCrudEdgeCases:
                 assert resp.status == 409
                 data = await resp.json()
                 assert "already exists" in data["error"]
+                assert data["code"] == "agent_exists"
 
     @pytest.mark.asyncio
     async def test_update_nonexistent_returns_404(self, tmp_path: Path) -> None:

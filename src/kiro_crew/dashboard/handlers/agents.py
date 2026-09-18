@@ -4672,7 +4672,9 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name in cfg.agents:
-            return web.json_response({"error": f"Agent '{name}' already exists"}, status=409)
+            return web.json_response(
+                {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
+            )
         model_reason = _model_pin_rejected(model, request, cfg.agent.provider)
         if model_reason:
             return web.json_response({"error": model_reason, "code": "invalid_model"}, status=400)

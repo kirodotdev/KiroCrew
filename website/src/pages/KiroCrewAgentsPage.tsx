@@ -44,6 +44,7 @@ import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
 import { errMessage } from '../utils/thunkError'
+import { parseErrorCode } from '../utils/errorReport'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../lib/effort'
 import { templateSourceBadge, type TemplateProvenance } from '../lib/templateSource'
 
@@ -1245,11 +1246,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
       settleFor(vars.epoch, r.error)
     },
     onError: (e: Error, vars) => {
-      // The server's wording is the crew manager's ("Agent 'x' already
-      // exists"); inside the member-titled form the same outcome is said in
-      // the form's own word. 409 is the create route's one "name taken"
-      // answer, so the status is the signal, not the message text.
-      if (fromMembers && e instanceof ApiError && e.status === 409) {
+      // Other conflicts can describe memory or template ownership failures.
+      if (fromMembers && e instanceof ApiError && e.status === 409 && parseErrorCode(e.body) === 'agent_exists') {
         settleFor(vars.epoch, i18nT('pages.kiroCrewAgentsPage.member_already_exists', { name: vars.name }))
         return
       }
