@@ -235,27 +235,11 @@ class TestNoRedundantConfigLoad:
         monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(counting))
         return calls
 
-    def test_supplied_provider_skips_the_load(self, monkeypatch):
+    def test_supplied_provider_and_backend_skip_the_load(self, monkeypatch):
         from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
         calls = self._counting_load(monkeypatch)
-        _model_rejected_reason("claude-opus-4-8", provider="acp")
-        assert calls == []
-
-    def test_omitted_provider_still_resolves_it(self, monkeypatch):
-        """The default must preserve the original behaviour for existing callers."""
-        from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
-
-        calls = self._counting_load(monkeypatch)
-        _model_rejected_reason("claude-opus-4-8")
-        assert len(calls) == 1
-
-    def test_validator_forwards_the_provider(self, monkeypatch):
-        from kiro_crew.dashboard.handlers.core import _validate_role_model
-
-        calls = self._counting_load(monkeypatch)
-        request = SimpleNamespace(app={})
-        _validate_role_model("claude-opus-4-8", request, provider="acp")
+        _model_rejected_reason("fable-5-1m", provider="acp", backend="kiro")
         assert calls == []
 
     def test_live_entitlements_preserve_the_registry_correction(self, monkeypatch):
@@ -270,6 +254,34 @@ class TestNoRedundantConfigLoad:
 
         assert reason is not None
         assert "registry maps that spelling to 'claude-opus-4.5'" in reason
+
+    def test_a_canonical_key_is_accepted_on_a_non_acp_namespace_backend(self):
+        """The defect this guard shipped with, driven at its own seam.
+
+        ``agent.provider`` is pinned to ``acp`` by the config schema, so every
+        harness this fork selects at ``agent.acp_backend`` reads as the same
+        provider. A guard keyed on that field therefore rejected canonical keys
+        on EVERY backend -- including claude-agent-acp, whose namespace is
+        ``claude_code`` and where ``_wire_model_id`` translates a canonical key
+        into the id the backend serves. The operator saw a model the account can
+        run refused as "display-only", naming a provider that was not the
+        reason. Keyed on the backend's namespace, the same value passes.
+        """
+        from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+
+        assert _model_rejected_reason("fable-5-1m", provider="acp", backend="claude") is None
+
+    def test_a_canonical_key_is_still_refused_on_the_acp_namespace(self):
+        """The rejection the guard exists for is unchanged where it applies.
+
+        kiro-cli's ids ARE the ``acp`` namespace, so a canonical registry key is
+        a display name there and the CLI answers -32603 for it. Narrowing the
+        guard to the namespace must not turn it off.
+        """
+        from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+
+        reason = _model_rejected_reason("fable-5-1m", provider="acp", backend="kiro")
+        assert reason is not None and "display-only" in reason
 
     def test_claude_code_provider_keeps_its_wire_id(self, monkeypatch):
         from kiro_crew.dashboard.handlers import agents, core
