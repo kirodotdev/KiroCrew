@@ -3266,6 +3266,7 @@ def _repo_key_owner_count(repo: str) -> int:
     """
     from kiro_crew.apps.registry import (
         _effective_registries,
+        _external_registry_cache_identity,
         _load_registry_file,
         _read_external_registry_cache,
     )
@@ -3278,7 +3279,9 @@ def _repo_key_owner_count(repo: str) -> int:
         ):
             sources += 1
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(
+                _external_registry_cache_identity(reg), ignore_ttl=True
+            )
             if any(
                 isinstance(e, dict)
                 and isinstance(e.get("repo"), str)

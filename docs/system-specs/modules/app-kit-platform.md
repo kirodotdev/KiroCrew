@@ -1451,19 +1451,22 @@ Four properties keep the tier from becoming a hole, and none is optional:
   cannot tell two repos on one forge apart.
 
 **A registry name claimed by two different repositories is refused outright.**
-The on-disk index cache is keyed by registry NAME, so if a pinned row and an
-operator row share a name but not a repo, serving either would read the other's
-cached index under the winner's identity — and every reader stamps `_registry`
-from the registry it asked for, so those rows would be attributed to it: apps the
-winning repository does not list, presented as its own and installable under it.
-`_effective_registries` therefore serves NEITHER row for a contested name and
-logs both claimants. Same name AND same repo is not contested: the pinned row
-simply supersedes an operator row that already agreed, and the shared cache is
-correct. `PUT /api/apps/registries` refuses to create such a collision, so the
-case that reaches this rule is a `config.json` that already used the name before
-the build pinned it. (Re-keying the cache on `(name, repo)` would fix the wider
-pre-existing case — an operator repointing a registry's `repo` has the same
-hazard — and is left as separate work.)
+The on-disk index cache is keyed by the registry's full source identity —
+`name|normalized credential-free repo|branch` — so an operator repointing a
+registry misses the former source's cache by construction. The same source
+coordinates are used by every reader and writer; changing the repo or branch
+therefore cannot make the new source serve the old source's cached rows.
+
+The build-pinned/config collision rule remains a control-plane ownership rule,
+not a cache-isolation mechanism. A build-pinned name carries build-owned trust
+and review metadata, while an operator row with that same public name claims a
+different source. Silently choosing either row would hide the other claimant
+and make the public `_registry` attribution ambiguous, so
+`_effective_registries` serves NEITHER row and logs both claimants. Same name,
+repo, AND branch is not contested: the pinned row supersedes an operator row
+that already agrees with it. `PUT /api/apps/registries` refuses to create a
+conflicting claim, so the case that reaches this rule is a `config.json` that
+predates the build pin.
 
 **Only the BUILD can grant `owner`.** `_registry_trust_tier` resolves the tier
 solely from `AppsLoader.default_registries()`; a row in `config.json` reads as
