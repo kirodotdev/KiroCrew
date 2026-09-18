@@ -560,12 +560,466 @@ def _kill_confirmed_and_writeback(
     return orphan_killed
 
 
+# Grace given to a TERMed provider tree before the group SIGKILL. Mirrors the
+# 3.0 s budget ``AcpClient._kill_process`` allows on the async teardown path, so
+# a runtime gets the same chance to flush and exit through its own shutdown
+# whichever path reaps it.
+_PROVIDER_TERM_GRACE_SECONDS = 3.0
+# Poll interval while waiting out that grace.
+_PROVIDER_TERM_POLL_SECONDS = 0.05
+# ``(start_id, argv0 basename)`` -- as the ACP layer records a descendant at spawn
+# time. Only the start id is verified before signalling (see
+# :func:`_signal_provider_descendants`); the basename rides along unread. Spelled
+# here rather than imported from the ACP layer, which this module must carry no
+# knowledge of: ``scripts/check_agent_sdk_boundary.py`` counts even a type-only
+# import as such knowledge, and ``test_agent_lifecycle_cycle.py`` pins the absence.
+_ProviderChildRecord = tuple[str | None, bytes | None]
+
+
+def _isolated_provider_group(pid: int) -> int | None:
+    """The process GROUP to signal for a provider rooted at *pid*, or ``None``.
+
+    ``None`` means a pid-scoped kill is the only safe option, so the caller must
+    not reach for ``killpg``.
+
+    A group id is returned only when *pid* is an isolated group leader
+    (``pgid == pid``, not our own group, not init's), which is what a provider
+    spawned with ``start_new_session=True`` is. Under that predicate the group
+    holds this provider's tree and nothing else, so a group signal can never
+    reach a foreign process -- the same guard
+    :func:`_kill_orphan_browser_daemon` carries for the same reason.
+
+    Callers resolve this while the root is still alive and reuse the number for
+    the escalation: the group outlives its leader, so the id read here still
+    names the survivors after a TERM reaps the root, and reading it up front
+    keeps a recycled pid out of the answer.
+
+    POSIX only. Windows has no process groups in this sense; teardown there goes
+    through ``kill_process_tree`` (``taskkill /T``), which walks the child tree
+    itself.
+    """
+    if platform_compat.IS_WINDOWS:
+        return None
+    pgid = platform_compat.pgroup_of(pid)
+    if pgid is None:
+        return None
+    if pgid == pid and pgid > 1 and pgid != os.getpgrp():
+        return pgid
+    return None
+
+
+def _root_identity_holds(pid: int, recorded_start: str | None, *, gated: bool) -> bool:
+    """Whether *pid* is still the process whose identity was recorded.
+
+    Called again before EVERY signal, not once up front: the identity checked at
+    entry can go stale inside the SIGTERM grace, because this teardown is not the
+    only reaper. ``asyncio``'s child watcher can reap the leader zombie on its own
+    (``_reap_provider_root`` says as much), which frees the pid, and under pid-space
+    wraparound a new process can take it before the SIGKILL lands.
+
+    ``gated=False`` is the ``_proc`` / ``_active_proc`` shape, whose pid comes from
+    a live handle this process owns: there is no recorded id to compare and the
+    handle already proves the child is unreaped.
+    """
+    if not gated:
+        return True
+    if recorded_start is None:
+        return False
+    return platform_compat.get_process_start_id(pid) == recorded_start
+
+
+def _pgroup_still_ours(
+    pgid: int,
+    root_pid: int,
+    recorded_start: str | None,
+    records: dict[int, _ProviderChildRecord],
+    *,
+    gated: bool,
+) -> bool:
+    """Whether an identity-verified process still owns process group *pgid*.
+
+    A pgid is only as trustworthy as its members. Once every process in the group
+    is gone the number is free, and a group signal aimed at it lands on whichever
+    tree takes it next -- so the escalation may only signal the group while it can
+    still name a member it has verified: the root itself, or one of the descendants
+    recorded at spawn. An unverifiable group is not signalled; the caller falls
+    back to the verified descendants it can still name individually.
+
+    A held zombie counts, and deliberately so: it is still a group member and its
+    identity is still readable, which is the whole point of not reaping the root
+    until the last signal is out. Membership is read through
+    :func:`_pid_in_pgroup` for that reason -- see there for why ``getpgid`` alone
+    would drop the zombie root on macOS. The ungated ``_proc`` shape has no
+    recorded start id, so its owned live handle supplies a fresh identity read for
+    the listing comparison.
+    """
+    if platform_compat.IS_WINDOWS:
+        return False
+    if _root_identity_holds(root_pid, recorded_start, gated=gated):
+        root_start = (
+            recorded_start
+            if recorded_start is not None
+            else platform_compat.get_process_start_id(root_pid)
+        )
+        if _pid_in_pgroup(root_pid, pgid, root_start):
+            return True
+    for cpid, (start, _basename) in records.items():
+        if start is None:
+            continue
+        if platform_compat.get_process_start_id(cpid) != start:
+            continue
+        if _pid_in_pgroup(cpid, pgid, start):
+            return True
+    return False
+
+
+def _pid_in_pgroup(pid: int, pgid: int, start_id: str | None) -> bool:
+    """Whether *pid* is a member of process group *pgid*, zombie or not.
+
+    ``getpgid`` answers for a live member on every POSIX host, and on Linux for a
+    zombie too. macOS refuses it for a zombie (``ESRCH``: the kernel looks the
+    pid up among running processes only), which is exactly the member
+    :func:`_pgroup_still_ours` needs to see -- the exited-but-unreaped root is
+    the one verified member left in the group once its children have been
+    SIGTERMed, and losing it there suppresses the group SIGKILL, so a child that
+    ignored SIGTERM outlives the teardown. ``sysctl KERN_PROC_PGRP`` lists the
+    group's zombies alongside its live members, so it settles the question
+    ``getpgid`` cannot.
+
+    The listing is consulted ONLY when ``getpgid`` had no answer. A definite
+    answer naming another group is final: the pid has left the group, or the
+    number has moved on to a stranger's tree, and a second oracle must not be
+    allowed to overrule that verdict in the direction of signalling. Unreadable
+    on both is "not a member": the caller must not signal a group it cannot
+    prove it owns.
+
+    A listed member counts only when its ``start_id`` matches *start_id* as well
+    as its pid. The caller verified the identity before asking, but the listing
+    is a separate read: a zombie collected by another reaper in between frees the
+    pid, and under wraparound a stranger's new group leader can hold it by the
+    time the listing runs. Matching the start instant refuses that recycled pid;
+    a caller with no identity to offer (``None``) gets "not a member" for the
+    same reason.
+    """
+    answer = platform_compat.pgroup_of(pid)
+    if answer is not None:
+        return answer == pgid
+    if sys.platform != "darwin" or start_id is None:
+        return False
+    members = platform_compat.darwin_pgroup_members(pgid)
+    if members is None:
+        return False
+    return any(m.pid == pid and m.start_id == start_id for m in members)
+
+
+def _provider_descendant_records(
+    provider: object,
+    pid: int,
+    *,
+    include_live_walk: bool = True,
+    recorded_start: str | None = None,
+    gated: bool = False,
+) -> dict[int, _ProviderChildRecord]:
+    """Snapshot a provider's descendants as ``pid -> (start_time, basename)``.
+
+    Merges the runtime's own spawn-time snapshot (``client._child_pids``, which
+    holds descendants that have already reparented away from the root and are
+    therefore invisible to a live walk) with a fresh recursive scan of the
+    process tree, and records each pid's identity so
+    :func:`_signal_provider_descendants` can refuse a recycled one.
+
+    Taken BEFORE any signal: once the root exits its children reparent to init
+    and no walk can find them from the root again.
+
+    Reads the machine through ``platform_compat`` alone -- ``process_descendants``
+    for the walk, ``get_process_start_id`` for the identity -- so this module
+    borrows nothing from the agent layer to do it. That is possible because the
+    ACP layer records the SAME neutral start id at spawn time, so a stored record
+    and a fresh one are directly comparable.
+
+    ``include_live_walk=False`` drops the fresh walk and keeps ONLY the spawn-time
+    snapshot. Pass it when the root's own identity could not be verified: a walk
+    from an unverified pid enumerates whoever holds it now, and because those pids
+    would have their identity captured here and re-read moments later they would
+    MATCH and be signalled -- turning a recycled root into a licence to kill a
+    stranger's children. The stored snapshot cannot do that: its entries were
+    recorded when the tree was provably ours.
+
+    The walk is BRACKETED by the same identity check for the same reason. A root
+    verified just before this call can exit while the walk runs, and the pid can be
+    reused inside that window, so a walk that started on our tree can finish on a
+    replacement's. Re-reading the identity afterwards and discarding the fresh
+    entries on a mismatch is what keeps a stale verification from authorising the
+    sweep; the spawn-time snapshot is unaffected and is still returned.
+    """
+    records: dict[int, _ProviderChildRecord] = {}
+    client = getattr(provider, "_client", None)
+    stored = getattr(client, "_child_pids", None) if client is not None else None
+    if isinstance(stored, dict):
+        for cpid, record in stored.items():
+            if isinstance(cpid, int) and cpid > 1:
+                records[cpid] = record if isinstance(record, tuple) else (record, None)
+    if not include_live_walk:
+        return records
+    if not _root_identity_holds(pid, recorded_start, gated=gated):
+        logger.warning(
+            "_sync_kill_provider: skipping the live descendant walk for pid %d -- "
+            "identity went stale before it started",
+            pid,
+        )
+        return records
+    try:
+        fresh = [p for p in platform_compat.process_descendants(pid) if p > 1 and p not in records]
+    except Exception:
+        logger.debug("_sync_kill_provider: descendant scan failed for %d", pid, exc_info=True)
+        fresh = []
+    if not _root_identity_holds(pid, recorded_start, gated=gated):
+        logger.warning(
+            "_sync_kill_provider: discarding %d freshly walked descendant(s) of pid %d -- "
+            "the root's identity changed while the walk ran, so they are not ours",
+            len(fresh),
+            pid,
+        )
+        return records
+    # Capture each identity, THEN re-confirm ancestry from a second snapshot. The
+    # enumeration above and the capture below are separate reads, so a descendant
+    # can exit and its pid be reused in between, handing us a stranger's start id
+    # that then verifies at signal time.
+    #
+    # The second snapshot is bracketed by the root check as well, and it is NOT
+    # enough to argue that an intersection can only shrink the set. Membership is
+    # not the only thing these two reads decide: if the ROOT pid is itself reused
+    # by a foreign process F while this runs, the second snapshot enumerates F's
+    # children, so a first-walk pid that F's child Y now holds is confirmed by the
+    # filter and carries Y's captured id -- which the signal-time re-read then
+    # agrees with instead of catching. Re-reading the root identity here is what
+    # separates "this pid is still in OUR tree" from "this pid is in whatever tree
+    # holds that number now".
+    captured = {cpid: platform_compat.get_process_start_id(cpid) for cpid in fresh}
+    try:
+        still_ours = set(platform_compat.process_descendants(pid))
+    except Exception:
+        logger.debug("_sync_kill_provider: re-scan failed for %d", pid, exc_info=True)
+        still_ours = set()
+    if not _root_identity_holds(pid, recorded_start, gated=gated):
+        logger.warning(
+            "_sync_kill_provider: discarding %d freshly walked descendant(s) of pid %d -- "
+            "the root's identity changes across the re-scan, so the tree scanned is "
+            "not ours",
+            len(captured),
+            pid,
+        )
+        return records
+    for cpid, start_id in captured.items():
+        if cpid in still_ours:
+            records[cpid] = (start_id, None)
+        else:
+            logger.warning(
+                "_sync_kill_provider: dropping pid %d -- it stops being a descendant of "
+                "%d between the walk and its identity capture, so the id may be a "
+                "stranger's",
+                cpid,
+                pid,
+            )
+    return records
+
+
+def _signal_provider_descendants(records: dict[int, _ProviderChildRecord], sig: int) -> None:
+    """Send *sig* to each snapshotted descendant still alive, leaf-first.
+
+    Covers the descendant a group signal cannot reach: one that ``setsid``-ed
+    out of the group, and one already reparented before the snapshot. Ownership
+    is re-verified per pid against the recorded start id, so a pid recycled
+    inside the teardown window is skipped rather than signalled (deny-by-default).
+    Leaf-first so a parent cannot fork a replacement while its own children are
+    being reaped.
+
+    The start id alone decides this, through ``platform_compat`` rather than the
+    agent layer's own check: it is microsecond libproc on macOS, 100 ns creation
+    time on Windows and stat field 22 on Linux, so two processes on the same pid
+    at different times cannot share one. The recorded basename is deliberately
+    NOT compared, because reading a live pid's basename would mean borrowing the
+    ACP layer's reader and this module is held to no knowledge of that layer
+    (``scripts/check_agent_sdk_boundary.py``). Basename was only ever a second
+    opinion on top of the start id, and it cannot rescue a case the start id
+    misses -- a matching start id already means it is the same process.
+    """
+    if platform_compat.IS_WINDOWS:
+        return
+    for cpid in reversed(list(records)):
+        try:
+            if not platform_compat.pid_exists(cpid):
+                continue
+            expected_start, _expected_basename = records[cpid]
+            actual_start = platform_compat.get_process_start_id(cpid)
+            if expected_start is None or actual_start is None or actual_start != expected_start:
+                logger.debug("_sync_kill_provider: skipping pid %d -- not ours (recycled?)", cpid)
+                continue
+            platform_compat.kill_pid(cpid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def _pid_exited_but_unreaped(pid: int) -> bool:
+    """True when *pid* has finished running: a zombie, or already gone.
+
+    Lets the teardown observe the root's exit WITHOUT reaping it. That matters
+    because a zombie still owns its pid, and for a group leader that pid IS the
+    process group id -- reaping it frees the number, after which the pgid may be
+    handed to an unrelated new leader. So the escalation has to be able to say
+    "the root has exited" without also making its pgid ambiguous.
+
+    Conservative on an unreadable state: returns False, i.e. "still running", so
+    a caller waits out its grace rather than exiting early on a guess. On macOS
+    the state comes from ``sysctl KERN_PROC_PID``, which lists zombies where
+    libproc refuses them; a liveness probe would not do, because a zombie
+    answers ``kill(pid, 0)`` as present and the root would read as running until
+    someone else reaped it -- which this teardown deliberately does not, until
+    the last group signal is sent. On other non-Linux platforms there is no
+    zombie state to read, so this falls back to plain liveness: an
+    exited-but-unreaped root reads as alive and the caller waits out the grace.
+    """
+    if sys.platform == "darwin":
+        zombie = platform_compat.darwin_pid_is_zombie(pid)
+        return bool(zombie) if zombie is not None else False
+    if sys.platform != "linux":
+        return not platform_compat.pid_exists(pid)
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return True  # already gone
+    except OSError:
+        return False  # unreadable -- do not claim it exited
+    rparen = stat.rfind(")")
+    if rparen < 0:
+        return False
+    fields = stat[rparen + 2 :].split()
+    return bool(fields) and fields[0] == "Z"
+
+
+def _pgroup_has_member_besides(pgid: int, root_pid: int) -> bool:
+    """True when some process other than *root_pid* is still in group *pgid*.
+
+    ``pgroup_exists`` cannot answer this: a retained zombie leader is itself a
+    group member, so ``killpg(pgid, 0)`` keeps succeeding after everything real
+    has died (measured). Without this distinction, holding the zombie for pgid
+    safety would cost every teardown its full SIGTERM grace.
+
+    One ``/proc`` pass reading each stat's pgrp (field 5, the third field after
+    the last ``)``, the same parse :func:`_pid_parent_and_token` uses). Callers
+    gate it behind the cheap probes, so the common path runs it once.
+
+    Conservative on a scan failure: returns True, i.e. "assume the group still
+    holds something", so the caller escalates rather than declaring the tree
+    gone on unread evidence.
+
+    macOS lists the group with ``sysctl KERN_PROC_PGRP`` and applies the same
+    rule -- a zombie member is not holding the group open. Other non-Linux
+    platforms can only ask whether the group exists, which a retained zombie
+    leader keeps answering yes to, so there the caller waits out its grace.
+    """
+    if sys.platform == "darwin":
+        members = platform_compat.darwin_pgroup_members(pgid)
+        if members is None:
+            return True
+        return any(m.pid != root_pid and not m.zombie for m in members)
+    if sys.platform != "linux":
+        return platform_compat.pgroup_exists(pgid)
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        logger.debug("_sync_kill_provider: /proc scan failed for pgid %d", pgid, exc_info=True)
+        return True
+    for entry in entries:
+        name = entry.name
+        if not name.isdigit():
+            continue
+        member = int(name)
+        if member == root_pid:
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except (OSError, ValueError):
+            continue  # exited mid-scan; it is not holding the group open
+        rparen = stat.rfind(")")
+        if rparen < 0:
+            continue
+        fields = stat[rparen + 2 :].split()
+        try:
+            if int(fields[2]) == pgid and fields[0] != "Z":
+                return True
+        except (IndexError, ValueError):
+            continue
+    return False
+
+
+def _provider_tree_gone(
+    pid: int, pgid: int | None, records: dict[int, _ProviderChildRecord]
+) -> bool:
+    """True when nothing of the provider's tree is alive any more.
+
+    Probes the GROUP when one was resolved -- a group outlives its leader, so a
+    dead root proves nothing about the launcher and agent processes left in it,
+    which is the whole failure this teardown exists to close. The root is judged
+    by :func:`_pid_exited_but_unreaped` rather than by liveness, because the
+    escalation deliberately holds its zombie to keep the pgid unambiguous, and a
+    zombie answers every liveness probe as present.
+
+    The cheap record probe runs first so the ``/proc`` group scan is reached only
+    once the recorded descendants are all gone.
+    """
+    if any(platform_compat.pid_exists(cpid) for cpid in records):
+        return False
+    if not _pid_exited_but_unreaped(pid):
+        return False
+    if pgid is not None:
+        return not _pgroup_has_member_besides(pgid, pid)
+    return True
+
+
+def _reap_provider_root(pid: int, recorded_start: str | None, *, gated: bool) -> None:
+    """Reap *pid* if it is still the process whose identity was recorded.
+
+    A zombie answers every liveness probe as present until someone waits on it.
+    ``ChildProcessError`` means the process is not ours to reap (or asyncio's
+    child watcher got there first), which is not a failure here.
+
+    Identity is re-checked immediately before the wait, for the same reason every
+    signal re-checks it: that watcher can reap the leader zombie on its own, which
+    frees the pid, and ``waitpid`` on a recycled pid consumes an UNRELATED child's
+    exit status. That loss is silent and nothing detects or repairs it, so this
+    reads the identity here rather than trusting the one taken at entry. A genuine
+    zombie of ours keeps a readable ``/proc`` entry, so the check passes for the
+    case this exists to handle.
+    """
+    if not _root_identity_holds(pid, recorded_start, gated=gated):
+        logger.warning(
+            "_sync_kill_provider: NOT reaping pid %d -- identity does not hold, so a "
+            "wait would consume an unrelated child's status",
+            pid,
+        )
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        pass
+
+
 def _sync_kill_provider(provider: object) -> None:
-    """Synchronously kill a provider's process.
+    """Synchronously kill a provider's whole process tree.
 
     Used during CancelledError handling where async shutdown is unreliable
     (asyncio.shield + await raises CancelledError immediately, leaving
-    shutdown fire-and-forget).  Falls back to SIGKILL if SIGTERM fails.
+    shutdown fire-and-forget).  Escalates SIGTERM to SIGKILL after a bounded
+    grace.
+
+    Signals the process GROUP, not the pid. An agent runtime is a tree -- a
+    sandbox launcher, the agent binary, its own chat subprocess and a handful of
+    MCP stub children -- and the pid recorded for a provider is the tree's group
+    leader (spawned ``start_new_session=True``). A pid-scoped signal reaps that
+    leader alone; everything below it survives, reparents to init, and holds its
+    memory for the life of the machine, with no tracking entry left to find it
+    by. Descendants outside the group are swept individually.
 
     ``provider`` is deliberately ``object`` rather than ``LLMProvider``.  Every
     read below goes through ``getattr(..., None)`` against a PRIVATE attribute
@@ -581,6 +1035,9 @@ def _sync_kill_provider(provider: object) -> None:
     # ACP provider: long-lived process via client._pid
     client = getattr(provider, "_client", None)
     pid = getattr(client, "_pid", None) if client else None
+    # Whether the pid is a RECORDED number (staleness-prone, so identity-gated
+    # below) or one read from a live handle this process owns.
+    pid_from_client = pid is not None
     # CC provider: long-lived process via _proc.pid or ephemeral via _active_proc.pid
     if pid is None:
         proc = getattr(provider, "_proc", None)
@@ -600,38 +1057,199 @@ def _sync_kill_provider(provider: object) -> None:
     if not isinstance(pid, int) or pid <= 1:
         logger.debug("_sync_kill_provider: refusing to signal invalid pid %r", pid)
         return
+    # Deny-by-default on the ROOT's own identity -- but only where the pid can go
+    # stale. ``_client._pid`` is a RECORDED number that outlives a failed start, so
+    # it can name a process the OS has since handed to someone else; and for a group
+    # leader that pid IS the pgid, so an unverified ``killpg`` takes a stranger's
+    # whole process tree. The pid-scoped fallback is the same hazard one process
+    # wide, so an unproven root is not signalled AT ALL rather than signalled
+    # narrowly. Recorded descendants are still swept: each carries its own
+    # spawn-time identity and is verified against it, which is exactly the check
+    # the root was missing.
+    #
+    # The ``_proc`` / ``_active_proc`` pids are NOT gated: they come from a live
+    # handle this process owns whose ``returncode`` is None, so the child is
+    # unreaped and its pid cannot have been recycled -- the handle is already
+    # better evidence than a recorded id would be, and there is no recorded id
+    # for that shape to compare against.
+    #
+    # Same source on both sides or the comparison is meaningless: the ACP layer
+    # records ``_start_time`` with ``platform_compat.get_process_start_id`` (both
+    # its client and its runtime do), which is what this reads back. It is also
+    # what makes this work on Windows, where there are no process groups but a
+    # recycled pid would still send ``taskkill /T`` down a foreign tree.
+    root_verified = True
+    recorded_start: str | None = None
+    if pid_from_client:
+        recorded_start = getattr(client, "_start_time", None)
+        live_start = platform_compat.get_process_start_id(pid)
+        root_verified = (
+            isinstance(recorded_start, str)
+            and live_start is not None
+            and live_start == recorded_start
+        )
+        if not root_verified:
+            logger.warning(
+                "_sync_kill_provider: NOT signalling root pid %d -- identity unproven "
+                "(recorded=%r, live=%r); sweeping only descendants recorded at spawn",
+                pid,
+                recorded_start,
+                live_start,
+            )
     # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /F is a hard
     # kill) and no os.waitpid for non-child PIDs, so a single kill suffices.
     if platform_compat.IS_WINDOWS:
-        # kill_pid raises ProcessLookupError / PermissionError / OSError on a
-        # non-zero taskkill rc (same shape POSIX uses). Catch those so the
-        # audit log doesn't record a phantom "killed" when nothing was
-        # actually terminated.
+        if not root_verified:
+            # Nothing further to do here: the descendant sweep is a POSIX-only
+            # arm (no process groups to escape on Windows, and ``taskkill /T``
+            # is what normally covers the tree), so refusing the root refuses
+            # the whole kill rather than narrowing it.
+            return
+        # /T so the descendant tree goes with it: Windows has no process group
+        # to signal, and the agent runtime's launcher, chat subprocess and MCP
+        # stub children are the bulk of what has to die. kill_process_tree
+        # raises ProcessLookupError / PermissionError / OSError on a non-zero
+        # taskkill rc (same shape POSIX uses). A /T refusal (a protected
+        # descendant, transient access-denied) still leaves the root to reap, so
+        # fall back to the pid-scoped /F rather than returning with the runtime
+        # alive.
         try:
-            platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+            if pid_from_client:
+                # PINNED: the query handle that verified this identity is held
+                # open across taskkill, and Windows reserves a pid while any
+                # handle to the process object exists -- so the pid still means
+                # the same process when taskkill resolves it. Reading the start
+                # id and then calling the plain variant releases that handle
+                # first, which is the window taskkill /T would tear a stranger's
+                # whole tree down through. False means identity unconfirmed, and
+                # is a refusal to reap rather than a failure to report.
+                assert recorded_start is not None  # implied by root_verified
+                if not platform_compat.kill_process_tree_pinned(
+                    pid, recorded_start, platform_compat.SIGKILL
+                ):
+                    logger.warning(
+                        "_sync_kill_provider: NOT killing tree of pid %d -- Windows "
+                        "identity could not be pinned across the terminate",
+                        pid,
+                    )
+                    return
+            else:
+                # The _proc / _active_proc shape: this process owns the child's
+                # own handle, which is itself what reserves the pid, so there is
+                # nothing to pin and no recorded id to pin against.
+                platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError) as exc:
             logger.debug(
-                "_sync_kill_provider: taskkill did not terminate PID %d (%s)",
+                "_sync_kill_provider: taskkill /T did not terminate PID %d (%s)",
                 pid,
                 exc,
             )
-            return
+            try:
+                # The fallback carries the SAME pin as the tree kill above: the
+                # /T refusal means the provider may already be exiting, which is
+                # exactly when its pid becomes reusable, so an un-pinned kill here
+                # would undo the guarantee the pinned tree kill just gave.
+                if pid_from_client:
+                    assert recorded_start is not None  # implied by root_verified
+                    if not platform_compat.kill_pid_pinned(
+                        pid, recorded_start, platform_compat.SIGKILL
+                    ):
+                        logger.warning(
+                            "_sync_kill_provider: NOT killing pid %d -- identity could "
+                            "not be pinned for the fallback kill",
+                            pid,
+                        )
+                        return
+                else:
+                    platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError) as pid_exc:
+                logger.debug(
+                    "_sync_kill_provider: taskkill did not terminate PID %d (%s)",
+                    pid,
+                    pid_exc,
+                )
+                return
         logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
         return
+    # Resolved once, while the root is alive. The root's zombie is then held
+    # unreaped until every group signal has been sent (see below), so this id
+    # keeps naming OUR group for the whole escalation. Not resolved at all for an
+    # unverified root: the pgid would be whatever group holds that pid now.
+    pgid = _isolated_provider_group(pid) if root_verified else None
+    records = _provider_descendant_records(
+        provider,
+        pid,
+        include_live_walk=root_verified,
+        recorded_start=recorded_start,
+        gated=pid_from_client,
+    )
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
-        try:
-            platform_compat.kill_pid(pid, sig)
-        except ProcessLookupError:
-            return  # already dead
-        except OSError:
-            return
-        if sig == platform_compat.SIGTERM:
-            # Brief wait for graceful exit before escalating (POSIX only)
+        # killpg is authorized by GROUP OWNERSHIP, not by the root still being alive.
+        # `_pgroup_still_ours` proves an identity-verified member of our tree owns this
+        # pgid -- the root if it is still there, otherwise a spawn-recorded descendant --
+        # and that is exactly the property killpg needs. Demanding the root's identity
+        # on top of it suppresses the escalation in the one case it matters: asyncio's
+        # watcher collects the leader zombie during the grace, so the SIGKILL round is
+        # skipped, and a descendant that forked into the group AFTER the snapshot is
+        # reached by neither the group signal nor the recorded sweep. It survives the
+        # teardown, which is the leak this whole change exists to stop.
+        #
+        # The pid-scoped fallback below is different: it names the root itself, so it
+        # keeps the root identity check.
+        group_ok = pgid is not None and _pgroup_still_ours(
+            pgid, pid, recorded_start, records, gated=pid_from_client
+        )
+        root_ok = root_verified and _root_identity_holds(pid, recorded_start, gated=pid_from_client)
+        if group_ok or root_ok:
             try:
-                os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                return
-    logger.warning("_sync_kill_provider: killed PID %d for leaked provider", pid)
+                if group_ok:
+                    os.killpg(pgid, sig)  # type: ignore[arg-type]
+                elif pgid is None:
+                    platform_compat.kill_pid(pid, sig)
+                else:
+                    logger.warning(
+                        "_sync_kill_provider: pgid %d holds no verified member "
+                        "of pid %d's tree; signalling recorded descendants only",
+                        pgid,
+                        pid,
+                    )
+            except ProcessLookupError:
+                # The root (or its whole group) is gone. Descendants that escaped it
+                # can still be alive, so sweep before deciding this teardown is done.
+                pass
+            except OSError:
+                pass
+        _signal_provider_descendants(records, sig)
+        if sig == platform_compat.SIGTERM:
+            deadline = time.monotonic() + _PROVIDER_TERM_GRACE_SECONDS
+            while True:
+                # Deliberately NOT reaping here. A zombie owns its pid, and for a
+                # group leader that pid IS the pgid, so reaping the root mid-grace
+                # frees the number while the SIGKILL escalation below still aims
+                # at it -- a pid recycled into a new group leader would take that
+                # SIGKILL. The root's exit is read from its zombie state instead,
+                # and it is reaped only once no further group signal can be sent.
+                if _provider_tree_gone(pid, pgid, records):
+                    _reap_provider_root(pid, recorded_start, gated=pid_from_client)
+                    logger.warning(
+                        "_sync_kill_provider: killed PID %d for leaked provider "
+                        "(SIGTERM, scope=%s, descendants=%d)",
+                        pid,
+                        "pgid" if pgid is not None else "pid",
+                        len(records),
+                    )
+                    return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_PROVIDER_TERM_POLL_SECONDS)
+    _reap_provider_root(pid, recorded_start, gated=pid_from_client)
+    logger.warning(
+        "_sync_kill_provider: killed PID %d for leaked provider "
+        "(SIGKILL, scope=%s, descendants=%d)",
+        pid,
+        "pgid" if pgid is not None else "pid",
+        len(records),
+    )
 
 
 def _tracked_child_has_runtime_identity(child_pid: int) -> bool:
@@ -1360,27 +1978,63 @@ def _browser_daemon_session_arg(cmdline: bytes) -> bytes | None:
     return None
 
 
-def _env_value(pid: int, key: str) -> bytes | None:
+def _env_value(pid: int, key: str, proc_root: Path | None = None) -> bytes | None:
     """Exec-time environment value for *key* in *pid*, or ``None`` if unset.
 
     Deliberately PROPAGATES ``OSError`` instead of swallowing it like
     :func:`_env_has_kirocrew_marker`: the callers here need to tell "read
     said the key is absent" apart from "the read failed", because those two
     outcomes must fail closed in OPPOSITE directions -- an absent owner
-    permits a kill, an unreadable one must forbid it. Linux-only; returns
-    ``None`` elsewhere so every caller fails closed off Linux.
+    permits a kill, an unreadable one normally forbids it. Linux-only; returns
+    ``None`` elsewhere so every caller fails closed off Linux. *proc_root* is a
+    fixture seam for tests and never changes the production ``/proc`` root.
     """
     if sys.platform != "linux":
         return None
+    root = proc_root if proc_root is not None else Path("/proc")
     prefix = key.encode() + b"="
-    environ = Path(f"/proc/{pid}/environ").read_bytes()
+    environ = (root / str(pid) / "environ").read_bytes()
     for item in environ.split(b"\x00"):
         if item.startswith(prefix):
             return item[len(prefix) :]
     return None
 
 
-def _browser_session_owner_alive(pid: int, session: bytes) -> bool:
+_BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
+    {
+        "bash",
+        "claude",
+        "codex",
+        "dash",
+        "fish",
+        "java",
+        "kas",
+        "kiro-cli",
+        "kirocrew",
+        "launcher",
+        "node",
+        "opencode",
+        "playwright-cli",
+        "sh",
+        "zsh",
+    }
+)
+_BROWSER_PLAUSIBLE_OWNER_PREFIXES = ("chrome", "chromium", "kiro-", "playwright", "python")
+
+
+def _browser_process_name_is_plausible(name: str) -> bool:
+    """Whether an unreadable process could own generated browser tooling."""
+    return name in _BROWSER_PLAUSIBLE_OWNER_NAMES or name.startswith(
+        _BROWSER_PLAUSIBLE_OWNER_PREFIXES
+    )
+
+
+def _browser_session_owner_alive(
+    pid: int,
+    session: bytes,
+    *,
+    proc_root: Path | None = None,
+) -> bool:
     """True while any live process OUTSIDE *pid*'s own tree holds *session*.
 
     This is the ownership proof, and it is drawn entirely from the kernel.
@@ -1394,15 +2048,18 @@ def _browser_session_owner_alive(pid: int, session: bytes) -> bool:
     it is its own session leader and every Chromium child inherits that SID --
     those inherit the variable too and must not be mistaken for owners.
 
-    FAIL-CLOSED to "alive": an unreadable ``/proc`` listing or an inconclusive
-    per-process read (EACCES, EIO) returns ``True``, so the sweep never kills
-    on a failed probe. A process that VANISHES mid-scan is simply not an
-    owner, which is the one error that is safe to skip.
+    FAIL-CLOSED to "alive" for an unreadable ``/proc`` listing, process stat,
+    process name, or plausible owner's environ. A positively named non-owner in
+    a stable different cgroup from the daemon cannot be part of the spawn tree
+    that inherited its generated browser session, so its unreadable environ
+    does not veto the scan. A plausible process, same cgroup, unreadable cgroup,
+    or changing cgroup keeps the daemon. A process that vanishes is safe to skip.
     """
     if sys.platform != "linux":
         return True
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
-        entries = [e for e in Path("/proc").iterdir() if e.name.isdigit()]
+        entries = [entry for entry in root.iterdir() if entry.name.isdigit()]
     except OSError:
         return True
     my_uid = os.getuid()
@@ -1420,19 +2077,83 @@ def _browser_session_owner_alive(pid: int, session: bytes) -> bool:
             continue
         except OSError:
             return True
-        if _linux_pid_sid(other) == pid:
+        if _linux_pid_sid(other, proc_root) == pid:
             continue  # the daemon's own detached tree, not an owner
         try:
-            if _env_value(other, _BROWSER_SESSION_ENV) == session:
+            owner_session = _env_value(other, _BROWSER_SESSION_ENV, proc_root)
+            if owner_session == session:
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=keep reason=matching_session",
+                    pid,
+                    other,
+                )
                 return True
         except _PID_VANISHED_ERRORS:
             continue
         except OSError:
+            process_name = platform_compat.linux_process_name(other, proc_root=root)
+            if process_name is None:
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=keep reason=process_name_unreadable",
+                    pid,
+                    other,
+                )
+                return True
+            if _browser_process_name_is_plausible(process_name):
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=keep reason=plausible_owner_unreadable",
+                    pid,
+                    other,
+                )
+                return True
+            cgroups_match = platform_compat.process_cgroups_match(
+                other,
+                pid,
+                proc_root=root,
+            )
+            if cgroups_match is False:
+                logger.debug(
+                    "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                    "decision=ignore reason=different_cgroup_unreadable",
+                    pid,
+                    other,
+                )
+                continue
+            reason = (
+                "same_cgroup_unreadable" if cgroups_match is True else "cgroup_identity_unreadable"
+            )
+            logger.debug(
+                "browser_session_owner_probe daemon_pid=%s candidate_pid=%s "
+                "decision=keep reason=%s",
+                pid,
+                other,
+                reason,
+            )
             return True
     return False
 
 
-def _is_sweepable_orphan_browser_daemon(pid: int, cmdline: bytes, age_seconds: float) -> bool:
+def _browser_sweep_decision(pid: int, *, sweep: bool, reason: str) -> bool:
+    """Log and return one structured browser-daemon sweep verdict."""
+    logger.debug(
+        "browser_daemon_sweep pid=%s decision=%s reason=%s",
+        pid,
+        "sweep" if sweep else "keep",
+        reason,
+    )
+    return sweep
+
+
+def _is_sweepable_orphan_browser_daemon(
+    pid: int,
+    cmdline: bytes,
+    age_seconds: float,
+    *,
+    proc_root: Path | None = None,
+) -> bool:
     """Fifth positive-identity path: a browser daemon whose owner is gone.
 
     Positive identity is the conjunction of:
@@ -1453,26 +2174,46 @@ def _is_sweepable_orphan_browser_daemon(pid: int, cmdline: bytes, age_seconds: f
 
     Every signal is a kernel fact (argv, exec-time environ, SID, process
     liveness). Nothing here reads agent-writable filesystem state, which is
-    what would make a reaper unsafe.
+    what would make a reaper unsafe. *proc_root* exists only for fixture-owned
+    process-table tests.
     """
-    if age_seconds < _ORPHAN_WORK_MIN_AGE_SECONDS:
-        return False
     if not cmdline:
-        return False  # kernel thread / zombie — nothing meaningful to kill
+        return False  # kernel thread / zombie -- nothing meaningful to kill
     normalized = cmdline.replace(b"\x00", b" ")
     if any(marker in normalized for marker in _GATEWAY_MARKERS):
         return False
     session = _browser_daemon_session_arg(cmdline)
     if session is None:
         return False
+    if age_seconds < _ORPHAN_WORK_MIN_AGE_SECONDS:
+        return _browser_sweep_decision(pid, sweep=False, reason="below_age_floor")
     try:
-        if _env_value(pid, _BROWSER_SESSION_ENV) != session:
-            return False
+        daemon_session = _env_value(pid, _BROWSER_SESSION_ENV, proc_root)
+        if daemon_session != session:
+            return _browser_sweep_decision(
+                pid,
+                sweep=False,
+                reason="session_environment_mismatch",
+            )
     except OSError:
-        return False  # inconclusive — fail closed
-    if not _env_has_kirocrew_marker(pid):
-        return False
-    return not _browser_session_owner_alive(pid, session)
+        return _browser_sweep_decision(
+            pid,
+            sweep=False,
+            reason="daemon_environment_unreadable",
+        )
+    if not _env_has_kirocrew_marker(pid, proc_root):
+        return _browser_sweep_decision(pid, sweep=False, reason="spawn_marker_absent")
+    if _browser_session_owner_alive(pid, session, proc_root=proc_root):
+        return _browser_sweep_decision(
+            pid,
+            sweep=False,
+            reason="owner_alive_or_inconclusive",
+        )
+    return _browser_sweep_decision(
+        pid,
+        sweep=True,
+        reason="no_owner_outside_daemon_tree",
+    )
 
 
 def _accepted_subreaper_pids() -> set[int]:
@@ -1606,7 +2347,7 @@ def _is_marked_mcp_launcher(cmdline: bytes) -> bool:
     return any(marker in normalized for marker in _MARKED_MCP_LAUNCHER_MARKERS)
 
 
-def _env_has_kirocrew_marker(pid: int) -> bool:
+def _env_has_kirocrew_marker(pid: int, proc_root: Path | None = None) -> bool:
     """True if *pid*'s environment carries the ``KIROCREW_SPAWNED`` marker.
 
     Reads ``/proc/<pid>/environ`` (exec-time environment, same-UID readable).
@@ -1614,12 +2355,14 @@ def _env_has_kirocrew_marker(pid: int) -> bool:
     platform, where there is no reliable same-UID environ read — returns
     ``False`` so the marked-launcher sweep path never kills without positive
     identity. macOS/Windows keep the pre-existing cmdline-marker-only behavior.
+    *proc_root* is a test seam for fixture-owned process tables.
     """
     if sys.platform != "linux":
         return False
+    root = proc_root if proc_root is not None else Path("/proc")
     needle = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
     try:
-        environ = Path(f"/proc/{pid}/environ").read_bytes()
+        environ = (root / str(pid) / "environ").read_bytes()
     except OSError:
         return False
     return needle in environ.split(b"\x00")
@@ -2117,17 +2860,19 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
     return candidates
 
 
-def _linux_pid_sid(pid: int) -> int:
+def _linux_pid_sid(pid: int, proc_root: Path | None = None) -> int:
     """Session id (SID) from /proc/pid/stat (field 6, index 3 after state).
 
     The SID of an agent-spawned work process points at the kiro-cli session
     leader that (transitively) spawned it — kiro-cli is started with
     ``start_new_session=True``, so every descendant inherits its SID even
     after the direct parent dies and the process reparents to init. Returns
-    -1 when unreadable (caller must fail closed).
+    -1 when unreadable (caller must fail closed). *proc_root* is a test seam
+    for fixture-owned process tables.
     """
+    root = proc_root if proc_root is not None else Path("/proc")
     try:
-        stat_data = Path(f"/proc/{pid}/stat").read_text()
+        stat_data = (root / str(pid) / "stat").read_text()
         close_paren = stat_data.rfind(")")
         fields = stat_data[close_paren + 2 :].split()
         return int(fields[3])  # field 6 (session) = index 3 after state
@@ -2349,7 +3094,25 @@ def kill_orphan_mcps(pids: list[int]) -> int:
             # phase cannot inherit the verdict.
             daemon_age = _linux_pid_age(pid, time.time()) if sys.platform == "linux" else 0.0
             if _is_sweepable_orphan_browser_daemon(pid, cmdline, daemon_age):
-                killed += _kill_orphan_browser_daemon(pid, cmdline)
+                live_token = _pid_start_token(pid)
+                if root_token is None or live_token is None or live_token != root_token:
+                    logger.debug(
+                        "Orphan browser sweep: skipping pid=%d — identity changed "
+                        "or unavailable before TERM (pre=%r post=%r)",
+                        pid,
+                        root_token,
+                        live_token,
+                    )
+                    continue
+                live_cmdline = _pid_cmdline(pid)
+                if not live_cmdline or live_cmdline != cmdline:
+                    logger.debug(
+                        "Orphan browser sweep: skipping pid=%d — cmdline changed "
+                        "or became unreadable before TERM",
+                        pid,
+                    )
+                    continue
+                killed += _kill_orphan_browser_daemon(pid, live_cmdline)
         except (
             ProcessLookupError,
             PermissionError,

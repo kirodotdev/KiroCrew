@@ -944,8 +944,6 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
   const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length
 
-  const visibleLog = toolLog.filter(e => e.type !== 'reasoning')
-
   // Subagent events are subscribed eagerly at WS connect time — no need to toggle here.
 
   useEffect(() => { setTab(reduxTab === ('nav' as string) ? 'changes' : reduxTab); explicitTab.current = true }, [reduxTab])
@@ -963,7 +961,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   // Auto-switch to subagents tab when subagents or spawn approvals first appear
   const hadSubagents = useRef(false)
-  const hasSpawnApprovals = visibleLog.some(e => e.type === 'approval' && isSpawnApproval(e))
+  const hasSpawnApprovals = toolLog.some(e => e.type === 'approval' && isSpawnApproval(e))
   const hasSubagentActivity = hasSubagents || hasSpawnApprovals
   useEffect(() => {
     if (hasSubagentActivity && !hadSubagents.current && !explicitTab.current) setTab('subagents')
@@ -991,7 +989,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     ...(hasIssues ? [{ key: 'issues' as const, label: i18nT('pages.chat.activityViewer.issues'), icon: <CircleDot size={13} />, count: issues!.length }] : []),
     { key: 'links', label: i18nT('pages.chat.activityViewer.links'), icon: <LinkIcon size={13} />, count: navLinks?.length || 0 },
     { key: 'artifacts', label: i18nT('pages.chat.activityViewer.artifacts'), icon: <Component size={13} /> },
-    { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
+    { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + toolLog.filter(isSpawnApproval).length },
     { key: 'workflows', label: i18nT('pages.chat.activityViewer.workflows'), icon: <Workflow size={13} />, count: wfRunningCount },
     { key: 'logs', label: i18nT('pages.chat.activityViewer.logs'), icon: <ScrollText size={13} /> },
     { key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon: <MessageCircleQuestionMark size={13} /> },
@@ -1100,7 +1098,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             </div>
           )}
           {/* Pending approvals */}
-          {visibleLog.filter(isSpawnApproval).map((entry, i) => (
+          {toolLog.filter(isSpawnApproval).map((entry, i) => (
             <ApprovalEntry key={`a${i}`} entry={entry} />
           ))}
           {/* Accepted-but-not-started banner: the only signal for a wave still
@@ -1139,7 +1137,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                 </button>
               )}
             </>
-          ) : visibleLog.filter(isSpawnApproval).length === 0 && queuedCount === 0 && (
+          ) : toolLog.filter(isSpawnApproval).length === 0 && queuedCount === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
               <span className="text-[24px]"><Bot className="lucide-inline" /></span>
               <span className="text-[13px]">{i18nT('pages.chat.activityViewer.no_subagents_running')}</span>

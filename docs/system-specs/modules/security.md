@@ -104,7 +104,24 @@ cannot supply Linux kernel process identity. The resulting owner login link
 can still be opened in a browser on another host.
 
 At the first trusted private preparation, the gateway permanently records
-`member-memory-bindings/sessions/<sha256-session-key>/memory.json`. Subsequent
+`member-memory-bindings/sessions/<sha256-session-key>/memory.json`. Four owner
+dashboard actions are that preparation, all through one helper
+(`pin_private_agent_store`): creating a chat with the member named, a first
+message that creates its chat, opening the member's thread from Members, and
+picking the member in the agent menu of a plain dashboard chat that is still
+EMPTY. Plain means the chat is not a channel, cron or workflow tab: those tabs
+can have their session key linked by an injector that holds no slot lock, and
+they already carry native context, so the menu never grants on them. Empty means
+no message row in the transcript; the file itself is born with the first
+metadata write (title, agent, model), so its existence proves nothing
+(`ConversationLog.has_messages`, not `has_log`). The helper is the one place
+that decides empty: a chat that carries messages, an unreadable transcript, or a
+live or resumable runtime refuses the grant, and the menu pick then unwinds the
+switch and answers `503 store_unavailable`. A grant is immutable, so a pick that
+lands on a chat which already holds a grant for another store is refused before
+anything is committed (`409 private_memory_session_pinned`). A turn can only
+confirm an existing grant, never issue one.
+Subsequent
 turns, consolidation and restart require transcript metadata to agree with this
 record. Missing, malformed or changed metadata cannot become V1 or another
 member. Removing an existing protected file also refuses; a genuinely unbound

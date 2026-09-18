@@ -15113,6 +15113,7 @@
       "session_open_error_named": "„{{name}}“ konnte nicht geöffnet werden.",
       "session_open_error": "Die Sitzung konnte nicht geöffnet werden.",
       "session_gone_open_failed_named": "„{{name}}“ wurde gelöscht und kann nicht geöffnet werden.",
+      "truncated_chars": "…({{count}} Zeichen gekürzt — vollständige Ausgabe nach dem Neuladen)",
       "truncated": "…(gekürzt)"
     }
   },

@@ -1328,7 +1328,7 @@ export interface SubagentActivity {
 
 export interface ToolActivity {
   type: string
-  text: string          // reasoning text or tool name
+  text: string          // tool name (or approval / activity label)
   purpose?: string      // tool purpose
   input?: string        // tool input (commands, file content, etc.)
   output?: string       // tool output (stdout, results, etc.)

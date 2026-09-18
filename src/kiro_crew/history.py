@@ -1777,6 +1777,48 @@ class ConversationLog:
         """Return True if a conversation log file exists for *key*."""
         return self._path(key).exists()
 
+    def has_messages(self, key: str) -> bool:
+        """Return True if *key*'s transcript holds at least one message row.
+
+        A transcript file is created by the first METADATA write -- a title,
+        an agent pick, a model pick -- long before any message is exchanged,
+        so :meth:`has_log` answers "does a file exist", not "was anything
+        said". Callers deciding whether a conversation already carries V1
+        history (the private-memory admission seam) need the second question:
+        a metadata-only file is an empty conversation.
+
+        Fails CLOSED, because that seam grants permanent private ownership on
+        a False: an absent file is empty, but a file that exists and cannot be
+        read raises ``OSError`` rather than reading as empty, and a record that
+        cannot be delivered intact or is not valid JSON counts as content --
+        unverifiable history is still history. The forgiving tail readers are
+        not used here for that reason.
+        """
+        from kiro_crew.jsonl_util import UnreadableRecord, strict_records
+
+        path = self._path(key)
+        with self._locked(key):
+            try:
+                handle = open(path, "rb")
+            except FileNotFoundError:
+                return False
+            with handle:
+                try:
+                    for record in strict_records(handle, path):
+                        line = record.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except ValueError:
+                            return True
+                        if isinstance(data, dict) and data.get("_type") == "metadata":
+                            continue
+                        return True
+                except UnreadableRecord:
+                    return True
+        return False
+
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
 

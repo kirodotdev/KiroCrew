@@ -90,26 +90,13 @@ async def test_private_fork_is_pinned_before_copy_and_can_continue_after_restore
     assert state.conversation_log.get_metadata(key)["memory_store"] == store
     # The real continuation guard sees a stored transcript and native-looking
     # assistant rows; only the protected pin lets this fork retain its member.
-    await asyncio.to_thread(
-        chat_runner._bind_private_slot_memory,
-        key,
-        store,
-        restored=True,
-        conversation_log=state.conversation_log,
-        native_context=True,
-    )
+    await asyncio.to_thread(chat_runner._bind_private_slot_memory, key, store)
     state._slots.pop(child.key)
     restored = chat_persistence._rehydrate_slot_from_history(state, child.key)
     assert restored is not None
     assert restored.memory_store == store
     assert restored.memory_mode == memory_mode
-    await asyncio.to_thread(
-        chat_runner._bind_private_slot_memory,
-        key,
-        store,
-        restored=restored._memory_assignment_from_history,
-        conversation_log=state.conversation_log,
-    )
+    await asyncio.to_thread(chat_runner._bind_private_slot_memory, key, store)
 
 
 @pytest.mark.asyncio

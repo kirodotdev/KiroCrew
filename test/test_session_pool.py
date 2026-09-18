@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.session_handle import WatchdogSettings
 
 
@@ -1673,7 +1674,17 @@ class TestDiscardReaping:
         proc = subprocess.Popen(["sleep", "300"])
         try:
             provider = _make_provider()
-            provider._client = SimpleNamespace(_pid=proc.pid)
+            # Model a real ACP provider: the tracked PID lives at
+            # provider._client._pid AND the client records the pid's start
+            # identity, exactly as AcpClient does after start
+            # (client.py: self._start_time = get_process_start_id(self._pid)).
+            # _sync_kill_provider verifies that recorded id against the live one
+            # before signalling the root; a stand-in without it is refused as
+            # unverifiable and the survivor would leak, which is not the
+            # production shape this test exists to exercise.
+            provider._client = SimpleNamespace(
+                _pid=proc.pid, _start_time=platform_compat.get_process_start_id(proc.pid)
+            )
             # Bookkeeping lies: claims dead while the OS process is alive
             provider.is_process_alive = MagicMock(return_value=False)
             provider.shutdown = AsyncMock()  # "ran" but killed nothing
@@ -1701,8 +1712,14 @@ class TestDiscardReaping:
         proc = subprocess.Popen(["sleep", "300"])
         try:
             provider = _make_provider()
-            # Mimic an ACP provider: the tracked PID lives at provider._client._pid
-            provider._client = SimpleNamespace(_pid=proc.pid)
+            # Mimic an ACP provider: the tracked PID lives at
+            # provider._client._pid, and the client records that pid's start
+            # identity the way AcpClient does after start
+            # (client.py: self._start_time = get_process_start_id(self._pid)).
+            # _sync_kill_provider re-verifies it before signalling the root.
+            provider._client = SimpleNamespace(
+                _pid=proc.pid, _start_time=platform_compat.get_process_start_id(proc.pid)
+            )
             provider.is_process_alive = MagicMock(side_effect=lambda: proc.poll() is None)
             provider.shutdown = AsyncMock()  # graceful close that kills nothing
 

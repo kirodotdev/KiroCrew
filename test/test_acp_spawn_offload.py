@@ -467,7 +467,7 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
                 "finish_suspended_spawn",
                 side_effect=_raise_if("finish_suspended_spawn"),
             ),
-            patch.object(client_mod, "_get_start_time", return_value=1.0),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1.0),
             patch("kiro_crew.session._track_pid", side_effect=_raise_if("track_pid")),
             patch(
                 "kiro_crew.session._track_session_pid",
@@ -511,7 +511,7 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
                 return_value=mock_proc,
             ),
             patch.object(client_mod, "finish_suspended_spawn"),
-            patch.object(client_mod, "_get_start_time", return_value=1.0),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1.0),
             patch("kiro_crew.session._track_pid"),
             patch(
                 "kiro_crew.session._track_session_pid",
@@ -555,7 +555,7 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
         monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
         monkeypatch.setattr(runtime_mod, "inject_xdist_auto_cap", lambda env: None)
-        monkeypatch.setattr(runtime_mod, "_get_start_time", lambda pid: 1.0)
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 1.0)
 
         async def fake_spawn(*_a, **_kw):
             return mock_proc
@@ -589,7 +589,8 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             )
         else:
             monkeypatch.setattr(
-                runtime_mod, "_get_start_time", lambda pid: (_ for _ in ()).throw(boom)
+                "kiro_crew.platform_compat.get_process_start_id",
+                lambda pid: (_ for _ in ()).throw(boom),
             )
 
         monkeypatch.setattr(runtime_mod, "register_protected_pid", lambda pid: None)

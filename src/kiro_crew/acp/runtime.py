@@ -47,7 +47,6 @@ from kiro_crew.acp.client import (
     OversizeLineUnrecoverable,
     _apply_pod_home_remap,
     _drain_oversize_line,
-    _get_start_time,
     _KiroExecutableTrustError,
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
@@ -829,7 +828,7 @@ class AcpRuntime:
         # Process state
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
-        self._start_time: int | None = None
+        self._start_time: str | None = None
         self._spawn_monotonic: float | None = None
         self._child_pids: dict[int, int | None] = {}
         # Names THIS spawn of the shared child process (fresh per spawn, cleared
@@ -1600,7 +1599,7 @@ class AcpRuntime:
         self._process_instance = uuid.uuid4().hex[:16]
         # The subprocess is LIVE from here on but nothing has recorded it yet, so
         # this window needs the same guard AcpClient._spawn has. finish_suspended_spawn
-        # documents its own resume failure as FATAL, and _get_start_time can raise;
+        # documents its own resume failure as FATAL, and the identity read can fail;
         # all four runtime.spawn() callers (providers/acp.py:726, :825 catch
         # AcpRuntimeError; session.py:1416, :1490 catch AcpRuntimeDead) let anything
         # else through, so a raise here left a live process absent from both PID
@@ -1624,7 +1623,7 @@ class AcpRuntime:
                     finish_suspended_spawn, self._process, self._pid, label=f"{KIRO_CLI_BIN} acp"
                 ),
             )
-            self._start_time = _get_start_time(self._pid)
+            self._start_time = platform_compat.get_process_start_id(self._pid)
             self._spawn_monotonic = time.monotonic()
             self._last_activity = time.monotonic()
             if self._scratch_dir is not None:

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -3042,7 +3043,25 @@ async def _reset_all_sessions(request: web.Request) -> int:
                         _timeout,
                     )
                     try:
-                        _h._sync_kill_provider(p)
+                        # The kill signals the provider's whole process group and
+                        # then waits out a bounded SIGTERM grace, so it blocks for
+                        # as long as that grace -- never inline on the event loop
+                        # (AUTOSDE: no-blocking-call-on-event-loop), which is what
+                        # every other caller of it already avoids. Awaited so the
+                        # tree is reaped before ``start_pool`` below spawns its
+                        # replacements, and concurrent across the ``gather``, so N
+                        # hung providers cost one grace rather than N in series.
+                        await asyncio.get_running_loop().run_in_executor(
+                            subprocess_executor(), _h._sync_kill_provider, p
+                        )
+                    except RuntimeError:
+                        # The executor is already shut down -- a gateway teardown
+                        # racing this restart. Run the kill on a plain daemon
+                        # thread instead: still off the loop, and far better than
+                        # skipping it, which is what leaks the tree.
+                        threading.Thread(
+                            target=_h._sync_kill_provider, args=(p,), daemon=True
+                        ).start()
                     except Exception:
                         logger.exception("Force-kill fallback also failed for %r", p)
                 except Exception:

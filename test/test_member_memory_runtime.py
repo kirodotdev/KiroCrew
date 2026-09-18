@@ -273,11 +273,11 @@ def test_history_fields_cannot_grant_private_assignment(
     assert slot is not None
     assert effective_session_key(slot) == key
     if protected:
-        _bind_private_slot_memory(key, writer, restored=slot._memory_assignment_from_history)
+        _bind_private_slot_memory(key, writer)
         assert read_private_session_store(key) == writer
     else:
         with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-            _bind_private_slot_memory(key, writer, restored=slot._memory_assignment_from_history)
+            _bind_private_slot_memory(key, writer)
         assert read_private_session_store(key) is None
 
 
@@ -299,9 +299,8 @@ async def test_http_resume_cannot_authorize_private_transcript(tmp_path, member_
         async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             response = await client.post("/api/chat/slots/resume-private/resume", json={"key": key})
             assert response.status == 200, await response.text()
-    slot = state._slots["resume-private"]
     with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-        _bind_private_slot_memory(key, writer, restored=slot._memory_assignment_from_history)
+        _bind_private_slot_memory(key, writer)
     assert read_private_session_store(key) is None
 
 
@@ -420,18 +419,318 @@ async def test_agent_pick_cannot_promote_an_existing_v1_transcript(tmp_path, mem
                 headers={} if owner else {"X-Test-User": "other-user"},
             )
             if owner:
-                assert response.status == 200, await response.text()
+                assert response.status == 503, await response.text()
+                assert (await response.json())["code"] == "store_unavailable"
+                assert slot.agent == "default"
+                assert (
+                    state.conversation_log.get_metadata("dashboard:owner-pick").get("agent")
+                    == "default"
+                )
     key = "dashboard:owner-pick"
-    # The selection itself is rollback-able; the actual turn publishes the pin.
+    # Neither an owner pick nor a turn can promote V1 transcript history.
     assert read_private_session_store(key) is None
     with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-        _bind_private_slot_memory(
-            key,
-            writer,
-            restored=slot._memory_assignment_from_history,
-            conversation_log=state.conversation_log,
-        )
+        _bind_private_slot_memory(key, writer)
     assert read_private_session_store(key) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [False, True])
+async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, member_stores, owner):
+    """The agent menu on an empty chat is a grant door, like create-with-agent.
+
+    The transcript file already exists (the slot's metadata was flushed when it
+    was created) but holds no message row: that is an EMPTY chat, and the
+    owner's pick must pin the member's store so the first turn is admitted
+    rather than refused with "no verified assignment". A non-owner pick
+    grants nothing.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    state.get_or_create_slot("empty-pick", agent="default")
+    key = "dashboard:empty-pick"
+    # A metadata-only transcript: born by the slot's first flush, no messages.
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata, key, {"agent": "default", "title": "New"}
+    )
+    assert state.conversation_log.has_log(key)
+    assert not state.conversation_log.has_messages(key)
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/empty-pick/agent",
+                json={"agent": "writer"},
+                headers={} if owner else {"X-Test-User": "other-user"},
+            )
+            if owner:
+                assert response.status == 200, await response.text()
+    slot = state._slots["empty-pick"]
+    if owner:
+        assert read_private_session_store(key) == writer
+        assert slot.memory_store == writer
+        # The first turn confirms the grant instead of refusing it.
+        _bind_private_slot_memory(key, writer)
+        assert read_private_session_store(key) == writer
+    else:
+        assert read_private_session_store(key) is None
+        with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
+            _bind_private_slot_memory(key, writer)
+        assert read_private_session_store(key) is None
+
+
+@pytest.mark.asyncio
+async def test_unreadable_transcript_pick_is_refused_not_silently_committed(
+    tmp_path, member_stores
+):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("unreadable-pick", agent="default")
+    key = "dashboard:unreadable-pick"
+    with (
+        patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"),
+        patch.object(ConversationLog, "has_messages", side_effect=PermissionError("denied")),
+    ):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/unreadable-pick/agent", json={"agent": "writer"}
+            )
+            assert response.status == 503, await response.text()
+            assert (await response.json())["code"] == "store_unavailable"
+    assert slot.agent == "default"
+    assert state.conversation_log.get_metadata(key).get("agent") == "default"
+    assert read_private_session_store(key) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot_kind", ["linked", "channel"])
+async def test_member_pick_on_linked_or_channel_slot_writes_no_grant(
+    tmp_path, member_stores, slot_kind
+):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("native-pick", agent="default")
+    linked_key = "slack:123.456"
+    if slot_kind == "linked":
+        slot.linked_session_key = linked_key
+    else:
+        slot.channel_origin = True
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/native-pick/agent", json={"agent": "writer"}
+            )
+            assert response.status == 200, await response.text()
+    assert read_private_session_store("dashboard:native-pick") is None
+    assert read_private_session_store(linked_key) is None
+
+
+@pytest.mark.asyncio
+async def test_owner_agent_pick_accepts_message_racing_with_private_pin(tmp_path, member_stores):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard.chat_persistence import pin_private_agent_store
+    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("raced-pick", agent="default")
+    key = "dashboard:raced-pick"
+
+    async def pin_with_message(state, session_key, agent, config):
+        assigned_store = await pin_private_agent_store(state, session_key, agent, config)
+        assert slot.agent == "writer"
+        slot.messages.append({"role": "user", "content": "first private message"})
+        _bind_private_slot_memory(session_key, writer)
+        return assigned_store
+
+    with (
+        patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"),
+        patch("kiro_crew.dashboard.chat_handlers.pin_private_agent_store", pin_with_message),
+    ):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/raced-pick/agent", json={"agent": "writer"}
+            )
+            assert response.status == 200, await response.text()
+    assert slot.messages
+    assert slot.agent == "writer"
+    assert slot.memory_store == writer
+    assert read_private_session_store(key) == writer
+
+
+@pytest.mark.asyncio
+async def test_owner_agent_pick_pin_failure_rolls_the_switch_back(tmp_path, member_stores):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("failed-pick", agent="default")
+    prior_memory_store = slot.memory_store
+    key = "dashboard:failed-pick"
+    with (
+        patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"),
+        patch(
+            "kiro_crew.dashboard.chat_handlers.pin_private_agent_store",
+            AsyncMock(side_effect=UnknownMemoryStore("boom")),
+        ),
+    ):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/failed-pick/agent", json={"agent": "writer"}
+            )
+            assert response.status == 503, await response.text()
+            assert (await response.json())["code"] == "store_unavailable"
+    assert slot.agent == "default"
+    assert slot.memory_store == prior_memory_store
+    assert state.conversation_log.get_metadata(key).get("agent") == "default"
+    assert read_private_session_store(key) is None
+
+
+@pytest.mark.asyncio
+async def test_owner_second_member_pick_on_pinned_empty_chat_is_refused(tmp_path, member_stores):
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("pinned-pick", agent="default")
+    key = "dashboard:pinned-pick"
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            response = await client.post(
+                "/api/chat/slots/pinned-pick/agent", json={"agent": "writer"}
+            )
+            assert response.status == 200, await response.text()
+            assert slot.agent == "writer"
+            assert read_private_session_store(key) == writer
+            for agent in ("reviewer", "default"):
+                response = await client.post(
+                    "/api/chat/slots/pinned-pick/agent", json={"agent": agent}
+                )
+                assert response.status == 409, await response.text()
+                assert (await response.json())["code"] == "private_memory_session_pinned"
+                assert slot.agent == "writer"
+                assert read_private_session_store(key) == writer
+
+
+@pytest.mark.asyncio
+async def test_owner_agent_pick_to_v1_member_or_default_pins_nothing(tmp_path, member_stores):
+    """Only a V2 member's pick writes a grant; V1 picks leave no binding behind."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_app_with_agent_routes, _make_state
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    cfg = KiroCrewConfig.load()
+    cfg.agents["legacy"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="legacy")
+    cfg.save()
+    state = _make_state(tmp_path)
+    state.sessions.reset = AsyncMock(return_value=True)
+    state.get_or_create_slot("v1-pick", agent="default")
+    key = "dashboard:v1-pick"
+    with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
+        async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+            for agent in ("legacy", "default"):
+                response = await client.post("/api/chat/slots/v1-pick/agent", json={"agent": agent})
+                assert response.status == 200, await response.text()
+                assert read_private_session_store(key) is None
+
+
+def test_metadata_only_transcript_is_not_v1_history_for_a_private_bind(tmp_path, member_stores):
+    """A transcript that holds only a metadata line is an empty conversation."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    writer, _ = member_stores
+    cfg = KiroCrewConfig.load()
+    state = _make_state(tmp_path)
+    key = "dashboard:metadata-only"
+    state.conversation_log.update_metadata(key, {"agent": "writer", "title": "Empty"})
+    assert state.conversation_log.has_log(key)
+    assert not state.conversation_log.has_messages(key)
+    with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
+        _bind_private_slot_memory(key, writer)
+    assert read_private_session_store(key) is None
+    assert (
+        _pin_private_agent_assignment(key, "writer", cfg, conversation_log=state.conversation_log)
+        == writer
+    )
+    assert read_private_session_store(key) == writer
+
+    # One message row is history, and history is never promoted.
+    other = "dashboard:has-a-row"
+    state.conversation_log.update_metadata(other, {"agent": "writer"})
+    state.conversation_log.append(other, "user", "said something on V1")
+    assert state.conversation_log.has_messages(other)
+    with pytest.raises(UnknownMemoryStore, match="retains its V1 history"):
+        _pin_private_agent_assignment(other, "writer", cfg, conversation_log=state.conversation_log)
+    assert read_private_session_store(other) is None
+
+
+def test_unverifiable_transcript_never_reads_as_empty_for_a_private_bind(tmp_path, member_stores):
+    """Fail closed: a corrupt line is history, and an unreadable file refuses."""
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    cfg = KiroCrewConfig.load()
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+
+    corrupt = "dashboard:corrupt-row"
+    log.update_metadata(corrupt, {"agent": "writer"})
+    with open(log._path(corrupt), "ab") as handle:
+        handle.write(b"{this is not json\n")
+    assert log.has_messages(corrupt)
+    with pytest.raises(UnknownMemoryStore, match="retains its V1 history"):
+        _pin_private_agent_assignment(corrupt, "writer", cfg, conversation_log=log)
+    assert read_private_session_store(corrupt) is None
+
+    unreadable = "dashboard:unreadable"
+    log.update_metadata(unreadable, {"agent": "writer"})
+    with patch("builtins.open", side_effect=PermissionError("denied")):
+        with pytest.raises(OSError):
+            log.has_messages(unreadable)
+        with pytest.raises(UnknownMemoryStore, match="unreadable"):
+            _pin_private_agent_assignment(unreadable, "writer", cfg, conversation_log=log)
+    assert read_private_session_store(unreadable) is None
 
 
 @pytest.mark.asyncio
@@ -485,7 +784,7 @@ async def test_owner_member_open_pins_only_its_unambiguous_canonical_session(
     if prior in {"fresh", "legacy", "private"}:
         slot = state._slots[slot_key]
         assert slot.memory_store == writer
-        _bind_private_slot_memory(key, writer, restored=slot._memory_assignment_from_history)
+        _bind_private_slot_memory(key, writer)
         assert read_private_session_store(key) == writer
     else:
         assert read_private_session_store(key) == (reviewer if prior == "foreign" else None)
@@ -515,11 +814,11 @@ def test_cron_followup_uses_job_authority_not_provider_template_alias(
     slot = _bind_cron_slot(_make_state(tmp_path), job, [])
     assert effective_session_key(slot) == key
     if private_job:
-        _bind_private_slot_memory(key, writer, restored=slot._memory_assignment_from_history)
+        _bind_private_slot_memory(key, writer)
         assert read_private_session_store(key) == writer
     else:
         with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-            _bind_private_slot_memory(key, writer, restored=slot._memory_assignment_from_history)
+            _bind_private_slot_memory(key, writer)
         assert read_private_session_store(key) is None
 
 

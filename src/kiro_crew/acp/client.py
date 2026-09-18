@@ -3852,34 +3852,50 @@ def _read_basename(pid: int) -> bytes | None:
         return None
 
 
-# Type alias for child PID records: (start_time, recorded_basename)
-ChildRecord = tuple[int | None, bytes | None]
+# Type alias for child PID records: (start_id, recorded_basename).
+#
+# The identity half is ``platform_compat.get_process_start_id``, NOT the local
+# ``_get_start_time``. That matters on macOS, where ``_get_start_time`` returns
+# ``hash(ps -o lstart=)``: ``ps`` reports whole seconds, so two processes started
+# in the same second alias to one value and a recycled pid can FALSE-MATCH, and
+# ``hash()`` is PYTHONHASHSEED-randomized so the value is not comparable outside
+# the interpreter that produced it. ``get_process_start_id`` is microsecond
+# libproc on macOS, 100 ns creation FILETIME on Windows and stat field 22 on
+# Linux, is stable to persist and compare across processes, and spawns nothing.
+# Being a neutral value also lets the pid-lifecycle layer verify these records
+# with platform_compat alone, instead of importing this module to do it.
+ChildRecord = tuple[str | None, bytes | None]
 
 
 def _capture_child_records(pids: list[int]) -> dict[int, ChildRecord]:
-    """Capture (start_time, basename) for each pid as a ChildRecord map.
+    """Capture (start_id, basename) for each pid as a ChildRecord map.
 
-    On macOS ``_get_start_time`` / ``_read_basename`` shell out to ``ps`` (and
-    ``_get_child_pids`` to ``pgrep``), which can block during the subprocess
-    spawn (fork/exec). Callers running on the event loop MUST invoke this via
+    On macOS ``_read_basename`` shells out to ``ps`` (and ``_get_child_pids`` to
+    ``pgrep``), which can block during the subprocess spawn (fork/exec). Callers
+    running on the event loop MUST invoke this via
     ``run_in_executor(subprocess_executor(), ...)`` so the spawns happen on a
-    worker thread and never wedge the loop.
+    worker thread and never wedge the loop. Only the basename half needs that:
+    the identity half spawns nothing on any platform.
     """
-    return {p: (_get_start_time(p), _read_basename(p)) for p in pids}
+    return {p: (platform_compat.get_process_start_id(p), _read_basename(p)) for p in pids}
 
 
 def _is_our_child(
-    pid: int, expected_start: int | None = None, expected_basename: bytes | None = None
+    pid: int, expected_start: str | None = None, expected_basename: bytes | None = None
 ) -> bool:
     """Verify a PID still belongs to a process we spawned (deny-by-default).
 
-    Compares recorded basename and start_time against live values. No hardcoded
+    Compares recorded basename and start id against live values. No hardcoded
     allowlist — any binary recorded at spawn time is automatically supervised.
     Returns False for recycled PIDs or unreadable processes.
+
+    The start id comes from ``platform_compat.get_process_start_id`` so it is
+    read the same way it was recorded (see :data:`ChildRecord` for why that is
+    not ``_get_start_time``).
     """
     try:
-        # Start-time check: definitive PID recycling detection (always required)
-        actual_start = _get_start_time(pid)
+        # Start-id check: definitive PID recycling detection (always required)
+        actual_start = platform_compat.get_process_start_id(pid)
         if expected_start is None or actual_start is None:
             logger.debug("PID %d start time unavailable — denying (fail-closed)", pid)
             return False
@@ -3929,12 +3945,16 @@ def _kill_escaped_children(child_pids: dict[int, int | None] | dict[int, ChildRe
             if not platform_compat.pid_exists(cpid):
                 continue  # gone — nothing to sweep
             record = child_pids.get(cpid)
-            # Support both old (int|None) and new (tuple) record shapes
+            # Support both the legacy (int|None) and current (tuple) record shapes.
+            # A legacy int is a pre-neutral-start-id reading and can never equal a
+            # ``get_process_start_id`` value, so it is carried as unproven rather
+            # than compared: _is_our_child then denies, which is the same outcome a
+            # mismatch would produce, and keeps this branch honest about what it can
+            # actually verify.
+            expected_start: str | None = None
+            expected_basename: bytes | None = None
             if isinstance(record, tuple):
                 expected_start, expected_basename = record
-            else:
-                expected_start = record
-                expected_basename = None
             if not _is_our_child(
                 cpid, expected_start=expected_start, expected_basename=expected_basename
             ):
@@ -4234,7 +4254,7 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
-        self._start_time: int | None = None  # process start time for PID recycling detection
+        self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
         # session/load path), so the session id cannot distinguish the process
@@ -7116,9 +7136,11 @@ class AcpClient:
                     finish_suspended_spawn, self._process, self._pid, label=_spawn_label
                 ),
             )
-            self._start_time = await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), _get_start_time, self._pid
-            )
+            # Identity for the recycle guards that later decide whether this pid
+            # may be signalled. ``get_process_start_id`` is in-process on every
+            # platform (its own docstring pins that), so unlike the ``ps``-forking
+            # reader it replaces there is nothing here to offload.
+            self._start_time = platform_compat.get_process_start_id(self._pid)
             if self._scratch_dir is not None:
                 # Liveness anchor for the scratch sweeps -- see acp/runtime.py's
                 # twin block. Off-loop, fail-open.

@@ -2767,7 +2767,7 @@ class TestIsOurChild:
         import kiro_crew.acp.client as client_mod
         from kiro_crew.acp.client import _is_our_child
 
-        monkeypatch.setattr(client_mod, "_get_start_time", lambda pid: 42)
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(
             client_mod.subprocess_mod,
@@ -2783,7 +2783,7 @@ class TestIsOurChild:
         import kiro_crew.acp.client as client_mod
         from kiro_crew.acp.client import _is_our_child
 
-        monkeypatch.setattr(client_mod, "_get_start_time", lambda pid: 42)
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(
             client_mod.subprocess_mod,
@@ -2798,7 +2798,7 @@ class TestIsOurChild:
         import kiro_crew.acp.client as client_mod
         from kiro_crew.acp.client import _is_our_child
 
-        monkeypatch.setattr(client_mod, "_get_start_time", lambda pid: 42)
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(
             client_mod.subprocess_mod,
@@ -2831,7 +2831,7 @@ class TestIsOurChild:
         import kiro_crew.acp.client as client_mod
         from kiro_crew.acp.client import _is_our_child
 
-        monkeypatch.setattr(client_mod, "_get_start_time", lambda pid: 42)
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(
             client_mod.subprocess_mod,
@@ -2846,11 +2846,10 @@ class TestIsOurChild:
 
     def test_none_basename_denied_fail_closed(self, monkeypatch):
         """When no basename was recorded, deny (fail-closed)."""
-        import kiro_crew.acp.client as client_mod
         from kiro_crew.acp.client import _is_our_child
 
-        monkeypatch.setattr(client_mod, "_get_start_time", lambda pid: 42)
-        # No expected_basename → deny-by-default even with matching start_time
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 42)
+        # No expected_basename → deny-by-default even with matching start id
         assert _is_our_child(999, expected_start=42, expected_basename=None) is False
 
 
