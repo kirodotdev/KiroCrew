@@ -203,6 +203,11 @@ export function useDeleteTerminalSession() {
   return useMutation({
     mutationFn: async (sessionId: string) => {
       const res = await fetch(`/api/terminal/sessions/${sessionId}`, { method: 'DELETE', keepalive: true })
+      // 404 means the server has no such session any more: the PTY was already
+      // reaped (idle sweep, gateway restart, a second close racing this one).
+      // The shell is stopped, which is the outcome the user asked for, so this
+      // is success, not a failure to report.
+      if (res.status === 404) return
       if (!res.ok) throw new Error(`Failed to delete terminal session (${res.status})`)
     },
     // Mutation-level (not per-`mutate`) so it still fires after the caller has
