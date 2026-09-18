@@ -437,6 +437,8 @@ from kiro_crew.slack.gateway_runtime.tool_policy import (  # noqa: F401
 )
 from kiro_crew.slack.handler import (
     _get_agent_for_session,
+    _hydrate_conv_flags,
+    _is_slack_restricted,
     build_timing_footer,
     is_thread_incognito,
     is_thread_temporary,
@@ -5464,6 +5466,52 @@ class GatewayOrchestrator:
                             # here is the point: a cron name is LLM-authored (the
                             # agent can create crons via cron_add), and the
                             # hand-rolled version of this had already forgotten to
+                            # ── Extract embedded local images and upload them
+                            # natively (mirror the chat renderer's on_done seal).
+                            # The cron delivery path posts text only; without
+                            # this an inline ![alt](/abs/path.png) in the reply
+                            # ships as literal Markdown and Slack shows nothing.
+                            # within_root is the cron session's resolved cwd
+                            # (client.cwd — the agent's workspace), which bounds
+                            # extraction to files the session may read.
+                            # extract_outbound_with_audit is the SAME admission
+                            # seal the renderer uses: it writes the mandatory SEL
+                            # record for both admitted and refused files and folds
+                            # any refusal note into the text, so a cron's file
+                            # egress leaves the same audit trail as a chat reply.
+                            _cron_upload_files: list = []
+                            _cron_root = getattr(client, "cwd", "") or ""
+                            # Restricted-session ceiling: the same gate the chat
+                            # renderer applies (uploads_allowed=not restricted). A
+                            # thread the user marked !temporary / !incognito must
+                            # not ship local bytes into a Slack channel where they
+                            # persist for everyone who can read it — even though a
+                            # cron fires unattended. Hydrate the durable flags
+                            # first (the in-memory LRU may be cold after a restart,
+                            # exactly as handle_message does before reading them),
+                            # then skip extraction entirely when restricted so the
+                            # reply degrades to text-only, path left intact.
+                            if session_key and self.sessions is not None:
+                                _hydrate_conv_flags(self.sessions, session_key)
+                            if _cron_root and not (
+                                session_key and _is_slack_restricted(session_key)
+                            ):
+                                from kiro_crew.slack.files import (
+                                    extract_outbound_with_audit,
+                                )
+
+                                _cron_body, _cron_files, _ = await extract_outbound_with_audit(
+                                    result_text,
+                                    within_root=_cron_root,
+                                    audit_caller=session_key or channel or "cron",
+                                )
+                                # Mirror the renderer's rule exactly: the body is
+                                # the stripped text, and the original is kept only
+                                # when extraction produced neither body nor files
+                                # (so an image-only reply never re-posts the raw
+                                # local path).
+                                result_text = _cron_body
+                                _cron_upload_files = list(_cron_files)
                             # redact it once.
                             parts = render_for_slack(
                                 result_text,
@@ -5519,6 +5567,23 @@ class GatewayOrchestrator:
                             # Overflow parts as threaded follow-up messages
                             for part in parts[1:]:
                                 await self.slack.post_message(channel, part, thread_root)
+                            # Upload any extracted local images natively into the
+                            # same thread (bytes travel, not the path — every gate
+                            # in outbound_files was already applied). The reporting
+                            # variant posts a redacted note into the thread for any
+                            # upload Slack refuses, so a failed upload is never a
+                            # silent loss (the image markup is already stripped).
+                            if _cron_upload_files:
+                                from kiro_crew.slack.files import (
+                                    upload_outbound_files_reporting,
+                                )
+
+                                await upload_outbound_files_reporting(
+                                    self.slack,
+                                    channel,
+                                    thread_root or "",
+                                    _cron_upload_files,
+                                )
                             # Dedup state: only advance after confirmed delivery.
                             self._record_cron_delivery(job, rh)
                         else:

@@ -49,7 +49,6 @@ from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     OutboundFile,
     Rejection,
-    extract_local_refs_off_loop,
     hide_local_refs,
     protected_ref_spans,
 )
@@ -63,8 +62,11 @@ from kiro_crew.messaging.renderer import (
 from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
-from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
+from kiro_crew.slack.files import (
+    extract_outbound_with_audit,
+    rejection_notes,
+    upload_outbound_files_reporting,
+)
 from kiro_crew.slack.format import (
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
@@ -108,10 +110,6 @@ _STATUS_WORKING = "is working on your request"
 #: placement; this absorbs the ordinary case so no chunk reaches
 #: :data:`SLACK_MSG_LIMIT`, where ``_safe_update`` would truncate it.
 _SPLIT_HEADROOM = 100
-
-#: Refusal lines appended to a reply before they are summarized as a count. Three
-#: lines explain a reply; twelve bury it.
-_MAX_REJECTION_LINES = 3
 
 #: Appended to a partially-streamed assistant row that the dispatcher rescues when
 #: a turn dies mid-flight. Without it the retry reads a reply that simply stops
@@ -1003,83 +1001,31 @@ class SlackRenderer(Renderer):
     async def _extract_uploads(self, text: str) -> tuple[str, list[OutboundFile], str]:
         """Pull local images out of the sealed reply; returns (body, files, notes).
 
-        ``notes`` is the refusal text, already folded into ``body``, and returned
-        separately because the streaming path cannot re-render ``body``: Slack's
-        ``chat.stopStream`` does not replace what was appended, so the notes have
-        to be appended there instead. Fail-soft: a reply must go out even when
-        extraction cannot decide anything about the files it mentions.
+        Thin wrapper over the shared Slack admission seal
+        (:func:`kiro_crew.slack.files.extract_outbound_with_audit`) so the chat
+        renderer and every other Slack posting site (the cron delivery leg) share
+        one implementation of extraction, the SEL audit of file egress, and the
+        refusal notes. ``notes`` is the refusal text, already folded into
+        ``body``, and returned separately because the streaming path cannot
+        re-render ``body``: Slack's ``chat.stopStream`` does not replace what was
+        appended, so the notes have to be appended there instead.
         """
-        try:
-            result = await extract_local_refs_off_loop(
-                text, within_root=self._upload_root, limits=UPLOAD_LIMITS
-            )
-        except Exception:
-            logger.warning("slack: outbound file extraction failed", exc_info=True)
-            return text, [], ""
-        body = result.rewritten_text.strip()
-        if not body and not result.files:
-            body = text
-        notes = ""
-        if result.rejections:
-            sel().log_api_access(
-                caller=self._audit_caller(),
-                operation="slack_renderer.upload_files",
-                outcome="denied",
-                source="slack",
-                resources=f"{len(result.rejections)} rejection(s)",
-                # Reason codes only: the destination is LLM-authored text.
-                error=",".join(sorted({item.reason for item in result.rejections})),
-            )
-            notes = self._rejection_notes(result.rejections)
-            body = f"{body}\n\n{notes}" if body else notes
-        if result.files:
-            sel().log_api_access(
-                caller=self._audit_caller(),
-                operation="slack_renderer.upload_files",
-                outcome="allowed",
-                source="slack",
-                resources=f"{len(result.files)} file(s)",
-            )
-        return body, result.files, notes
+        return await extract_outbound_with_audit(
+            text, within_root=self._upload_root, audit_caller=self._audit_caller()
+        )
 
     def _rejection_notes(self, rejections: list[Rejection]) -> str:
-        """Refusal lines for the thread. Never conditional on the answer's length.
-
-        The reason names the destination, so the user reads which picture is
-        missing and why rather than a reply that talks about one that never
-        arrived. A budget check belongs to no caller here: the text is split after
-        this, so an answer near the cap costs the reader a chunk boundary, where
-        dropping the note would cost them the explanation.
-        """
-        for rejection in rejections:
-            logger.info("slack: local image not uploaded (%s)", rejection.reason)
-        lines = [f"⚠️ _{rejection}_" for rejection in rejections[:_MAX_REJECTION_LINES]]
-        if len(rejections) > _MAX_REJECTION_LINES:
-            lines.append(f"⚠️ _…and {len(rejections) - _MAX_REJECTION_LINES} more_")
-        note = "\n".join(lines)
-        # The destination came from the model, so the line it appears in is
-        # scanned like any other outbound text before it can be posted -- in the
-        # DISPLAY form too, since a rejected path is echoed inside `_..._` italics
-        # that Slack renders away.
-        return _display_safe(note)
+        """Refusal lines for the thread (shared implementation)."""
+        return rejection_notes(rejections)
 
     async def _upload_files(self, files: list[OutboundFile]) -> None:
-        """Upload the extracted files, reporting any Slack would not take."""
-        try:
-            failures = await upload_outbound_files(
-                self.slack, self.channel, self.thread_ts or "", files
-            )
-        except Exception:
-            logger.warning("slack: uploading extracted images failed", exc_info=True)
-            return
-        if not failures:
-            return
-        try:
-            await self.slack.post_message(
-                self.channel, self._rejection_notes(failures), self.thread_ts
-            )
-        except Exception:
-            logger.warning("slack: reporting a failed image upload failed", exc_info=True)
+        """Upload the extracted files, reporting any Slack would not take.
+
+        Delegates to the shared
+        :func:`kiro_crew.slack.files.upload_outbound_files_reporting`, which
+        posts a redacted note into the thread for every upload Slack refuses.
+        """
+        await upload_outbound_files_reporting(self.slack, self.channel, self.thread_ts or "", files)
 
     def _audit_caller(self) -> str:
         """Identity for the SEL audit line: the session, else the conversation."""
