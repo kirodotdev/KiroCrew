@@ -329,6 +329,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # manager, the runner adapters, ``/api/tasks``), which opens the path
     # directly; the MCP tools reach the queue through ``/api/spawn``.
     "tasks",
+    # Canonical cross-device goal drafts. The dashboard serves these values back
+    # into the goal editor, where Start turns them into agent instructions. A
+    # prompt-injected same-UID agent must not be able to forge that next prompt
+    # by writing the backing file directly; the owner-gated dashboard route is
+    # the only writer. Whole directory because atomic replacement stages a
+    # sibling temp beside the final JSON file.
+    "goal-drafts",
     # Per-session work ledgers (session_ledger.py). Not credentials, but each
     # directory is one session's private work state, and the ledger's whole
     # authorization model is "a session reaches only its OWN ledger" (the HTTP

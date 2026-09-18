@@ -19,12 +19,25 @@
  * `safeSetItem` / `safeSetSessionItem` so a quota hit
  * reclaims disposable cache and retries instead of silently losing the write.
  *
- * Cross-tab: `persistNow` overwrites the whole key, so two open tabs are
- * last-write-wins on the shared draft. No merge: merging breaks LRU order and
- * resurrects intentionally-deleted drafts. Accepted because the dashboard is
- * effectively single-tab.
+ * Cross-tab: explicit saves overwrite the whole raw body key, so two user edits
+ * remain last-write-wins. TTL loads read sidecar/body as a stable pair and never
+ * rewrite the body while filtering expiry; a concurrent tab's committed body
+ * therefore cannot be erased by load-time cleanup. No merge: merging breaks LRU
+ * order and resurrects intentionally-deleted drafts.
  */
 import { safeSetItem, safeSetSessionItem } from './safeStorage'
+
+/**
+ * Create module-owned state keyed by externally supplied slot names.
+ *
+ * Slot names may equal Object.prototype members such as `toString`. Every
+ * timestamp, fallback, and reconciliation registry must therefore start with
+ * no prototype: an unseen slot always reads as `undefined`, never as an
+ * inherited function that can crash or masquerade as stored state.
+ */
+export function createSlotKeyedRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>
+}
 
 export interface SlotDraftStoreOpts<T> {
   /** Storage key holding the `Record<slot, T>` blob. */
@@ -56,8 +69,11 @@ export interface SlotDraftStoreOpts<T> {
 
 export interface SlotDraftStore<T> {
   load(): Record<string, T>
+  /** Persist `drafts`. Outcome is observable through storage, never returned:
+   *  every consumer discards it, and a failed write already leaves the caller's
+   *  in-memory drafts whole (see `evictAfterWrite`). */
   save(drafts: Record<string, T>): void
-  set(drafts: Record<string, T>, slot: string, value: T): void
+  set(drafts: Record<string, T>, slot: string, value: T, updatedAt?: number): void
   /** @internal test-only: reset module state between tests. `undefined` in the
    *  prod bundle (gated on `!import.meta.env.PROD`). */
   __resetForTests: () => void
@@ -76,25 +92,160 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     console.warn(`slotDraftStore[${key}]: evictAfterWrite + ttlMs desyncs timestamps on a failed write; use one or the other`)
   }
 
-  const timestamps: Record<string, number> = {}
+  const timestamps = createSlotKeyedRecord<number>()
   let timestampsLoaded = false
 
   const store = (): Storage => (storage === 'local' ? localStorage : sessionStorage)
   const safeWrite = (k: string, v: string): boolean =>
     storage === 'local' ? safeSetItem(k, v) : safeSetSessionItem(k, v)
 
-  function ensureTimestampsLoaded(): void {
-    if (!hasTtl || timestampsLoaded) return
-    timestampsLoaded = true
+  function replaceTimestamps(value: unknown): void {
+    for (const k of Object.keys(timestamps)) delete timestamps[k]
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof v === 'number' && Number.isFinite(v)) timestamps[k] = v
+    }
+  }
+
+  function replaceTimestampsFromRaw(raw: string | null): void {
+    for (const k of Object.keys(timestamps)) delete timestamps[k]
+    if (!raw) return
     try {
-      const raw = store().getItem(tsKey)
-      const parsed = raw ? JSON.parse(raw) : {}
+      const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
           if (typeof v === 'number') timestamps[k] = v
         }
       }
     } catch { /* ignore */ }
+  }
+
+  function refreshTimestampsFromStorage(): void {
+    if (!hasTtl) return
+    timestampsLoaded = true
+    try {
+      replaceTimestampsFromRaw(store().getItem(tsKey))
+    } catch {
+      // Disabled/denied Web Storage is an ordinary fallback condition, not a
+      // reason to crash the editor. Clear the cache so load returns {} safely.
+      replaceTimestamps(null)
+    }
+  }
+
+  function ensureTimestampsLoaded(): void {
+    if (!hasTtl || timestampsLoaded) return
+    refreshTimestampsFromStorage()
+  }
+
+  interface RawDraftPair {
+    bodyRaw: string | null
+    timestampRaw: string | null
+    stable: boolean
+  }
+
+  function readBodyAndTimestamps(): RawDraftPair {
+    if (!hasTtl) return { bodyRaw: store().getItem(key), timestampRaw: null, stable: true }
+    let timestampRaw = store().getItem(tsKey)
+    let bodyRaw = store().getItem(key)
+    let stable = false
+    // Writers commit sidecar before body. If either value changes across the
+    // confirmation reads, retry the whole pair rather than pruning a new body
+    // with a stale timestamp snapshot.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const confirmedTimestampRaw = store().getItem(tsKey)
+      const confirmedBodyRaw = store().getItem(key)
+      if (confirmedTimestampRaw === timestampRaw && confirmedBodyRaw === bodyRaw) {
+        stable = true
+        break
+      }
+      timestampRaw = confirmedTimestampRaw
+      bodyRaw = confirmedBodyRaw
+    }
+    return { bodyRaw, timestampRaw, stable }
+  }
+
+  function pairMatches(
+    pair: RawDraftPair,
+    bodyRaw: string | null,
+    timestampRaw: string | null,
+  ): boolean {
+    return pair.stable && pair.bodyRaw === bodyRaw && pair.timestampRaw === timestampRaw
+  }
+
+  function writeTimestampRaw(raw: string | null): boolean {
+    if (raw !== null) return safeWrite(tsKey, raw)
+    try {
+      store().removeItem(tsKey)
+      return store().getItem(tsKey) === null
+    } catch {
+      return false
+    }
+  }
+
+  type RestoreResult = 'restored' | 'superseded' | 'failed'
+
+  function restoreTimestampSidecarIfOwned(
+    previous: RawDraftPair,
+    ownedTimestampRaw: string,
+  ): RestoreResult {
+    if (!previous.stable) return 'superseded'
+    try {
+      // A failed body write owns the sidecar only while BOTH halves still match
+      // the pair it created. Another tab commits sidecar first, then body; either
+      // difference means its newer pair must win and an old sidecar must not be
+      // restored over it.
+      const current = readBodyAndTimestamps()
+      if (!pairMatches(current, previous.bodyRaw, ownedTimestampRaw)) return 'superseded'
+      if (!writeTimestampRaw(previous.timestampRaw)) return 'failed'
+      const confirmed = readBodyAndTimestamps()
+      return pairMatches(confirmed, previous.bodyRaw, previous.timestampRaw)
+        ? 'restored'
+        : 'superseded'
+    } catch {
+      return 'failed'
+    }
+  }
+
+  function refreshTimestampsAfterFailure(fallbackRaw: string | null): void {
+    try {
+      const current = readBodyAndTimestamps()
+      if (current.stable) {
+        replaceTimestampsFromRaw(current.timestampRaw)
+        return
+      }
+    } catch { /* fall back to the pre-write sidecar below */ }
+    replaceTimestampsFromRaw(fallbackRaw)
+  }
+
+  function persistMissingTimestamps(
+    bodyRaw: string | null,
+    timestampRaw: string | null,
+    stampedSlots: string[],
+  ): void {
+    if (!hasTtl || stampedSlots.length === 0) return
+    const merged = createSlotKeyedRecord<number>()
+    try {
+      if (timestampRaw) {
+        const prior: unknown = JSON.parse(timestampRaw)
+        if (prior && typeof prior === 'object' && !Array.isArray(prior)) {
+          for (const [slot, value] of Object.entries(prior as Record<string, unknown>)) {
+            if (typeof value === 'number' && Number.isFinite(value)) merged[slot] = value
+          }
+        }
+      }
+      for (const slot of stampedSlots) {
+        if (!(slot in merged)) merged[slot] = timestamps[slot]
+      }
+      // Missing-stamp migration owns only the exact stable pair load observed.
+      // It never rewrites the body, and it declines the sidecar write if another
+      // tab changed either half before this repair reached storage.
+      const current = readBodyAndTimestamps()
+      if (!pairMatches(current, bodyRaw, timestampRaw)) return
+      if (safeWrite(tsKey, JSON.stringify(merged))) replaceTimestamps(merged)
+      // On false, safeWrite may have failed before or just after the browser
+      // accepted the value. Do not restore an older sidecar: that repair would
+      // have no CAS ownership once another tab can commit in between.
+    } catch { /* a missing legacy stamp remains an in-memory fallback */ }
   }
 
   /**
@@ -148,6 +299,38 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     }
   }
 
+  /**
+   * A sibling writer can restore the pre-write sidecar after this writer's
+   * sidecar operation returns but before its body commits. Repair only that
+   * exact rollback shape: this body still owns the pair and the sidecar equals
+   * the stable pre-write value. Any other stable pair belongs to a concurrent
+   * writer. In both cases adopt the durable sidecar in memory so a later save
+   * cannot downgrade it.
+   */
+  function reconcileCommittedBodyTimestamp(
+    previous: RawDraftPair,
+    draftRaw: string,
+    timestampRaw: string,
+  ): void {
+    try {
+      let current = readBodyAndTimestamps()
+      if (
+        current.stable
+        && current.bodyRaw === draftRaw
+        && current.timestampRaw === previous.timestampRaw
+        && current.timestampRaw !== timestampRaw
+      ) {
+        safeWrite(tsKey, timestampRaw)
+        current = readBodyAndTimestamps()
+      }
+      if (current.stable) {
+        replaceTimestampsFromRaw(current.timestampRaw)
+        return
+      }
+    } catch { /* refresh from storage or the stable pre-write fallback below */ }
+    refreshTimestampsAfterFailure(previous.timestampRaw)
+  }
+
   /** Cap `drafts` in place, persist, and report whether the drafts write stuck.
    *  The boolean drives the evict-after-write sync-back in `save`. */
   function persistNow(drafts: Record<string, T>): boolean {
@@ -155,16 +338,46 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     capBytes(drafts)
     if (hasTtl) {
       for (const k of Object.keys(timestamps)) {
-        if (!(k in drafts)) delete timestamps[k]
+        if (!Object.prototype.hasOwnProperty.call(drafts, k)) delete timestamps[k]
       }
     }
     try {
-      // Timestamps BEFORE drafts: the two writes are non-atomic, so if the
-      // drafts write fails (quota) we must not strand un-timestamped entries
-      // that a later load would mistake for legacy and re-stamp, resetting TTL.
-      // safeWrite reclaims disposable cache + retries on quota (never throws).
-      if (hasTtl) safeWrite(tsKey, JSON.stringify(timestamps))
-      return safeWrite(key, JSON.stringify(drafts))
+      const draftRaw = JSON.stringify(drafts)
+      if (!hasTtl) return safeWrite(key, draftRaw)
+
+      const timestampRaw = JSON.stringify(timestamps)
+      const previous = readBodyAndTimestamps()
+      if (!safeWrite(tsKey, timestampRaw)) {
+        const restore = restoreTimestampSidecarIfOwned(previous, timestampRaw)
+        refreshTimestampsAfterFailure(previous.timestampRaw)
+        if (restore === 'failed' && import.meta.env.DEV) {
+          // eslint-disable-next-line no-console -- partial persistence needs an operator-visible diagnostic
+          console.warn(`slotDraftStore[${key}]: failed to restore timestamps after timestamp persist failure`)
+        }
+        return false
+      }
+
+      const saved = safeWrite(key, draftRaw)
+      if (saved) {
+        reconcileCommittedBodyTimestamp(previous, draftRaw, timestampRaw)
+        return true
+      }
+
+      // A Storage implementation can accept a write and then throw. Treat the
+      // exact completed pair as success; otherwise roll back only while the
+      // sidecar is still ours and the body is still the pre-write body.
+      const current = readBodyAndTimestamps()
+      if (pairMatches(current, draftRaw, timestampRaw)) {
+        replaceTimestampsFromRaw(current.timestampRaw)
+        return true
+      }
+      const restore = restoreTimestampSidecarIfOwned(previous, timestampRaw)
+      refreshTimestampsAfterFailure(previous.timestampRaw)
+      if (restore === 'failed' && import.meta.env.DEV) {
+        // eslint-disable-next-line no-console -- partial persistence needs an operator-visible diagnostic
+        console.warn(`slotDraftStore[${key}]: failed to restore timestamps after draft persist failure`)
+      }
+      return false
     } catch (e) {
       // eslint-disable-next-line no-console -- intentional dev-only diagnostic
       if (import.meta.env.DEV) console.warn(`slotDraftStore[${key}]: save failed`, e)
@@ -173,33 +386,47 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   }
 
   function load(): Record<string, T> {
-    ensureTimestampsLoaded()
     try {
-      const raw = store().getItem(key)
-      const parsed = raw ? JSON.parse(raw) : {}
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      const { bodyRaw, timestampRaw, stable } = readBodyAndTimestamps()
+      timestampsLoaded = true
+      replaceTimestampsFromRaw(timestampRaw)
+      if (!stable) return createSlotKeyedRecord<T>()
+      const parsed: unknown = bodyRaw ? JSON.parse(bodyRaw) : {}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        replaceTimestamps(null)
+        return createSlotKeyedRecord<T>()
+      }
       const cutoff = Date.now() - (ttlMs ?? 0)
-      const fresh: Record<string, T> = {}
-      let pruned = false
-      let stamped = false
+      const fresh = createSlotKeyedRecord<T>()
+      const stampedSlots: string[] = []
       for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
         const clean = sanitize(v)
-        if (clean === null) { if (k in timestamps) { delete timestamps[k]; pruned = true } continue }
+        if (clean === null) { delete timestamps[k]; continue }
         if (!hasTtl) { fresh[k] = clean; continue }
         // No timestamp = legacy / pre-TTL entry; stamp now and treat as fresh.
-        if (!(k in timestamps)) { timestamps[k] = Date.now(); stamped = true }
+        if (!(k in timestamps)) {
+          timestamps[k] = Date.now()
+          stampedSlots.push(k)
+        }
         if (timestamps[k] >= cutoff) fresh[k] = clean
-        else { delete timestamps[k]; pruned = true }
+        else delete timestamps[k]
       }
-      // Persist when we evicted or stamped, so the next load sees real
-      // timestamps instead of re-stamping legacy entries with a fresh Date.now()
-      // (which would reset the TTL indefinitely on every reload).
-      if (hasTtl && (pruned || stamped)) persistNow(fresh)
+      if (hasTtl) {
+        for (const k of Object.keys(timestamps)) {
+          if (!Object.prototype.hasOwnProperty.call(fresh, k)) delete timestamps[k]
+        }
+      }
+      // Never rewrite the shared body from a load: another tab may have
+      // committed a body after this snapshot. Expired values stay filtered by
+      // their persisted old timestamp; only missing legacy timestamps are
+      // merged into the sidecar.
+      persistMissingTimestamps(bodyRaw, timestampRaw, stampedSlots)
       return fresh
     } catch (e) {
+      replaceTimestamps(null)
       // eslint-disable-next-line no-console -- intentional dev-only diagnostic
       if (import.meta.env.DEV) console.warn(`slotDraftStore[${key}]: load failed`, e)
-      return {}
+      return createSlotKeyedRecord<T>()
     }
   }
 
@@ -210,7 +437,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     // back to the caller once the write actually stuck. A failed persist leaves
     // the caller's in-memory drafts whole so nothing that never reached storage
     // is silently dropped.
-    const toSave = { ...drafts }
+    const toSave = Object.assign(createSlotKeyedRecord<T>(), drafts)
     if (persistNow(toSave)) {
       for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
     }
@@ -219,13 +446,13 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   /** Mutate `drafts` for `slot`: delete-then-reinsert a sanitized deep copy if
    *  accepted (refreshes LRU position), delete if `sanitize` rejects it (empty /
    *  corrupt). Stamps touch time for TTL eviction when the store has a TTL. */
-  function set(drafts: Record<string, T>, slot: string, value: T): void {
+  function set(drafts: Record<string, T>, slot: string, value: T, updatedAt?: number): void {
     ensureTimestampsLoaded()
     delete drafts[slot]
     const clean = sanitize(value)
     if (clean !== null) {
       drafts[slot] = clean
-      if (hasTtl) timestamps[slot] = Date.now()
+      if (hasTtl) timestamps[slot] = updatedAt ?? Date.now()
     } else if (hasTtl) {
       delete timestamps[slot]
     }

@@ -168,6 +168,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
+    # One goal draft carries three bounded fields plus ordering metadata; the
+    # shared 64 KB ceiling is comfortably above the server's message limit.
+    "handlers/autonudge.py::api_goal_draft_put": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "handlers/messaging.py::api_notification_agent_push": (
         "<default>",
         _BOUNDED_BY_DEFAULT,
