@@ -1420,6 +1420,28 @@ when a switch is detected (stored SID exists AND providers differ).
    during allocation and consume the lease directly. Cancelled, failed, empty, or
    synthetic terminals leave it armed for the next prompt.
 
+**Replayed content carries no image reference.** `_replay_rows` and
+`_recall_rows` — the two row builders behind every history vehicle
+(`build_session_replay`, the thread-history fallback in `build_session_context`,
+and the transcript `compress_thread_history` hands to the LLM compressor) — hand
+each row out through
+`kiro_crew.image_refs.strip_image_refs`, which replaces every local image
+reference with `[image not carried into this context]`. Markdown references go
+through the attachment store's own `iter_local_refs`; bare paths go through the
+inliner's own `_PATH_RE`, narrowed to paths outside code spans that stand alone
+rather than sit inside a URL query, because the inliner rewrites text only after
+reading a file and an unconditional substitution would corrupt a URL or a code
+snippet instead of scrubbing it. A row's picture belonged
+to an earlier turn and a text vehicle cannot carry bytes, so the reference is
+the only thing that would arrive, and both readings of it are wrong: while the
+file is still readable `build_prompt_blocks` re-inlines it (a picture an earlier
+compaction already dropped returns at full byte cost on every later cold start),
+and once the file is gone the path is left in the prose next to the assistant's
+own earlier description of what it showed. Stripping at the row builders rather
+than at each consumer is what makes the guarantee hold for all three. The
+CURRENT turn is unaffected — it is excluded from the replay by identity, so a
+freshly attached image still becomes a real image block.
+
 **Same-provider resume:** unaffected. Normal `session/load` path with full
 native fidelity.
 

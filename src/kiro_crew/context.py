@@ -2678,6 +2678,9 @@ def _replay_rows(
         messages = _merge_replay_rows(messages, pending_messages or [], current_message)
     elif exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
+    # See _recall_rows for why an image reference cannot travel in a history row.
+    from kiro_crew.image_refs import strip_image_refs
+
     kept: list[dict] = []
     conv = inj = 0
     for m in reversed(messages):
@@ -2694,7 +2697,7 @@ def _replay_rows(
             conv += 1
         else:
             continue
-        kept.append({"role": role, "content": m["content"]})
+        kept.append({"role": role, "content": strip_image_refs(m["content"])})
     kept.reverse()
     return kept
 
@@ -2721,10 +2724,24 @@ def _recall_rows(
 
     ``exclude_last_n`` drops trailing raw entries BEFORE role filtering, matching
     ``recent()``.
+
+    Rows are handed out with their image references stripped
+    (:func:`~kiro_crew.image_refs.strip_image_refs`). A row's picture
+    belonged to an earlier turn and cannot travel in a text vehicle, so the
+    reference is the only thing that would arrive: either as a path the prompt
+    builder re-inlines -- resurrecting an image a compaction already dropped --
+    or, once the file is gone, as prose naming a picture the model cannot see.
+    Stripping HERE rather than at each consumer is what makes the guarantee hold
+    for all three of them: this recall feeds both the thread-history fallback in
+    ``build_session_context`` and the transcript ``compress_thread_history``
+    hands to the LLM compressor (which returns it VERBATIM under the cap, and
+    above it would be free to narrate a picture it never saw).
     """
     messages = conversation_log.read_messages(session_key)
     if exclude_last_n > 0:
         messages = messages[:-exclude_last_n]
+    from kiro_crew.image_refs import strip_image_refs
+
     kept: list[dict] = []
     conv = inj = 0
     for m in reversed(messages):
@@ -2741,7 +2758,7 @@ def _recall_rows(
             conv += 1
         else:
             continue
-        kept.append({"role": role, "content": m["content"]})
+        kept.append({"role": role, "content": strip_image_refs(m["content"])})
     kept.reverse()
     return kept
 
