@@ -1380,9 +1380,9 @@ class AcpRuntime:
         else:
             # config.paths is a stdlib-only leaf: importing it here can't
             # re-enter the config.loader -> providers.acp -> acp.client cycle.
-            from kiro_crew.config.paths import config_dir
+            from kiro_crew.config.paths import default_workspace_dir
 
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = default_workspace_dir()
         self._agent = agent
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
@@ -5356,6 +5356,7 @@ class AcpRuntime:
             runtime=self,
             watchdog=_wd,
             crew_agent=_crew,
+            bound_cwd=str(session_work_dir),
         )
         handle.memory_mode = memory_mode
         # The token this session's stubs carry, so a later claim (warm-pool
@@ -5812,6 +5813,7 @@ class AcpRuntime:
             runtime=self,
             watchdog=_wd,
             crew_agent=_crew,
+            bound_cwd=str(load_params["cwd"]),
         )
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token

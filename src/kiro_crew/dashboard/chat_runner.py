@@ -5711,7 +5711,7 @@ async def _spawn_admitted_prefetch(
             # alias applied, so no override applies.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=slot.claim_cwd,
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
@@ -9058,7 +9058,7 @@ async def _run_chat(
             # carry different watchdog windows.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=slot.claim_cwd,
             # The persisted channel stays separate from the dashboard-owned key
             # so provider startup can distinguish a linked dispatcher from a
             # direct dashboard turn.
