@@ -532,6 +532,60 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         ), "a spawn that failed with a live process must say so at ERROR"
 
 
+class TestRuntimeSpawnCarriesItsInstance:
+    """The per-spawn incarnation travels in the child's environment.
+
+    It is what a teardown reads back out of /proc/<pid>/environ to prove a
+    process is THIS spawn's descendant once the root is gone -- so it must be in
+    the env the process was created with, and it must be the value the runtime
+    keeps as its own process_instance.
+    """
+
+    @pytest.mark.asyncio
+    async def test_env_instance_matches_process_instance(self, tmp_path, monkeypatch) -> None:
+        from kiro_crew.constants import KIROCREW_SPAWN_INSTANCE_ENV, KIROCREW_SPAWNED_ENV
+
+        class _StopSpawn(Exception):
+            pass
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 5152
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+        mock_proc.stdout = None
+        TestRuntimeShieldSurvivesAFailedAppend._patch_prelude(monkeypatch, tmp_path, mock_proc)
+        seen_env: dict[str, str] = {}
+
+        async def fake_spawn(*_a, **kw):
+            seen_env.update(kw.get("env") or {})
+            return mock_proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+        monkeypatch.setattr(runtime_mod, "register_protected_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_pid", lambda pid: None)
+        monkeypatch.setattr(runtime_mod, "_track_session_pid", lambda pid: None)
+
+        runtime = AcpRuntime(work_dir=tmp_path / "workspace")
+
+        async def _no_reader(_self) -> None:
+            return None
+
+        monkeypatch.setattr(AcpRuntime, "_reader_loop", _no_reader, raising=True)
+        monkeypatch.setattr(
+            AcpRuntime, "_send_and_await", AsyncMock(side_effect=_StopSpawn()), raising=True
+        )
+        # The failed-handshake cleanup would clear _process_instance; hold it.
+        monkeypatch.setattr(AcpRuntime, "kill", AsyncMock(), raising=True)
+
+        with pytest.raises(_StopSpawn):
+            await runtime.spawn()
+
+        assert seen_env.get(KIROCREW_SPAWNED_ENV) == "1"
+        instance = seen_env.get(KIROCREW_SPAWN_INSTANCE_ENV)
+        assert instance, "the child env carries no spawn instance"
+        assert runtime._process_instance == instance
+
+
 class TestRuntimeShieldSurvivesAFailedAppend:
     """``AcpRuntime.spawn`` shields its PID from the periodic orphan sweep with
     ``register_protected_pid`` — an in-memory set insert with no IO. Behind the
@@ -647,6 +701,13 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             get_process_start_id=lambda pid: f"start-{pid}" if pid in groups else None,
             pid_exists=lambda pid: pid in groups,
             kill_process_tree=kill_tree,
+            # The teardown pins the root's identity across the terminate, so the
+            # stand-in answers the pinned call the same way it answers the plain
+            # one once the recorded identity matches. Its assertions are unchanged:
+            # the live tree must still come down and other runtimes must be spared.
+            kill_process_tree_pinned=lambda pid, start, sig: (
+                (kill_tree(pid, sig) is None or True) if start == f"start-{pid}" else False
+            ),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
         )

@@ -54,6 +54,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.config import paths as config_paths
+from kiro_crew.constants import KIROCREW_SPAWN_INSTANCE_ENV
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 #: The committed fixture. Resolved from this file so both callers agree on it.
@@ -84,6 +85,11 @@ VOLATILE_ENV = {
     # That a one-session client's child RECEIVES it is the fact being pinned: it is
     # how a control-plane MCP server on that child resolves its own session.
     STUB_SESSION_TOKEN_ENV: "<session-token>",
+    # Minted per spawn so a recycled root pid cannot false-match a later spawn; the
+    # tree inherits it and a teardown that has lost its root reads it back out of
+    # /proc to tell the root's own descendants from a fresh runtime's. That the
+    # runtime's child RECEIVES it is the fact being pinned.
+    KIROCREW_SPAWN_INSTANCE_ENV: "<spawn-instance>",
 }
 
 #: The parent environment every capture runs against, whatever the recording host's

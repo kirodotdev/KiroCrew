@@ -79,6 +79,18 @@ def lifecycle(monkeypatch, tmp_path):
         get_process_start_id=kernel.tokens.get,
         get_ppid=kernel.parents.get,
         kill_process_tree=kernel.kill_tree,
+        # The teardown pins the root's identity across the terminate, so the
+        # stand-in has to answer the pinned call as well; it delegates to the same
+        # fake kernel once the recorded token still matches, and refuses when it
+        # does not, which is the real function's contract.
+        kill_process_tree_pinned=lambda pid, start, sig: (
+            # Delegates for the side effect and reports success, which is the real
+            # function's contract: True once the signal went out, False -- without
+            # signalling -- when the identity could not be confirmed.
+            (kernel.kill_tree(pid, sig), True)[1]
+            if kernel.tokens.get(pid) == start
+            else False
+        ),
         kill_pid=kernel.kill_pid,
         file_lock=platform_compat.file_lock,
         open_lock_file=platform_compat.open_lock_file,
