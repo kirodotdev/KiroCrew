@@ -370,6 +370,18 @@ def config_dir() -> Path:
     return d
 
 
+CWD_CLEARED = ""
+"""The ``cwd`` a caller states to say the project was CLEARED, not left unspecified.
+
+``cwd`` carries two distinguishable answers and one of them is easy to write by
+accident. ``None`` means the caller has no requirement, so a stored or inherited
+directory may still be restored over it. ``CWD_CLEARED`` is a requirement: the user
+removed the project, and the claim must bind the default workspace rather than the
+directory the session previously had. A bare ``""`` at a call site reads as the absence
+of a value, which is the one thing it does not mean -- so the requirement is named.
+"""
+
+
 def data_home() -> Path:
     """The resolved data home, WITHOUT re-running start-of-process maintenance.
 

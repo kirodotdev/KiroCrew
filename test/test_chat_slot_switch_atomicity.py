@@ -1931,6 +1931,92 @@ class TestLinkedSlotSessionKey:
             assert slot.agent == "old-agent"
 
     @pytest.mark.asyncio
+    async def test_concurrent_clear_of_an_empty_project_survives_the_rollback(self, monkeypatch):
+        # The sibling case the project VALUE cannot express: clearing an
+        # already-empty project moves only the marker, so a project-only
+        # compare-and-set still sees "" == "" and commits. The rollback would
+        # then restore the marker to its pre-await False and silently retract a
+        # clear this request never owned -- and a retracted clear reads as
+        # "never set", so an expired session's stored directory can come back.
+        # The marker therefore joins the write-side compare.
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.warm_project_agent_names", AsyncMock()
+        )
+        landed: list[str] = []
+
+        calls: list[int] = []
+
+        def _resolve_while_the_clear_lands(cfg, name, project_dir=None, **kwargs):
+            # Bindings resolve TWICE: once for the pre-lock selection read, then
+            # again in the locked section. Only the second pass runs after this
+            # request snapshots its pre-await baseline, so that is the window an
+            # in-turn clear directive (empty project, marker raised) has to land
+            # in for the compare below to be the thing under test. Firing once
+            # matters: a clear re-applied later would mask a lost marker.
+            calls.append(1)
+            if len(calls) == 2 and not landed:
+                slot.project = ""
+                slot.project_cleared = True
+                landed.append("cleared")
+            return MagicMock(
+                workspace_dir="/tmp/ws2",
+                memory_store_name="",
+                kiro_agent=name,
+                selection_kind="template",
+                resolved_alias="",
+                requested_resolved=True,
+            )
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+            _resolve_while_the_clear_lands,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",
+            lambda cfg, ws_dir: "ws2",
+        )
+        # The switch target has no folder of its own, so the derived project is
+        # empty -- the same text the cleared slot already holds.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.default_project_dir",
+            lambda ws: "",
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.cached_project_agent_names",
+            lambda p: frozenset(),
+        )
+        slot = _ChatSlot("test")
+        slot.agent = "old-agent"
+        slot.project = ""
+        slot.project_cleared = False
+        state = _mock_state(slot, provider=None)
+        state.conversation_log = MagicMock()
+
+        async def _reset_and_rebind(*_a, **_k):
+            slot.linked_session_key = "cron:job-1"
+            return True
+
+        state.sessions.reset = AsyncMock(side_effect=_reset_and_rebind)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/agent", json={"agent": "new-agent"})
+            data = await resp.json()
+            assert resp.status == 409
+            assert data["code"] == "session_rebound"
+            # Guard against a vacuous pass: the window this pins only exists if
+            # the clear actually landed inside the resolution await.
+            assert landed == ["cleared"]
+            # The concurrent clear stands; only our own agent commit unwinds.
+            assert slot.project_cleared is True
+            assert slot.project == ""
+            assert slot.agent == "old-agent"
+
+    @pytest.mark.asyncio
     async def test_rebind_during_project_save_rolls_back_and_answers_409(
         self, tmp_path, monkeypatch
     ):

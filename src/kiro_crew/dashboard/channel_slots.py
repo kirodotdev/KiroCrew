@@ -614,8 +614,15 @@ def surface_channel_session(
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):
         slot.memory_store = str(meta["memory_store"])
-    if meta.get("project"):
+    # The upsert cannot delete a key, so a cleared slot's line still carries the
+    # stale ``project``; dropped rather than restored beside the marker, or a reader
+    # taking the raw field spawns in the directory the user removed.
+    cleared = meta.get("project_cleared") is True
+    if cleared:
+        slot.project = ""
+    elif meta.get("project"):
         slot.project = meta["project"]
+    slot.project_cleared = cleared
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the

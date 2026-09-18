@@ -2121,6 +2121,121 @@ class TestConsumePendingDiscardBoundary:
         assert torn_down is True
 
     @pytest.mark.asyncio
+    async def test_a_clear_landing_during_registration_rejects_the_allocation(self, tmp_path):
+        """A clear racing the allocation must not leave THIS turn in the old directory.
+
+        The turn resolves its cwd from the slot's claim, then awaits
+        ``get_or_create``. A clear landing inside that await arms a teardown the
+        NEXT turn consumes -- so without a post-registration re-read, the session
+        just registered keeps serving this turn from the directory the user
+        removed. The re-read rejects that allocation: the armed teardown is
+        consumed here and the claim is resolved and registered again.
+        """
+        from kiro_crew.config.loader import session_default_cwd
+
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        # A slot that never had a project: the claim reads None, so the first
+        # allocation states no cwd -- exactly the case a stored-cwd resume can
+        # rebind to a directory the user has since removed.
+        slot.project = ""
+        slot.project_cleared = False
+        session_key = "dashboard:chat-cov-1"
+        seen_cwd: list[str | None] = []
+
+        async def _clear_lands_during_registration(key, **kwargs):
+            seen_cwd.append(kwargs.get("cwd"))
+            if len(seen_cwd) == 1:
+                # The production clear's own effects, landing mid-await.
+                slot.project = ""
+                slot.project_cleared = True
+                slot._pending_reset_history_key = session_key
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_clear_lands_during_registration)
+
+        await _drive(state, slot)
+
+        assert len(seen_cwd) == 2, (
+            "the allocation that registered before the clear was kept, so this turn "
+            f"still runs in the directory the user removed: {seen_cwd}"
+        )
+        # First attempt states nothing, because the slot had no project yet.
+        assert seen_cwd[0] is None
+        # Second attempt: the cleared claim resolves to the session's own default,
+        # which a stored-cwd resume cannot override.
+        assert seen_cwd[1] == str(session_default_cwd(session_key))
+        # The rejected allocation was torn down rather than left registered.
+        state.sessions.reset.assert_awaited_with(session_key, skip_if_busy=True)
+
+    @pytest.mark.asyncio
+    async def test_the_rejected_allocation_hands_its_lease_back_before_the_teardown(self, tmp_path):
+        """The reject path must not wait on the lease it is still holding.
+
+        A claim that returns owns the session's ``BoundedSemaphore(1)``, and the
+        teardown asks ``skip_if_busy``, which counts a held lease as busy. So the
+        order matters: release, then tear down, then re-claim. Held across the
+        teardown, the reset declines, the session stays registered, and the retry
+        blocks on the permit this same task owns -- forever, the semaphore being
+        non-reentrant.
+
+        The sibling test above cannot see that: its ``get_or_create`` is a mock
+        with no lease at all. This one models the real lease, so the bug is a
+        timeout rather than a silent pass, and pins the ORDER that prevents it.
+        """
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        slot.project = ""
+        slot.project_cleared = False
+        session_key = "dashboard:chat-cov-1"
+        lease = asyncio.BoundedSemaphore(1)
+        registered = {"live": True}
+        order: list[str] = []
+
+        async def _claim(key, **kwargs):
+            # Mirrors the contract: a successful return owns the lease.
+            await lease.acquire()
+            order.append("claim")
+            if len(order) == 1:
+                slot.project = ""
+                slot.project_cleared = True
+                slot._pending_reset_history_key = session_key
+            return client, True, False
+
+        def _release(key, **_kw):
+            order.append("release")
+            try:
+                lease.release()
+            except ValueError:
+                pass
+
+        async def _reset(key, **kwargs):
+            # Mirrors `_turn_in_flight`: a held lease is busy, so refuse.
+            if kwargs.get("skip_if_busy") and lease.locked():
+                order.append("reset-refused")
+                return False
+            order.append("reset")
+            registered["live"] = False
+            return True
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_claim)
+        state.sessions.release = MagicMock(side_effect=_release)
+        state.sessions.reset = AsyncMock(side_effect=_reset)
+
+        # Bounded so the defect is a clean failure here rather than a hung suite.
+        await asyncio.wait_for(_drive(state, slot), timeout=10)
+
+        assert order.count("claim") == 2, f"the allocation was not re-claimed: {order}"
+        assert "reset-refused" not in order, (
+            "the teardown was refused because this task still held the lease, which is "
+            f"the state the retry then blocks on: {order}"
+        )
+        # The load-bearing order: the lease goes back before the teardown runs.
+        assert order.index("release") < order.index("reset"), order
+
+    @pytest.mark.asyncio
     async def test_the_discard_goes_through_the_atomic_skip_if_busy_path(self, tmp_path):
         """The busy-check and the teardown must be ONE step under the session
         lock. Probing here and tearing down afterwards leaves a window in which a
