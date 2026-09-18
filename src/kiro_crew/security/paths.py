@@ -319,6 +319,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens all of it directly rather than through this gate, so spooling and
     # the notice pass keep working.
     "inbound-spool",
+    # Exact scheduled-composer bytes are gateway-owned provenance. A sandboxed
+    # agent can write ``trust/`` for SEL and MCP support, so this separate
+    # directory prevents it from forging or reading deferred user prompts.
+    "scheduled-message-provenance",
     # The durable task queue (taskq/store.py): ``tasks/tasks.db`` plus its WAL
     # and journal siblings. Every row is another session's accepted work --
     # the task prompt, its parameters, its lease and generation -- and the

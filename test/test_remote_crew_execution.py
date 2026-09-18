@@ -494,7 +494,8 @@ class TestRelayReplay:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _remote_slot()
-        await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
+        completed = await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
+        assert completed is True
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
     @pytest.mark.parametrize(
@@ -556,7 +557,8 @@ class TestRelayReplay:
             yield _sse({"type": "chunk", "content": "par", "cls": "chunk"})
             raise ConnectionResetError("tunnel died")
 
-        await relay_remote_turn(state, slot, "hi", chunks=_boom())
+        completed = await relay_remote_turn(state, slot, "hi", chunks=_boom())
+        assert completed is False
         assert slot.messages[-1]["role"] == "error"
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
@@ -574,13 +576,14 @@ class TestRelayReplay:
         state.broadcast_ws = MagicMock()
         slot = _remote_slot()
 
-        await relay_remote_turn(
+        completed = await relay_remote_turn(
             state,
             slot,
             "hi",
             chunks=_stream(_sse({"type": "chunk", "content": "half an ans", "cls": "chunk"})),
         )
 
+        assert completed is False
         assert slot.messages[-1]["role"] == "error"
         assert "incomplete" in slot.messages[-1]["content"]
         # Still unblocked: a truncation is reported, not left hanging.

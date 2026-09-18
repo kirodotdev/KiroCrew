@@ -246,6 +246,14 @@ class SessionLifecycleState:
     # beside the sibling per-key dicts, so a long-lived gateway does not keep
     # one entry per channel thread it ever stopped.
     stop_requests: dict[str, int] = field(default_factory=dict)
+    # Runtimes detached from the live registries by a sandbox-security reload
+    # whose kill or liveness verification did not complete, keyed by object
+    # identity to ``(label, runtime)``. A ConfigWatch retry re-enters
+    # ``reload_provider_factory`` against THIS map, so the exact survivor is
+    # killed again rather than a fresh registry scan finding nothing to retire.
+    # Emptied only as each runtime is verified dead; the new posture is
+    # published only once it is empty.
+    sandbox_retirement_quarantine: dict[int, tuple[str, Any]] = field(default_factory=dict)
 
 
 class SessionLifecycleService:
@@ -390,34 +398,35 @@ class SessionLifecycleService:
             cfg.agent.reasoning_effort,
         )
 
-    async def reload_provider_factory(self, cfg: Any = None) -> None:
+    async def reload_provider_factory(
+        self,
+        cfg: Any = None,
+        *,
+        retire_companions: bool = False,
+    ) -> None:
         """Reload the provider factory and tear down providers from the old one.
 
         ``cfg`` is the already-loaded config the live applier hands in so the
         switch does no filesystem work on the loop; ``None`` loads it here.
+        ``retire_companions`` selects the sandbox-security transition: every
+        registered provider plus every detached subagent and background runtime
+        is retired and verified dead BEFORE the new factory and config are
+        published, and a runtime that survives is kept in a quarantine the next
+        watcher retry kills again (see :meth:`_reload_after_verified_retirement`).
         """
         owner = self._owner
         logger = self._deps.logger
         constants = self._deps.constants()
         if cfg is None:
             cfg = self._deps.load_config()
+        if retire_companions:
+            await self._reload_after_verified_retirement(cfg, constants)
+            return
         stale: list[tuple[str, Any]] = []
         async with owner._pool_fill_lock:
             pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
             async with owner._lock:
-                owner._cfg = cfg
-                owner._provider_factory = self._deps.build_provider_factory(cfg)
-                # The same four pool fields refresh_defaults adopts: a reset
-                # handler that loads a disk-edited pool_ttl_secs must not evict
-                # the warm pool at the stale TTL until the watcher's next cycle.
-                owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
-                owner._pool_agent = cfg.session.pool_agent or getattr(
-                    cfg.agent,
-                    "default_agent",
-                    "",
-                )
-                owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
-                owner._pool_cwd = pool_cwd
+                self._publish_provider_factory_locked(cfg, constants, pool_cwd)
                 while not owner._warm_pool.empty():
                     try:
                         provider, _ = owner._warm_pool.get_nowait()
@@ -426,20 +435,9 @@ class SessionLifecycleService:
                     await owner._discard_pool_provider(provider, "Stale pool drain")
                 # Intentionally clear only the registry: the original reload
                 # path does not rewrite session-map or compaction state here.
-                stale = list(owner._sessions.items())
-                for stale_key, _ in stale:
-                    owner._advance_session_generation(stale_key)
-                owner._sessions.clear()
-                # Same tick as the clear. This removal had no end record, so a
-                # replacement under a reused key inherited the old start and
-                # reported a lifetime spanning two sessions. Recorded as one set,
-                # so the awaited unlink cannot be cancelled between two keys and
-                # leave the rest behind as fabricated crashes.
-                await record_sessions_ended(
-                    [stale_key for stale_key, _ in stale], end_reason=END_REASON_RETIRED
-                )
+                stale = await self._detach_registered_sessions_locked()
         # Shutdown remains outside both locks. Queue unlinking and companion
-        # runtime release are intentionally not added to this historical path.
+        # runtime release are intentionally not part of this historical path.
         for key, sess in stale:
             try:
                 await sess.provider.shutdown()
@@ -449,16 +447,227 @@ class SessionLifecycleService:
                     key,
                     exc_info=True,
                 )
-        owner._pool_started = False
-        if owner._pool_health_task and not owner._pool_health_task.done():
-            owner._pool_health_task.cancel()
-            owner._pool_health_task = None
-        await owner.start_pool(blocking=False)
+        await self._restart_pool_with_new_factory()
         logger.info(
             "Provider factory reloaded: provider=%s, cleared %d sessions",
             cfg.agent.provider,
             len(stale),
         )
+
+    def _publish_provider_factory_locked(self, cfg: Any, constants: Any, pool_cwd: str) -> None:
+        """Install ``cfg`` and its factory plus the four pool fields (under ``_lock``).
+
+        The same four pool fields ``refresh_defaults`` adopts: a reset handler
+        that loads a disk-edited ``pool_ttl_secs`` must not evict the warm pool
+        at the stale TTL until the watcher's next cycle.
+        """
+        owner = self._owner
+        owner._cfg = cfg
+        owner._provider_factory = self._deps.build_provider_factory(cfg)
+        owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
+        owner._pool_agent = cfg.session.pool_agent or getattr(
+            cfg.agent,
+            "default_agent",
+            "",
+        )
+        owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
+        owner._pool_cwd = pool_cwd
+
+    async def _detach_registered_sessions_locked(self) -> list[tuple[str, Any]]:
+        """Pop registered sessions and record their retirement under ``_lock``."""
+        owner = self._owner
+        stale = list(owner._sessions.items())
+        for stale_key, _ in stale:
+            owner._advance_session_generation(stale_key)
+        owner._sessions.clear()
+        if stale:
+            # The end sample stays in the same retirement transaction as the clear.
+            # A reused key cannot inherit a detached session's start crumb, and the
+            # batch await cannot leave only part of the drained registry recorded.
+            await record_sessions_ended(
+                [stale_key for stale_key, _ in stale], end_reason=END_REASON_RETIRED
+            )
+        return stale
+
+    async def _restart_pool_with_new_factory(self) -> None:
+        """Restart the warm pool: the health sweep returns early on an empty pool."""
+        owner = self._owner
+        owner._pool_started = False
+        if owner._pool_health_task and not owner._pool_health_task.done():
+            owner._pool_health_task.cancel()
+            owner._pool_health_task = None
+        await owner.start_pool(blocking=False)
+
+    @property
+    def _sandbox_retirement_quarantine(self) -> dict[int, tuple[str, Any]]:
+        return self.state.sandbox_retirement_quarantine
+
+    async def _reload_after_verified_retirement(self, cfg: Any, constants: Any) -> None:
+        """Sandbox-security reload: retire, verify, and only then publish.
+
+        Ordering, and why each step is where it is:
+
+        1. Detach. Registered sessions, the warm pool, detached subagent
+           runtimes and the background runtime (plus any draining holders) are
+           taken off their live registries and moved into the quarantine, so a
+           reference to every old-generation process is held by exactly one
+           place until that process is verified dead. The registries are
+           emptied so nothing can be re-claimed mid-retirement; the caller
+           holds every cold-start permit, so nothing new is minted either.
+        2. Kill everything in quarantine -- including survivors an earlier
+           attempt left there -- THEN verify liveness of everything. Two
+           phases, because a subagent session's provider shares its parent's
+           companion runtime and only reads dead once that runtime is killed.
+        3. A survivor (kill raised, still alive, or liveness unverifiable)
+           stays quarantined and the reload raises. ``ConfigWatch`` retries the
+           applier each tick; the retry re-enters here and kills the SAME
+           object again. ``owner._cfg`` and ``owner._provider_factory`` are
+           still the previous pair, so a session started between attempts is
+           old-generation and is retired by the retry like any other.
+        4. Only with the quarantine empty is the new factory and config
+           published and the pool restarted. The caller's final provenance
+           purge therefore runs after every old runtime is dead.
+        """
+        owner = self._owner
+        logger = self._deps.logger
+        quarantine = self._sandbox_retirement_quarantine
+
+        retired_keys: list[str] = []
+        async with owner._pool_fill_lock:
+            async with owner._lock:
+                # Pooled providers were minted by the old factory; discard them
+                # now so none can be claimed into a session mid-retirement.
+                while not owner._warm_pool.empty():
+                    try:
+                        provider, _ = owner._warm_pool.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    quarantine[id(provider)] = (f"warm-pool:{id(provider)}", provider)
+                stale = await self._detach_registered_sessions_locked()
+                for stale_key, sess in stale:
+                    quarantine[id(sess.provider)] = (f"session:{stale_key}", sess.provider)
+                retired_keys = [stale_key for stale_key, _ in stale]
+
+        # Detach companion runtimes off-map under their per-parent spawn lock,
+        # mirroring release_subagent_runtime, but WITHOUT killing here: the
+        # kill happens once, below, where its outcome is verified and retained.
+        for parent_key in list(owner._subagent_runtimes):
+            lock = owner._subagent_runtime_locks.get(parent_key)
+            if lock is not None:
+                async with lock:
+                    subagent_runtime = owner._subagent_runtimes.pop(parent_key, None)
+                    # A waiter on this removed lock re-checks canonical identity
+                    # in get_subagent_runtime and retries under the live lock.
+                    owner._subagent_runtime_locks.pop(parent_key, None)
+            else:
+                subagent_runtime = owner._subagent_runtimes.pop(parent_key, None)
+            if subagent_runtime is not None:
+                quarantine[id(subagent_runtime)] = (
+                    f"subagent:{parent_key}",
+                    subagent_runtime,
+                )
+
+        async with owner._bg_runtime_lock:
+            for background_runtime in (owner._bg_runtime, *owner._draining_bg_runtimes):
+                if background_runtime is not None:
+                    quarantine[id(background_runtime)] = ("background", background_runtime)
+            owner._bg_runtime = None
+            owner._draining_bg_runtimes = []
+
+        while True:
+            # Phase 1: issue every kill. A failure is recorded, not raised, so one
+            # stubborn runtime cannot leave its siblings un-killed this attempt.
+            kill_failed: set[int] = set()
+            for ident, (label, candidate_runtime) in list(quarantine.items()):
+                try:
+                    if label.startswith("warm-pool:"):
+                        await owner._discard_pool_provider(
+                            candidate_runtime,
+                            "Sandbox posture drain",
+                        )
+                    elif label.startswith("session:"):
+                        await candidate_runtime.shutdown()
+                    else:
+                        await candidate_runtime.kill(expected=True)
+                except Exception:
+                    kill_failed.add(ident)
+                    logger.warning(
+                        "Failed to retire %s on sandbox switch; retained for retry",
+                        label,
+                        exc_info=True,
+                    )
+
+            # Phase 2: verify. Only a runtime whose kill returned AND whose liveness
+            # probe reads dead leaves the quarantine.
+            survivors: list[str] = []
+            for ident, (label, runtime) in list(quarantine.items()):
+                if ident in kill_failed or self._runtime_reads_alive(label, runtime):
+                    survivors.append(label)
+                    continue
+                quarantine.pop(ident, None)
+
+            if survivors:
+                raise RuntimeError(
+                    "sandbox transition could not retire agent runtimes: "
+                    + ", ".join(sorted(survivors))
+                )
+
+            async with owner._pool_fill_lock:
+                pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
+                async with owner._lock:
+                    # The caller holds every cold-start permit, but retain any
+                    # provider that still reached the pool and send it through the
+                    # same kill-and-verify loop before publishing the new posture.
+                    while not owner._warm_pool.empty():
+                        try:
+                            provider, _ = owner._warm_pool.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        quarantine[id(provider)] = (
+                            f"warm-pool:{id(provider)}",
+                            provider,
+                        )
+                    if quarantine:
+                        continue
+                    self._publish_provider_factory_locked(cfg, constants, pool_cwd)
+            break
+        await self._restart_pool_with_new_factory()
+        logger.info(
+            "Provider factory reloaded after sandbox transition: provider=%s, "
+            "retired %d sessions and every companion runtime",
+            cfg.agent.provider,
+            len(retired_keys),
+        )
+
+    def _runtime_reads_alive(self, label: str, runtime: Any) -> bool:
+        """Liveness verdict for a quarantined runtime; unverifiable reads alive.
+
+        A registered or pooled provider is asked ``is_process_alive`` (both
+        process-backed providers override it to inspect the OS process); a
+        companion runtime is asked ``is_alive``. A probe that raises is treated as
+        alive so the runtime stays quarantined rather than being declared dead on
+        no evidence.
+        """
+        probe = (
+            getattr(runtime, "is_process_alive", None)
+            if label.startswith(("session:", "warm-pool:"))
+            else getattr(runtime, "is_alive", None)
+        )
+        if not callable(probe):
+            self._deps.logger.warning(
+                "Liveness of %s has no usable probe on sandbox switch; retained for retry",
+                label,
+            )
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            self._deps.logger.warning(
+                "Liveness of %s could not be verified on sandbox switch; retained for retry",
+                label,
+                exc_info=True,
+            )
+            return True
 
     async def reset(
         self,

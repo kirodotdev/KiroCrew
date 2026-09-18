@@ -1817,17 +1817,100 @@ class SessionManager:
         the warm pool. The manager keeps what is in force and the watcher retries
         each tick until the document validates.
         """
-        if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
-            raise live.ConfigDeferred(change.changed)
-        if change.touched(*self._FACTORY_CONFIG_PATHS):
-            await self.refresh_defaults(cfg=change.new)
+        from kiro_crew import autonudge_selfarm
+
+        sandbox_security_change = change.touched(
+            *autonudge_selfarm.scheduled_message_sandbox_config_paths()
+        )
+        if sandbox_security_change and platform_compat.IS_LINUX:
+            await self._apply_linux_sandbox_security_change(change)
         else:
-            async with self._lock:
-                self._cfg = change.new
+            if sandbox_security_change:
+                # Off Linux there is no namespace boundary a restart could
+                # re-establish, so scheduled-message provenance is never honored
+                # here and no old process generation can be promoted by this
+                # edit. Only the cheap, idempotent part applies: close the epoch
+                # and remove any record, then take the ordinary factory path --
+                # live sessions, subagent and background runtimes are not
+                # retired for a change that grants them nothing.
+                await self._invalidate_and_purge_scheduled_messages()
+            if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
+                raise live.ConfigDeferred(change.changed)
+            if change.touched(*self._FACTORY_CONFIG_PATHS):
+                await self.refresh_defaults(cfg=change.new)
+            else:
+                async with self._lock:
+                    self._cfg = change.new
         if change.touched("watchdog", "agent.chat_turn_timeout_secs") or any(
             path.rsplit(".", 1)[-1].startswith("watchdog_") for path in change.under("agents")
         ):
             await self._rebind_live_watchdogs(change.new)
+
+    async def _invalidate_and_purge_scheduled_messages(self) -> None:
+        """Close the confinement epoch, then remove live and orphan protected records.
+
+        Monotonic and yield-free before the purge: support is closed first, and
+        the epoch stays invalid even if the operator changes the values back.
+        """
+        from kiro_crew import autonudge_selfarm
+        from kiro_crew.autonudge import get_instance as _autonudge_get
+
+        autonudge_selfarm.invalidate_scheduled_message_confinement_epoch()
+        service = _autonudge_get()
+        if service is None:
+            await asyncio.to_thread(autonudge_selfarm.clear_scheduled_message_records)
+        else:
+            await service.purge_scheduled_messages_for_confinement_change()
+
+    async def _apply_linux_sandbox_security_change(self, change: ConfigChange) -> None:
+        """Linux-only: invalidate -> purge -> verified retirement -> final purge.
+
+        Only on Linux can a LATER confined restart honor a provenance pair, so
+        only here can an old, less-confined process generation that outlives
+        the edit plant a pair the next boot would trust. The cold-start barrier
+        and the retirement of registered providers plus detached subagent and
+        background runtimes exist to close exactly that window; Windows and
+        macOS never honor provenance and take the ordinary path instead.
+
+        Every cold-start permit is held across the whole sequence so no new
+        provider generation can appear after the authoritative cleanup and
+        before the changed posture is adopted. ``reload_provider_factory`` with
+        ``retire_companions=True`` publishes the new factory only after every
+        old runtime is verified dead and raises otherwise; a surviving runtime
+        stays in the lifecycle quarantine, ``ConfigWatch`` retries this applier,
+        and the retry kills the same object again. Because the old factory is
+        still in force between attempts, a session started meanwhile is
+        old-generation and is retired by the retry like the rest.
+        """
+        held_start_permits = 0
+        try:
+            for _ in range(_MAX_CONCURRENT_COLD_STARTS):
+                await self._start_sem.acquire()
+                held_start_permits += 1
+
+            await self._invalidate_and_purge_scheduled_messages()
+
+            if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
+                raise live.ConfigDeferred(change.changed)
+
+            # Retire registered providers plus detached subagent/background
+            # runtimes before the final purge. A surviving old generation
+            # could otherwise recreate a forged pair after the first purge.
+            await self.reload_provider_factory(
+                cfg=change.new,
+                retire_companions=True,
+            )
+            # Final purge runs only after retirement returned, i.e. after every
+            # old runtime is verified dead; a failed retirement raised above.
+            await self._invalidate_and_purge_scheduled_messages()
+        finally:
+            for _ in range(held_start_permits):
+                self._start_sem.release()
+
+    @property
+    def _sandbox_retirement_quarantine(self) -> dict[int, tuple[str, Any]]:
+        """Runtimes a sandbox-security reload could not verify dead (retry seam)."""
+        return self._lifecycle_boundary()._sandbox_retirement_quarantine
 
     async def _rebind_live_watchdogs(self, cfg: KiroCrewConfig) -> None:
         """Re-snapshot ``watchdog.*`` on every live session handle.
@@ -1886,12 +1969,22 @@ class SessionManager:
             self._adopted_autocompact_pct = published
             self._cfg.session.autocompact_pct = published
 
-    async def reload_provider_factory(self, cfg: KiroCrewConfig | None = None) -> None:
+    async def reload_provider_factory(
+        self,
+        cfg: KiroCrewConfig | None = None,
+        *,
+        retire_companions: bool = False,
+    ) -> None:
         """Rebuild the provider factory and retire sessions created by the old one.
 
         ``cfg`` is the config the live applier already holds; ``None`` loads.
+        ``retire_companions`` also terminates detached subagent/background
+        runtimes before a sandbox-security transition can complete.
         """
-        await self._lifecycle_boundary().reload_provider_factory(cfg=cfg)
+        await self._lifecycle_boundary().reload_provider_factory(
+            cfg=cfg,
+            retire_companions=retire_companions,
+        )
 
     # ── Background Session ──
 

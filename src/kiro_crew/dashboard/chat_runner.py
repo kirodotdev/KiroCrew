@@ -56,7 +56,7 @@ from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
 from kiro_crew.agent_discovery import agent_welcome_message, warm_project_agent_names
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.autonudge import get_instance
+from kiro_crew.autonudge import MonitorUpdateConflict, get_instance, is_scheduled_message
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -208,6 +208,7 @@ from kiro_crew.deny_guidance import (
     resolve_credential_tool_hint,
 )
 from kiro_crew.executors import run_in_embed_pool, subprocess_executor
+from kiro_crew.goal_command import GoalCommandAction, parse_goal_command
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
     HOOK_EVENT_POST_TOOL_USE,
@@ -5857,6 +5858,14 @@ async def _handle_workflow_command(
     slot.append("done", "", "done")
 
 
+_SCHEDULED_MESSAGE_OWNS_SLOT_BODY = (
+    "🎯 This chat has a scheduled message, and a session can hold only one "
+    "automation at a time. A scheduled message is protected: `/goal` cannot "
+    "clear or replace it. Unschedule it from the banner above the composer "
+    "in the chat where it was scheduled, then set your goal."
+)
+
+
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
     """Handle the ``/goal`` slash command (v0 self-verdict loop).
 
@@ -5865,60 +5874,84 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
     no autonudge-internals change. Subcommands: ``status`` (default/empty),
     ``clear``, else arm with an optional ``--max N`` budget (default 50, clamped
     1..50).
+
+    A scheduled composer message occupies the session's single automation slot
+    and is protected: the service refuses to let ``add``/``remove`` replace or
+    delete it and raises ``MonitorUpdateConflict``. That refusal is caught HERE,
+    at the live handler boundary, because nothing above ``_run_chat`` writes the
+    ``done`` row for an escaped exception -- the turn would otherwise die with a
+    logged error and a spinner that never stops. Mutations are short-circuited
+    before the service call when the slot's record is a scheduled message, and
+    the conflict is still caught around the call for the race where the record
+    lands between the read and the mutation. ``status`` stays read-only.
     """
     _goal_svc = get_instance()
-    _parts = message.split(None, 1)
-    _rest = _parts[1].strip() if len(_parts) > 1 else ""
+    _command = parse_goal_command(message)
+    if _command is None:
+        raise ValueError("goal handler received a non-goal command")
+    _outcome = "ok"
     if _goal_svc is None:
         body = (
             "🎯 Goal loops are unavailable (AutoNudge is disabled). "
             "Set `KIROCREW_AUTONUDGE=1` and restart the gateway."
         )
-    elif _rest in ("", "status"):
+    elif _command.action is GoalCommandAction.STATUS:
         _loop = _goal_svc.get_by_slot(slot.key)
-        if _loop is not None:
-            _cap = _loop.max_cycles or "∞"
-            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
-        else:
+        if _loop is None:
             body = (
                 "No active goal. Set one with `/goal <objective>` "
                 "(optionally `/goal --max N <objective>`)."
             )
-    elif _rest == "clear":
+        elif is_scheduled_message(_loop):
+            body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+        else:
+            _cap = _loop.max_cycles or "∞"
+            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
+    elif _command.action is GoalCommandAction.CLEAR:
         _loop = _goal_svc.get_by_slot(slot.key)
-        if _loop is not None:
-            await _goal_svc.remove(_loop.id)
-            body = "🎯 Goal cleared."
-        else:
+        if _loop is None:
             body = "No active goal to clear."
-    else:
-        _max_cycles = 50
-        _objective = _rest
-        _m = re.match(r"--max\s+(\d+)\s+(.*)", _rest, re.DOTALL)
-        if _m:
-            _max_cycles = max(1, min(50, int(_m.group(1))))
-            _objective = _m.group(2).strip()
-        elif _rest.startswith("--max"):
-            _objective = ""
-        if not _objective:
-            body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
+        elif is_scheduled_message(_loop):
+            body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+            _outcome = "conflict"
         else:
-            _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
-            Path(_sentinel).unlink(missing_ok=True)
-            _nudge = (
-                f"Goal: {_objective}\n"
-                "Each idle cycle, in order: "
-                f'(1) if the file {_sentinel} exists -> autonudge_stop(reason="sentinel") and stop; '
-                "(2) if the goal is fully met by concrete evidence (a passing test, a built file, "
-                'command output — not a guess) -> autonudge_stop(reason="goal met"), post a one-line '
-                "summary citing the evidence, and stop; "
-                "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
-                "(write the file / run the check) before claiming progress.\n"
-                "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
-                f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
-                "the cap). One short progress line per cycle."
-            )
+            try:
+                await _goal_svc.remove(_loop.id)
+            except MonitorUpdateConflict:
+                # The record changed under the read (a schedule landed on the
+                # slot between get_by_slot and remove). Same terminal answer
+                # as the short-circuit; the service left the record intact.
+                body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+                _outcome = "conflict"
+            else:
+                body = "🎯 Goal cleared."
+    elif _command.action is GoalCommandAction.USAGE:
+        body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
+    elif (_existing_loop := _goal_svc.get_by_slot(slot.key)) is not None and is_scheduled_message(
+        _existing_loop
+    ):
+        body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+        _outcome = "conflict"
+    else:
+        _max_cycles = _command.max_cycles
+        _objective = _command.objective
+        _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
+        _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
+        Path(_sentinel).unlink(missing_ok=True)
+        _nudge = (
+            f"Goal: {_objective}\n"
+            "Each idle cycle, in order: "
+            f'(1) if the file {_sentinel} exists -> autonudge_stop(reason="sentinel") and stop; '
+            "(2) if the goal is fully met by concrete evidence (a passing test, a built file, "
+            'command output — not a guess) -> autonudge_stop(reason="goal met"), post a one-line '
+            "summary citing the evidence, and stop; "
+            "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
+            "(write the file / run the check) before claiming progress.\n"
+            "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
+            f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
+            "the cap). One short progress line per cycle."
+        )
+        try:
             await _goal_svc.add(
                 slot.key,
                 message=_nudge,
@@ -5936,6 +5969,12 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
                 banner=normalize_banner(_objective, absent_ok=True, truncate=True)[0],
                 admission_check=lambda: state.get_slot(slot.key) is slot,
             )
+        except MonitorUpdateConflict:
+            # Raced with a schedule landing on the slot after the read above.
+            # The service refused before touching the protected record.
+            body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+            _outcome = "conflict"
+        else:
             body = (
                 f"⊙ Goal set ({_max_cycles}-turn budget): {_objective}\n\n"
                 "I'll work toward it across turns and stop when it's met "
@@ -5948,7 +5987,7 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         source="dashboard",
         tool_name="/goal",
         tool_kind="slash_command",
-        outcome="ok",
+        outcome=_outcome,
         metadata={"slot": slot.key},
     )
     slot.append("assistant", body, "msg msg-a")
@@ -16260,7 +16299,7 @@ async def _run_chat(
 
             _autonudge = _autonudge_get()
             if _autonudge is not None:
-                _autonudge.notify_turn_complete(slot.key)
+                _autonudge.notify_turn_complete(slot.key, turn_completed=_turn_landed)
         except Exception:
             logger.debug("autonudge.notify_turn_complete failed", exc_info=True)
         # Clean up mirror stream on any exit path.

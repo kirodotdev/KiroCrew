@@ -458,87 +458,100 @@ class BackgroundSessionRuntime:
 
         max_retries = 1
         for attempt in range(max_retries + 1):
-            async with self._bg_runtime_lock:
-                # Paired with close_all()'s locked detach: once _closing is
-                # set, spawning or parking here would install a runtime the
-                # shutdown sweep has already run past.
-                if self._owner._closing:
-                    raise self._deps.session_closing_error(
-                        "session manager is closing; no background session"
-                    )
-                await self._owner._reap_drained_bg_runtimes_locked()
-                runtime = self._bg_runtime
-                configured_backend_raw = self._owner._configured_bg_backend_raw()
-                configured_backend = (
-                    configured_backend_raw
-                    if configured_backend_raw is not None
-                    else self._deps.acp_backend_kiro
-                )
-                runtime_capable = configured_backend in self._deps.runtime_backends()
-                if runtime_capable and runtime is not None and runtime.is_alive():
-                    cached_backend = getattr(runtime, "acp_backend", None)
-                    if (
-                        configured_backend_raw is not None
-                        and isinstance(cached_backend, str)
-                        and cached_backend != configured_backend_raw
-                    ):
-                        await self._owner._displace_bg_runtime_locked(
-                            runtime,
-                            cached_backend,
-                            configured_backend_raw,
+            start_permit_held = False
+            try:
+                while True:
+                    needs_start_permit = False
+                    async with self._bg_runtime_lock:
+                        # Paired with close_all()'s locked detach: once _closing is
+                        # set, spawning or parking here would install a runtime the
+                        # shutdown sweep has already run past.
+                        if self._owner._closing:
+                            raise self._deps.session_closing_error(
+                                "session manager is closing; no background session"
+                            )
+                        await self._owner._reap_drained_bg_runtimes_locked()
+                        runtime = self._bg_runtime
+                        configured_backend_raw = self._owner._configured_bg_backend_raw()
+                        configured_backend = (
+                            configured_backend_raw
+                            if configured_backend_raw is not None
+                            else self._deps.acp_backend_kiro
                         )
-                    else:
-                        # Age AND RSS are probed whether or not co-tenant
-                        # handles are live: a multiplexed runtime that never
-                        # reaches a zero-session window would otherwise never
-                        # be bounded at all, which is how this process was
-                        # observed growing to multi-GB RSS over a day of
-                        # uptime. Displacing a busy runtime does not interrupt
-                        # it — it is parked to drain, and only new callers are
-                        # moved to the replacement.
-                        stale_reason = await runtime._is_stale()
-                        if stale_reason:
-                            await self._detach_bg_runtime_locked(
-                                runtime,
-                                f"stale by {stale_reason}",
-                            )
+                        runtime_capable = configured_backend in self._deps.runtime_backends()
+                        if runtime_capable and runtime is not None and runtime.is_alive():
+                            cached_backend = getattr(runtime, "acp_backend", None)
+                            if (
+                                configured_backend_raw is not None
+                                and isinstance(cached_backend, str)
+                                and cached_backend != configured_backend_raw
+                            ):
+                                await self._owner._displace_bg_runtime_locked(
+                                    runtime,
+                                    cached_backend,
+                                    configured_backend_raw,
+                                )
+                            else:
+                                # Age AND RSS are probed whether or not co-tenant
+                                # handles are live: a multiplexed runtime that never
+                                # reaches a zero-session window would otherwise never
+                                # be bounded at all.
+                                stale_reason = await runtime._is_stale()
+                                if stale_reason:
+                                    await self._detach_bg_runtime_locked(
+                                        runtime,
+                                        f"stale by {stale_reason}",
+                                    )
 
-                if runtime_capable and (
-                    self._bg_runtime is None or not self._bg_runtime.is_alive()
-                ):
-                    # Reap the dead runtime before replacing it — kill() releases
-                    # its PID tracking + sweep-protection shield.
-                    if self._bg_runtime is not None:
-                        try:
-                            await self._bg_runtime.kill(
-                                expected=True, reason="background runtime reap"
-                            )
-                        except Exception:
-                            logger.debug(
-                                "get_bg_session: dead _bg runtime kill failed",
-                                exc_info=True,
-                            )
-                    agent_cfg = self._owner._cfg.agent
-                    runtime = AcpRuntime(
-                        agent=self._deps.runtime_agent,
-                        sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
-                        acp_backend=configured_backend,
-                        expect_mcp_reports=False,
-                        # Same operator choice the foreground provider threads in;
-                        # on a wire-settings host the runtime sends it explicitly
-                        # (gated on the background agent's own loader grant)
-                        # rather than leaving it to the host's default.
-                        tool_search=ToolSearchSettings.from_config(
-                            getattr(agent_cfg, "tool_search", True),
-                            getattr(agent_cfg, "tool_search_min_pct", None),
-                            getattr(agent_cfg, "tool_search_min_tokens", None),
-                        ),
-                    )
-                    await runtime.spawn()
-                    self._bg_runtime = runtime
-                # Pinned under the lock: use the selected object even if a later
-                # displacement changes the shared slot.
-                selected = self._bg_runtime if runtime_capable else None
+                        if runtime_capable and (
+                            self._bg_runtime is None or not self._bg_runtime.is_alive()
+                        ):
+                            # Reap the dead runtime before replacing it — kill()
+                            # releases PID tracking and sweep protection.
+                            if self._bg_runtime is not None:
+                                try:
+                                    await self._bg_runtime.kill(
+                                        expected=True,
+                                        reason="background runtime reap",
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "get_bg_session: dead _bg runtime kill failed",
+                                        exc_info=True,
+                                    )
+                                self._bg_runtime = None
+                            if not start_permit_held:
+                                needs_start_permit = True
+                            else:
+                                agent_cfg = self._owner._cfg.agent
+                                runtime = AcpRuntime(
+                                    agent=self._deps.runtime_agent,
+                                    sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
+                                    acp_backend=configured_backend,
+                                    expect_mcp_reports=False,
+                                    tool_search=ToolSearchSettings.from_config(
+                                        getattr(agent_cfg, "tool_search", True),
+                                        getattr(agent_cfg, "tool_search_min_pct", None),
+                                        getattr(agent_cfg, "tool_search_min_tokens", None),
+                                    ),
+                                )
+                                await runtime.spawn()
+                                self._bg_runtime = runtime
+                        selected = self._bg_runtime if runtime_capable else None
+
+                    if needs_start_permit:
+                        # Never wait for admission while holding _bg_runtime_lock:
+                        # the sandbox transition owns every permit before taking
+                        # that lock for its snapshot. Once admitted, keep the permit
+                        # through spawn and canonical _bg_runtime registration.
+                        await self._owner._start_sem.acquire()
+                        start_permit_held = True
+                        continue
+                    break
+            finally:
+                if start_permit_held:
+                    self._owner._start_sem.release()
+
             if selected is None:
                 await self._owner._retire_stale_backend_bg_runtime()
                 return await self._owner._provider_backed_bg_session()

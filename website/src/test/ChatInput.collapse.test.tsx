@@ -41,6 +41,7 @@ vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => flags.touch }))
 vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => flags.touch }))
 
 import ChatInput from '../components/ChatInput'
+import { SlotProvider } from '../providers/SlotContext'
 import { requestComposerExpand, queryComposerOrExpand } from '../pages/chat/composerFocus'
 import { renderWithProviders } from './helpers'
 
@@ -304,6 +305,28 @@ describe('composer collapse', () => {
     // behaviour rather than a test workaround.
     fireEvent.click(screen.getByTitle('Sketch'))
     await waitFor(() => expect(screen.getByTestId('sketch-dialog')).toBeInTheDocument())
+  })
+
+  it('opens Send later from the touch overflow when the plus menu is absent', async () => {
+    flags.touch = true
+    renderWithProviders(
+      <SlotProvider slotId="chat-1">
+        <ChatInput
+          {...base}
+          value="follow up later"
+          automationCreationReady
+          onAutomationChange={vi.fn()}
+        />
+      </SlotProvider>,
+    )
+
+    expect(screen.queryByTitle('Add files & options')).not.toBeInTheDocument()
+    openOverflow()
+    const sendLater = screen.getByTestId('mobile-menu-send-later')
+    expect(sendLater).toHaveTextContent('Send later…')
+    expect(sendLater).not.toHaveAttribute('data-disabled')
+    fireEvent.click(sendLater)
+    expect(await screen.findByTestId('schedule-later-popover')).toBeInTheDocument()
   })
 
   it('keeps the upload guard on Sketch after it moved into the overflow', () => {

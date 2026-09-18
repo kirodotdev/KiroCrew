@@ -147,10 +147,7 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
         # Already gone (a sibling cleaned it up, or it never landed) — nothing
         # of ours to remove.
         return
-    if (
-        on_disk.st_dev == created_stat.st_dev
-        and on_disk.st_ino == created_stat.st_ino
-    ):
+    if on_disk.st_dev == created_stat.st_dev and on_disk.st_ino == created_stat.st_ino:
         try:
             os.unlink(key_path)
         except OSError:
@@ -237,9 +234,7 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
         while mv:
             n = os.write(fd, mv)
             if n == 0:
-                raise OSError(
-                    "short write persisting token signing key (wrote 0 bytes)"
-                )
+                raise OSError("short write persisting token signing key (wrote 0 bytes)")
             mv = mv[n:]
         # Cross-restart persistence is the entire reason this file
         # exists, so flush the bytes to stable storage before we treat
@@ -268,8 +263,8 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
     return key
 
 
-def _load_or_create_secret() -> bytes:
-    """Return the HMAC signing secret, persisted across restarts.
+def _load_or_create_secret_with_state() -> tuple[bytes, bool]:
+    """Return the HMAC signing secret and whether it is restart-persistent.
 
     See module docstring for the persistence rationale. Falls back to an
     ephemeral secret if the key file is unwritable — tokens still work within
@@ -349,7 +344,7 @@ def _load_or_create_secret() -> bytes:
                 # have been relaxed since (backup restore, manual edit,
                 # migration) and this key signs all auth tokens/cookies.
                 _enforce_owner_only(key_path)
-                return existing
+                return existing, True
 
             # 2) Publish a WHOLE key, or lose the race and read the winner's.
             #    The key is staged into a private sibling first and only then
@@ -379,9 +374,7 @@ def _load_or_create_secret() -> bytes:
             # path). It also matches the suffix atomic_write's own mkstemp temp
             # already uses. test_token_auth.py pins this against the real
             # predicate so a rename cannot silently leave the fence behind.
-            staged = key_path.with_name(
-                f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
-            )
+            staged = key_path.with_name(f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp")
             key = os.urandom(_MIN_KEY_BYTES)
             try:
                 # restrict_to_owner (rather than mode=0o600 alone) is what
@@ -473,7 +466,7 @@ def _load_or_create_secret() -> bytes:
             else:
                 _unlink_quietly(staged)
             _enforce_owner_only(key_path)
-            return key
+            return key, True
 
         # Retries exhausted. The in-place fallback below creates the
         # destination EMPTY and writes afterwards, so it carries the very
@@ -508,10 +501,10 @@ def _load_or_create_secret() -> bytes:
                     continue
                 if len(existing) >= _MIN_KEY_BYTES:
                     _enforce_owner_only(key_path)
-                    return existing
+                    return existing, True
                 created = _create_key_in_place(key_path)
                 if created is not None:
-                    return created
+                    return created, True
                 # Lost the create (or it failed): give the winner a beat, then
                 # loop back and read what they persisted.
                 time.sleep(_CREATE_BACKOFF_SECONDS)
@@ -532,14 +525,21 @@ def _load_or_create_secret() -> bytes:
             key_path,
             _CREATE_MAX_ATTEMPTS,
         )
-        return os.urandom(_MIN_KEY_BYTES)
+        return os.urandom(_MIN_KEY_BYTES), False
     except OSError:
         # Fall back to an ephemeral secret if the key file is unwritable.
         logger.warning("token signing key not persisted; using ephemeral secret", exc_info=True)
-        return os.urandom(_MIN_KEY_BYTES)
+        return os.urandom(_MIN_KEY_BYTES), False
+
+
+def _load_or_create_secret() -> bytes:
+    """Compatibility seam returning the available secret without its state."""
+    secret, _persistent = _load_or_create_secret_with_state()
+    return secret
 
 
 _SECRET: bytes | None = None
+_SECRET_PERSISTENT: bool | None = None
 _SECRET_LOCK = threading.Lock()
 
 
@@ -551,9 +551,21 @@ def _get_secret() -> bytes:
     module docstring. Memoized under a lock so the key is loaded exactly
     once even under concurrent first use.
     """
-    global _SECRET
+    global _SECRET, _SECRET_PERSISTENT
     if _SECRET is None:
         with _SECRET_LOCK:
             if _SECRET is None:
-                _SECRET = _load_or_create_secret()
+                _SECRET, _SECRET_PERSISTENT = _load_or_create_secret_with_state()
     return _SECRET
+
+
+def signing_secret_is_persistent() -> bool:
+    """Whether the process secret is proven durable across a restart.
+
+    Initializing the dashboard secret remains fail-soft: callers that only need
+    same-process tokens still receive an ephemeral key when persistence fails.
+    This state-only API lets durable authenticated stores fail closed without
+    exposing key material or weakening token availability.
+    """
+    _get_secret()
+    return _SECRET_PERSISTENT is True

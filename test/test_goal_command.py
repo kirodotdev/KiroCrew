@@ -219,3 +219,199 @@ async def test_autonudge_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "unavailable" in body.lower()
     # Turn is still finalized even on the disabled path.
     state.push_slots_update.assert_called_once()
+
+
+# ── A scheduled composer message owns the slot ──────────────────────────────
+#
+# The service protects scheduled messages: generic ``add``/``remove`` raise
+# ``MonitorUpdateConflict`` instead of replacing or deleting one. Nothing above
+# ``_run_chat`` writes a ``done`` row for an escaped exception, so the handler
+# must answer at its own boundary or the turn spinner never stops.
+
+
+def _scheduled_record(loop_id: str = "sched-1") -> SimpleNamespace:
+    """Shape ``autonudge.is_scheduled_message`` positively classifies."""
+    return SimpleNamespace(
+        id=loop_id, max_cycles=1, scheduled_message=True, scheduled_at=1.0e12
+    )
+
+
+def _assert_terminal(slot: MagicMock, state: MagicMock) -> str:
+    """The turn ended: one assistant row, one slots push, one ``done`` row last."""
+    kinds = [c.args[0] for c in slot.append.call_args_list if c.args]
+    assert kinds.count("assistant") == 1
+    assert kinds[-1] == "done"
+    state.push_slots_update.assert_called_once()
+    return _last_assistant_body(slot)
+
+
+def _assert_directs_to_original_chat_banner(body: str) -> None:
+    """Scheduled messages are managed only in their original chat.
+
+    The Schedule page is read-only guidance, so the refusal must send the user
+    to the banner above the composer in that chat and never claim the Schedule
+    tab can unschedule it.
+    """
+    lowered = body.lower()
+    assert "unschedule" in lowered
+    assert "banner above the composer" in lowered
+    assert "chat where it was scheduled" in lowered
+    assert "schedule tab" not in lowered
+    assert "schedule page" not in lowered
+
+
+@pytest.mark.asyncio
+async def test_clear_short_circuits_when_scheduled_message_owns_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = _fake_service(loop=_scheduled_record())
+    svc.remove = AsyncMock(side_effect=AssertionError("remove must not be reached"))
+    audit = _install(monkeypatch, svc)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal clear")
+
+    body = _assert_terminal(slot, state)
+    assert "scheduled message" in body.lower()
+    _assert_directs_to_original_chat_banner(body)
+    assert "cleared" not in body.lower()
+    svc.remove.assert_not_awaited()
+    assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "conflict"
+
+
+@pytest.mark.asyncio
+async def test_arm_short_circuits_when_scheduled_message_owns_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    svc = _fake_service(loop=_scheduled_record())
+    svc.add = AsyncMock(side_effect=AssertionError("add must not be reached"))
+    audit = _install(monkeypatch, svc)
+    monkeypatch.setattr(chat_runner, "data_home", lambda: tmp_path)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal --max 5 ship the feature")
+
+    body = _assert_terminal(slot, state)
+    assert "scheduled message" in body.lower()
+    _assert_directs_to_original_chat_banner(body)
+    assert "Goal set" not in body
+    svc.add.assert_not_awaited()
+    assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "conflict"
+    # The stop sentinel is a side effect of ARMING; a refused arm leaves no trace.
+    assert not (tmp_path / "goal-stop").exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_survives_conflict_raised_by_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Race: the read saw an ordinary goal, but a schedule landed before remove."""
+    from kiro_crew.autonudge import MonitorUpdateConflict
+
+    svc = _fake_service(loop=SimpleNamespace(id="loop-xyz", max_cycles=15))
+    svc.remove = AsyncMock(
+        side_effect=MonitorUpdateConflict(
+            "protected scheduled messages require an authenticated dashboard user"
+        )
+    )
+    audit = _install(monkeypatch, svc)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal clear")  # must not raise
+
+    body = _assert_terminal(slot, state)
+    assert "scheduled message" in body.lower()
+    assert "cleared" not in body.lower()
+    svc.remove.assert_awaited_once_with("loop-xyz")
+    assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "conflict"
+
+
+@pytest.mark.asyncio
+async def test_arm_survives_conflict_raised_by_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Race: the read saw an empty slot, but a schedule landed before add."""
+    from kiro_crew.autonudge import MonitorUpdateConflict
+
+    svc = _fake_service(loop=None)
+    svc.add = AsyncMock(
+        side_effect=MonitorUpdateConflict(
+            "scheduled message must be unscheduled by an authenticated dashboard user"
+        )
+    )
+    audit = _install(monkeypatch, svc)
+    monkeypatch.setattr(chat_runner, "data_home", lambda: tmp_path)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal ship the feature")  # must not raise
+
+    body = _assert_terminal(slot, state)
+    assert "scheduled message" in body.lower()
+    assert "Goal set" not in body
+    svc.add.assert_awaited_once()
+    assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "conflict"
+
+
+@pytest.mark.asyncio
+async def test_status_is_read_only_when_scheduled_message_owns_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = _fake_service(loop=_scheduled_record())
+    audit = _install(monkeypatch, svc)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal status")
+
+    body = _assert_terminal(slot, state)
+    assert "scheduled message" in body.lower()
+    # Status never advertises a `/goal clear` that the service would refuse.
+    assert "Active goal" not in body
+    svc.add.assert_not_awaited()
+    svc.remove.assert_not_awaited()
+    assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_goal_paths_unchanged_by_scheduled_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Opposite failure mode: an ordinary goal record must not be mistaken for a schedule."""
+    ordinary = SimpleNamespace(id="loop-ord", max_cycles=15, scheduled_message=False, scheduled_at=0.0)
+    svc = _fake_service(loop=ordinary)
+    _install(monkeypatch, svc)
+    monkeypatch.setattr(chat_runner, "data_home", lambda: tmp_path)
+    slot, state = _make_slot(), _make_state()
+
+    await chat_runner._handle_goal_command(state, slot, "/goal status")
+    assert "Active goal" in _last_assistant_body(slot)
+
+    slot, state = _make_slot(), _make_state()
+    await chat_runner._handle_goal_command(state, slot, "/goal clear")
+    svc.remove.assert_awaited_once_with("loop-ord")
+    assert "cleared" in _last_assistant_body(slot).lower()
+
+    svc.get_by_slot.return_value = None
+    slot, state = _make_slot(), _make_state()
+    await chat_runner._handle_goal_command(state, slot, "/goal ship it")
+    svc.add.assert_awaited_once()
+    assert "Goal set" in _last_assistant_body(slot)
+
+
+@pytest.mark.parametrize(
+    ("message", "mutates"),
+    [
+        ("ordinary text", False),
+        ("/goal", False),
+        ("/goal status", False),
+        ("/goal --max 5", False),
+        ("/goal clear", True),
+        ("/goal ship the feature", True),
+        ("/goal --max 5 ship the feature", True),
+    ],
+)
+def test_goal_mutation_classifier_matches_live_command_semantics(
+    message: str, mutates: bool
+) -> None:
+    from kiro_crew.goal_command import goal_command_mutates_automation
+
+    assert goal_command_mutates_automation(message) is mutates

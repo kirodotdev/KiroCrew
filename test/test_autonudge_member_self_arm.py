@@ -1362,10 +1362,33 @@ class TestSelfArmTrustRecord:
 
     @pytest.fixture(autouse=True)
     def _home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-        from kiro_crew import autonudge_selfarm
+        from kiro_crew import autonudge_selfarm, sandbox
+        from kiro_crew.config.loader import KiroCrewConfig
 
+        config = SimpleNamespace(
+            agent=SimpleNamespace(
+                sandbox="auto",
+                sandbox_allow_no_isolation=False,
+                sandbox_allow_unsandboxed_exec=False,
+            ),
+            degraded_sections=frozenset(),
+        )
+        autonudge_selfarm._reset_scheduled_message_confinement_epoch_for_tests()
         monkeypatch.setattr(autonudge_selfarm, "data_home", lambda: tmp_path)
-        return tmp_path
+        monkeypatch.setattr(autonudge_selfarm.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(autonudge_selfarm.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(autonudge_selfarm.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(KiroCrewConfig, "load", MagicMock(return_value=config))
+        monkeypatch.setattr(sandbox, "effective_sandbox_mode", MagicMock(return_value="standard"))
+        monkeypatch.setattr(sandbox, "detect_backend", MagicMock(return_value="namespace"))
+        monkeypatch.setattr(
+            autonudge_selfarm.token_secret,
+            "signing_secret_is_persistent",
+            MagicMock(return_value=True),
+        )
+        assert autonudge_selfarm.establish_scheduled_message_confinement_epoch() is True
+        yield tmp_path
+        autonudge_selfarm._reset_scheduled_message_confinement_epoch_for_tests()
 
     def test_record_lives_under_trust_and_round_trips(self, tmp_path: Path) -> None:
         from kiro_crew import autonudge_selfarm as sa
@@ -1423,6 +1446,211 @@ class TestSelfArmTrustRecord:
         path.write_text(json.dumps({"loops": {"x": "not a dict"}}))
         assert sa.is_recorded_self_arm("x", "y") is False
         sa.forget_self_arm("x")  # never raises
+
+    def test_self_arm_read_failure_refuses_without_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        sa.record_self_arm("abc12345", "member-conductor")
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("temporary failure")),
+        )
+        assert sa.is_recorded_self_arm("abc12345", "member-conductor") is False
+
+    def test_scheduled_read_retries_transient_oserror(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        record_id = "scheduled-message:retry"
+        sa.record_scheduled_message(record_id, "chat-1-1", "exact bytes", 2_000.0)
+        original = Path.read_text
+        attempts = 0
+
+        def flaky(path: Path, *args: Any, **kwargs: Any) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts < sa._SCHEDULED_READ_ATTEMPTS:
+                raise OSError("temporary failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", flaky)
+        assert sa.read_scheduled_message(record_id, "chat-1-1") is not None
+        assert attempts == sa._SCHEDULED_READ_ATTEMPTS
+
+    def test_malformed_scheduled_record_does_not_hide_a_sibling(self) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        broken = "scheduled-message:broken"
+        healthy = "scheduled-message:healthy"
+        sa.record_scheduled_message(broken, "chat-1-1", "broken", 2_000.0)
+        sa.record_scheduled_message(healthy, "chat-2-2", "healthy", 3_000.0)
+        sa.scheduled_message_record_path(broken).write_text("not json")
+
+        assert sa.read_scheduled_message(broken, "chat-1-1") is None
+        assert sa.read_scheduled_message(healthy, "chat-2-2") == (
+            sa.ScheduledMessageProvenance("chat-2-2", "healthy", 3_000.0)
+        )
+
+    def test_scheduled_content_round_trips_and_cas_refreshes(self) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        record_id = "scheduled-message:abc12345"
+        sa.record_scheduled_message(record_id, "chat-1-1", "original bytes", 2_000.0)
+
+        original = sa.read_scheduled_message(record_id, "chat-1-1")
+        assert original == sa.ScheduledMessageProvenance(
+            slot_key="chat-1-1",
+            message="original bytes",
+            scheduled_at=2_000.0,
+        )
+        assert sa.read_scheduled_message(record_id, "chat-2-2") is None
+        assert sa.read_scheduled_message("abc12345", "chat-1-1") is None
+        assert sa.is_recorded_self_arm(record_id, "chat-1-1") is False
+
+        assert sa.replace_scheduled_message(record_id, original, "edited bytes", 3_000.0)
+        assert sa.read_scheduled_message(record_id, "chat-1-1") == (
+            sa.ScheduledMessageProvenance(
+                slot_key="chat-1-1",
+                message="edited bytes",
+                scheduled_at=3_000.0,
+            )
+        )
+        assert not sa.replace_scheduled_message(record_id, original, "stale overwrite", 4_000.0)
+
+    def test_delegated_process_secret_cannot_forge_scheduled_provenance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        record_id = "scheduled-message:delegated"
+        gateway_secret = b"g" * 32
+        delegated_secret = b"d" * 32
+        monkeypatch.setattr(sa.token_secret, "_get_secret", lambda: delegated_secret)
+        sa.record_scheduled_message(record_id, "chat-1-1", "forged", 2_000.0)
+
+        monkeypatch.setattr(sa.token_secret, "_get_secret", lambda: gateway_secret)
+        assert sa.read_scheduled_message(record_id, "chat-1-1") is None
+
+        sa.record_scheduled_message(record_id, "chat-1-1", "authentic", 2_000.0)
+        assert sa.read_scheduled_message(record_id, "chat-1-1") == (
+            sa.ScheduledMessageProvenance("chat-1-1", "authentic", 2_000.0)
+        )
+
+    @pytest.mark.parametrize(
+        ("is_linux", "is_macos", "is_windows", "supported"),
+        [
+            (True, False, False, True),
+            (False, True, False, False),
+            (False, False, True, False),
+            (False, False, False, False),
+        ],
+    )
+    def test_scheduled_provenance_platform_table(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        is_linux: bool,
+        is_macos: bool,
+        is_windows: bool,
+        supported: bool,
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", is_linux)
+        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", is_macos)
+        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", is_windows)
+
+        assert sa.scheduled_message_provenance_supported() is supported
+
+    def test_windows_refuses_without_reading_or_writing_plaintext(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False)
+        record_id = "scheduled-message:windows-delegated"
+        record = sa.scheduled_message_record_path(record_id)
+        read_text = MagicMock(side_effect=AssertionError("plaintext record was opened"))
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        assert sa.read_scheduled_message(record_id, "chat-1-1") is None
+        read_text.assert_not_called()
+        assert not record.exists()
+        expected = sa.ScheduledMessageProvenance("chat-1-1", "authentic", 2_000.0)
+        for operation in (
+            lambda: sa.record_scheduled_message(record_id, "chat-1-1", "forged", 2_000.0),
+            lambda: sa.replace_scheduled_message(record_id, expected, "forged", 3_000.0),
+            lambda: sa.mark_scheduled_message_completed(record_id, expected),
+        ):
+            with pytest.raises(OSError, match="requires Linux filesystem isolation"):
+                operation()
+        assert not record.exists()
+
+    def test_macos_refuses_without_reading_or_writing_plaintext(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", True)
+        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False)
+        record_id = "scheduled-message:macos-delegated"
+        record = sa.scheduled_message_record_path(record_id)
+        read_text = MagicMock(side_effect=AssertionError("plaintext record was opened"))
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        assert sa.scheduled_message_provenance_supported() is False
+        assert sa.read_scheduled_message(record_id, "chat-1-1") is None
+        read_text.assert_not_called()
+        with pytest.raises(OSError, match="requires Linux filesystem isolation"):
+            sa.record_scheduled_message(record_id, "chat-1-1", "private text", 2_000.0)
+        assert not record.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unsupported", ["windows", "macos"])
+    async def test_unsupported_startup_purges_existing_plaintext(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        unsupported: str,
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", False)
+        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", True)
+        record_id = "scheduled-message:cross-host"
+        sa.record_scheduled_message(record_id, "chat-1-1", "private text", 2_000.0)
+        root = tmp_path / sa.SCHEDULED_MESSAGE_RECORD_NAME
+        assert root.exists()
+
+        monkeypatch.setattr(sa.platform_compat, "IS_WINDOWS", unsupported == "windows")
+        monkeypatch.setattr(sa.platform_compat, "IS_MACOS", unsupported == "macos")
+        monkeypatch.setattr(sa.platform_compat, "IS_LINUX", False)
+        service = AutoNudgeService(base_dir=tmp_path)
+        await service.start()
+        try:
+            assert not root.exists()
+        finally:
+            service.stop()
+
+    def test_self_arm_shape_and_lookup_remain_compatible(self) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        sa.record_self_arm("abc12345", "member-conductor")
+        sa.record_scheduled_message("scheduled-message:abc12345", "chat-1-1", "later", 2_000.0)
+
+        assert sa.is_recorded_self_arm("abc12345", "member-conductor") is True
+        assert sa.read_scheduled_message("abc12345", "member-conductor") is None
+        raw = json.loads(sa.self_arm_record_path().read_text())
+        assert set(raw["loops"]["abc12345"]) == {"slot_key", "armed_ts"}
 
 
 class TestFireTimeGuardRequiresTheTrustRecord(TestFireTimeModeRecheck):
@@ -1533,12 +1761,20 @@ def test_removing_any_loop_revokes_its_trust_entry_after_the_commit(
         monkeypatch.setattr(svc, "_save", lambda: saves.append("saved"))
         # No running event loop here, so the sync fallback revokes inline.
         assert svc.remove_sync(plain.id, persist=True, emit=False) is plain
-        assert revoked == ["plain002"], "revocation must not trust the store's self_armed bit"
+        assert revoked == [
+            "plain002",
+            "scheduled-message:plain002",
+        ], "revocation must not trust the store's self_armed bit"
         # persist=False: the caller owns the commit and revokes afterwards.
         assert svc.remove_sync(armed.id, persist=False, emit=False) is armed
-        assert revoked == ["plain002"]
+        assert revoked == ["plain002", "scheduled-message:plain002"]
         svc._revoke_self_arm_for(armed)
-        assert revoked == ["plain002", "self0001"]
+        assert revoked == [
+            "plain002",
+            "scheduled-message:plain002",
+            "self0001",
+            "scheduled-message:self0001",
+        ]
 
         # persist=True with a failing save: the row is still stored -> no revoke.
         def _boom() -> None:
@@ -1547,11 +1783,23 @@ def test_removing_any_loop_revokes_its_trust_entry_after_the_commit(
         monkeypatch.setattr(svc, "_save", _boom)
         with pytest.raises(OSError):
             svc.remove_sync(failing.id, persist=True, emit=False)
-        assert revoked == ["plain002", "self0001"]
+        assert revoked == [
+            "plain002",
+            "scheduled-message:plain002",
+            "self0001",
+            "scheduled-message:self0001",
+        ]
         # persist=True with a good save: revoked after the commit.
         svc._loops[failing.id] = failing
         monkeypatch.setattr(svc, "_save", lambda: saves.append("saved"))
         assert svc.remove_sync(failing.id, persist=True, emit=False) is failing
-        assert revoked == ["plain002", "self0001", "self0003"]
+        assert revoked == [
+            "plain002",
+            "scheduled-message:plain002",
+            "self0001",
+            "scheduled-message:self0001",
+            "self0003",
+            "scheduled-message:self0003",
+        ]
     finally:
         svc.stop()

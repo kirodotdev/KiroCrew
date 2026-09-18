@@ -2112,6 +2112,7 @@ class _ChatSlot:
         "_dirty_flag",
         "_dirty_gen",
         "_metadata_persist_inflight",
+        "_history_persist_lock",
         "_orch_tracker",
         "_plan_cancelled",
         "_auto_run",
@@ -2554,6 +2555,9 @@ class _ChatSlot:
         # committed.  The periodic writer must not serialize that provisional
         # state to an unpinned transcript while the guarded write waits.
         self._metadata_persist_inflight: int = 0
+        # Serializes every history snapshot-to-commit span with corrective row
+        # deletion. Reentrant because locked persistence helpers can compose.
+        self._history_persist_lock = threading.RLock()
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         # Plan-cancel latch closing the cancel/Go race: the Cancel
         # handler can only stop a tracker that exists, but _stage_loop creates

@@ -228,6 +228,9 @@ _LIVE_TARGET_LEAF: str = "live_target.json"
 #: reason as ``_MD_NOTEBOOK_STAGING_LEAF`` / ``aws-control-staging``.
 _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 
+#: Gateway-only scheduled composer provenance, masked as a whole directory.
+_SCHEDULED_MESSAGE_PROVENANCE_LEAF: str = "scheduled-message-provenance"
+
 #: The md-notebook builtin's name, and its own state files under the crew data home.
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
 #: gives it a mount target cannot drift apart on a literal.
@@ -293,6 +296,9 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # the spool write and the notice pass happen in the GATEWAY process, which
     # opens the paths directly.
     "inbound-spool",
+    # Exact scheduled-composer content is gateway-owned provenance. Unlike
+    # ``trust/``, this directory has no in-sandbox reader or writer.
+    _SCHEDULED_MESSAGE_PROVENANCE_LEAF,
     # The durable task queue (``tasks/tasks.db`` + SQLite siblings). Fenced
     # from agent file tools by ``security._CREW_SECRET_LEAVES``; masked here so
     # a spawned shell's ``sqlite3`` cannot read other sessions' task prompts or
@@ -1051,6 +1057,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "file-delivery-consent-pending",
     "appearance-library",
     "quarantined-clones",
+    # Scheduled-message provenance is created on the first deferred send. Precreate
+    # its empty root so a namespace started earlier binds a mask over the name and
+    # cannot observe records the gateway writes later.
+    _SCHEDULED_MESSAGE_PROVENANCE_LEAF,
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the

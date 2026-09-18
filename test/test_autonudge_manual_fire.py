@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -476,6 +477,36 @@ async def test_route_refuses_a_structured_monitor(monkeypatch) -> None:
     assert resp.status == 409
     assert _body(resp)["code"] == "structured_monitor_requires_monitor_api"
     assert svc.fired == []
+
+
+@pytest.mark.asyncio
+async def test_route_refuses_a_scheduled_message_with_409(monkeypatch, sel_mock) -> None:
+    """A Send-later record fires only when its countdown reaches ``scheduled_at``.
+
+    The product has no control that sends it early, so the route refuses it in
+    its own vocabulary and stops before the audit-or-deny write: nothing is
+    armed, no ``invoked`` record is minted, and the refusal itself is audited.
+    """
+    loop = NudgeLoop(
+        id="sched-1",
+        slot_key="chat-1-111",
+        message="send later",
+        idle_secs=600,
+        max_cycles=1,
+        gate=False,
+        scheduled_message=True,
+        scheduled_at=time.time() + 600,
+    )
+    svc = _FakeSvc([loop])
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+
+    resp = await h.api_autonudge_fire(_mk("sched-1", slot=_slot()))
+
+    assert resp.status == 409
+    assert _body(resp)["code"] == "scheduled_message_cannot_fire"
+    assert svc.fired == []
+    outcomes = [c.kwargs["outcome"] for c in sel_mock.log_tool_invocation.call_args_list]
+    assert outcomes == ["denied"]
 
 
 @pytest.mark.asyncio

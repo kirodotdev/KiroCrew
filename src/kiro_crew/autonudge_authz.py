@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
@@ -30,13 +32,20 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from kiro_crew import autonudge_provider_trust
 from kiro_crew.autonudge import (
     MAX_BANNER_CHARS,
+    MAX_SCHEDULE_AHEAD_SECS,
     AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     is_channel_key,
+    is_scheduled_message,
+    scheduled_message_trust_id,
     scrub_loop_text,
 )
-from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
+from kiro_crew.autonudge_selfarm import (
+    forget_self_arm,
+    record_scheduled_message,
+    record_self_arm,
+)
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
@@ -582,6 +591,8 @@ async def authorize_and_update_nudge(
     max_runtime_secs: Any = None,
     banner: Any = None,
     expect_fingerprint: Any = None,
+    scheduled_at: Any = None,
+    scheduled_user_origin: bool = False,
     source: str,
     caller: str = "",
 ) -> tuple[Any | None, str | None, int]:
@@ -642,6 +653,28 @@ async def authorize_and_update_nudge(
             return _deny("message too long (max 8000 chars)", 400)
         # A client that RE-SUBMITS the served projection has not edited the message, so
         # applying it would destroy the stored instruction with no error and no warning.
+        # Scheduled composer text is exact human input and follows the protected path below.
+    if scheduled_at is not None:
+        if isinstance(scheduled_at, bool):
+            return _deny("scheduled_at must be a finite epoch-seconds number", 400)
+        try:
+            scheduled_at = float(scheduled_at)
+        except (TypeError, ValueError, OverflowError):
+            return _deny("scheduled_at must be a finite epoch-seconds number", 400)
+        now = time.time()
+        if not math.isfinite(scheduled_at) or scheduled_at <= now:
+            return _deny("scheduled_at must be in the future", 400)
+        if scheduled_at > now + MAX_SCHEDULE_AHEAD_SECS:
+            return _deny("scheduled_at must be within 30 days", 400)
+    scheduled_update = row is not None and is_scheduled_message(row)
+    if scheduled_update and not scheduled_user_origin:
+        return _deny(
+            "protected scheduled messages require an authenticated dashboard user",
+            403,
+        )
+    if scheduled_user_origin and not scheduled_update:
+        return _deny("scheduled message provenance is not authorized", 409)
+    if message is not None and not scheduled_update:
         try:
             resubmitted_projection = message_is_echoed_projection(row, message)
         except PlatformCompositionError:
@@ -661,7 +694,10 @@ async def authorize_and_update_nudge(
                 scrub_loop_text(loop_id),
                 source,
             )
-    if message is not None:
+    if message is not None and not scheduled_update:
+        # Agent/workflow-authored automation stays on the output-redaction
+        # boundary. Only the positively authenticated composer path above keeps
+        # human input byte-exact, as ordinary user turns do.
         message, _ = redact_exfiltration_urls(message)
         message, _ = redact_credentials(message)
     if banner is not None:
@@ -749,6 +785,7 @@ async def authorize_and_update_nudge(
                         ("max_runtime_secs", max_runtime_secs),
                         ("active", active),
                         ("banner", banner),
+                        ("scheduled_at", scheduled_at),
                     )
                     if v is not None
                 ),
@@ -762,16 +799,24 @@ async def authorize_and_update_nudge(
         logger.error("autonudge update denied: SEL audit unavailable", exc_info=True)
         return None, "audit log unavailable — nudge loop not updated", 503
     try:
-        loop = await svc.update(
-            loop_id,
-            message=message,
-            idle_secs=idle_secs,
-            max_cycles=max_cycles,
-            active=active,
-            max_runtime_secs=max_runtime_secs,
-            banner=banner,
-            expect_fingerprint=expect_fingerprint,
-        )
+        if scheduled_update:
+            loop = await svc.update_pending_scheduled_message(
+                loop_id,
+                message=message,
+                scheduled_at=scheduled_at,
+            )
+        else:
+            loop = await svc.update(
+                loop_id,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+                active=active,
+                max_runtime_secs=max_runtime_secs,
+                banner=banner,
+                expect_fingerprint=expect_fingerprint,
+                scheduled_at=scheduled_at,
+            )
     except AutoNudgeStaleBaseline:
         # Refused under the store's own lock, so the newer goal is still there. 409 rather
         # than a silent success: last-write-wins would destroy a change never seen.
@@ -782,6 +827,13 @@ async def authorize_and_update_nudge(
             "and choose.",
             409,
         )
+    except MonitorUpdateConflict as exc:
+        return _deny(str(exc), 409)
+    except OSError:
+        _audit("error", "scheduled message provenance update failed")
+        return None, "scheduled message provenance update unavailable", 503
+    except ValueError as exc:
+        return _deny(str(exc), 409)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.update failed: {type(exc).__name__}")
         raise
@@ -802,6 +854,8 @@ async def authorize_and_add_nudge(
     stop_sentinel_path: str = "",
     max_runtime_secs: int = 0,
     banner: str = "",
+    scheduled_at: float = 0.0,
+    composer_user_origin: bool = False,
     source: str,
     caller: str = "",
     # UNGATED by default: this chokepoint is shared with callers whose work is not
@@ -853,33 +907,32 @@ async def authorize_and_add_nudge(
     an HTTP response and the workflow bridge can log-and-skip.
     """
     slot_key = (slot_key or "").strip()
+    raw_message = message
     message = (message or "").strip()
-    # The nudge message is LLM-influenced (workflow-authored ctx.nudge and
-    # agent-issued monitor_start alike), gets PERSISTED to the loop store, and
-    # is later re-injected into chat / posted to messaging channels on every
-    # fire. Redact credential patterns and exfiltration URLs at this single
-    # chokepoint so no delivery surface can leak them (same guard as other
-    # LLM-influenced output paths; backend-security-controls).
-    if message:
-        message, _ = redact_exfiltration_urls(message)
-        message, _ = redact_credentials(message)
     audit_tool = "monitor_watch" if monitor is not None else "autonudge_start"
 
     def _audit(outcome: str, err: str | None = None) -> None:
         try:
+            metadata = {
+                "slot_key": slot_key,
+                "idle_secs": idle_secs,
+                "max_cycles": max_cycles,
+                "max_runtime_secs": max_runtime_secs,
+                "caller": caller,
+            }
+            if (
+                isinstance(scheduled_at, (int, float))
+                and not isinstance(scheduled_at, bool)
+                and scheduled_at > 0
+            ):
+                metadata["scheduled_at"] = scheduled_at
             sel().log_tool_invocation(
                 session_key=slot_key,
                 source=source,
                 tool_name=audit_tool,
                 outcome=outcome,
                 error=err or "",
-                metadata={
-                    "slot_key": slot_key,
-                    "idle_secs": idle_secs,
-                    "max_cycles": max_cycles,
-                    "max_runtime_secs": max_runtime_secs,
-                    "caller": caller,
-                },
+                metadata=metadata,
             )
         except Exception:  # noqa: BLE001 - auditing must never break the flow
             logger.warning("autonudge audit failed", exc_info=True)
@@ -888,9 +941,44 @@ async def authorize_and_add_nudge(
         _audit("denied", reason)
         return None, reason, status
 
+    if isinstance(scheduled_at, bool):
+        return _deny("scheduled_at must be a finite epoch-seconds number", 400)
+    try:
+        scheduled_at = float(scheduled_at)
+    except (TypeError, ValueError, OverflowError):
+        return _deny("scheduled_at must be a finite epoch-seconds number", 400)
+    if not math.isfinite(scheduled_at) or scheduled_at < 0:
+        return _deny("scheduled_at must be a finite epoch-seconds number", 400)
+    if scheduled_at > 0 and monitor is not None:
+        return _deny("scheduled messages cannot be structured monitors", 400)
+    if scheduled_at > 0:
+        if composer_user_origin is not True:
+            return _deny("scheduled messages require authenticated composer provenance", 403)
+        if not isinstance(raw_message, str):
+            return _deny("message must be a string", 400)
+        if len(raw_message) > 8000:
+            return _deny("message too long (max 8000 chars)", 400)
+        # Human composer input is the turn input, not model output. Keep it
+        # exact in local transcript/model semantics; any cross-surface mirror
+        # still redacts at its established egress boundary.
+        message = raw_message
+    elif message:
+        # Every agent/workflow automation message remains LLM-influenced and is
+        # redacted before persistence and later injection.
+        message, _ = redact_exfiltration_urls(message)
+        message, _ = redact_credentials(message)
+
     if svc is None:
         _audit("error", "autonudge disabled")
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
+    get_by_slot = getattr(svc, "get_by_slot", None)
+    existing = get_by_slot(slot_key) if callable(get_by_slot) and slot_key else None
+    if existing is not None and is_scheduled_message(existing):
+        return _deny(
+            "scheduled message must be unscheduled by an authenticated dashboard "
+            "user before another automation can replace it",
+            409,
+        )
     monitor_wake_instructions = ""
     if monitor is not None:
         monitor_wake_instructions = monitor.wake_instructions
@@ -927,6 +1015,11 @@ async def authorize_and_add_nudge(
     if banner_channel_error:
         return _deny(banner_channel_error, 400)
     admission_check: Callable[[], bool]
+    # The first surface is the dashboard composer. Keeping scheduled messages on
+    # dashboard slots avoids silently inventing DM semantics for transport keys;
+    # channel scheduling can be added once its authorizing UX exists.
+    if scheduled_at > 0 and is_channel_key(slot_key):
+        return _deny("scheduled messages currently require a dashboard session", 400)
     # Set only on the dashboard branch, when a crew/member slot is armed by its
     # own turn; channel-bound loops have no slot mode and stay False.
     self_armed = False
@@ -1192,7 +1285,7 @@ async def authorize_and_add_nudge(
     ):
         return _deny("monitor authorization requires a rollback-capable loop store", 503)
     reserved_loop_id: str | None = None
-    if self_armed or owner_credentials_grant:
+    if self_armed or owner_credentials_grant or scheduled_at > 0:
         # Reserve a COLLISION-FREE id before touching the trust record. The
         # record is an upsert keyed by loop id, so an id already held by a live
         # loop would overwrite that loop's entry -- and the add's conflict
@@ -1218,6 +1311,19 @@ async def authorize_and_add_nudge(
         except OSError:
             logger.error("self-arm record unavailable; loop not armed", exc_info=True)
             return _deny("self-arm record unavailable — loop not armed", 503)
+    elif scheduled_at > 0:
+        try:
+            assert reserved_loop_id is not None
+            await asyncio.to_thread(
+                record_scheduled_message,
+                scheduled_message_trust_id(reserved_loop_id),
+                slot_key,
+                message,
+                scheduled_at,
+            )
+        except (OSError, ValueError):
+            logger.error("scheduled-message provenance unavailable", exc_info=True)
+            return _deny("scheduled message provenance unavailable — loop not armed", 503)
 
     if owner_credentials_grant:
         assert monitor is not None and reserved_loop_id is not None
@@ -1240,6 +1346,8 @@ async def authorize_and_add_nudge(
             return
         if self_armed:
             forget_self_arm(reserved_loop_id)  # never raises
+        if scheduled_at > 0:
+            forget_self_arm(scheduled_message_trust_id(reserved_loop_id))
         if owner_credentials_grant:
             autonudge_provider_trust.forget_monitor_owner_credentials(reserved_loop_id)
 
@@ -1254,9 +1362,11 @@ async def authorize_and_add_nudge(
                 "max_runtime_secs": int(max_runtime_secs),
                 "banner": banner,
                 "admission_check": admission_check,
-                "gate": gate,
+                "gate": False if scheduled_at > 0 else gate,
                 "creation_surface": creation_surface,
             }
+            if scheduled_at > 0:
+                add_kwargs["scheduled_at"] = scheduled_at
             if not replace_existing:
                 add_kwargs["replace_existing"] = False
             if replace_stopped:

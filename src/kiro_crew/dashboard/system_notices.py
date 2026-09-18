@@ -11,7 +11,14 @@ the real turn, or vice versa.
 
 SESSION_RELOAD_KIND = "session_reload"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+# A scheduled composer message the gateway refused to deliver (no trusted
+# provenance). Delivery was never attempted; the card tells the user to re-type
+# the lost text. Emitted by ``slack/gateway.py::_notify_scheduled_message_dropped``.
+SCHEDULED_MESSAGE_DROPPED_KIND = "scheduled_message_dropped"
+
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
+    {"compaction", SESSION_RELOAD_KIND, SCHEDULED_MESSAGE_DROPPED_KIND}
+)
 
 
 def is_system_notice(role: object, meta: object) -> bool:

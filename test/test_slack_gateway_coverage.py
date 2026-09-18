@@ -24,12 +24,15 @@ import asyncio
 import json
 import logging
 import math
+import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from chat_test_helpers import _make_state
 
 from kiro_crew import session_directive
 from kiro_crew import subagent as _sa
@@ -78,6 +81,7 @@ def _make_orchestrator(**kwargs: Any) -> Any:
 def _mock_dashboard_state() -> MagicMock:
     ds = MagicMock()
     ds._slots = {}
+    ds.conversation_log = None
     ds.last_notification_persist = None
     ds.notify = MagicMock()
     ds.push_slots_update = MagicMock()
@@ -1006,6 +1010,26 @@ class TestFireSlackNudgeGuards:
 class TestAutonudgeRouterAndObserver:
     """``_init_autonudge`` builds the key-namespace router and the WS observer."""
 
+    @pytest.mark.asyncio
+    async def test_disabled_unconfined_boot_purges_scheduled_plaintext(self, monkeypatch, tmp_path):
+        provenance_dir = tmp_path / gw.autonudge_selfarm.SCHEDULED_MESSAGE_RECORD_NAME
+        provenance_dir.mkdir()
+        plaintext = provenance_dir / "legacy.json"
+        plaintext.write_text("deferred user text", encoding="utf-8")
+        monkeypatch.setattr(gw.autonudge_selfarm, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "scheduled_message_hidden_leaf_confined",
+            MagicMock(return_value=False),
+        )
+        monkeypatch.setattr(gw, "autonudge_enabled", lambda: False)
+        orch = _make_orchestrator()
+
+        await orch._init_autonudge()
+
+        assert not provenance_dir.exists()
+        assert orch.autonudge_svc is None
+
     async def _wire(
         self,
         orch: Any,
@@ -1160,6 +1184,204 @@ class TestAutonudgeRouterAndObserver:
         rendered = json.dumps(payload)
         assert secret not in rendered
         assert "provider rejected token" in payload["loop"]["monitor"]["last_provider_error"]
+
+    @pytest.mark.asyncio
+    async def test_observer_broadcasts_scheduled_text_from_provenance_to_owners_only(
+        self, monkeypatch
+    ):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        loop = _loop("chat-1-1721")
+        loop.message = "scrubbed mutable mirror"
+        loop.scheduled_message = True
+        loop.scheduled_at = 2_000.0
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot_key: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key=loop.slot_key,
+                message="exact protected composer text",
+                scheduled_at=2_100.0,
+            ),
+        )
+
+        observer("updated", loop)
+        broadcast_tasks = tuple(orch._background_tasks)
+        assert len(broadcast_tasks) == 1
+        await asyncio.gather(*broadcast_tasks)
+
+        orch.dashboard_state.broadcast_ws.assert_not_called()
+        topic, payload = orch.dashboard_state.broadcast_ws_owners.call_args.args
+        assert topic == "autonudge_state"
+        assert payload["loop"]["message"] == "exact protected composer text"
+        assert payload["loop"]["scheduled_at"] == 2_100.0
+        assert "scrubbed mutable mirror" not in json.dumps(payload)
+
+    @pytest.mark.asyncio
+    async def test_observer_busy_provenance_suppresses_frame_without_removing_loop(
+        self, monkeypatch
+    ):
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        loop = _loop("chat-1-1721")
+        loop.scheduled_message = True
+        loop.scheduled_at = 2_100.0
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda *_args: (_ for _ in ()).throw(OSError("store busy")),
+        )
+
+        observer("updated", loop)
+        await asyncio.gather(*tuple(orch._background_tasks))
+
+        orch.dashboard_state.broadcast_ws.assert_not_called()
+        orch.dashboard_state.broadcast_ws_owners.assert_not_called()
+        orch.autonudge_svc.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_observer_suppresses_an_older_scheduled_update_that_finishes_last(
+        self, monkeypatch
+    ):
+        import threading
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        first_started = threading.Event()
+        second_started = threading.Event()
+        release_first = threading.Event()
+        read_lock = threading.Lock()
+        read_count = 0
+
+        def read_provenance(_record_id, slot_key):
+            nonlocal read_count
+            with read_lock:
+                index = read_count
+                read_count += 1
+            if index == 0:
+                first_started.set()
+                assert release_first.wait(timeout=2)
+                message, scheduled_at = "older protected text", 2_100.0
+            else:
+                second_started.set()
+                message, scheduled_at = "newest protected text", 2_200.0
+            return gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key=slot_key,
+                message=message,
+                scheduled_at=scheduled_at,
+            )
+
+        monkeypatch.setattr(gw.autonudge_selfarm, "read_scheduled_message", read_provenance)
+        older = _loop("chat-1-1721")
+        older.scheduled_message = True
+        older.scheduled_at = 2_100.0
+        newer = _loop("chat-1-1721")
+        newer.scheduled_message = True
+        newer.scheduled_at = 2_200.0
+
+        observer("updated", older)
+        assert await asyncio.to_thread(first_started.wait, 2)
+        first_task = next(iter(orch._background_tasks))
+        observer("updated", newer)
+        tasks = tuple(orch._background_tasks)
+        assert await asyncio.to_thread(second_started.wait, 2)
+        release_first.set()
+        await asyncio.gather(first_task, *tasks)
+
+        orch.dashboard_state.broadcast_ws.assert_not_called()
+        assert orch.dashboard_state.broadcast_ws_owners.call_count == 1
+        _topic, payload = orch.dashboard_state.broadcast_ws_owners.call_args.args
+        assert payload["event"] == "updated"
+        assert payload["loop"]["message"] == "newest protected text"
+        assert payload["loop"]["scheduled_at"] == 2_200.0
+
+    @pytest.mark.asyncio
+    async def test_observer_removal_suppresses_a_pending_scheduled_update(self, monkeypatch):
+        import threading
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        read_started = threading.Event()
+        release_read = threading.Event()
+
+        def read_provenance(_record_id, slot_key):
+            read_started.set()
+            assert release_read.wait(timeout=2)
+            return gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key=slot_key,
+                message="stale protected text",
+                scheduled_at=2_100.0,
+            )
+
+        monkeypatch.setattr(gw.autonudge_selfarm, "read_scheduled_message", read_provenance)
+        loop = _loop("chat-1-1721")
+        loop.scheduled_message = True
+        loop.scheduled_at = 2_100.0
+
+        observer("updated", loop)
+        assert await asyncio.to_thread(read_started.wait, 2)
+        pending = tuple(orch._background_tasks)
+        observer("removed", loop)
+        release_read.set()
+        await asyncio.gather(*pending)
+
+        orch.dashboard_state.broadcast_ws.assert_not_called()
+        assert orch.dashboard_state.broadcast_ws_owners.call_count == 1
+        _topic, payload = orch.dashboard_state.broadcast_ws_owners.call_args.args
+        assert payload["event"] == "removed"
+        assert "message" not in payload["loop"]
+
+    @pytest.mark.asyncio
+    async def test_observer_removal_then_same_id_recreation_suppresses_old_read(self, monkeypatch):
+        import threading
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        read_count = 0
+
+        def read_provenance(_record_id, slot_key):
+            nonlocal read_count
+            read_count += 1
+            if read_count == 1:
+                first_started.set()
+                assert release_first.wait(timeout=2)
+                message, scheduled_at = "removed text", 2_100.0
+            else:
+                message, scheduled_at = "replacement text", 2_200.0
+            return gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key=slot_key,
+                message=message,
+                scheduled_at=scheduled_at,
+            )
+
+        monkeypatch.setattr(gw.autonudge_selfarm, "read_scheduled_message", read_provenance)
+        removed = _loop("chat-1-1721")
+        removed.scheduled_message = True
+        removed.scheduled_at = 2_100.0
+        observer("updated", removed)
+        assert await asyncio.to_thread(first_started.wait, 2)
+        pending = tuple(orch._background_tasks)
+
+        observer("removed", removed)
+        replacement = _loop("chat-1-1721")
+        replacement.scheduled_message = True
+        replacement.scheduled_at = 2_200.0
+        observer("added", replacement)
+        await asyncio.sleep(0)
+        release_first.set()
+        await asyncio.gather(*pending, *tuple(orch._background_tasks))
+
+        frames = [call.args[1] for call in orch.dashboard_state.broadcast_ws_owners.call_args_list]
+        assert [frame["event"] for frame in frames] == ["removed", "added"]
+        assert "message" not in frames[0]["loop"]
+        assert frames[1]["loop"]["message"] == "replacement text"
 
     @pytest.mark.asyncio
     async def test_observer_expired_event_also_notifies(self):
@@ -2080,12 +2302,17 @@ class TestFireDashboardNudgeDispatch:
         ds.get_slot.return_value = slot
         orch.dashboard_state = ds
 
-        # _run_chat's return value is handed straight to the (patched)
-        # spawn_guarded_turn, so a plain sentinel avoids creating a coroutine
-        # nothing will ever await.
+        # Keep the wrapper construction real, but close it at the patched task
+        # boundary because this unit test only verifies dispatch bookkeeping.
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
         task = MagicMock()
+
+        def discard_turn(_state, _slot, coro):
+            coro.close()
+            return task
+
         monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", MagicMock(return_value="CORO"))
-        monkeypatch.setattr(gw, "spawn_guarded_turn", MagicMock(return_value=task))
+        monkeypatch.setattr(gw, "spawn_guarded_turn", discard_turn)
 
         loop = _loop("chat-1", cycle_count=1)
         assert await orch._fire_dashboard_nudge(loop) is True
@@ -2099,6 +2326,1503 @@ class TestFireDashboardNudgeDispatch:
         assert slot.task is task
         assert orch._session_tasks["chat-1"] is task
         ds.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("linked_session_key", ["", "slack:111.222"])
+    async def test_scheduled_message_is_an_exact_user_turn(self, monkeypatch, linked_session_key):
+        """Reuse the nudge dispatcher without leaking nudge protocol into the prompt."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.running = False
+        slot._in_stage_execution = False
+        slot._has_reader = False
+        slot.key = "chat-1"
+        slot.linked_session_key = linked_session_key
+        slot.messages = []
+        slot._pending = []
+        slot.event = MagicMock()
+        order: list[str] = []
+
+        def append(role, content, css, **kwargs):
+            order.append("append")
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            slot._pending.append(row)
+            return row
+
+        async def persist(*_args, **_kwargs):
+            assert slot._pending == [], "scheduled row became live before persistence"
+            order.append("persist")
+            return True
+
+        slot.append.side_effect = append
+        ds.broadcast_ws.side_effect = lambda *_args, **_kwargs: order.append("publish")
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=False)
+
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _i, _s: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1",
+                message="follow up with the release owner",
+                scheduled_at=2_000.0,
+            ),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        loop = _loop(
+            "chat-1",
+            message="follow up with the release owner",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=2_000.0,
+        )
+
+        assert await orch._fire_dashboard_nudge(loop) is True
+        await asyncio.gather(*spawned)
+        await asyncio.sleep(0)
+
+        assert slot.append.call_args.args == (
+            "user",
+            "follow up with the release owner",
+            "msg msg-u",
+        )
+        assert "broadcast_user" not in slot.append.call_args.kwargs
+        assert slot.append.call_args.kwargs["broadcast"] is False
+        delivery = slot.append.call_args.kwargs["meta"]
+        assert delivery["scheduled_message"] == {
+            "at": 2_000.0,
+            "loop_id": "loop-1",
+        }
+        assert isinstance(delivery.get("mid"), str) and delivery["mid"]
+        assert gw.row_mid(slot.messages[0]) == delivery["mid"]
+        assert order[:3] == ["append", "persist", "publish"]
+        assert run_chat.call_args.args[2] == "follow up with the release owner"
+        assert run_chat.call_args.kwargs["_directive_user_origin"] is False
+        assert run_chat.call_args.kwargs["_directive_self_wake"] is True
+        assert "_directive_loop_id" not in run_chat.call_args.kwargs
+        assert "_directive_loop_gen" not in run_chat.call_args.kwargs
+        # Completion belongs to chat_runner's landed-turn verdict, not task exit.
+        orch.autonudge_svc.notify_turn_complete.assert_not_called()
+        orch.autonudge_svc.remove.assert_not_called()
+        # The local slash-command backstop is armed before the turn spawns and
+        # consulted on the turn's return; the runner's own completion signal is
+        # what makes it a no-op here.
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_called_once_with("loop-1")
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery.assert_awaited_once_with("loop-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "save_outcome",
+        [False, OSError("save failed")],
+        ids=("refused", "exception"),
+    )
+    async def test_scheduled_persistence_failure_publishes_and_spawns_nothing(
+        self, monkeypatch, save_outcome
+    ):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            _has_reader=True,
+            key="chat-1",
+        )
+        slot.messages = []
+        slot._pending = []
+        slot.total_messages = 0
+        slot.event = MagicMock()
+
+        def append(role, content, css, **kwargs):
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            slot._pending.append(row)
+            slot.total_messages += 1
+            return row
+
+        slot.append.side_effect = append
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        save = (
+            AsyncMock(side_effect=save_outcome)
+            if isinstance(save_outcome, Exception)
+            else AsyncMock(return_value=save_outcome)
+        )
+        ds.conversation_log = MagicMock()
+        rollback = AsyncMock(return_value=False)
+        monkeypatch.setattr(gw, "save_slot_off_loop", save)
+        monkeypatch.setattr(gw, "_rollback_staged_transcript_row", rollback)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="persist me", scheduled_at=2_000.0
+            ),
+        )
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+
+        fire = orch._fire_dashboard_nudge(
+            _loop(
+                "chat-1",
+                max_cycles=1,
+                scheduled_message=True,
+                scheduled_at=2_000.0,
+            )
+        )
+        if isinstance(save_outcome, Exception):
+            with pytest.raises(OSError, match="save failed"):
+                await fire
+        else:
+            assert await fire is False
+        await asyncio.gather(*spawned)
+        if isinstance(save_outcome, Exception):
+            rollback.assert_awaited_once()
+        else:
+            rollback.assert_not_awaited()
+        assert slot.messages == []
+        assert slot._pending == []
+        assert slot.total_messages == 0
+        ds.broadcast_ws.assert_not_called()
+        ds.clear_question_pending.assert_not_called()
+        assert len(spawned) == 1
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("fully_bound", "connected"),
+        [(False, True), (True, False)],
+        ids=("incomplete-remote-binding", "disconnected-peer"),
+    )
+    async def test_scheduled_remote_unavailable_stays_pending_without_a_row(
+        self, monkeypatch, fully_bound, connected
+    ):
+        from kiro_crew.dashboard import remote_relay
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            key="chat-1",
+            executor="remote",
+            instance_id="peer-1",
+            remote_slot="peer-chat-1",
+        )
+        slot.is_remote = fully_bound
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        monkeypatch.setattr(remote_relay, "peer_is_connected", lambda *_args: connected)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="run remotely", scheduled_at=2_000.0
+            ),
+        )
+        persist = AsyncMock(return_value=True)
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        spawn = MagicMock()
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+
+        result = await orch._fire_dashboard_nudge(
+            _loop(
+                "chat-1",
+                max_cycles=1,
+                scheduled_message=True,
+                scheduled_at=2_000.0,
+            )
+        )
+
+        assert result is False
+        slot.append.assert_not_called()
+        persist.assert_not_awaited()
+        ds.broadcast_ws.assert_not_called()
+        spawn.assert_not_called()
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "first_outcome",
+        ["truncated", "failed", "cancelled"],
+    )
+    async def test_scheduled_remote_delivery_retries_without_duplicate_user_rows(
+        self, monkeypatch, first_outcome
+    ):
+        from kiro_crew.dashboard import remote_relay
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            _has_reader=False,
+            key="chat-1",
+            executor="remote",
+            instance_id="peer-1",
+            remote_slot="peer-chat-1",
+        )
+        slot.is_remote = True
+        slot.messages = []
+        slot._pending = []
+        slot.event = MagicMock()
+
+        def append(role, content, css, **kwargs):
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            slot._pending.append(row)
+            return row
+
+        slot.append.side_effect = append
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        monkeypatch.setattr(remote_relay, "peer_is_connected", lambda *_args: True)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="run remotely", scheduled_at=2_000.0
+            ),
+        )
+        monkeypatch.setattr(gw, "save_slot_off_loop", AsyncMock(return_value=True))
+        relay_attempt = 0
+
+        async def relay(_state, target, _message):
+            nonlocal relay_attempt
+            relay_attempt += 1
+            if relay_attempt > 1:
+                return True
+            if first_outcome == "failed":
+                target.messages[:] = [
+                    row
+                    for row in target.messages
+                    if not row.get("meta", {}).get("scheduled_message")
+                ]
+                target._pending[:] = [
+                    row
+                    for row in target._pending
+                    if not row.get("meta", {}).get("scheduled_message")
+                ]
+                return False
+            if first_outcome == "cancelled":
+                raise asyncio.CancelledError
+            return False
+
+        monkeypatch.setattr(remote_relay, "relay_remote_turn", relay)
+        local_run = AsyncMock(side_effect=AssertionError("remote schedule ran locally"))
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", local_run)
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        loop = _loop(
+            "chat-1",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=2_000.0,
+        )
+
+        assert await orch._fire_dashboard_nudge(loop) is True
+        first_tasks = tuple(spawned)
+        first_results = await asyncio.gather(*first_tasks, return_exceptions=True)
+        if first_outcome == "cancelled":
+            assert isinstance(first_results[0], asyncio.CancelledError)
+        else:
+            assert first_results == [None]
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery.assert_not_awaited()
+        orch.autonudge_svc.notify_turn_complete.assert_called_once_with(
+            "chat-1", turn_completed=False
+        )
+
+        assert await orch._fire_dashboard_nudge(loop) is True
+        await asyncio.gather(*spawned[len(first_tasks) :])
+
+        local_run.assert_not_awaited()
+        assert relay_attempt == 2
+        assert len(slot.messages) == 1
+        assert slot.messages[0]["content"] == "run remotely"
+        assert slot.messages[0]["meta"]["scheduled_message"]["loop_id"] == "loop-1"
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery.assert_awaited_once_with("loop-1")
+
+    @pytest.mark.asyncio
+    async def test_scheduled_delivery_reserves_slot_before_and_during_persist(self, monkeypatch):
+        """A concurrent user send queues behind the reserved scheduled turn.
+
+        The reservation is the slot task before the row is appended or persisted.
+        A user send arriving during the write therefore cannot take or clobber the
+        task; the scheduled row is committed, published, and dispatched once.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.running = False
+        slot._in_stage_execution = False
+        slot._has_reader = False
+        slot.key = "chat-1"
+        slot.messages = []
+        slot._queue = []
+        published: list[str] = []
+
+        def append(role, content, css, **kwargs):
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            return row
+
+        async def persist(*_args, **_kwargs):
+            assert slot.task is not None and not slot.task.done()
+            slot._queue.append({"id": "queued-user"})
+            return True
+
+        slot.append.side_effect = append
+        ds.broadcast_ws.side_effect = lambda *_a, **_k: published.append("publish")
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=False)
+
+        spawn_calls: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawn_calls.append(task)
+            return task
+
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _i, _s: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1",
+                message="follow up with the release owner",
+                scheduled_at=2_000.0,
+            ),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", AsyncMock())
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        loop = _loop(
+            "chat-1",
+            message="follow up with the release owner",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=2_000.0,
+        )
+
+        result = await orch._fire_dashboard_nudge(loop)
+
+        assert result is True
+        await asyncio.gather(*spawn_calls)
+
+        assert len(spawn_calls) == 1
+        assert slot.task is spawn_calls[0], "the reservation task was not clobbered"
+        assert len(slot.messages) == 1, "the scheduled row was duplicated or lost"
+        assert published == ["publish"]
+        assert slot._queue == [{"id": "queued-user"}]
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_called_once_with("loop-1")
+
+    @pytest.mark.asyncio
+    async def test_scheduled_delivery_refuses_an_occupied_slot_before_persist(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(running=True, _in_stage_execution=False, key="chat-1")
+        slot.messages = []
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        persist = AsyncMock(return_value=True)
+        spawn = MagicMock()
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="wait", scheduled_at=2_000.0
+            ),
+        )
+
+        result = await orch._fire_dashboard_nudge(
+            _loop("chat-1", max_cycles=1, scheduled_message=True, scheduled_at=2_000.0)
+        )
+
+        assert result is False
+        slot.append.assert_not_called()
+        persist.assert_not_awaited()
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "delete_outcome",
+        [True, "cancelled", False, OSError("delete failed")],
+        ids=("committed", "cancelled", "refused", "exception"),
+    )
+    async def test_scheduled_delivery_rolls_back_row_when_reservation_is_displaced(
+        self, monkeypatch, delete_outcome
+    ):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            _has_reader=False,
+            key="chat-1",
+        )
+        slot.messages = []
+        slot._pending = []
+        slot.total_messages = 0
+        slot.event = MagicMock()
+        slot.linked_session_key = ""
+        competing_release = asyncio.Event()
+        competing_task: asyncio.Task | None = None
+        persist_calls = 0
+        staged_mid = ""
+
+        def append(role, content, css, **kwargs):
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"]}
+            slot.messages.append(row)
+            slot.total_messages += 1
+            return row
+
+        async def persist(*_args, **_kwargs):
+            nonlocal competing_task, persist_calls, staged_mid
+            persist_calls += 1
+            competing_task = asyncio.create_task(competing_release.wait())
+            slot.task = competing_task
+            assert len(slot.messages) == 1
+            staged_mid = gw.row_mid(slot.messages[0]) or ""
+            assert staged_mid
+            return True
+
+        slot.append.side_effect = append
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        conversation_log = MagicMock()
+        ds.conversation_log = conversation_log
+        delete_row = (
+            AsyncMock(side_effect=delete_outcome)
+            if isinstance(delete_outcome, Exception)
+            else AsyncMock(
+                return_value=(
+                    delete_outcome is not False,
+                    delete_outcome == "cancelled",
+                    delete_outcome is not False,
+                )
+            )
+        )
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        monkeypatch.setattr(gw, "_delete_transcript_row_by_mid", delete_row)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="wait", scheduled_at=2_000.0
+            ),
+        )
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+
+        fire = orch._fire_dashboard_nudge(
+            _loop("chat-1", max_cycles=1, scheduled_message=True, scheduled_at=2_000.0)
+        )
+        if delete_outcome is True:
+            result = await fire
+            assert result is False
+        elif delete_outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await fire
+        else:
+            with pytest.raises(OSError, match="delete failed|rollback was refused"):
+                await fire
+        await asyncio.gather(*spawned)
+
+        assert persist_calls == 1
+        delete_row.assert_awaited_once_with(
+            slot,
+            conversation_log,
+            "dashboard:chat-1",
+            staged_mid,
+        )
+        if delete_outcome is True or delete_outcome == "cancelled":
+            assert slot.messages == []
+            assert slot.total_messages == 0
+        else:
+            assert len(slot.messages) == 1
+            assert gw.row_mid(slot.messages[0]) == staged_mid
+            assert slot.total_messages == 1
+        ds.broadcast_ws.assert_not_called()
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_not_called()
+        assert competing_task is not None and slot.task is competing_task
+        competing_release.set()
+        await competing_task
+
+    @pytest.mark.asyncio
+    async def test_stable_mid_deletion_preserves_nonempty_history_and_is_idempotent(self, tmp_path):
+        conversation_log = gw.ConversationLog(base_dir=tmp_path)
+        slot = SimpleNamespace(_history_persist_lock=threading.RLock())
+        history_key = "dashboard:chat-1"
+        await asyncio.to_thread(
+            conversation_log.append,
+            history_key,
+            "assistant",
+            "keep me",
+            mid="m-keep",
+        )
+        await asyncio.to_thread(
+            conversation_log.append,
+            history_key,
+            "user",
+            "remove me",
+            mid="m-remove",
+        )
+
+        assert await gw._delete_transcript_row_by_mid(
+            slot,
+            conversation_log,
+            history_key,
+            "m-remove",
+        ) == (True, False, True)
+        assert await gw._delete_transcript_row_by_mid(
+            slot,
+            conversation_log,
+            history_key,
+            "m-remove",
+        ) == (True, False, False)
+
+        retained = await asyncio.to_thread(conversation_log.read_messages, history_key)
+        assert [(row["content"], gw.row_mid(row)) for row in retained] == [("keep me", "m-keep")]
+
+    @pytest.mark.asyncio
+    async def test_stable_mid_deletion_drains_cancellation_before_returning(self, tmp_path):
+        conversation_log = gw.ConversationLog(base_dir=tmp_path)
+        history_key = "dashboard:chat-1"
+        await asyncio.to_thread(
+            conversation_log.append,
+            history_key,
+            "user",
+            "remove me",
+            mid="m-remove",
+        )
+        base_lock = threading.RLock()
+        entered = threading.Event()
+
+        class ObservedLock:
+            def __enter__(self):
+                entered.set()
+                return base_lock.__enter__()
+
+            def __exit__(self, *args):
+                return base_lock.__exit__(*args)
+
+        slot = SimpleNamespace(_history_persist_lock=ObservedLock())
+        base_lock.acquire()
+        deletion = asyncio.create_task(
+            gw._delete_transcript_row_by_mid(
+                slot,
+                conversation_log,
+                history_key,
+                "m-remove",
+            )
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 2.0)
+            deletion.cancel()
+        finally:
+            base_lock.release()
+
+        assert await deletion == (True, True, True)
+        assert await asyncio.to_thread(conversation_log.read_messages, history_key) == []
+
+    @pytest.mark.asyncio
+    async def test_displaced_first_scheduled_row_is_deleted_from_real_history(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_persistence
+
+        orch = _make_orchestrator()
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        assert slot.messages == []
+        orch.dashboard_state = state
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            state,
+            "run_background_turn",
+            lambda _slot, coro: coro,
+        )
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="deliver once", scheduled_at=2_000.0
+            ),
+        )
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        first_row_committed = threading.Event()
+        release_first_save = threading.Event()
+        original_atomic_write = chat_persistence.atomic_write
+        blocked = False
+        stale_snapshot: list[dict] = []
+        periodic_before_commit = threading.Event()
+        release_periodic = threading.Event()
+        deletion_waiting = threading.Event()
+        periodic_thread_id: int | None = None
+        periodic_task: asyncio.Task | None = None
+        original_locked = state.conversation_log._locked
+        original_delete = gw._delete_transcript_row_by_mid
+
+        @contextmanager
+        def gated_conversation_lock(history_key):
+            if threading.get_ident() == periodic_thread_id:
+                periodic_before_commit.set()
+                assert release_periodic.wait(2.0)
+            with original_locked(history_key):
+                yield
+
+        monkeypatch.setattr(state.conversation_log, "_locked", gated_conversation_lock)
+
+        async def delete_after_stale_periodic_save(target_slot, conversation_log, history_key, mid):
+            nonlocal periodic_task, periodic_thread_id
+
+            def run_periodic_save():
+                nonlocal periodic_thread_id
+                periodic_thread_id = threading.get_ident()
+                return chat_persistence._save_slot_to_history(
+                    state,
+                    slot,
+                    list(stale_snapshot),
+                )
+
+            periodic_task = asyncio.create_task(asyncio.to_thread(run_periodic_save))
+            assert await asyncio.to_thread(periodic_before_commit.wait, 2.0)
+            deletion_waiting.set()
+            result = await original_delete(
+                target_slot,
+                conversation_log,
+                history_key,
+                mid,
+            )
+            assert await periodic_task
+            return result
+
+        monkeypatch.setattr(
+            gw,
+            "_delete_transcript_row_by_mid",
+            delete_after_stale_periodic_save,
+        )
+
+        def atomic_write_then_block(path, payload, *args, **kwargs):
+            nonlocal blocked
+            result = original_atomic_write(path, payload, *args, **kwargs)
+            if not blocked and '"scheduled_message"' in payload:
+                blocked = True
+                stale_snapshot[:] = list(slot.messages)
+                first_row_committed.set()
+                assert release_first_save.wait(2.0)
+            return result
+
+        monkeypatch.setattr(chat_persistence, "atomic_write", atomic_write_then_block)
+        loop = _loop(
+            "chat-1",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=2_000.0,
+        )
+        first_fire = asyncio.create_task(orch._fire_dashboard_nudge(loop))
+        assert await asyncio.to_thread(first_row_committed.wait, 2.0)
+        assert len(slot.messages) == 1
+        first_mid = gw.row_mid(slot.messages[0])
+        assert first_mid
+
+        competing_release = asyncio.Event()
+        competing_task = asyncio.create_task(competing_release.wait())
+        slot.task = competing_task
+        release_first_save.set()
+        assert await asyncio.to_thread(deletion_waiting.wait, 2.0)
+        assert not first_fire.done()
+        release_periodic.set()
+        assert await first_fire is False
+        await asyncio.gather(*spawned)
+
+        rolled_back = await asyncio.to_thread(
+            state.conversation_log.read_messages,
+            "dashboard:chat-1",
+        )
+        assert rolled_back == []
+        assert slot.messages == []
+        state.broadcast_ws = MagicMock()
+
+        competing_release.set()
+        await competing_task
+        assert await orch._fire_dashboard_nudge(loop) is True
+        await asyncio.gather(*spawned)
+
+        retried = await asyncio.to_thread(
+            state.conversation_log.read_messages,
+            "dashboard:chat-1",
+        )
+        assert len(retried) == 1
+        assert retried[0]["meta"]["scheduled_message"]["loop_id"] == loop.id
+        assert gw.row_mid(retried[0]) != first_mid
+        assert len(slot.messages) == 1
+        run_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_initial_scheduled_save_deletes_committed_row_before_retry(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_persistence
+
+        orch = _make_orchestrator()
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        orch.dashboard_state = state
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        monkeypatch.setattr(state, "run_background_turn", lambda _slot, coro: coro)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="deliver once", scheduled_at=2_000.0
+            ),
+        )
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        payload_written = threading.Event()
+        release_write = threading.Event()
+        original_atomic_write = chat_persistence.atomic_write
+        blocked = False
+
+        def atomic_write_then_block(path, payload, *args, **kwargs):
+            nonlocal blocked
+            result = original_atomic_write(path, payload, *args, **kwargs)
+            if not blocked and '"scheduled_message"' in payload:
+                blocked = True
+                payload_written.set()
+                assert release_write.wait(2.0)
+            return result
+
+        monkeypatch.setattr(chat_persistence, "atomic_write", atomic_write_then_block)
+        loop = _loop(
+            "chat-1",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=2_000.0,
+        )
+        fire = asyncio.create_task(orch._fire_dashboard_nudge(loop))
+        assert await asyncio.to_thread(payload_written.wait, 2.0)
+        first_mid = gw.row_mid(slot.messages[0])
+        assert first_mid
+        fire.cancel()
+        await asyncio.sleep(0)
+        assert not fire.done()
+        release_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await fire
+        await asyncio.gather(*spawned)
+
+        assert slot.messages == []
+        assert (
+            await asyncio.to_thread(
+                state.conversation_log.read_messages,
+                "dashboard:chat-1",
+            )
+            == []
+        )
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_not_called()
+
+        state.broadcast_ws = MagicMock()
+        assert await orch._fire_dashboard_nudge(loop) is True
+        await asyncio.gather(*spawned)
+        retried = await asyncio.to_thread(
+            state.conversation_log.read_messages,
+            "dashboard:chat-1",
+        )
+        assert len(retried) == 1
+        assert gw.row_mid(retried[0]) != first_mid
+        assert len(slot.messages) == 1
+        run_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_scheduled_local_command_exception_rearms_instead_of_settling(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            _has_reader=False,
+            key="chat-1",
+        )
+        slot.messages = []
+        slot._pending = []
+        slot.event = MagicMock()
+
+        def append(role, content, css, **kwargs):
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"]}
+            slot.messages.append(row)
+            return row
+
+        slot.append.side_effect = append
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        monkeypatch.setattr(gw, "save_slot_off_loop", AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="/goal status", scheduled_at=2_000.0
+            ),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat._run_chat",
+            AsyncMock(side_effect=RuntimeError("local command failed")),
+        )
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+
+        assert (
+            await orch._fire_dashboard_nudge(
+                _loop("chat-1", max_cycles=1, scheduled_message=True, scheduled_at=2_000.0)
+            )
+            is True
+        )
+        outcomes = await asyncio.gather(*spawned, return_exceptions=True)
+
+        assert len(outcomes) == 1 and isinstance(outcomes[0], RuntimeError)
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_called_once_with("loop-1")
+        orch.autonudge_svc.notify_turn_complete.assert_called_once_with(
+            "chat-1", turn_completed=False
+        )
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_scheduled_local_slash_command_is_retired_by_the_backstop(self, monkeypatch):
+        """A local slash-command delivery never signals completion, so the fire
+        path settles the charged one-shot on the turn's return."""
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.running = False
+        slot._in_stage_execution = False
+        slot._has_reader = False
+        slot.key = "chat-1"
+        slot.messages = []
+
+        def append(role, content, css, **kwargs):
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            return row
+
+        async def persist(*_args, **_kwargs):
+            return True
+
+        slot.append.side_effect = append
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        # A local slash-command handler returns without signalling completion.
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _i, _s: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1",
+                message="/goal status",
+                scheduled_at=2_000.0,
+            ),
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        loop = _loop(
+            "chat-1",
+            message="/goal status",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=2_000.0,
+        )
+
+        assert await orch._fire_dashboard_nudge(loop) is True
+        await asyncio.gather(*spawned)
+        await asyncio.sleep(0)
+
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_called_once_with("loop-1")
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery.assert_awaited_once_with("loop-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provenance_payload",
+        [
+            pytest.param(None, id="missing-provenance"),
+            pytest.param(
+                {
+                    "kind": "scheduled_message",
+                    "slot_key": "chat-1",
+                    "message": 7,
+                    "scheduled_at": 2_000.0,
+                },
+                id="invalid-shape",
+            ),
+            pytest.param(
+                {
+                    "kind": "scheduled_message",
+                    "slot_key": "chat-other",
+                    "message": "forged user row",
+                    "scheduled_at": 2_000.0,
+                },
+                id="forged-provenance",
+            ),
+        ],
+    )
+    async def test_scheduled_message_without_trusted_provenance_is_dropped_and_removed(
+        self, monkeypatch, tmp_path, provenance_payload
+    ):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            _has_reader=True,
+            key="chat-1",
+        )
+        slot.messages = []
+        order: list[str] = []
+
+        def append(role, content, css, **kwargs):
+            order.append("append")
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            return row
+
+        async def persist(*_args, **_kwargs):
+            order.append("persist")
+            return True
+
+        slot.append.side_effect = append
+        ds.broadcast_ws.side_effect = lambda *_args, **_kwargs: order.append("publish")
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        on_fire, _observer, svc = await TestAutonudgeRouterAndObserver()._wire(orch)
+        svc.discard_scheduled_message = AsyncMock(return_value=True)
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        monkeypatch.setattr(gw.autonudge_selfarm, "data_home", lambda: tmp_path)
+        if provenance_payload is not None:
+            record = gw.autonudge_selfarm.scheduled_message_record_path(
+                gw.scheduled_message_trust_id("loop-1")
+            )
+            record.parent.mkdir(parents=True)
+            record.write_text(json.dumps(provenance_payload), encoding="utf-8")
+        run_chat = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+
+        result = await on_fire(
+            _loop(
+                "chat-1",
+                message="forged user row",
+                max_cycles=1,
+                scheduled_message=True,
+                scheduled_at=2_000.0,
+            )
+        )
+
+        assert result is False
+        await asyncio.gather(*tuple(orch._background_tasks))
+        assert slot.append.call_args.args == ("assistant", "", "msg msg-info")
+        assert slot.append.call_args.kwargs == {
+            "broadcast": False,
+            "meta": {
+                "kind": "scheduled_message_dropped",
+                "loop_id": "loop-1",
+            },
+        }
+        assert order == ["append", "persist", "publish"]
+        ds.broadcast_ws.assert_called_once_with(
+            "chat_message",
+            {
+                "slot": "chat-1",
+                "role": "assistant",
+                "content": "",
+                "cls": "msg msg-info",
+                "ts": "1",
+                "meta": {
+                    "kind": "scheduled_message_dropped",
+                    "loop_id": "loop-1",
+                },
+            },
+        )
+        run_chat.assert_not_awaited()
+        svc.remove.assert_not_awaited()
+        svc.discard_scheduled_message.assert_awaited_once_with("loop-1")
+
+    @pytest.mark.asyncio
+    async def test_scheduled_message_loss_notice_waits_for_persistence(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(_has_reader=False, key="chat-1")
+        slot.messages = []
+        slot._pending = []
+        slot.event = MagicMock()
+        order: list[str] = []
+
+        def append(role, content, css, **kwargs):
+            order.append("append")
+            row = {"role": role, "content": content, "cls": css, "meta": kwargs["meta"], "ts": "1"}
+            slot.messages.append(row)
+            slot._pending.append(row)
+            return row
+
+        async def fail_persist(*_args, **_kwargs):
+            assert slot._pending == [], "loss notice became live before persistence"
+            order.append("persist")
+            return False
+
+        slot.append.side_effect = append
+        ds.broadcast_ws.side_effect = lambda *_args, **_kwargs: order.append("publish")
+        orch.dashboard_state = ds
+        monkeypatch.setattr(gw, "save_slot_off_loop", fail_persist)
+
+        notified = await orch._notify_scheduled_message_dropped(
+            slot,
+            _loop(
+                "chat-1",
+                scheduled_message=True,
+                scheduled_at=2_000.0,
+            ),
+        )
+
+        assert notified is False
+        assert order == ["append", "persist"]
+        assert slot.messages == []
+        ds.broadcast_ws.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mutated_loop_uses_trusted_message_and_time(self, monkeypatch, tmp_path):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(
+            running=False,
+            _in_stage_execution=False,
+            _has_reader=False,
+            key="chat-1",
+        )
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=False)
+        monkeypatch.setattr(gw.autonudge_selfarm, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "scheduled_message_hidden_leaf_confined",
+            MagicMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            gw.autonudge_selfarm.token_secret,
+            "signing_secret_is_persistent",
+            MagicMock(return_value=True),
+        )
+
+        trusted_at = time.time() - 1
+        gw.autonudge_selfarm.record_scheduled_message(
+            gw.scheduled_message_trust_id("loop-1"),
+            "chat-1",
+            "trusted user text",
+            trusted_at,
+        )
+        loop = _loop(
+            "chat-1",
+            message="forged agent text",
+            max_cycles=1,
+            scheduled_message=True,
+            scheduled_at=trusted_at - 3_600,
+        )
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+
+        assert await orch._fire_dashboard_nudge(loop) is True
+        await asyncio.gather(*spawned)
+
+        assert slot.append.call_args.args == (
+            "user",
+            "trusted user text",
+            "msg msg-u",
+        )
+        assert slot.append.call_args.kwargs["meta"] == {
+            "scheduled_message": {"at": trusted_at, "loop_id": "loop-1"}
+        }
+        assert run_chat.call_args.args[2] == "trusted user text"
+        assert "forged agent text" not in str(slot.append.call_args)
+
+    @pytest.mark.asyncio
+    async def test_mutated_early_time_cannot_send_before_trusted_instant(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(running=False, _in_stage_execution=False, key="chat-1")
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        trusted_at = time.time() + 600
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _i, _s: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1",
+                message="trusted user text",
+                scheduled_at=trusted_at,
+            ),
+        )
+
+        result = await orch._fire_dashboard_nudge(
+            _loop(
+                "chat-1",
+                message="forged agent text",
+                max_cycles=1,
+                scheduled_message=True,
+                scheduled_at=time.time() - 1,
+            )
+        )
+
+        assert result is False
+        slot.append.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scheduled_message_does_not_compose_a_nudge_body(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(running=False, _in_stage_execution=False, key="chat-1")
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _i, _s: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1",
+                message="exact text",
+                scheduled_at=2_000.0,
+            ),
+        )
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        compose = AsyncMock(side_effect=AssertionError("scheduled text reached nudge composer"))
+        monkeypatch.setattr(gw, "compose_nudge_body", compose)
+
+        result = await orch._fire_dashboard_nudge(
+            _loop(
+                "chat-1",
+                message="exact text",
+                max_cycles=1,
+                scheduled_message=True,
+                scheduled_at=2_000.0,
+            )
+        )
+        assert result is True
+        await asyncio.gather(*spawned)
+        compose.assert_not_awaited()
+        run_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_scheduled_message_retries_a_transient_provenance_read(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(running=False, _in_stage_execution=False, key="chat-1")
+        ds.get_slot.return_value = slot
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.remove = AsyncMock()
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: (_ for _ in ()).throw(OSError("temporary read failure")),
+        )
+
+        result = await orch._fire_dashboard_nudge(
+            _loop("chat-1", max_cycles=1, scheduled_message=True, scheduled_at=2_000.0)
+        )
+
+        assert result is False
+        slot.append.assert_not_called()
+        orch.autonudge_svc.remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scheduled_replay_reuses_its_durable_user_row(self, monkeypatch):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        slot = MagicMock(running=False, _in_stage_execution=False, _has_reader=False, key="chat-1")
+        slot.messages = [
+            {
+                "role": "user",
+                "content": "old scheduled text",
+                "cls": "msg msg-u",
+                "ts": "1",
+                "meta": {
+                    "mid": "stable-mid",
+                    "keep": "unrelated",
+                    "scheduled_message": {"loop_id": "loop-1", "at": 1_000.0},
+                },
+            }
+        ]
+        slot._pending = []
+        slot.event = MagicMock()
+        ds.get_slot.return_value = slot
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        orch.dashboard_state = ds
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        persisted: list[list[dict[str, Any]]] = []
+
+        async def persist(*_args, **_kwargs):
+            persisted.append(json.loads(json.dumps(slot.messages)))
+            return True
+
+        monkeypatch.setattr(gw, "save_slot_off_loop", persist)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="edited scheduled text", scheduled_at=2_000.0
+            ),
+        )
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+
+        assert (
+            await orch._fire_dashboard_nudge(
+                _loop("chat-1", max_cycles=1, scheduled_message=True, scheduled_at=1_000.0)
+            )
+            is True
+        )
+        await asyncio.gather(*spawned)
+
+        slot.append.assert_not_called()
+        assert len(slot.messages) == 1
+        row = slot.messages[0]
+        assert row["content"] == "edited scheduled text"
+        assert row["meta"] == {
+            "mid": "stable-mid",
+            "keep": "unrelated",
+            "scheduled_message": {"loop_id": "loop-1", "at": 2_000.0},
+        }
+        assert persisted == [slot.messages]
+        assert run_chat.await_args.args[2] == "edited scheduled text"
+        assert ds.broadcast_ws.call_args.args[1]["content"] == "edited scheduled text"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rollback_persists", [True, False], ids=["restored", "refused"])
+    async def test_cancelled_existing_scheduled_row_reconciliation_is_authoritative(
+        self, tmp_path, monkeypatch, rollback_persists
+    ):
+        orch = _make_orchestrator()
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot._has_reader = False
+        prior_row = slot.append(
+            "user",
+            "old scheduled text",
+            "msg msg-u",
+            broadcast=False,
+            meta={
+                "mid": "stable-mid",
+                "keep": "unrelated",
+                "scheduled_message": {"loop_id": "loop-1", "at": 1_000.0},
+            },
+        )
+        assert await gw.save_slot_off_loop(
+            state,
+            slot,
+            best_effort=False,
+            expected_history_key="dashboard:chat-1",
+        )
+        prior_meta = json.loads(json.dumps(prior_row["meta"]))
+        prior_mid = gw.row_mid(prior_row)
+        assert prior_mid == "stable-mid"
+
+        state.broadcast_ws = MagicMock()
+        monkeypatch.setattr(state, "run_background_turn", lambda _slot, coro: coro)
+        orch.dashboard_state = state
+        orch.autonudge_svc = MagicMock()
+        orch.autonudge_svc.settle_unclaimed_scheduled_delivery = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            gw.autonudge_selfarm,
+            "read_scheduled_message",
+            lambda _record_id, _slot: gw.autonudge_selfarm.ScheduledMessageProvenance(
+                slot_key="chat-1", message="edited scheduled text", scheduled_at=2_000.0
+            ),
+        )
+        run_chat = AsyncMock(return_value=None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", run_chat)
+        spawned: list[asyncio.Task] = []
+
+        def spawn(_state, _slot, coro):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        monkeypatch.setattr(gw, "spawn_guarded_turn", spawn)
+        original_save = gw.save_slot_off_loop
+        reconciled_saved = asyncio.Event()
+        release_reconciled_save = asyncio.Event()
+        save_calls = 0
+
+        async def controlled_save(*args, **kwargs):
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 1:
+                result = await original_save(*args, **kwargs)
+                reconciled_saved.set()
+                await release_reconciled_save.wait()
+                return result
+            if not rollback_persists:
+                return False
+            return await original_save(*args, **kwargs)
+
+        monkeypatch.setattr(gw, "save_slot_off_loop", controlled_save)
+        fire = asyncio.create_task(
+            orch._fire_dashboard_nudge(
+                _loop("chat-1", max_cycles=1, scheduled_message=True, scheduled_at=1_000.0)
+            )
+        )
+        await reconciled_saved.wait()
+        persisted_reconciled = await asyncio.to_thread(
+            state.conversation_log.read_messages,
+            "dashboard:chat-1",
+        )
+        assert persisted_reconciled[0]["content"] == "edited scheduled text"
+
+        fire.cancel()
+        await asyncio.sleep(0)
+        release_reconciled_save.set()
+        if rollback_persists:
+            with pytest.raises(asyncio.CancelledError):
+                await fire
+            expected_content = "old scheduled text"
+            expected_meta = prior_meta
+        else:
+            with pytest.raises(
+                OSError, match="scheduled transcript reconciliation rollback was refused"
+            ):
+                await fire
+            expected_content = "edited scheduled text"
+            expected_meta = {
+                **prior_meta,
+                "scheduled_message": {"loop_id": "loop-1", "at": 2_000.0},
+            }
+        await asyncio.gather(*spawned)
+
+        assert len(slot.messages) == 1
+        assert slot.messages[0]["content"] == expected_content
+        assert slot.messages[0]["meta"] == expected_meta
+        assert gw.row_mid(slot.messages[0]) == prior_mid
+        durable = await asyncio.to_thread(
+            state.conversation_log.read_messages,
+            "dashboard:chat-1",
+        )
+        assert len(durable) == 1
+        assert durable[0]["content"] == expected_content
+        assert durable[0]["meta"] == expected_meta
+        assert gw.row_mid(durable[0]) == prior_mid
+        state.broadcast_ws.assert_not_called()
+        run_chat.assert_not_awaited()
+        orch.autonudge_svc.note_scheduled_delivery_dispatched.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_structured_delivery_distinguishes_busy_and_unavailable(self, monkeypatch):
@@ -2143,8 +3867,15 @@ class TestFireDashboardNudgeDispatch:
             return restored
 
         monkeypatch.setattr(gw, "rehydrate_slot_from_history_async", _rehydrate)
+        ds.run_background_turn.side_effect = lambda _slot, coro: coro
+        task = MagicMock()
+
+        def discard_turn(_state, _slot, coro):
+            coro.close()
+            return task
+
         monkeypatch.setattr("kiro_crew.dashboard.chat._run_chat", MagicMock(return_value="CORO"))
-        monkeypatch.setattr(gw, "spawn_guarded_turn", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(gw, "spawn_guarded_turn", discard_turn)
 
         assert await orch._fire_dashboard_nudge(_loop("chat-9")) is True
         orch.autonudge_svc.remove.assert_not_called()
