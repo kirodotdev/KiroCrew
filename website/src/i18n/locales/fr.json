@@ -10250,6 +10250,9 @@
       },
       "filesHome": {
         "no_project_dir": "Aucun répertoire de projet n'est défini pour cette discussion",
+        "open_terminal": "Ouvrir un terminal dans le répertoire du projet",
+        "open_terminal_hint": "Une ligne de commande qui démarre dans le dossier de ce projet.",
+        "project_actions": "Actions du projet",
         "refresh": "Actualiser",
         "select_file_hint": "Sélectionnez un fichier dans l'arborescence pour l'ouvrir dans un nouvel onglet",
         "title": "Fichiers",

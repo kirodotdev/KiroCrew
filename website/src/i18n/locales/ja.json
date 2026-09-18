@@ -9964,6 +9964,9 @@
       },
       "filesHome": {
         "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",
+        "open_terminal": "プロジェクトディレクトリでターミナルを開く",
+        "open_terminal_hint": "このプロジェクトのフォルダーで始まるコマンドラインです。",
+        "project_actions": "プロジェクトの操作",
         "refresh": "更新",
         "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
         "title": "ファイル",

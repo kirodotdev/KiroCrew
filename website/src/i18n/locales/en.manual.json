@@ -3985,6 +3985,9 @@
       },
       "filesHome": {
         "no_project_dir": "No project directory is set for this chat",
+        "open_terminal": "Open terminal in the project directory",
+        "open_terminal_hint": "A command line that starts in this project’s folder.",
+        "project_actions": "Project actions",
         "refresh": "Refresh",
         "select_file_hint": "Select a file from the tree to open it in a new tab",
         "title": "Files",

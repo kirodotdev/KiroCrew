@@ -10250,6 +10250,9 @@
       },
       "filesHome": {
         "no_project_dir": "Nessuna directory di progetto impostata per questa chat",
+        "open_terminal": "Apri un terminale nella directory del progetto",
+        "open_terminal_hint": "Una riga di comando che parte dalla cartella di questo progetto.",
+        "project_actions": "Azioni del progetto",
         "refresh": "Aggiorna",
         "select_file_hint": "Seleziona un file dall'albero per aprirlo in una nuova scheda",
         "title": "File",

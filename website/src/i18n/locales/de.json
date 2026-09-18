@@ -10107,6 +10107,9 @@
       },
       "filesHome": {
         "no_project_dir": "Für diesen Chat ist kein Projektverzeichnis festgelegt",
+        "open_terminal": "Terminal im Projektverzeichnis öffnen",
+        "open_terminal_hint": "Eine Kommandozeile, die im Ordner dieses Projekts startet.",
+        "project_actions": "Projektaktionen",
         "refresh": "Aktualisieren",
         "select_file_hint": "Wähle eine Datei im Baum, um sie in einem neuen Tab zu öffnen",
         "title": "Dateien",

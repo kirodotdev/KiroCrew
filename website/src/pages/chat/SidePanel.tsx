@@ -568,10 +568,15 @@ export default function SidePanel({
   const dynamicTabs = useMemo(() => visibleTabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id)), [visibleTabs])
   // Terminal opens a NEW tab (its own PTY session) starting in the chat's
   // working dir; every other menu item is a singleton view.
+  // Spawn a terminal whose cwd is the chat's project directory. Shared with the
+  // Files header's per-project quick action (issue #1142) so the two entry
+  // points cannot drift on WHERE the shell starts — that cwd is the whole point
+  // of the affordance.
+  const openProjectTerminal = useCallback(() => { openTerminal({ cwd: projectDir }) }, [openTerminal, projectDir])
   const openMenuItem = useCallback((kind: ViewKind | 'terminal') => {
-    if (kind === 'terminal') openTerminal({ cwd: projectDir })
+    if (kind === 'terminal') openProjectTerminal()
     else openView(kind)
-  }, [openTerminal, openView, projectDir])
+  }, [openProjectTerminal, openView])
   // Closing a terminal tab kills its PTY (server) and disposes local state. The
   // server delete goes through a React Query mutation (use-react-query
   // guideline); the synchronous WS + xterm teardown stays in disposeTerminalSession.
@@ -984,6 +989,12 @@ export default function SidePanel({
                   projectDir={projectDir ?? ''}
                   onFileOpen={(abs, diff, opts) => onFileOpen?.(abs, { diffMode: diff, line: opts?.line })}
                   onAddToContext={onAddToContext}
+                  // Withheld, not disabled, when the terminal feature is off or
+                  // the host withdraws the terminal view — the same withdrawal
+                  // that removes Terminal from the + menu must remove its
+                  // per-project shortcut, or the button promises a shell this
+                  // panel will not open.
+                  onOpenTerminal={terminalEnabled && !isWithheld('terminal') ? openProjectTerminal : undefined}
                 />
               </div>
             )

@@ -9964,6 +9964,9 @@
       },
       "filesHome": {
         "no_project_dir": "此聊天未设置项目目录",
+        "open_terminal": "在项目目录中打开终端",
+        "open_terminal_hint": "一个从这个项目的文件夹开始的命令行。",
+        "project_actions": "项目操作",
         "refresh": "刷新",
         "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
         "title": "文件",

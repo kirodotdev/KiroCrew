@@ -9964,6 +9964,9 @@
       },
       "filesHome": {
         "no_project_dir": "이 채팅에는 프로젝트 디렉터리가 설정되어 있지 않습니다",
+        "open_terminal": "프로젝트 디렉터리에서 터미널 열기",
+        "open_terminal_hint": "이 프로젝트의 폴더에서 시작하는 명령줄입니다.",
+        "project_actions": "프로젝트 작업",
         "refresh": "새로 고침",
         "select_file_hint": "트리에서 파일을 선택하면 새 탭에서 열립니다",
         "title": "파일",
