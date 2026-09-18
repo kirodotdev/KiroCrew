@@ -37,6 +37,7 @@ class _FakeStore:
     def __init__(self, *, fail_write: bool = False, fail_backfill: bool = False) -> None:
         self.writes: list[dict[str, Any]] = []
         self.texts: set[str] = set()
+        self.pending_embeddings: set[str] = set()
         self.backfill_calls = 0
         self._fail_write = fail_write
         self._fail_backfill = fail_backfill
@@ -48,6 +49,7 @@ class _FakeStore:
         if text in self.texts:
             return False  # already present, as the real store reports
         self.texts.add(text)
+        self.pending_embeddings.add(text)
         return True
 
     def backfill_missing_embeddings(self, *, pace: bool = True) -> int:
@@ -55,7 +57,9 @@ class _FakeStore:
             raise RuntimeError("model unavailable")
         self.backfill_calls += 1
         self.backfill_paced = pace
-        return len(self.texts)
+        embedded = len(self.pending_embeddings)
+        self.pending_embeddings.clear()
+        return embedded
 
     def search_episodic(self, **kw: Any) -> list[dict]:
         self.last_search = kw
@@ -115,7 +119,8 @@ class TestIncrementalImport(_Env):
 
         second = ledger_index.import_pending(store)
         self.assertEqual(second["written"], 0, "an unchanged ledger must re-embed nothing")
-        self.assertEqual(store.backfill_calls, 1, "no second sweep when nothing was written")
+        self.assertEqual(second["embedded"], 0, "the completion sweep is idempotent")
+        self.assertEqual(store.backfill_calls, 2, "derived work is checked independently")
         self.assertEqual(len(store.writes), 20, "the store was not touched again")
 
     def test_only_new_entries_are_imported(self) -> None:
@@ -160,6 +165,42 @@ class TestIncrementalImport(_Env):
 
         store = _FakeStore()
         self.assertEqual(ledger_index.import_pending(store)["written"], 3)
+
+    def test_second_run_backfills_a_row_written_before_embedder_readiness(self) -> None:
+        """The durable import cursor must not suppress later derived work."""
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        self._seed(1)
+        db_path = self.tmp / "memory.db"
+        ready = False
+
+        def embed(_text: str) -> list[float] | None:
+            return [1.0, 0.0] if ready else None
+
+        first_store = VectorMemoryStore(db_path=db_path, embedding_dim=2)
+        first_store.embed_fn = embed
+        first_store.init()
+        try:
+            first = ledger_index.import_pending(first_store)
+            self.assertEqual(first["written"], 1)
+            self.assertEqual(first["embedded"], 0)
+        finally:
+            first_store.close()
+
+        ready = True
+        second_store = VectorMemoryStore(db_path=db_path, embedding_dim=2)
+        second_store.embed_fn = embed
+        second_store.init()
+        try:
+            second = ledger_index.import_pending(second_store)
+            self.assertEqual(second["written"], 0, "the cursor still owns import dedupe")
+            self.assertEqual(second["embedded"], 1)
+            row = second_store.db.execute(
+                "SELECT embedding FROM episodic_memories WHERE is_deleted = 0"
+            ).fetchone()
+            self.assertIsNotNone(row["embedding"])
+        finally:
+            second_store.close()
 
 
 class TestStoreContract(_Env):
@@ -280,7 +321,8 @@ class TestScale(_Env):
         # costs zero embeddings.
         again = ledger_index.import_pending(store, limit=500)
         self.assertEqual(again["written"], 0)
-        self.assertEqual(store.backfill_calls, 4, "no extra sweep")
+        self.assertEqual(again["embedded"], 0, "the completion sweep finds no extra work")
+        self.assertEqual(store.backfill_calls, 5)
 
     def test_cursor_stays_proportional_to_entry_count(self) -> None:
         """The cursor is the scaling risk: it must hold ids, never texts."""

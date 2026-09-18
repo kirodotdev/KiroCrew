@@ -144,10 +144,10 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
         return result
 
     result["scanned"] = len(entries)
+    if not entries:
+        return result
     cursor = _read_cursor()
     pending = [e for e in entries if e.entry_id not in cursor]
-    if not pending:
-        return result
 
     newly: set[str] = set()
     for entry in pending[:limit]:
@@ -184,20 +184,25 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
     if newly:
         _write_cursor(cursor | newly)
 
-    if result["written"]:
-        try:
-            # PACED, even though a caller blocks on this: the only caller is the
-            # ledger-hygiene CRON (`routes.py:_handle_ledger_hygiene`, "Called by
-            # the ledger-hygiene cron"; no UI path reaches it). A cron holds the
-            # response open but nobody attends it, and the PR's rule is
-            # attendance, not blocking. Left unpaced this was a side door around
-            # the whole fix: the sweep is whole-corpus, so a post-migration
-            # backlog would be re-embedded flat out — at the full interactive
-            # thread count, since `pace=False` also selects the thread class — on
-            # the next daily tick.
-            result["embedded"] = int(store.backfill_missing_embeddings() or 0)
-        except Exception:  # noqa: BLE001 — rows stay keyword-searchable if this fails
-            logger.exception("ops-mission-control: embedding backfill failed")
+    try:
+        # This completion boundary is deliberately independent of ``pending``.
+        # The cursor records durable text projection, not derived-vector
+        # completion: a cold backend can leave a just-imported row NULL, and the
+        # next hygiene run must sweep it after the model becomes ready even
+        # though that entry id is already cursor-owned.
+        #
+        # PACED, even though a caller blocks on this: the only caller is the
+        # ledger-hygiene CRON (`routes.py:_handle_ledger_hygiene`, "Called by
+        # the ledger-hygiene cron"; no UI path reaches it). A cron holds the
+        # response open but nobody attends it, and the PR's rule is attendance,
+        # not blocking. Left unpaced this was a side door around the whole fix:
+        # the sweep is whole-corpus, so a post-migration backlog would be
+        # re-embedded flat out — at the full interactive thread count, since
+        # `pace=False` also selects the thread class — on the next daily tick.
+        result["embedded"] = int(store.backfill_missing_embeddings() or 0)
+    except Exception:  # noqa: BLE001 — rows stay keyword-searchable if this fails
+        logger.exception("ops-mission-control: embedding backfill failed")
+    if result["written"] or result["embedded"]:
         sel().log_api_access(
             caller="core:ops-mission-control",
             operation="ledger_index_import",
