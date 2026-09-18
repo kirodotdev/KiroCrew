@@ -712,6 +712,42 @@ def _pid_in_pgroup(pid: int, pgid: int, start_id: str | None) -> bool:
     return any(m.pid == pid and m.start_id == start_id for m in members)
 
 
+def _group_from_witnessed_descendant(
+    pid: int,
+    recorded_start: str | None,
+    records: dict[int, _ProviderChildRecord],
+) -> int | None:
+    """The group led by *pid*, once :func:`_pgroup_still_ours` vouches for it.
+
+    Companion to :func:`_isolated_provider_group` for the case it cannot serve: a
+    reaped leader. ``pgroup_of`` needs the leader in ``/proc``, so once it is gone
+    the group has no readable id and the escalation signals nothing -- while the
+    members left in that group keep running.
+
+    ``pgroup_of_leader`` resolves the id for a reaped leader, but from the pid
+    ALONE, and an unverified pid is what a RECYCLED one looks like: killpg on it
+    takes a stranger's tree. So this reads the number and then hands it to the same
+    ownership check the escalation itself uses, rather than carrying a second copy
+    of that loop.
+
+    What is added here is only the leader predicate: ``candidate == pid`` ties the
+    number to the leader we recorded, since a group a descendant ``setsid``-ed into
+    is not the one this pid led.
+
+    ``None`` -- no group signal, exactly as before -- when no verified member
+    vouches, when the group is not the one ``pid`` leads, and when signalling is
+    denied. POSIX only, like :func:`_isolated_provider_group`.
+    """
+    if platform_compat.IS_WINDOWS:
+        return None
+    candidate = platform_compat.pgroup_of_leader(pid)
+    if candidate is None or candidate != pid or candidate <= 1 or candidate == os.getpgrp():
+        return None
+    if not _pgroup_still_ours(candidate, pid, recorded_start, records, gated=True):
+        return None
+    return candidate
+
+
 def _provider_descendant_records(
     provider: object,
     pid: int,
@@ -1173,8 +1209,9 @@ def _sync_kill_provider(provider: object) -> None:
         return
     # Resolved once, while the root is alive. The root's zombie is then held
     # unreaped until every group signal has been sent (see below), so this id
-    # keeps naming OUR group for the whole escalation. Not resolved at all for an
-    # unverified root: the pgid would be whatever group holds that pid now.
+    # keeps naming OUR group for the whole escalation. Read BEFORE the descendant
+    # scan: that scan is unbounded in the width of the tree, and the watcher can
+    # reap the leader while it runs, which would cost a verified root its group.
     pgid = _isolated_provider_group(pid) if root_verified else None
     records = _provider_descendant_records(
         provider,
@@ -1183,6 +1220,26 @@ def _sync_kill_provider(provider: object) -> None:
         recorded_start=recorded_start,
         gated=pid_from_client,
     )
+    if pgid is None and pid_from_client:
+        # No group id from the root. Usually that root is a RECYCLED pid, and
+        # reading a group off it would name whatever group holds that pid now. But
+        # it is also the shape a REAPED leader presents -- no /proc entry to verify
+        # against -- and that root's group is still full of our running members.
+        # Telling the two apart needs evidence the pid cannot give, so the group is
+        # derived from a spawn-recorded descendant still in it; failing that this
+        # stays None and nothing is signalled, as before.
+        #
+        # Only for the RECORDED-pid shape. A `_proc`/`_active_proc` root came from a
+        # live handle whose returncode was None, so it was alive moments ago and
+        # `_isolated_provider_group` already had its answer -- there is no reaped
+        # leader to recover. That shape also passes `gated=False`, which makes every
+        # `_root_identity_holds` check pass on trust, including the ones bracketing
+        # the live descendant walk: a pid recycled to a foreign root would have that
+        # root's children walked into `records` and verified against identities read
+        # from the same stranger, so a witness drawn from them proves nothing. The
+        # recorded shape cannot reach that state -- an unverified root turns the walk
+        # off (`include_live_walk=root_verified`), leaving only the spawn snapshot.
+        pgid = _group_from_witnessed_descendant(pid, recorded_start, records)
     for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
         # killpg is authorized by GROUP OWNERSHIP, not by the root still being alive.
         # `_pgroup_still_ours` proves an identity-verified member of our tree owns this
