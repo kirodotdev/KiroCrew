@@ -155,6 +155,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
+    _note_authorized_elsewhere,
     _slots_serialization_note,
     chat_message_frame,
     durable_row_count,
@@ -12530,8 +12531,9 @@ def _enqueue_pending_context(
     slot: _ChatSlot,
     content: str,
     source: str,
-    ephemeral: bool,
     max_age: int | float | None,
+    ephemeral: bool,
+    context_key: str | None = None,
 ) -> web.Response | None:
     """Build, cap, and append a ``_pending_context`` entry.
 
@@ -12545,7 +12547,9 @@ def _enqueue_pending_context(
     through to the drain.
 
     """
-    entry, err = _build_pending_context_entry(slot, content, source, ephemeral, max_age)
+    entry, err = _build_pending_context_entry(
+        slot, content, source, max_age, ephemeral, context_key
+    )
     if err is not None:
         return err
     assert entry is not None
@@ -12557,8 +12561,9 @@ def _build_pending_context_entry(
     slot: _ChatSlot,
     content: str,
     source: str,
-    ephemeral: bool,
     max_age: int | float | None,
+    ephemeral: bool,
+    context_key: str | None = None,
 ) -> tuple[dict[str, object] | None, web.Response | None]:
     """Validate and build one context entry WITHOUT touching the queue.
 
@@ -12587,7 +12592,64 @@ def _build_pending_context_entry(
     }
     if max_age is not None:
         entry["maxAge"] = max_age
+    # LIVE-QUEUE ONLY, NOT ACROSS A RELOAD: ``_sanitize_restored_context`` rebuilds a
+    # restored entry from its known keys alone, so neither key below survives one.
+    if context_key:
+        entry["contextKey"] = context_key
+        # NOT ``noteSession``: that is the stamp ``drop_foreign_authorized_notes`` deletes on,
+        # so reusing it would discard queued context on a rebind instead of re-queueing.
+        entry["ctxSession"] = effective_session_key(slot)
     return entry, None
+
+
+def _validate_context_key(raw: object) -> web.Response | None:
+    """400 when ``contextKey`` is present but unusable, mirroring :func:`_validate_source`.
+
+    REFUSED RATHER THAN TRUNCATED, and that asymmetry would be a data-loss bug rather than a
+    style choice: the key is an IDENTITY the dedup compares, so clipping it to the cap aliases
+    two distinct keys sharing a prefix onto one. The second post would then match the first,
+    answer 200, and append nothing -- content acknowledged and silently dropped, with no
+    surface reporting it. ``source`` is already refused at this same limit, so refusing here
+    reuses that convention instead of inventing a second one.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return web.json_response(
+            {"error": "contextKey must be a string", "code": "invalid_context_key"},
+            status=400,
+        )
+    # Checked BEFORE any length test: a control character in an IDENTITY is malformed, and
+    # ``_validate_source`` already refuses the raw value rather than a cleaned one.
+    if _SOURCE_CTRL_RE.search(raw):
+        return web.json_response(
+            {
+                "error": "contextKey must not contain control characters or newlines",
+                "code": "invalid_context_key",
+            },
+            status=400,
+        )
+    if raw == "":
+        return None
+    # REFUSED, NOT STRIPPED: `" v7"` and `"v7"` strip onto one identity, so the second post
+    # matches the first, answers 200, and appends nothing.
+    if raw != raw.strip():
+        return web.json_response(
+            {
+                "error": "contextKey must not have leading or trailing whitespace",
+                "code": "invalid_context_key",
+            },
+            status=400,
+        )
+    if len(raw) > _MAX_SOURCE_LEN:
+        return web.json_response(
+            {
+                "error": f"contextKey exceeds {_MAX_SOURCE_LEN} char limit",
+                "code": "context_key_too_long",
+            },
+            status=400,
+        )
+    return None
 
 
 async def api_chat_slot_context(request: web.Request) -> web.Response:
@@ -12633,6 +12695,7 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         _validate_content(content)
         or _validate_source(body.get("source"))
         or _validate_max_age(body.get("maxAge"))
+        or _validate_context_key(body.get("contextKey"))
     )
     if bad is not None:
         return bad
@@ -12643,6 +12706,45 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
+    _ctx_key = body.get("contextKey")
+    if isinstance(_ctx_key, str) and _ctx_key:
+        _ctx_src = _normalize_source(body.get("source"))
+        _now = time.time()
+        _ctx_live_session = effective_session_key(slot)
+        # Ownership is the POSITIVE stamp: an entry queued before a cron bound this slot carries
+        # none, so an absence test read it as ours under the NEW session and ate the repost.
+        _owned_live = [
+            e
+            for e in slot._pending_context
+            if e.get("ctxSession") == _ctx_live_session
+            and not _note_authorized_elsewhere(e, _ctx_live_session)
+        ]
+        # UNEXPIRED, AND THE SAME CONTENT. An expired entry is discarded by the drain, and a
+        # changed snapshot under a reused key is a new post, so matching either lost content.
+        _match = next(
+            (
+                e
+                for e in _owned_live
+                if e.get("contextKey") == _ctx_key
+                and (e.get("source") or "") == _ctx_src
+                and (e.get("content") or "") == content
+                and not context_entry_expired(e, _now)
+            ),
+            None,
+        )
+        if _match is not None:
+            # AUDITED LIKE EVERY OTHER SUCCESSFUL RETURN. This arm returns before the call at
+            # the end of the handler, so a suppressed repost left no SEL row at all.
+            sel().log_api_access(
+                caller=request_app or request.get("user", "dashboard"),
+                operation="context_inject",
+                outcome="ok",
+                source="app_kit",
+                resources=f"slot={name}",
+            )
+            return web.json_response({"ok": True, "pending": len(slot._pending_context)})
+    else:
+        _ctx_key = None
     # Normalize the source the same way /note does, so a whitespace-padded label
     # renders a clean drain frame and shares one cap bucket with its trimmed
     # form. /context keeps empty-source-uncapped and applies no default label: a
@@ -12651,8 +12753,9 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
         slot,
         content,
         _normalize_source(body.get("source")),
-        body.get("ephemeral", True),
         body.get("maxAge"),
+        body.get("ephemeral", True),
+        _ctx_key,
     )
     if err is not None:
         return err
@@ -13054,7 +13157,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         if max_age is _UNSET:
             max_age = _NOTE_CONTEXT_MAX_AGE
         context_entry, err = _build_pending_context_entry(
-            slot, content, source, body.get("ephemeral", True), max_age
+            slot, content, source, max_age, body.get("ephemeral", True)
         )
         if err is not None:
             return err

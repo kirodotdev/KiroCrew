@@ -463,7 +463,8 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
 
     Returns the concatenated ``[Background context from "<source>"] … [End of
     background context]`` blocks (empty string when there is nothing to inject)
-    and clears the queue. Expired entries (``maxAge`` elapsed) are discarded.
+    and clears the queue. Expired entries (``maxAge`` elapsed) are discarded, as are
+    keyed entries whose ``ctxSession`` names a session this slot has since left.
 
     Each frame carries an explicit silent-consumption contract line
     (``_CONTEXT_FRAME_CONTRACT``) between the opening delimiter and the
@@ -489,9 +490,20 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
         return ""
     now = time.time()
     ctx_parts: list[str] = []
+    # RESOLVED ON DEMAND BELOW, not here: a queue carrying no keyed entry never needs the
+    # session, and a caller may hand this a slot stub that cannot answer for one.
+    live_session: str | None = None
     for entry in slot._pending_context:
         if context_entry_expired(entry, now):
             continue  # expired — silently discard
+        _ctx_stamp = entry.get("ctxSession")
+        if _ctx_stamp is not None:
+            # The drop above cannot cover this: it keys on ``noteSession``, written only by
+            # /note, so a /context entry from the pre-rebind session passes it untouched.
+            if live_session is None:
+                live_session = effective_session_key(slot)
+            if _ctx_stamp != live_session:
+                continue  # posted under a session this slot has since left
         # `or "app"` (not a dict default): api_chat_slot_context always writes
         # the key — as "" when the caller omitted it — so a plain .get() default
         # never fires and the header would render [Background context from ""],
