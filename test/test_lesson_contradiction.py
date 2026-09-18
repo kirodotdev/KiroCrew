@@ -1113,6 +1113,9 @@ class TestApiLessonsSanitizesStoredFields:
         state = MagicMock()
         vs = MagicMock()
         vs.get_lessons.return_value = rows
+        # The route sizes the body from the store's count; a MagicMock here would
+        # not be a number.
+        vs.count_lessons.return_value = len(rows)
         with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
              patch.object(cron, "_blocks_reads_session", return_value=False):
             resp = await cron.api_lessons(self._request(state))
@@ -1226,14 +1229,19 @@ class TestApiLessonsReturnsTheNewest:
         ]
 
     def _vector_store(self, rows):
-        """A store with the real one's contract: newest first, cap applied in SQL."""
+        """A store with the real one's contract: newest first, the window
+        (``limit`` rows after skipping ``offset``) applied in SQL, and the
+        population counted without materializing it."""
         newest_first = sorted(rows, key=lambda r: r["updated_at"], reverse=True)
 
-        def get_lessons(limit=None):
-            return newest_first[:limit] if limit else list(newest_first)
+        def get_lessons(limit=None, offset=0):
+            if limit:
+                return newest_first[offset : offset + limit]
+            return list(newest_first)
 
         vs = MagicMock()
         vs.get_lessons.side_effect = get_lessons
+        vs.count_lessons.return_value = len(rows)
         return vs
 
     async def _get_vector(self, rows):
@@ -1310,7 +1318,7 @@ class TestApiLessonsReturnsTheNewest:
         from kiro_crew.dashboard.handlers import cron
 
         _, vs = await self._get_vector(self._rows(cron.LESSON_LIST_LIMIT + 20))
-        vs.get_lessons.assert_called_once_with(cron.LESSON_LIST_LIMIT)
+        vs.get_lessons.assert_called_once_with(cron.LESSON_LIST_LIMIT, 0)
 
     async def test_jsonl_tier_answers_the_newest_lessons(self):
         """The append-ordered tier keeps its tail slice -- pinned here so a later

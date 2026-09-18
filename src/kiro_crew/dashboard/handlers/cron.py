@@ -11,7 +11,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -65,6 +65,9 @@ from kiro_crew.validation import (
     CHANNEL_MAX_LEN,
     CRON_ADD_SCHEMA,
     LEARN_ADD_SCHEMA,
+    LESSON_LIST_LIMIT,
+    LESSON_LIST_LIMIT_MAX,
+    LESSON_LIST_OFFSET_MAX,
     MAX_CRON_MESSAGE,
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
@@ -2996,9 +2999,35 @@ async def api_cron_folders_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-# The most lessons ``GET /api/lessons`` returns. Both branches of the handler
-# apply it, so the vector-store and JSONL tiers cannot disagree about the cap.
-LESSON_LIST_LIMIT = 50
+# ``LESSON_LIST_LIMIT`` / ``LESSON_LIST_LIMIT_MAX`` (the ``GET /api/lessons``
+# window) are imported from ``validation.py`` beside the tool schema that
+# advertises them. Both branches of the handler apply the window, so the
+# vector-store and JSONL tiers cannot disagree about the bound.
+
+
+def _lesson_list_page(query: Mapping[str, str]) -> tuple[int, int] | web.Response:
+    """``(limit, offset)`` from the ``GET /api/lessons`` query, or the 400.
+
+    ``limit`` is clamped into ``[1, LESSON_LIST_LIMIT_MAX]`` and ``offset`` into
+    ``[0, LESSON_LIST_OFFSET_MAX]`` rather than refused, because the body echoes
+    both effective values back and the clamp is therefore never silent. The
+    offset ceiling matters: the vector tier binds the offset as a SQLite
+    parameter, and a value past the 64-bit range raises there instead of
+    yielding an empty page. A non-integer is refused: the caller asked for a
+    page it did not get, and defaulting would return the first page under a
+    shape the caller cannot distinguish from the one it wanted.
+    """
+    try:
+        limit = int(query.get("limit", str(LESSON_LIST_LIMIT)))
+        offset = int(query.get("offset", "0"))
+    except (ValueError, TypeError):
+        return web.json_response(
+            {"error": "limit/offset must be integers", "code": "invalid_pagination"}, status=400
+        )
+    return (
+        max(1, min(limit, LESSON_LIST_LIMIT_MAX)),
+        max(0, min(offset, LESSON_LIST_OFFSET_MAX)),
+    )
 
 
 def _lesson_scope_selector(stored: object) -> str | None:
@@ -3057,13 +3086,45 @@ def _lesson_scope_selector(stored: object) -> str | None:
 
 
 async def api_lessons(request: web.Request) -> web.Response:
-    """GET /api/lessons — up to ``LESSON_LIST_LIMIT`` lessons, oldest-first.
+    """GET /api/lessons — one bounded window of lessons, oldest-first, plus its size.
 
-    The vector tier selects its newest rows. The JSONL tier appends workspace
-    rows after global rows before truncating, so a workspace union is not
-    strictly the newest rows across both stores.
+    Query: ``limit`` (default ``LESSON_LIST_LIMIT``, at most
+    ``LESSON_LIST_LIMIT_MAX``) and ``offset`` (rows skipped from the NEWEST
+    end, default 0). Body: ``lessons`` (the window), ``total`` (every live
+    lesson in the store this caller is bound to), ``truncated`` (``True`` when
+    the body does not carry every one of them), and the effective ``limit`` /
+    ``offset``. The counts exist because this is the only lesson surface that
+    ever omits rows without a reader that could notice: injection reports its
+    omissions inline, the memory graph reads the population, the CLI is
+    unbounded -- and ``learn_list`` renders this body verbatim, so a store past
+    the cap showed the model a subset with nothing to say so. ``learn_add``'s
+    ``deduped`` outcome sends the model here to find the stored wording it
+    lost to, and an older dedup winner sits exactly outside the newest window.
+
+    The vector tier selects its newest rows, so ``offset`` walks back in time.
+    The JSONL tier appends workspace rows after global rows before taking the
+    window, so a workspace union is not strictly the newest rows across both
+    stores.
     """
     state: DashboardState = request.app["state"]
+    # Parsed before any store is resolved: a 400 should not have paid for a
+    # silo's first ``init()``.
+    page = _lesson_list_page(request.query)
+    if isinstance(page, web.Response):
+        return page
+    limit, offset = page
+
+    def _page_body(data: list[dict], total: int) -> web.Response:
+        return web.json_response(
+            {
+                "lessons": data,
+                "total": total,
+                "truncated": len(data) < total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
     # Block lesson reads only for temporary sessions (blocks_reads=True).
     # Incognito sessions can read lessons (memory context is already injected).
     if _blocks_reads_session(state, request):
@@ -3075,7 +3136,7 @@ async def api_lessons(request: web.Request) -> web.Response:
             source="dashboard",
             resources=sk,
         )
-        return web.json_response({"lessons": []})
+        return _page_body([], 0)
     workspace = request.query.get("workspace")
 
     def _safe_lesson(
@@ -3150,44 +3211,60 @@ async def api_lessons(request: web.Request) -> web.Response:
     # correct there, because ``load_all()`` returns file append order -- selected
     # the OLDEST rows here and hid every recent lesson: a lesson saved through
     # ``learn_add`` was absent from the very next ``learn_list``, which reads as a
-    # silently failed write. Passing the cap to the store keeps the ordering and
-    # the limit in one place and stops the read from materializing every lesson
-    # row (embedding blobs included) to discard all but the newest handful.
-    vs_lessons = await asyncio.to_thread(vs.get_lessons, LESSON_LIST_LIMIT) if vs else None
+    # silently failed write. Passing the window to the store keeps the ordering
+    # and the bound in one place and stops the read from materializing every
+    # lesson row (embedding blobs included) to discard all but one page.
+    vs_lessons: list[dict] = await asyncio.to_thread(vs.get_lessons, limit, offset) if vs else []
+    # ``count_lessons()`` is the raw row count; it sizes ``total`` and nothing
+    # else. The tier fallback below is keyed on the vector POPULATION, not on
+    # the page, so an empty page past the end of a populated vector store still
+    # answers from the vector tier -- with its true total -- and never falls
+    # through to the JSONL file, whose rows are a different (superseded) tier.
+    vs_total = await asyncio.to_thread(vs.count_lessons) if vs else 0
     if vs_lessons:
         # Deferred import: ``vector_memory`` pulls snowballstemmer plus the
         # optional numpy/faiss imports, and this helper is the handler's only
         # use of it, on one dashboard read path.
         from kiro_crew.vector_memory import _lesson_display_text, _lesson_fields_for_row
 
-        data = []
-        # Oldest-first, so both branches of this endpoint answer in the same
-        # order. Consumers rely on it: the Memory tab takes its recent rows from
-        # the TAIL of this list, so a newest-first response would show the oldest
-        # of the capped window there.
-        for e in reversed(vs_lessons):
-            try:
-                decoded = json.loads(e["value_json"])
-            except (json.JSONDecodeError, TypeError):
-                continue
-            # Rendered text for either storage shape: mapping-shaped rows
-            # (write_lesson's format and the onboarding import's) would otherwise
-            # ship a nested object where the dashboard expects a string. A row with
-            # no lesson shape falls back to str() rather than being dropped, so it
-            # stays listed and therefore deletable -- delete_lesson needs a
-            # substring, and this list is the only surface that can show it. The
-            # memory graph applies the same policy for the same reason.
-            rule = _lesson_display_text(decoded) or str(decoded)
-            fields = _lesson_fields_for_row(decoded, e["key"])
-            negative = fields[1] if fields is not None else None
-            raw_category = decoded.get("category") if isinstance(decoded, dict) else None
-            # The RAW stored value, key-present or not: a legacy string row has
-            # nowhere to carry a scope and reads as global, exactly as the
-            # store's own ``_lesson_scope`` / ``_lesson_scope_unusable`` read it.
-            raw_scope = decoded.get("repo_scope") if isinstance(decoded, dict) else None
-            data.append(
-                _safe_lesson(rule, raw_category, e.get("updated_at", ""), negative, raw_scope)
-            )
+    data: list[dict] = []
+    # Oldest-first, so both branches of this endpoint answer in the same
+    # order. Consumers rely on it: the Memory tab takes its recent rows from
+    # the TAIL of this list, so a newest-first response would show the oldest
+    # of the capped window there.
+    for e in reversed(vs_lessons):
+        try:
+            decoded = json.loads(e["value_json"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        # Rendered text for either storage shape: mapping-shaped rows
+        # (write_lesson's format and the onboarding import's) would otherwise
+        # ship a nested object where the dashboard expects a string. A row with
+        # no lesson shape falls back to str() rather than being dropped, so it
+        # stays listed and therefore deletable -- delete_lesson needs a
+        # substring, and this list is the only surface that can show it. The
+        # memory graph applies the same policy for the same reason.
+        rule = _lesson_display_text(decoded) or str(decoded)
+        fields = _lesson_fields_for_row(decoded, e["key"])
+        negative = fields[1] if fields is not None else None
+        raw_category = decoded.get("category") if isinstance(decoded, dict) else None
+        # The RAW stored value, key-present or not: a legacy string row has
+        # nowhere to carry a scope and reads as global, exactly as the
+        # store's own ``_lesson_scope`` / ``_lesson_scope_unusable`` read it.
+        raw_scope = decoded.get("repo_scope") if isinstance(decoded, dict) else None
+        data.append(_safe_lesson(rule, raw_category, e.get("updated_at", ""), negative, raw_scope))
+    # The population is measured by the rows THIS list renders: everything
+    # that decodes (legacy strings and rule-less mappings included, marked
+    # withheld), which is what ``has_any_decodable_lesson()`` asks. A page with
+    # a rendered row settles it without a scan; a page with none (past the
+    # end, or every row on it undecodable) asks the store, so a vector store
+    # holding only rows an import or legacy migration left undecodable does
+    # not silence the JSONL file the caller's valid corrections still live in.
+    vs_populated = bool(data) or (
+        vs is not None and vs_total > 0 and await asyncio.to_thread(vs.has_any_decodable_lesson)
+    )
+    if vs_populated:
+        total = vs_total
     else:
         # The JSONL tier of the store this caller is BOUND to, which for a silo is its
         # own file and never the operator's -- an empty silo answers "no lessons", not
@@ -3208,11 +3285,16 @@ async def api_lessons(request: web.Request) -> web.Response:
                 # this list hides is a row the UI can never delete.
                 ws_lessons = await asyncio.to_thread(lambda: _get_lessons(state, ws).load_all())
                 tiered.extend((le, ("workspace", ws)) for le in ws_lessons)
+        total = len(tiered)
+        # ``load_all()`` is file append order, so the newest rows are at the
+        # TAIL: the window ends ``offset`` rows before it, mirroring the vector
+        # tier where ``offset`` also counts back from the newest row.
+        end = max(0, total - offset)
         data = [
             _safe_lesson(le.rule, le.category, le.ts, le.negative, le.repo_scope, tier=tier)
-            for le, tier in tiered[-LESSON_LIST_LIMIT:]
+            for le, tier in tiered[max(0, end - limit) : end]
         ]
-    return web.json_response({"lessons": data})
+    return _page_body(data, total)
 
 
 # Every other api_* handler in this module is an owner surface, so a private

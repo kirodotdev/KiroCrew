@@ -9,7 +9,7 @@ Tools:
     spawn_status    — retrieve full subagent output
     resource_status — check host resource headroom before heavy work
     learn_add       — save a learned correction
-    learn_list      — list all lessons
+    learn_list      — list one window of lessons, with the total
     learn_remove    — remove lessons by substring
     task_run        — start the autonomous task runner
 """
@@ -1935,7 +1935,7 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     schema = MCP_CORE_SCHEMAS.get(name)
     if schema:
         return validate_tool_args(args, schema)
-    return args  # tools without schemas (learn_list) pass through
+    return args  # tools without schemas pass through
 
 
 def _current_session_thread_ts() -> str | None:

@@ -21,7 +21,14 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
-from kiro_crew.validation import LEARN_ADD_SCHEMA, MAX_SHORT_STRING
+from kiro_crew.validation import (
+    LEARN_ADD_SCHEMA,
+    LESSON_LIST_LIMIT,
+    LESSON_LIST_LIMIT_MAX,
+    LESSON_LIST_OFFSET_MAX,
+    MAX_RESPONSE_LEN,
+    MAX_SHORT_STRING,
+)
 
 
 def schemas() -> list[dict[str, Any]]:
@@ -133,8 +140,39 @@ def schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "learn_list",
-            "description": "List all saved lessons and corrections",
-            "inputSchema": {"type": "object", "properties": {}},
+            "description": (
+                "List saved lessons and corrections, one window at a time. "
+                f"Returns the newest `limit` lessons (default {LESSON_LIST_LIMIT}) "
+                "and, when the store holds more, a first line saying how many are "
+                "shown of how many exist. Pass `offset` to page back to older "
+                "lessons; a lesson you are looking for and do not see may be on a "
+                "later page."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": LESSON_LIST_LIMIT_MAX,
+                        "description": (
+                            "Optional. How many lessons to return in this window "
+                            f"(default {LESSON_LIST_LIMIT}, at most "
+                            f"{LESSON_LIST_LIMIT_MAX})."
+                        ),
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": LESSON_LIST_OFFSET_MAX,
+                        "description": (
+                            "Optional. How many of the newest lessons to skip before "
+                            "the window starts (default 0). The 'showing N of M' line "
+                            "names the offset that reaches the next older page."
+                        ),
+                    },
+                },
+            },
         },
         {
             "name": "learn_remove",
@@ -358,8 +396,10 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
             f"is NOT the stored lesson: {rule}\n"
             "An existing stored lesson already covers it, and that existing lesson "
             "stays in effect. If this was meant to correct or replace a stale lesson, "
-            "run learn_list to find the stored wording, learn_remove it, then add this "
-            "again -- otherwise the outdated lesson keeps applying."
+            "run learn_list to find the stored wording -- it shows the newest window "
+            "first, so page back with offset when its first line reports lessons not "
+            "shown -- then learn_remove it and add this again; otherwise the outdated "
+            "lesson keeps applying."
             f"{lost}"
         )
     if outcome == "unchanged":
@@ -397,7 +437,15 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
 
 
 def learn_list(name: str, args: dict[str, Any]) -> str:
-    d = mcp_core._get("/api/lessons")
+    # Forwarded only when the caller named them, so an absent pair keeps the
+    # route's own default window and the response says what that window was.
+    window = {
+        k: args[k]
+        for k in ("limit", "offset")
+        if isinstance(args.get(k), int) and not isinstance(args.get(k), bool)
+    }
+    path = "/api/lessons" + ("?" + urlencode(window) if window else "")
+    d = mcp_core._get(path)
     # Surface transport/auth failures instead of rendering them as "no
     # lessons". ``_get`` returns ``{"error": ...}`` on a non-2xx, which has
     # no ``lessons`` key — reporting that as an empty list told the agent its
@@ -407,9 +455,9 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
     if err_val:
         return f"Error: {err_val}"
     lessons = d.get("lessons", [])
+    lines = _window_header(d, len(lessons))
     if not lessons:
-        return "No lessons saved."
-    lines = []
+        return "\n".join(lines) if lines else "No lessons saved."
     for le in lessons:
         withheld = (
             " [WITHHELD: volatile_session_fact]"
@@ -417,7 +465,61 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
             else ""
         )
         lines.append(f"[{le.get('category', '?')}] {le['rule']}{withheld}{_scope_suffix(le)}")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if len(text) > _LIST_RENDER_BUDGET:
+        # ``sanitize_response`` cuts the TAIL of a response over the cap, and
+        # the header above is the head -- so a page that renders past the cap
+        # would say "Showing N" and then lose rows the model never sees. Refuse
+        # the page and name a limit that fits instead of shipping that claim.
+        shown = len(lessons)
+        fits = max(1, min(shown - 1, shown * _LIST_RENDER_BUDGET // len(text)))
+        return (
+            f"This page of {shown} lessons renders to {len(text)} characters, past the "
+            f"{MAX_RESPONSE_LEN}-character tool response cap, so none of it is shown. "
+            f"Pass limit={fits} with the same offset to read it in parts."
+        )
+    return text
+
+
+# Rows are rendered whole, so a page must fit under the response cap with room
+# for the header line; past this the page is refused rather than cut.
+_LIST_RENDER_BUDGET = MAX_RESPONSE_LEN - 512
+
+
+def _window_header(body: dict[str, Any], shown: int) -> list[str]:
+    """The ``showing N of M`` line, or nothing when the body carries every lesson.
+
+    The route is the only lesson surface that omits rows, and this tool renders
+    its body verbatim -- so a store past the window showed the model a subset
+    with nothing to say so, and the ``deduped`` outcome of ``learn_add`` sent it
+    here to find a stored lesson that sat exactly outside the newest window.
+    The line names the offset that reaches the next older page when one exists;
+    otherwise it only states the count, since the rows not shown are the newer
+    ones the caller skipped on purpose. Both the older count and the next offset
+    advance by the window the store consumed (the body's ``limit``), not by the
+    rows shown: the route drops a row whose stored JSON does not decode, so a
+    page can come back short while the store still skipped ``limit`` rows for
+    it, and counting by the shorter number would overstate the rest and re-read
+    that tail. An older gateway that sends no ``total`` renders no line: it has
+    nothing truthful to say about the rest.
+    """
+    total = body.get("total")
+    if not isinstance(total, int) or isinstance(total, bool) or total <= shown:
+        return []
+    offset = _window_int(body.get("offset"), 0)
+    step = _window_int(body.get("limit"), shown) or shown
+    header = f"Showing {shown} of {total} lessons"
+    older = total - offset - step
+    if older > 0:
+        header += f"; {older} older not shown -- pass offset={offset + step} to list them"
+    return [header + "."]
+
+
+def _window_int(value: Any, default: int) -> int:
+    """``value`` when the body carries it as a real integer, else ``default``."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return default
 
 
 def _scope_suffix(row: dict[str, Any]) -> str:
