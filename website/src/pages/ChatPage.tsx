@@ -6742,6 +6742,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 ? i18nT('store.chatSlice.session_gone_open_failed_named', { name: switchSlotGone.name })
                 : i18nT('store.chatSlice.session_gone_open_failed'))
             : ''}
+          report={switchSlotGone?.report}
           onDismiss={() => dispatch(clearSwitchSlotGone())}
           askAgent
           className="mx-4 mt-2 mb-0 animate-rise"

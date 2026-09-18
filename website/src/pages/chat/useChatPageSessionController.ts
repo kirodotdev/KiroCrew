@@ -563,14 +563,31 @@ export function useChatPageSessionController({
     }
   }, [searchParams, filteredSlots, activeSlot, activeSlotRef, dispatch, embedMode, navigationType, locationKey, locationPathname, locationHash, connected, noUrlSync, navigate, isMobile])
 
-  // Timeout: if slot never appears after 5s, show error.
+  // Timeout: if slot never appears after 5s, show an error. Keep the denied key
+  // so a later authoritative slots frame can revoke that verdict; keeping
+  // `initialSidRef` itself set would re-arm popInFlightRef on every render and
+  // wedge URL synchronization.
+  const deniedSidRef = useRef<{
+    key: string
+    activeSlot: string | null
+    activeSlotChanged: boolean
+    error: string
+  } | null>(null)
+  // Equality at recovery time cannot distinguish "stayed on A" from A -> B -> A.
+  // Latch the first committed change while a denied link is pending; returning
+  // to the deadline's slot must not give the old deep link ownership again.
+  useEffect(() => {
+    const denied = deniedSidRef.current
+    if (denied && activeSlot !== denied.activeSlot) denied.activeSlotChanged = true
+  }, [activeSlot])
   // Gated on `connected` so the timer only runs while the gateway is reachable
   // — otherwise an offline tab would burn its 5s while the resolve effects
   // above are deferred, fire a false "Session not found", clear initialSidRef,
   // and the resolve never happens once the gateway comes back. Re-runs the
   // effect when connected flips so the timer starts fresh on reconnect.
-  // Also gated on `slotsLoaded`: firing is one-way (it clears `initialSidRef`),
-  // so arming before the list lands makes a late arrival unresolvable.
+  // Also gated on `slotsLoaded`: arming before the list lands would reject every
+  // slow first frame. A landed list starts the deadline, but is not assumed to
+  // be the final restored list.
   const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
   useEffect(() => {
     if (!connected || !slotsLoaded) return
@@ -578,10 +595,17 @@ export function useChatPageSessionController({
     if (!urlSlot) return
     const timer = setTimeout(() => {
       if (initialSidRef.current) {
+        const error = i18nT('pages.chatPage.session_not_found', { name: urlSlot })
+        deniedSidRef.current = {
+          key: urlSlot,
+          activeSlot: activeSlotRef.current,
+          activeSlotChanged: false,
+          error,
+        }
         initialSidRef.current = null
         pendingSidRef.current = false
         popInFlightRef.current = false
-        setSidError(i18nT('pages.chatPage.session_not_found', { name: urlSlot }))
+        setSidError(error)
         // Deliberately does NOT refresh the session on screen. The deep link did
         // own this mount's fetch, so that session's messages can be as stale as
         // Redux left them — but a refresh here races the user: five seconds is
@@ -592,7 +616,30 @@ export function useChatPageSessionController({
       }
     }, 5000)
     return () => clearTimeout(timer)
-  }, [connected, slotsLoaded])
+  }, [connected, slotsLoaded, activeSlotRef])
+
+  // A slots frame can arrive after the deadline while the gateway restores its
+  // full session list. Once it carries the denied key, the old banner is false.
+  // Resolve the original link only if the user is still on the session that was
+  // active when the deadline fired; otherwise clear the lie without snapping
+  // them back over a later choice.
+  useEffect(() => {
+    const denied = deniedSidRef.current
+    if (!denied || !filteredSlots.some(slot => slot.key === denied.key)) return
+    deniedSidRef.current = null
+    if (denied.activeSlotChanged || activeSlotRef.current !== denied.activeSlot) {
+      setSidError(current => current === denied.error ? '' : current)
+      return
+    }
+    // The late frame has disproved the deadline verdict before transcript loading
+    // begins. Retire that stale local notice now; `switchSlot` owns any load
+    // failure through its announced, localized ErrorNotice and structured report.
+    setSidError(current => current === denied.error ? '' : current)
+    popInFlightRef.current = true
+    void dispatch(switchSlot({ key: denied.key, announceOnMissing: true })).then(() => {
+      popInFlightRef.current = false
+    })
+  }, [filteredSlots, activeSlotRef, dispatch])
 
   // Sync activeSlot → ?sid= in URL (persistent deep-link)
   // Skip entirely when embedded — URL belongs to the host app

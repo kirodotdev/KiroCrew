@@ -26,7 +26,7 @@ import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
 import { isRejectedDecision } from '../utils/approvalDecision'
 import { automationForSlot, type AutomationRecord } from '../monitoring/automation'
-import { findReport, parseErrorCode } from '../utils/errorReport'
+import { findReport, parseErrorCode, type ErrorReport } from '../utils/errorReport'
 import type { HistoryDeleteRefusal } from '../utils/historyDeleteRefusal'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
@@ -913,9 +913,11 @@ interface ChatState {
    *  (#6372). ChatPage renders it through the pane-level ErrorNotice — the
    *  `errors-use-error-notice` surface — above the composer. Carries the
    *  NAME, not the sentence, so the copy re-resolves on locale switch; ''
-   *  when the slot list no longer knew the title. Cleared by the next
+   *  when the slot list no longer knew the title. The optional report keeps
+   *  the API endpoint, status, and backend code available to Ask the agent
+   *  while the displayed sentence stays localized. Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
-  switchSlotGone: { name: string; kind: 'gone' | 'failed' } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed'; report?: ErrorReport } | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -2181,6 +2183,13 @@ export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolea
  *  reducers' pre-existing tolerance of that must survive this indirection. */
 const switchSlotKey = (arg: SwitchSlotArg): string => typeof arg === 'object' && arg !== null ? arg.key : arg
 
+/** Preserve the API report behind a localized switch failure without changing
+ *  journal-less reducer fixtures or the serialized rejection contract. */
+const switchSlotFailureReport = (error: unknown): { report?: ErrorReport } => {
+  const report = findReport(errMessage(error))
+  return report ? { report } : {}
+}
+
 export const switchSlot = createAsyncThunk<
   Awaited<ReturnType<typeof fetchSlotDetail>>,
   SwitchSlotArg,
@@ -2327,7 +2336,11 @@ export const switchSlot = createAsyncThunk<
             // NAME is stored, not the sentence, so the copy re-resolves on a
             // locale switch. Cleared by the next `switchSlot.pending` or the
             // notice's own dismiss.
-            dispatch(chatSlice.actions.setSwitchSlotGone({ name: name ?? '', kind: 'gone' }))
+            dispatch(chatSlice.actions.setSwitchSlotGone({
+              name: name ?? '',
+              kind: 'gone',
+              ...switchSlotFailureReport(e),
+            }))
           }
           // Evict only when the selection will ESCAPE the evicted key. The
           // rejected reducer restores `slotSwitchOrigin` only when it differs
@@ -2378,7 +2391,11 @@ export const switchSlot = createAsyncThunk<
           // click they already moved past.
           if ((getState() as RootState).chat.slotSwitchRequestId === requestId) {
             const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
-            dispatch(chatSlice.actions.setSwitchSlotGone({ name: name ?? '', kind: 'failed' }))
+            dispatch(chatSlice.actions.setSwitchSlotGone({
+              name: name ?? '',
+              kind: 'failed',
+              ...switchSlotFailureReport(e),
+            }))
           }
         }
         return rejectWithValue(payload)
@@ -2391,7 +2408,11 @@ export const switchSlot = createAsyncThunk<
       if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
           && (getState() as RootState).chat.slotSwitchRequestId === requestId) {
         const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
-        dispatch(chatSlice.actions.setSwitchSlotGone({ name: name ?? '', kind: 'failed' }))
+        dispatch(chatSlice.actions.setSwitchSlotGone({
+          name: name ?? '',
+          kind: 'failed',
+          ...switchSlotFailureReport(e),
+        }))
       }
       throw e
     }
@@ -4047,7 +4068,7 @@ const chatSlice = createSlice({
     },
     /** See `switchSlotGone` on ChatState. Set by `switchSlot`'s catch for an
      *  `announceOnMissing` caller whose target 404ed. */
-    setSwitchSlotGone(state, action: PayloadAction<{ name: string; kind: 'gone' | 'failed' }>) { state.switchSlotGone = action.payload },
+    setSwitchSlotGone(state, action: PayloadAction<{ name: string; kind: 'gone' | 'failed'; report?: ErrorReport }>) { state.switchSlotGone = action.payload },
     clearSwitchSlotGone(state) { state.switchSlotGone = null },
     /** Dismiss the unresumable-surface notice (#5925). Deliberately does NOT
      *  clear `lastResumeRequestId`: that ordering token belongs to the resume
