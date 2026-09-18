@@ -53,6 +53,7 @@ from kiro_crew.artifacts import (
     ArtifactNotFoundError,
     ArtifactStillPublishedError,
     ArtifactValidationError,
+    filter_comments_for_forward,
     get_default_folder_store,
     get_default_store,
     has_unthemed_hardcoded_colors,
@@ -3777,6 +3778,14 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
             remote_sync_error = _redact_text(str(exc))
 
     comments = await _run_off_loop(lambda: store.list_comments(slug))
+
+    # ── Forwarding filter (comment→chat replay fix) ──
+    # Opt-in: `?exclude_resolved=1` drops resolved threads, which is what the
+    # forwarding paths want. Without the param the full list comes back, so
+    # existing callers are unaffected.
+    if request.query.get("exclude_resolved", "").lower() in ("1", "true"):
+        comments = filter_comments_for_forward(comments)
+
     result = []
     for c in comments:
         entry: dict[str, Any] = {

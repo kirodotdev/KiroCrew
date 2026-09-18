@@ -2036,6 +2036,7 @@ ARTIFACT_GET_COMMENTS_SCHEMA = ToolSchema(
     tool_name="artifact_get_comments",
     fields=[
         FieldSpec("slug", str, required=True, max_len=80, pattern=_ARTIFACT_SLUG_RE),
+        FieldSpec("exclude_resolved", bool),
     ],
 )
 

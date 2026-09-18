@@ -120,6 +120,37 @@ describe('ArtifactDetailPage comment submit bar', () => {
     expect(await screen.findByText('2 comments to send to this chat')).toBeInTheDocument()
   })
 
+  it('leaves a resolved thread out of the batch, reply included', async () => {
+    // This page has its OWN pending-batch derivation, separate from
+    // ArtifactPanel's. Filtering only the panel's would show the page's filtered
+    // "N open comments" count beside a bar that still ships the resolved ones.
+    renderPage([
+      mkComment('r1', { status: 'resolved', thread_id: 'r1' }),
+      mkComment('r1a', { parent_id: 'r1', thread_id: 'r1' }),
+      mkComment('h1', { thread_id: 'h1' }),
+    ])
+    expect(await screen.findByText('1 comment to send to this chat')).toBeInTheDocument()
+  })
+
+  it('does not send a resolved comment body even when open ones go with it', async () => {
+    renderPage([
+      mkComment('r1', { status: 'resolved', thread_id: 'r1' }),
+      mkComment('h1', { thread_id: 'h1' }),
+    ])
+    await bar()
+    fireEvent.click(submit())
+    await waitFor(() => expect(vi.mocked(api).sendChat).toHaveBeenCalledTimes(1))
+    const [message] = vi.mocked(api).sendChat.mock.calls[0]
+    expect(message).toContain('note h1')
+    expect(message).not.toContain('note r1')
+  })
+
+  it('offers no bar when every thread is resolved', async () => {
+    renderPage([mkComment('r1', { status: 'resolved', thread_id: 'r1' })])
+    await waitFor(() => expect(screen.getByLabelText('Toggle comments')).toBeInTheDocument())
+    expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
+  })
+
   it('offers no bar when every comment is agent-authored', async () => {
     renderPage([mkComment('a1', { is_agent: true })])
     await waitFor(() => expect(screen.getByLabelText('Toggle comments')).toBeInTheDocument())

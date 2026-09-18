@@ -130,7 +130,7 @@ doc stored as `widget` renders as raw inner HTML).
 | `artifact_folder_move` | Reparent a folder; cycle-guarded |
 | `artifact_folder_delete` | Delete a folder; default keeps contents (re-parent), `delete_contents=true` cascades |
 | `artifact_move` | Move an artifact into a folder / unfile it (metadata-only, no version bump) |
-| `artifact_get_comments` | Read all comments on an artifact (local + provider-synced) |
+| `artifact_get_comments` | Read all comments on an artifact (local + provider-synced); `exclude_resolved=true` omits resolved threads (root-granular) so a mid-review read is not re-handed feedback already addressed |
 | `artifact_post_comment` | Post a comment; agent comments carry the structured `is_agent` flag (no emoji stamped into the body — dashboard renders a lucide `Bot` icon, CLI prefixes a plain-text `[agent]` marker) + SEL-audited; `scope='shared'` syncs to the provider |
 | `artifact_mark_review` | Advance a comment thread to REVIEW status (agent can mark_review but NEVER resolve) |
 | `artifact_reply_comment` | Reply to an existing comment thread; a reply to a provider-origin parent posts back to the provider |

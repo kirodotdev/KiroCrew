@@ -11,6 +11,7 @@ import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
+import { filterCommentsForForward } from '../lib/commentFilter'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeSetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
@@ -221,10 +222,14 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
   // Re-read when the panel is reused for a different artifact.
   useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
-  // Pending = human-authored AND not yet submitted. Agent comments are filtered
-  // out here AND defensively inside formatArtifactCommentsMessage (hardened esc()).
+  // Pending = forwarding-eligible AND human-authored AND not yet submitted.
+  // The three filters answer different questions and all three are needed:
+  // filterCommentsForForward drops threads already resolved, `!is_agent` drops
+  // agent-authored comments (also filtered defensively inside
+  // formatArtifactCommentsMessage, hardened esc()), and `!sentIds.has` stops an
+  // already-submitted batch being re-sent.
   const pendingComments = useMemo(
-    () => fa.comments.filter(c => !c.is_agent && !sentIds.has(c.id)),
+    () => filterCommentsForForward(fa.comments).filter(c => !c.is_agent && !sentIds.has(c.id)),
     [fa.comments, sentIds],
   )
   const [submitting, setSubmitting] = useState(false)
