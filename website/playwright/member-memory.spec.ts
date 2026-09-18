@@ -279,7 +279,13 @@ test('private backup staging can be cancelled and a replaced experience can be r
     data: { episodic: [{ text: episodeText, source: 'import', tags: ['recovery-example'] }] },
   })
   expect(imported.ok(), await imported.text()).toBeTruthy()
-  expect(await imported.json()).toEqual({ semantic: 0, episodic: 1, skipped: 0 })
+  const importCounts = await imported.json()
+  // The episode's vector depends on whether this gateway's embedder is ready,
+  // so only its presence as a count is pinned here.
+  expect(importCounts).toEqual(
+    expect.objectContaining({ semantic: 0, episodic: 1, skipped: 0, semantic_unembedded: 0 }),
+  )
+  expect(typeof importCounts.episodic_unembedded).toBe('number')
   const originalEpisode = (await episodes(owner.store)).find(row => row.text === episodeText)!
   expect(originalEpisode).toBeDefined()
   await writeFact(request, owner.store, episodeKey, 'green checklist')

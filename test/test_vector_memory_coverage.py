@@ -13,6 +13,7 @@ requirement.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import struct
@@ -32,6 +33,12 @@ def _lesson_texts(store: VectorMemoryStore) -> list[str]:
 
 
 _DIM = 8
+
+
+def _unpack(blob: object) -> list[float]:
+    """A stored embedding BLOB as floats, the way the store packs it."""
+    assert isinstance(blob, bytes)
+    return list(struct.unpack(f"{len(blob) // 4}f", blob))
 
 
 def _store(tmp_path: Path, *, episodic_max: int = 10_000) -> VectorMemoryStore:
@@ -789,7 +796,13 @@ class TestImportMemory:
                 ],
             }
         )
-        assert counts == {"semantic": 2, "episodic": 2, "skipped": 0}
+        assert counts == {
+            "semantic": 2,
+            "episodic": 2,
+            "skipped": 0,
+            "semantic_unembedded": 2,
+            "episodic_unembedded": 2,
+        }
         editor = store.get_semantic("pref.editor")
         shell = store.get_semantic("pref.shell")
         assert editor is not None and json.loads(editor["value_json"]) == "vim"
@@ -811,11 +824,649 @@ class TestImportMemory:
                 ],
             }
         )
-        assert counts == {"semantic": 0, "episodic": 0, "skipped": 4}
+        assert counts == {
+            "semantic": 0,
+            "episodic": 0,
+            "skipped": 4,
+            "semantic_unembedded": 0,
+            "episodic_unembedded": 0,
+        }
 
     def test_an_empty_payload_is_a_noop(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
-        assert store.import_memory({}) == {"semantic": 0, "episodic": 0, "skipped": 0}
+        assert store.import_memory({}) == {
+            "semantic": 0,
+            "episodic": 0,
+            "skipped": 0,
+            "semantic_unembedded": 0,
+            "episodic_unembedded": 0,
+        }
+
+
+class TestSetSemanticSuppliedEmbedding:
+    """The keyword-only ``embedding`` parameter, mirroring ``write_episodic``."""
+
+    def test_a_valid_supplied_vector_is_stored_verbatim_without_embed_fn(
+        self, tmp_path: Path
+    ) -> None:
+        store = _store(tmp_path)
+        vec = [0.25] * _DIM
+        assert store.set_semantic("pref.editor", "vim", 0.9, "test", embedding=vec) is None
+        assert _raw_semantic_embedding(store, "pref.editor") == struct.pack(f"{_DIM}f", *vec)
+
+    def test_a_supplied_vector_skips_the_embed_tail(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        calls: list[str] = []
+
+        def _capture(text: str) -> list[float]:
+            calls.append(text)
+            return [0.5] * _DIM
+
+        store.embed_fn = _capture
+        vec = [0.75] * _DIM
+        assert store.set_semantic("pref.shell", "zsh", 0.9, "test", embedding=vec) is None
+        assert calls == []
+        assert _raw_semantic_embedding(store, "pref.shell") == struct.pack(f"{_DIM}f", *vec)
+
+    def test_a_base64_vector_is_stored_verbatim(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        blob = struct.pack(f"{_DIM}f", *([0.25] * _DIM))
+        encoded = base64.b64encode(blob).decode("ascii")
+        assert store.set_semantic("pref.editor", "vim", 0.9, "test", embedding=encoded) is None
+        assert _raw_semantic_embedding(store, "pref.editor") == blob
+
+    def test_an_oversized_base64_vector_is_refused_before_it_is_decoded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import vector_memory
+
+        store = _store(tmp_path)
+
+        def _must_not_decode(*args: object, **kwargs: object) -> bytes:
+            raise AssertionError("an oversized payload must be refused by length alone")
+
+        monkeypatch.setattr(vector_memory.base64, "b64decode", _must_not_decode)
+        oversized = "A" * (vector_memory._base64_len_for_dim(_DIM) * 64)
+        assert store._valid_supplied_embedding(oversized) is None
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            base64.b64encode(struct.pack(f"{_DIM + 1}f", *([0.1] * (_DIM + 1)))).decode(),
+            base64.b64encode(struct.pack(f"{_DIM}f", *([float("nan")] * _DIM))).decode(),
+            base64.b64encode(b"\x00\x00\x00").decode(),  # not whole floats
+            "not base64!",  # malformed
+            "A" * (4 * ((_DIM * 4 + 2) // 3) * 64),  # oversized: refused before decode
+            [0.1] * (_DIM + 1),  # foreign width
+            [float("nan")] * _DIM,  # non-finite elements
+            [True] * _DIM,  # booleans are not vector components
+            ["0.1"] * _DIM,  # strings, e.g. a hand-edited payload
+            [1e308] * _DIM,  # finite in Python, overflows float32 packing
+            [10**400] * _DIM,  # an int past float64 range: float() would raise
+            "b'\\x00\\x00\\x80?'",  # a legacy repr-string of the raw BLOB
+        ],
+    )
+    def test_an_invalid_supplied_vector_falls_back_to_the_tail(
+        self, tmp_path: Path, bad: object
+    ) -> None:
+        store = _store(tmp_path)
+        store.embed_fn = _fixed_embed(0.5)
+        assert store.set_semantic("pref.pager", "less", 0.9, "test", embedding=bad) is None
+        expected = struct.pack(f"{_DIM}f", *([0.5] * _DIM))
+        assert _raw_semantic_embedding(store, "pref.pager") == expected
+
+
+class TestImportMemoryEmbeddings:
+    """Vector carry-over across stores that record the same embedding space."""
+
+    @staticmethod
+    def _export_payload(store: VectorMemoryStore) -> dict:
+        """The shape the CLI export branch emits for semantic and episodic rows."""
+        rows = store.get_all_semantic()
+        episodes = store.get_episodic_list(limit=10_000, include_embedding=True)
+        for row in (*rows, *episodes):
+            encoded = vm.embedding_blob_to_payload(row.get("embedding"))
+            if encoded is None:
+                row.pop("embedding", None)
+            else:
+                row["embedding"] = encoded
+        return {
+            "embedding_space_sig": store.recorded_embedding_space(),
+            "semantic": rows,
+            "episodic": episodes,
+        }
+
+    def test_round_trip_preserves_vectors_when_the_space_matches(self, tmp_path: Path) -> None:
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        src = _store(tmp_path / "a")
+        src.reconcile_embedding_space("space-1")
+        src.embed_fn = _fixed_embed(0.25)
+        assert src.set_semantic("pref.editor", "vim", 0.9, "test") is None
+        payload = self._export_payload(src)
+        assert isinstance(payload["semantic"][0]["embedding"], str)
+
+        dst = _store(tmp_path / "b")  # no embed_fn, like the CLI's store
+        dst.reconcile_embedding_space("space-1")
+        counts = dst.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 0
+        assert _raw_semantic_embedding(dst, "pref.editor") == _raw_semantic_embedding(
+            src, "pref.editor"
+        )
+
+    def test_a_foreign_space_payload_falls_back_to_reembedding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-2")
+        store.embed_fn = _fixed_embed(0.5)
+        monkeypatch.setattr(embeddings, "peek_ready_shared_embedder", lambda: object())
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 0
+        expected = struct.pack(f"{_DIM}f", *([0.5] * _DIM))
+        assert _raw_semantic_embedding(store, "pref.editor") == expected
+
+    def test_an_unsigned_payload_on_a_bare_store_lands_null_and_is_counted(
+        self, tmp_path: Path
+    ) -> None:
+        store = _store(tmp_path)  # neither a recorded space nor an embed_fn
+        payload = {
+            "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}]
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 1
+        assert _raw_semantic_embedding(store, "pref.editor") is None
+
+    def test_a_ready_embedder_reembeds_from_text_even_on_a_matching_space(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-1")
+        store.embed_fn = _fixed_embed(0.5)
+        monkeypatch.setattr(embeddings, "peek_ready_shared_embedder", lambda: object())
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 0
+        expected = struct.pack(f"{_DIM}f", *([0.5] * _DIM))
+        assert _raw_semantic_embedding(store, "pref.editor") == expected
+
+    def test_a_ready_embedder_still_carries_a_lesson_vector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-1")
+        store.embed_fn = _fixed_embed(0.5)
+        monkeypatch.setattr(embeddings, "peek_ready_shared_embedder", lambda: object())
+        key = _lesson_key("Quote every shell argument you interpolate")
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [
+                {
+                    "key": key,
+                    "value_json": json.dumps(
+                        {"rule": "Quote every shell argument you interpolate"}
+                    ),
+                    "embedding": [0.25] * _DIM,
+                }
+            ],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 0
+        # The embed tail skips lesson rows, so the payload's same-space vector
+        # is the one that lands -- not the ready backend's 0.5 vector.
+        expected = struct.pack(f"{_DIM}f", *([0.25] * _DIM))
+        assert _raw_semantic_embedding(store, key) == expected
+
+    def test_an_unready_embedder_carries_the_payload_vector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-1")
+        store.embed_fn = _fixed_embed(0.5)
+        monkeypatch.setattr(embeddings, "peek_ready_shared_embedder", lambda: None)
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 0
+        expected = struct.pack(f"{_DIM}f", *([0.25] * _DIM))
+        assert _raw_semantic_embedding(store, "pref.editor") == expected
+
+    def test_a_fresh_unsigned_store_adopts_the_active_backend_space(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store = _store(tmp_path)  # nothing recorded, no embed_fn
+        monkeypatch.setattr(embeddings, "active_embedding_space_signature", lambda: "space-1")
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 0
+        assert store.recorded_embedding_space() == "space-1"
+        expected = struct.pack(f"{_DIM}f", *([0.25] * _DIM))
+        assert _raw_semantic_embedding(store, "pref.editor") == expected
+
+    def test_a_fresh_store_refuses_a_space_the_active_backend_does_not_produce(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        store = _store(tmp_path)
+        monkeypatch.setattr(embeddings, "active_embedding_space_signature", lambda: "space-9")
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [{"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 1
+        assert store.recorded_embedding_space() is None
+        assert _raw_semantic_embedding(store, "pref.editor") is None
+
+    def test_a_legacy_repr_string_embedding_is_tolerated(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-1")
+        payload = {
+            "embedding_space_sig": "space-1",
+            "semantic": [
+                {
+                    "key": "pref.editor",
+                    "value_json": '"vim"',
+                    "embedding": "b'\\x00\\x00\\x80?'",
+                }
+            ],
+        }
+        counts = store.import_memory(payload)
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 1
+        assert _raw_semantic_embedding(store, "pref.editor") is None
+
+
+class TestImportMemoryEpisodicEmbeddings:
+    """The episodic half of the carry: same gates, same counting."""
+
+    _TEXT = "An imported episode long enough to clear the length floor"
+
+    def test_the_list_carries_the_vector_only_on_request(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.embed_fn = _fixed_embed(0.25)
+        assert store.write_episodic(self._TEXT, source="test")
+        assert "embedding" not in store.get_episodic_list()[0]
+        [row] = store.get_episodic_list(include_embedding=True)
+        assert isinstance(row["embedding"], bytes) and len(row["embedding"]) == _DIM * 4
+
+    def test_round_trip_preserves_episodic_vectors_when_the_space_matches(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        src = _store(tmp_path / "a")
+        src.reconcile_embedding_space("space-1")
+        src.embed_fn = _fixed_embed(0.25)
+        assert src.write_episodic(self._TEXT, source="test")
+        payload = TestImportMemoryEmbeddings._export_payload(src)
+        assert isinstance(payload["episodic"][0]["embedding"], str)
+
+        dst = _store(tmp_path / "b")  # no embed_fn, like the CLI's store
+        dst.reconcile_embedding_space("space-1")
+        counts = dst.import_memory(payload)
+        assert counts["episodic"] == 1
+        assert counts["episodic_unembedded"] == 0
+        [src_row] = src.get_episodic_list(include_embedding=True)
+        [dst_row] = dst.get_episodic_list(include_embedding=True)
+        # ``write_episodic`` unit-normalizes every vector it stores; the source
+        # row was stored normalized already, so the round trip is exact up to
+        # float32 rounding of that idempotent step.
+        assert _unpack(dst_row["embedding"]) == pytest.approx(
+            _unpack(src_row["embedding"]), rel=1e-6, abs=1e-7
+        )
+
+    def test_a_near_duplicate_import_never_tombstones_an_active_episode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Merge-only: the similarity dedup that a carried vector switches on
+        must skip the imported row, not swap it in over the existing one."""
+        pytest.importorskip("numpy")
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        store = _store(tmp_path)  # no embed_fn, like the CLI's store
+        store.reconcile_embedding_space("space-1")
+        existing_text = "Team agreed on PostgreSQL for the database layer"
+        assert store.write_episodic(existing_text, embedding=[0.25] * _DIM, source="test")
+        [existing] = store.get_episodic_list()
+        # A stand-in index reporting the existing row as an exact match, so the
+        # dedup scan runs without a faiss install.
+        index = MagicMock()
+        index.ntotal = 1
+        index.search.return_value = (
+            np.array([[1.0]], dtype=np.float32),
+            np.array([[0]], dtype=np.int64),
+        )
+        monkeypatch.setattr(store, "_faiss_index", index)
+        monkeypatch.setattr(store, "_faiss_id_map", [existing["id"]])
+
+        longer = existing_text + ", after a long discussion that ran late into the evening"
+        assert len(longer) > len(existing_text) * 1.2
+        counts = store.import_memory(
+            {
+                "embedding_space_sig": "space-1",
+                "episodic": [{"text": longer, "embedding": [0.25] * _DIM}],
+            }
+        )
+        assert counts["episodic"] == 0
+        assert counts["skipped"] == 1
+        rows = store.get_episodic_list()
+        assert [r["text"] for r in rows] == [existing_text]
+        assert rows[0]["id"] == existing["id"]
+
+    def test_a_resigned_store_never_dedups_against_a_foreign_space_vector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A supplied vector from a space other than the store's recorded one
+        is dropped BEFORE the similarity scan: a stale in-memory index (another
+        process re-signed the database) must not skip a valid import on a
+        meaningless cross-space cosine."""
+        pytest.importorskip("numpy")
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        store = _store(tmp_path)  # no embed_fn, like the CLI's store
+        store.reconcile_embedding_space("space-1")
+        existing_text = "Team agreed on PostgreSQL for the database layer"
+        assert store.write_episodic(existing_text, embedding=[0.25] * _DIM, source="test")
+        [existing] = store.get_episodic_list()
+        index = MagicMock()
+        index.ntotal = 1
+        index.search.return_value = (
+            np.array([[1.0]], dtype=np.float32),
+            np.array([[0]], dtype=np.int64),
+        )
+        monkeypatch.setattr(store, "_faiss_index", index)
+        monkeypatch.setattr(store, "_faiss_id_map", [existing["id"]])
+        # The database was re-signed under this process's feet; its index is
+        # still the space-1 one the payload vector below would "match".
+        store.reconcile_embedding_space("space-2")
+        monkeypatch.setattr(store, "_faiss_index", index)
+        monkeypatch.setattr(store, "_faiss_id_map", [existing["id"]])
+
+        assert store.write_episodic(
+            "An unrelated note about the sprint retrospective",
+            embedding=[0.25] * _DIM,
+            source="test",
+            embedding_space="space-1",
+            preserve_existing=True,
+        )
+        index.search.assert_not_called()
+        rows = {r["text"]: r for r in store.get_episodic_list(include_embedding=True)}
+        assert rows["An unrelated note about the sprint retrospective"]["embedding"] is None
+
+    def test_a_re_sign_during_the_scan_does_not_skip_the_import(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A store re-signed by another process BETWEEN the admissibility
+        pre-check and a similarity match: the match is cross-space, so the
+        episode is written (without its vector) instead of skipped."""
+        pytest.importorskip("numpy")
+        from unittest.mock import MagicMock
+
+        import numpy as np
+
+        store = _store(tmp_path)  # no embed_fn, like the CLI's store
+        store.reconcile_embedding_space("space-1")
+        existing_text = "Team agreed on PostgreSQL for the database layer"
+        assert store.write_episodic(existing_text, embedding=[0.25] * _DIM, source="test")
+        [existing] = store.get_episodic_list()
+        index = MagicMock()
+        index.ntotal = 1
+        index.search.return_value = (
+            np.array([[1.0]], dtype=np.float32),
+            np.array([[0]], dtype=np.int64),
+        )
+        monkeypatch.setattr(store, "_faiss_index", index)
+        monkeypatch.setattr(store, "_faiss_id_map", [existing["id"]])
+
+        real_admissible = store._supplied_vector_admissible
+        calls: list[bool] = []
+
+        def _resign_after_first_read(blob: bytes | None, space: str | None) -> bool:
+            verdict = real_admissible(blob, space)
+            calls.append(verdict)
+            if len(calls) == 1:
+                # Another process re-signs the shared database right after
+                # the pre-check passed and before the scan's match is judged.
+                store.db.execute(
+                    "UPDATE memory_meta SET value = ? WHERE key = ?",
+                    ("space-2", "embedding_space_sig"),
+                )
+                store.db.commit()
+            return verdict
+
+        monkeypatch.setattr(store, "_supplied_vector_admissible", _resign_after_first_read)
+        assert store.write_episodic(
+            "An unrelated note about the sprint retrospective",
+            embedding=[0.25] * _DIM,
+            source="test",
+            embedding_space="space-1",
+            preserve_existing=True,
+        )
+        assert calls[:2] == [True, False]
+        rows = {r["text"]: r for r in store.get_episodic_list(include_embedding=True)}
+        assert existing_text in rows
+        assert rows["An unrelated note about the sprint retrospective"]["embedding"] is None
+
+    def test_an_unsigned_payload_lands_episodes_null_and_counts_them(
+        self, tmp_path: Path
+    ) -> None:
+        store = _store(tmp_path)  # neither a recorded space nor an embed_fn
+        counts = store.import_memory(
+            {"episodic": [{"text": self._TEXT, "embedding": [0.25] * _DIM}]}
+        )
+        assert counts["episodic"] == 1
+        assert counts["episodic_unembedded"] == 1
+        [row] = store.get_episodic_list(include_embedding=True)
+        assert row["embedding"] is None
+
+    def test_a_foreign_space_payload_does_not_carry_episodic_vectors(
+        self, tmp_path: Path
+    ) -> None:
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-2")
+        counts = store.import_memory(
+            {
+                "embedding_space_sig": "space-1",
+                "episodic": [{"text": self._TEXT, "embedding": [0.25] * _DIM}],
+            }
+        )
+        assert counts["episodic"] == 1
+        assert counts["episodic_unembedded"] == 1
+        [row] = store.get_episodic_list(include_embedding=True)
+        assert row["embedding"] is None
+
+    def test_a_supplied_vector_is_dropped_when_the_store_was_resigned(
+        self, tmp_path: Path
+    ) -> None:
+        """The named space is re-read inside the insert transaction: a store
+        recording a different space persists the text with a NULL vector."""
+        store = _store(tmp_path)
+        store.reconcile_embedding_space("space-2")
+        assert store.write_episodic(
+            self._TEXT, embedding=[0.25] * _DIM, source="test", embedding_space="space-1"
+        )
+        [row] = store.get_episodic_list(include_embedding=True)
+        assert row["embedding"] is None
+        # ...and kept when the store still records exactly that space, on both
+        # insert branches.
+        assert store.write_episodic(
+            self._TEXT + " (matching)",
+            embedding=[0.25] * _DIM,
+            source="test",
+            embedding_space="space-2",
+        )
+        assert store.write_episodic(
+            self._TEXT + " (matching, merge-only)",
+            embedding=[0.25] * _DIM,
+            source="test",
+            embedding_space="space-2",
+            preserve_existing=True,
+        )
+        rows = {r["text"]: r for r in store.get_episodic_list(include_embedding=True)}
+        assert rows[self._TEXT + " (matching)"]["embedding"] is not None
+        assert rows[self._TEXT + " (matching, merge-only)"]["embedding"] is not None
+
+
+class TestImportMemoryDeclaredModel:
+    """``embedding_model`` beside ``embedding_space_sig``: a verifiable claim."""
+
+    def test_a_declaration_that_produces_the_signature_is_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew import embeddings
+
+        sig = embeddings.embedding_space_signature("my-model", _DIM)
+        store = _store(tmp_path)
+        store.reconcile_embedding_space(sig)
+        counts = store.import_memory(
+            {
+                "embedding_space_sig": sig,
+                "embedding_model": {"model_id": "my-model", "dim": _DIM},
+                "semantic": [
+                    {"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}
+                ],
+            }
+        )
+        assert counts["semantic_unembedded"] == 0
+        assert _raw_semantic_embedding(store, "pref.editor") is not None
+
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            {"model_id": "some-other-model", "dim": _DIM},  # a different model
+            {"model_id": "my-model", "dim": _DIM * 2},  # a different width
+            {"model_id": "", "dim": _DIM},  # unverifiable
+            "my-model",  # not the documented shape
+        ],
+    )
+    def test_a_declaration_that_does_not_match_the_signature_refuses_the_carry(
+        self, tmp_path: Path, declared: object
+    ) -> None:
+        from kiro_crew import embeddings
+
+        sig = embeddings.embedding_space_signature("my-model", _DIM)
+        store = _store(tmp_path)
+        store.reconcile_embedding_space(sig)
+        counts = store.import_memory(
+            {
+                "embedding_space_sig": sig,
+                "embedding_model": declared,
+                "semantic": [
+                    {"key": "pref.editor", "value_json": '"vim"', "embedding": [0.25] * _DIM}
+                ],
+            }
+        )
+        assert counts["semantic"] == 1
+        assert counts["semantic_unembedded"] == 1
+        assert _raw_semantic_embedding(store, "pref.editor") is None
+
+
+class TestEmbeddingModelIdentity:
+    def test_the_bundled_signature_names_the_bundled_model(self) -> None:
+        from kiro_crew import embeddings
+
+        named = embeddings.embedding_model_for_signature(
+            embeddings.default_embedding_space_signature()
+        )
+        assert named == {"model_id": embeddings._MODEL_ID, "dim": embeddings._DEFAULT_DIM}
+
+    def test_an_unknown_signature_is_left_unnamed(self) -> None:
+        from kiro_crew import embeddings
+
+        assert embeddings.embedding_model_for_signature("not-a-known-space") is None
+        assert embeddings.embedding_model_for_signature(None) is None
+
+    def test_the_active_backend_names_its_own_space(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        class _Backend:
+            model_id = "custom-model"
+            dim = 384
+
+        monkeypatch.setattr(embeddings, "get_shared_embedder", lambda: _Backend())
+        sig = embeddings.embedding_space_signature("custom-model", 384)
+        assert embeddings.embedding_model_for_signature(sig) == {
+            "model_id": "custom-model",
+            "dim": 384,
+        }
+
+    def test_a_lone_surrogate_backend_id_is_left_unnamed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import embeddings
+
+        class _Backend:
+            model_id = "m\udcff"
+            dim = 4
+
+        monkeypatch.setattr(embeddings, "get_shared_embedder", lambda: _Backend())
+        # A lone surrogate survives json.loads but not a strict UTF-8 encode:
+        # the space stays unnamed instead of aborting a read-only export.
+        assert embeddings.embedding_model_for_signature("not-a-known-space") is None
+
+    def test_matches_signature(self) -> None:
+        from kiro_crew import embeddings
+
+        sig = embeddings.embedding_space_signature("m", 4)
+        assert embeddings.embedding_model_matches_signature({"model_id": "m", "dim": 4}, sig)
+        assert not embeddings.embedding_model_matches_signature({"model_id": "m", "dim": 5}, sig)
+        assert not embeddings.embedding_model_matches_signature({"model_id": "m", "dim": True}, sig)
+        assert not embeddings.embedding_model_matches_signature(None, sig)
+        # A lone surrogate survives json.loads but not a strict UTF-8 encode:
+        # refused, not raised.
+        assert not embeddings.embedding_model_matches_signature(
+            {"model_id": "m\udcff", "dim": 4}, sig
+        )
+
+
+class TestEmbeddingBlobToPayload:
+    def test_encodes_the_packed_bytes_verbatim(self) -> None:
+        blob = struct.pack("3f", 0.25, -1.5, 3.0)
+        payload = vm.embedding_blob_to_payload(blob)
+        assert isinstance(payload, str)
+        assert base64.b64decode(payload) == blob
+
+    @pytest.mark.parametrize("blob", [None, "", b"", b"\x00\x00\x00", 7, [0.1]])
+    def test_refuses_non_blob_shapes(self, blob: object) -> None:
+        assert vm.embedding_blob_to_payload(blob) is None
 
 
 class TestMigrateFromMarkdown:

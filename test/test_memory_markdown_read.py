@@ -77,11 +77,17 @@ class _EmptyVectorStore:
     def get_all_semantic(self) -> list:
         return []
 
-    def get_episodic_list(self, limit: int = 0) -> list:
+    def get_episodic_list(self, limit: int = 0, *, include_embedding: bool = False) -> list:
         return []
 
     def get_events(self, limit: int = 0) -> list:
         return []
+
+    def recorded_embedding_space(self) -> None:
+        return None
+
+    def has_stored_embeddings(self) -> bool:
+        return False
 
     def import_memory(self, data: dict) -> dict:
         return {"semantic": 0, "episodic": 0, "skipped": 0}
@@ -888,7 +894,17 @@ class TestMemoryExportMarkdown:
         """The regression guard that matters most: no flag, no shape change."""
         with patch.object(cli_commands, "VectorMemoryStore", _EmptyVectorStore):
             cli_commands._memory_cmd(self._export_args(include_markdown=False))
-        expected = json.dumps({"semantic": [], "episodic": [], "events": []}, indent=2, default=str)
+        expected = json.dumps(
+            {
+                "semantic": [],
+                "episodic": [],
+                "events": [],
+                "embedding_space_sig": None,
+                "embedding_model": None,
+            },
+            indent=2,
+            default=str,
+        )
         assert capsys.readouterr().out == expected + "\n"
 
     def test_export_with_flag_adds_markdown_collection(
@@ -901,7 +917,14 @@ class TestMemoryExportMarkdown:
         ):
             cli_commands._memory_cmd(self._export_args(include_markdown=True))
         data = json.loads(capsys.readouterr().out)
-        assert list(data) == ["semantic", "episodic", "events", "markdown"]
+        assert list(data) == [
+            "semantic",
+            "episodic",
+            "events",
+            "markdown",
+            "embedding_space_sig",
+            "embedding_model",
+        ]
         markdown = data["markdown"]
         assert "- prefers pytest" in markdown["preferences"]["content"]
         assert [e["date"] for e in markdown["history"]] == [

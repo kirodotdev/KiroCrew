@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -73,6 +74,8 @@ from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.embeddings import (
+    default_embedding_space_signature,
+    embedding_model_for_signature,
     get_shared_embedder,
     make_sync_embed_fn,
     model_file_present,
@@ -131,6 +134,8 @@ from kiro_crew.vector_memory import (
     _lesson_display_text,
     _lesson_scope,
     _lesson_scope_unusable,
+    embedding_blob_is_decodable,
+    embedding_blob_to_payload,
 )
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
@@ -2366,6 +2371,51 @@ _LEARN_EMBED_NOTE = (
     "  is ready."
 )
 
+# The import-path sibling of _LEARN_EMBED_NOTE, printed when an import lands
+# semantic rows with a NULL vector: this CLI store binds no embed_fn by design
+# (see the note above), and a payload's vectors are only persisted into a store
+# whose embedding-space signature matches the export's.
+_IMPORT_EMBED_NOTE = (
+    "  Those rows are keyword-searchable only for the moment: their embedding\n"
+    "  vectors are filled by the gateway's re-embed sweep after it next starts,\n"
+    "  once its embedding backend is ready. To carry vectors across installs\n"
+    "  directly, stop the gateway first, then copy memory.db and\n"
+    "  memory_index.db (with their -wal and -shm sidecars if present) instead\n"
+    "  of export/import — copying while the gateway runs can miss commits\n"
+    "  still in the write-ahead log."
+)
+
+
+def _export_json_default(value: object) -> object:
+    """``default=`` hook for the export encoder: a stored vector BLOB becomes base64.
+
+    A raw BLOB would otherwise survive only as an unrestorable ``repr`` string,
+    so it ships as ``embedding_blob_to_payload``'s base64 of the packed float32
+    bytes -- the form the import side persists, ~5.5 KB per 1024-dim row and
+    decoded on import as one bytes object rather than a thousand floats -- and
+    it is encoded at the moment the encoder reaches that row, not up front.
+    Everything else keeps the ``default=str`` fallback the export always had.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        encoded = embedding_blob_to_payload(value)
+        if encoded is not None:
+            return encoded
+    return str(value)
+
+
+def _write_export_json(write: Callable[[str], object], data: dict[str, object]) -> None:
+    """Stream *data* as ``json.dumps(data, indent=2, default=_export_json_default)`` would.
+
+    ``json.dumps`` is the join of ``JSONEncoder.iterencode``'s chunks, so
+    writing those chunks as they come yields identical bytes (the export
+    shape is a pinned contract) without ever materializing the payload as one
+    string; the ``default`` hook decodes each vector BLOB as the encoder
+    reaches its row.
+    """
+    for chunk in json.JSONEncoder(indent=2, default=_export_json_default).iterencode(data):
+        write(chunk)
+
+
 # INSERTED only. An enrichment resolves against the ONE existing row it rewrites
 # (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over
 # ``[] if matched else lesson_rows``), so the substring/topic-overlap claim is
@@ -3087,22 +3137,60 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                 print("✅ No suspicious content in memory.")
 
         elif action == "export":
+            recorded_before = store.recorded_embedding_space()
+            space_sig = recorded_before
+            if space_sig is None and store.has_stored_embeddings():
+                # Vectors stored before the space was ever versioned were all
+                # produced by the bundled model at its default width -- the
+                # provable identity of an un-versioned vector (see
+                # ``default_embedding_space_signature``). Shipping them
+                # unsigned would have import drop them for no reason.
+                space_sig = default_embedding_space_signature()
+            with_vectors = not getattr(args, "no_vectors", False)
+            semantic_rows = store.get_all_semantic()
+            episodic_rows = store.get_episodic_list(limit=10000, include_embedding=with_vectors)
+            if store.recorded_embedding_space() != recorded_before:
+                # A live model swap landed between the reads, so the rows'
+                # vectors cannot be attributed to one space. Ship them
+                # unsigned: import then refuses the carry and re-embeds.
+                space_sig = None
+            for row in (*semantic_rows, *episodic_rows):
+                # The key is dropped for a row that ships no vector -- a NULL
+                # column, a malformed BLOB, or ``--no-vectors`` (the old-weight
+                # payload for consumers that pipe the export). A shippable BLOB
+                # stays a BLOB here and is encoded by the encoder's ``default``
+                # hook as its row is written (``_write_export_json``).
+                if not with_vectors or not embedding_blob_is_decodable(row.get("embedding")):
+                    row.pop("embedding", None)
+            if not with_vectors:
+                space_sig = None
             data: dict[str, object] = {
-                "semantic": store.get_all_semantic(),
-                "episodic": store.get_episodic_list(limit=10000),
+                "semantic": semantic_rows,
+                "episodic": episodic_rows,
                 "events": store.get_events(limit=1000),
             }
             if getattr(args, "include_markdown", False):
                 # Opt-in so the default payload shape stays byte-identical
                 # for existing consumers.
                 data["markdown"] = _markdown_memory_store().markdown_snapshot()
-            output = json.dumps(data, indent=2, default=str)
+            # Appended after every pre-existing key — the optional markdown
+            # collection included — so each keeps its position for
+            # shape-sniffing consumers. Scopes the vectors above: import
+            # persists them only into a store recording the same space.
+            data["embedding_space_sig"] = space_sig
+            # The identity the signature hashes, when this process can name
+            # it (bundled model, or the active backend): vectors only rank
+            # against queries embedded by the SAME model, so a reader can see
+            # which one produced these, and import verifies the pair agree.
+            data["embedding_model"] = embedding_model_for_signature(space_sig)
             out_file = getattr(args, "output", None)
             if out_file:
-                Path(out_file).write_text(output, encoding="utf-8")
+                with open(out_file, "w", encoding="utf-8") as fh:
+                    _write_export_json(fh.write, data)
                 print(f"Exported to {out_file}")
             else:
-                print(output)
+                _write_export_json(sys.stdout.write, data)
+                print()
 
         elif action == "migrate":
             counts = store.migrate_from_markdown()
@@ -3139,6 +3227,34 @@ def _memory_cmd(args: argparse.Namespace) -> None:
             print(f"  Semantic: {counts['semantic']}")
             print(f"  Episodic: {counts['episodic']}")
             print(f"  Skipped:  {counts['skipped']}")
+            sem_null = counts.get("semantic_unembedded", 0)
+            epi_null = counts.get("episodic_unembedded", 0)
+            if sem_null > 0:
+                print(f"  Semantic rows without a vector: {sem_null}")
+            if epi_null > 0:
+                print(f"  Episodic rows without a vector: {epi_null}")
+            if sem_null > 0 or epi_null > 0:
+                payload_sig = data.get("embedding_space_sig") if isinstance(data, dict) else None
+                declared = data.get("embedding_model") if isinstance(data, dict) else None
+                if (
+                    payload_sig
+                    and payload_sig != store.recorded_embedding_space()
+                    and isinstance(declared, dict)
+                ):
+                    # Name the mismatch: the vectors exist but rank only against
+                    # queries embedded by the model that produced them. Both
+                    # fields come straight from the import file, so they are
+                    # scrubbed of terminal control sequences like every other
+                    # memory value this command prints (a hostile payload must
+                    # not get to drive the terminal through the notice).
+                    model_id = _TERMINAL_CTRL_RE.sub("", str(declared.get("model_id")))[:200]
+                    dim = _TERMINAL_CTRL_RE.sub("", str(declared.get("dim")))[:20]
+                    print(
+                        f"  The payload's vectors were produced by {model_id} (dim {dim}); "
+                        f"this store records a different embedding space, so they were "
+                        f"not carried."
+                    )
+                print(_IMPORT_EMBED_NOTE)
             if "markdown" in data:
                 # The markdown collection is export-only: the markdown layer is
                 # consolidator-owned, so import never writes it. Say so rather
