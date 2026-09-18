@@ -1427,8 +1427,9 @@ describe('useKeyboardShortcuts — stop speaking (Escape)', () => {
 //
 // The test platform is not macOS (IS_MAC froze false at module load), so the
 // registry's `mod` resolves to Ctrl here: Ctrl+N is new session, Ctrl+W close
-// session, Ctrl+/ the shortcuts reference, Ctrl+, settings. The Option/Alt
-// chords they replaced stay live as aliases for one release.
+// session, Ctrl+/ the shortcuts reference. Settings is the exception — it is
+// Alt+, off macOS, never Ctrl+,, because Ctrl+, is a CJK-IME comma (#9824). The
+// Option/Alt chords the others replaced stay live as aliases for one release.
 describe('useKeyboardShortcuts — registry chords (conventional defaults + aliases)', () => {
   const onToggleShortcutsModal = vi.fn()
   const onNewChat = vi.fn()

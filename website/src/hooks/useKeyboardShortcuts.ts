@@ -496,14 +496,17 @@ export function registerPanelShortcut(entry: { code: string; path: string; label
 
 /**
  * True when `e` is the platform's "open Settings" chord, as the registry defines
- * it: ⌘, on macOS / Ctrl+, on Windows-Linux, plus the Option/Alt+, alias.
+ * it: ⌘, on macOS / Alt+, on Windows-Linux, plus the Option/Alt+, macOS alias.
  *
  * ⌘, is the OS-standard Preferences chord on macOS, and the one the desktop app's
- * "Settings…" menu item advertises (electron/app-menu.js binds `CmdOrCtrl+,`);
- * Ctrl+, is the VS Code convention on Windows/Linux. In the desktop shell the
- * menu accelerator fires first there, which is fine — same destination.
+ * "Settings…" menu item advertises (electron/app-menu.js binds `CmdOrCtrl+,`
+ * there). Windows/Linux is Alt+, instead: Ctrl+, is how a Chinese or Japanese IME
+ * types a comma, so binding it swallows comma input entirely (#9824). Off macOS
+ * the menu registers nothing and only DISPLAYS an Alt+, caption, so no menu
+ * accelerator fires ahead of this handler — the chord is owned here.
  *
- * Option/Alt+, stays accepted everywhere, rendered as an alias: a Mac browser can
+ * Option/Alt+, is accepted on both platforms: the primary off macOS, an alias on
+ * macOS, where a Mac browser can
  * claim ⌘, as its own Preferences accelerator before the page ever sees the
  * keydown, so dropping the Option chord would leave those users with no keyboard
  * route to Settings. Exactly one primary modifier either way, so the chord can't
@@ -861,11 +864,12 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       }
     }
 
-    // Settings — ⌘, on macOS, Ctrl+, on Windows/Linux, Option/Alt+, alias
-    // everywhere (see the registry entry for why). Handled BEFORE the Alt gate
-    // below because the primary chord carries no Alt. Fires even when shortcuts
-    // are globally disabled, so the user can always reach the toggle that
-    // re-enables them.
+    // Settings — ⌘, on macOS, Alt+, on Windows/Linux, Option/Alt+, a macOS
+    // alias (see the registry entry for why). Must stay BEFORE the Alt gate
+    // below: off macOS the primary chord now CARRIES Alt, so moving this branch
+    // under that gate would take Alt+, away from Settings. Fires even when
+    // shortcuts are globally disabled, so the user can always reach the toggle
+    // that re-enables them.
     if (hit === 'open-settings') {
       e.preventDefault()
       navigate('/settings')
