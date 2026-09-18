@@ -3134,7 +3134,7 @@ def _isolate_kirocrew_home(request, _isolation_dirs, _floor_monkeypatch):
     ``<config_dir>/workspace_dir`` file it falls back to the platform's
     ``_default_workspace_base()`` plus ``kirocrew-workspace``, which on Linux/macOS
     is the operator's real ``~/workplace``. Any test that reaches an agent working
-    directory (``workspace_root()``, ``_session_work_dir()``, ``outbox_dir()``)
+    directory (``workspace_root()``, ``session_default_cwd()``, ``outbox_dir()``)
     without setting its own ``KIROCREW_WORKSPACE`` therefore ``mkdir``s and writes
     into that real tree. Unlike ``config_dir()``, ``workspace_root()`` reads the env
     var fresh on every call and caches nothing, so there is no module-global memo to

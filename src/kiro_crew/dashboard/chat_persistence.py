@@ -1527,6 +1527,10 @@ def _rehydrate_slot_from_history(
             slot.agent_kind = meta["agent_kind"]
         if meta.get("project"):
             slot.project = meta["project"]
+        # Restored independently of the project: a record written before the marker existed
+        # carries a stale directory, and its absent marker must not read as "never cleared".
+        # Literal True only: the STRING "false" is truthy, and would restore a clear never made.
+        slot.project_cleared = meta.get("project_cleared") is True
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
         # history JSONL is a file on disk, so a truncated write or a hand-edit can
         # leave the ``executor="remote"`` marker without a valid instance_id /
@@ -2179,6 +2183,9 @@ def _apply_recent_session(
         slot.agent_kind = meta["agent_kind"]
     if meta.get("project"):
         slot.project = meta["project"]
+    # Same rehydration as _rehydrate_slot_from_history, including its literal-True guard:
+    # without the marker a restored clear is spelled the same as a project never set.
+    slot.project_cleared = meta.get("project_cleared") is True
     if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
         slot.mode = _mode
     if meta.get("created_by"):
@@ -3732,8 +3739,10 @@ def _save_slot_to_history(
                 # Clearable like memory_store: a name-only pick after a template
                 # pick must not keep advertising the template namespace.
                 fields["agent_kind"] = slot.agent_kind
-                if slot.project:
-                    fields["project"] = slot.project
+                # CLEARABLE like memory_store above: the merge cannot delete a key, so a
+                # truthy-only write leaves the old directory on disk for the next restart.
+                fields["project"] = slot.project
+                fields["project_cleared"] = bool(slot.project_cleared)
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:
@@ -4115,8 +4124,14 @@ def _save_slot_to_history(
                 meta_line["memory_store"] = _named
             if slot.agent_kind:
                 meta_line["agent_kind"] = slot.agent_kind
-            if slot.project:
-                meta_line["project"] = slot.project
+            # Unconditional, matching the empty-window merge mirror: this branch is
+            # taken whenever the slot holds messages, so a truthy-only write is the
+            # path EVERY active conversation takes. The marker is the half that
+            # cannot be inferred -- absent from disk it rehydrates False, the claim
+            # answers no directory, and the warm pool's stored-cwd override rebinds
+            # the project the user removed.
+            meta_line["project"] = slot.project
+            meta_line["project_cleared"] = bool(slot.project_cleared)
             # Remote-execution binding. All three are written together or not at
             # all: a half-restored binding (executor="remote" with no peer slot)
             # is the fail-closed refusal case, so persisting the marker without
