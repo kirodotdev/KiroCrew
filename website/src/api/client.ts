@@ -3039,7 +3039,11 @@ export const api = {
   saveMemoryPreferences: (content: string, store?: string) => put('/api/memory/preferences' + memoryStoreQuery(store), { content }),
   memoryProjects: (store?: string) => fetch('/api/memory/projects' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
   saveMemoryProjects: (content: string, store?: string) => put('/api/memory/projects' + memoryStoreQuery(store), { content }),
-  memoryHistory: (store?: string) => fetch('/api/memory/history' + memoryStoreQuery(store)).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
+  memoryHistory: (store?: string, date?: string) => fetch(
+    '/api/memory/history'
+      + (date ? `?date=${encodeURIComponent(date)}` : '')
+      + memoryStoreQuery(store, date ? '&' : '?'),
+  ).then(j) as Promise<{ content?: string; content_redacted?: boolean }>,
   saveMemoryHistory: (content: string, store?: string) => put('/api/memory/history' + memoryStoreQuery(store), { content }),
   memorySettings: () => fetch('/api/memory/settings').then(j),
   saveMemorySettings: (s: {history_idle_hours?: number; history_max_days?: number}) => put('/api/memory/settings', s),

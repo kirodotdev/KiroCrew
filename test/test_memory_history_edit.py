@@ -179,3 +179,59 @@ async def test_private_history_rechecks_exact_target_before_replacement(env, mon
     assert sentinel in winner
     assert await asyncio.to_thread(today.read_bytes) == winner
     assert "AKIAIOSFODNN7EXAMPLE" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store_name", ["", "member-alice"], ids=["global-v1", "member-v2"])
+async def test_history_date_query_reads_only_that_day(env, store_name):
+    store = await document_store(env, store_name)
+    today = store._today_history_file()
+    day = date.fromisoformat(today.stem)
+    yesterday = today.with_name(f"{day - timedelta(days=1)}.md")
+    # newline="" keeps the bytes as written: the endpoint returns the file
+    # verbatim, and Windows text mode would otherwise store CRLF.
+    await asyncio.to_thread(
+        yesterday.write_text,
+        "# Yesterday\nPrior day sentinel.\n",
+        encoding="utf-8",
+        newline="",
+    )
+    await asyncio.to_thread(
+        today.write_text, "# Today\nCurrent day sentinel.\n", encoding="utf-8", newline=""
+    )
+    query = {"date": yesterday.stem}
+    if store_name:
+        query["store"] = store_name
+
+    response = await memory.api_memory_history(
+        request(env, query=query, owner=True, session="dashboard:ui")
+    )
+
+    assert response.status == 200
+    assert json.loads(response.text) == {
+        "content": "# Yesterday\nPrior day sentinel.\n",
+        "content_redacted": False,
+    }
+
+    # A day with no file is an ordinary empty day, not an error.
+    blank = {**query, "date": f"{day - timedelta(days=2)}"}
+    empty = await memory.api_memory_history(
+        request(env, query=blank, owner=True, session="dashboard:ui")
+    )
+    assert empty.status == 200
+    assert json.loads(empty.text) == {"content": "", "content_redacted": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_date", ["today", "2026-13-01", "2026-9-1", "../preferences", "2026-09-01/../x"]
+)
+async def test_history_date_query_rejects_malformed_dates(env, bad_date):
+    await document_store(env, "")
+
+    response = await memory.api_memory_history(
+        request(env, query={"date": bad_date}, owner=True, session="dashboard:ui")
+    )
+
+    assert response.status == 400
+    assert json.loads(response.text)["code"] == "invalid_history_date"

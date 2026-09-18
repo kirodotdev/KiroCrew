@@ -12209,6 +12209,28 @@
         "count_by": "统计维度",
         "memory": "记忆",
         "not_recorded": "未记录"
+      },
+      "todayCard": {
+        "folder_sessions_other": "{{folder}} 中有 {{count}} 个会话",
+        "go_to_chat": "前往聊天",
+        "in_memory": "已存入记忆",
+        "last_active": "最近活动 {{time}}",
+        "memory_empty_title": "今天还没有内容存入记忆",
+        "memory_entries_other": "{{count}} 条条目已存入记忆",
+        "memory_footnote_other": "会话在闲置 {{count}} 小时后会被总结进记忆。",
+        "memory_read_failed": "无法读取今天的记忆条目",
+        "messages_other": "{{count}} 条消息",
+        "no_sessions_body": "你今天参与的会话会按文件夹分组显示在这里。",
+        "no_sessions_yet": "今天还没有会话",
+        "open_memory": "打开记忆",
+        "running": "{{n}} 个进行中",
+        "running_label": "进行中",
+        "sessions_read_failed": "无法读取今天的会话",
+        "sessions_active_scope": "今天有过活动的会话，包括更早开始的会话。",
+        "sessions_active_other": "今天活跃 {{count}} 个会话",
+        "sessions_today": "今天的会话",
+        "title": "今天",
+        "unfiled": "未归档"
       }
     },
     "overviewPage": {
@@ -12225,7 +12247,7 @@
       "overview": "概览",
       "reconnecting": "正在重连…",
       "semantic_memory_active": "· 语义记忆已启用",
-      "sessions": "个会话 ·",
+      "sessions": "个会话已开始 ·",
       "stat_cron_jobs": "定时任务",
       "stat_lessons": "经验",
       "stat_messages": "消息",
