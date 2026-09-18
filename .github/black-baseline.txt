@@ -464,7 +464,6 @@ test/test_computer_use_overlay.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
 test/test_config_meta_stamp.py
-test/test_config_rmw_preserves_settings.py
 test/test_connections_kiro_spec_fields.py
 test/test_connections_l0_probe.py
 test/test_connections_registry.py

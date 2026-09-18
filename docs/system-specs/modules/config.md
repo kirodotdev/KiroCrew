@@ -1761,7 +1761,7 @@ happens to notice — which is the bug class this closes.
 | `KiroCrewConfig.save()` | `config/loader.py` |
 | `_persist_config_migration` | `config/loader.py` — a boot migration is a config write like any other |
 | `refresh_config_meta_stamp` | `config/loader.py` — kicks only when the stamp actually moved (no rewrite, no mtime churn) |
-| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`; the per-channel savers and the STT PUT reach the file through here, bypassing the loader's writers |
+| `_atomic_json_write` | `agent.py` — via `_notify_if_config_write`, and ONLY when the target resolves to `config_path()`; the remaining per-channel savers and the STT PUT reach the file through here, bypassing the loader's writers. Held to a shrinking baseline by `TestTheAtomicJsonWriteConfigFamilyIsRatcheted`, so a new saver cannot join them; the Feishu and iMessage savers are already on `update_config_locked` and are the shape to copy |
 
 A handler that must answer only after the new value is in force calls
 `ConfigWatch.refresh_now()` (`handlers/core.py::_hot_apply_after_write`), which

@@ -1519,18 +1519,23 @@ def update_config_locked(
     a stale snapshot saved after a locked update overwrites it with older
     values.  The lock fixes interleaving, not staleness.
 
-    A SECOND family of writers still bypasses this lock, and the ratchet does
-    NOT reach it: writers that reach ``config_path()`` through
-    ``kiro_crew.agent._atomic_json_write`` (``messaging.py``'s per-channel
-    savers, ``core.py``'s STT PUT, ``mcp.py``'s gateway-enable). The ratchet
-    matches calls to :func:`write_config_atomically`, and these make none.
+    A SECOND family of writers still bypasses this lock: writers that reach
+    ``config_path()`` through ``kiro_crew.agent._atomic_json_write``
+    (``messaging.py``'s per-channel savers, ``core.py``'s STT PUT, ``mcp.py``'s
+    gateway-enable). ``TestEveryConfigWriterIsLocked`` does not reach them --
+    it matches calls to :func:`write_config_atomically`, and these make none --
+    so they have their own ratchet,
+    ``TestTheAtomicJsonWriteConfigFamilyIsRatcheted`` in the same file, which
+    pins that family to a baseline that may only SHRINK.
 
     That family relies on the in-process asyncio ``_get_config_lock()`` only,
     which serializes same-loop callers and nothing else, so it can still
-    interleave with a holder of this lock.  Converting it is follow-up work; do
-    not read the ratchet's green as covering it, and note that an ALIASED
-    import of :func:`write_config_atomically` would evade it for the same
-    matching reason.
+    interleave with a holder of this lock.  Converting the remaining members is
+    follow-up work (``api_feishu_config_save`` and ``api_imessage_config_save``
+    are already through here and are the shape to copy); do not read either
+    ratchet's green as meaning the family is converted, only that it cannot
+    grow, and note that an ALIASED import of :func:`write_config_atomically`
+    would evade the sibling ratchet for the same matching reason.
 
     Contract:
 
