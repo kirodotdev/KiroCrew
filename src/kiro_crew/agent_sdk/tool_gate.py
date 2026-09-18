@@ -58,6 +58,7 @@ import os
 from enum import Enum
 from pathlib import PurePosixPath
 
+from kiro_crew import platform_compat
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
@@ -375,6 +376,13 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
 
     Returns for a harness this core does not enforce, so the first-class path and
     every unenforced harness reach the spawn unchanged.
+
+    Native Windows has no Crew OS sandbox backend that can apply the mask, so the
+    refusal there names that limitation and points at Kiro CLI rather than at
+    ``agent.sandbox``: changing the configured tier cannot enable a backend this
+    host does not have. The generic set-standard-or-strict remedy is kept for
+    hosts where a backend can exist. Neither message consults
+    ``sandbox_allow_unsandboxed_exec``.
     """
     if not is_enforced(backend):
         return
@@ -390,6 +398,16 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     # with its credential mask dropped.
     if credential_mask_applies(mode):
         return
+    # Platform copy only: the verdict above already decided the session cannot
+    # start. Recommending standard/strict is advice that cannot succeed on native
+    # Windows, where Crew has no OS sandbox backend to apply the mask.
+    if platform_compat.IS_WINDOWS:
+        raise ToolGateUnroutable(
+            "{} cannot run on native Windows because Kiro Crew has no supported OS "
+            "sandbox backend here to protect credential files; changing agent.sandbox "
+            "cannot enable it. Select Kiro CLI in Settings → Agent Backend and start "
+            "a new session.".format(label_for(backend))
+        )
     raise ToolGateUnroutable(
         "{} routes tool calls through an enforced permission route whose "
         "compensating control is an OS-level credential mask, but this session would "

@@ -24,6 +24,7 @@ import pathlib
 import pytest
 
 from kiro_crew import acp_tool_gate as gate
+from kiro_crew import platform_compat
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -32,6 +33,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_ROUTING,
     Routing,
     permission_config_for,
     routing_for,
@@ -39,6 +41,14 @@ from kiro_crew.acp_backends import (
 from kiro_crew.security import sensitive_home_dirs
 
 AGENT_SPEC_BACKENDS = (ACP_BACKEND_KIRO, ACP_BACKEND_KAS)
+
+#: Production routing table, not a hand-maintained id list: a newly enforced
+#: harness must pick up the Windows copy with its own ``label_for`` name.
+ENFORCED_BACKENDS = tuple(
+    backend for backend, routing in ACP_BACKEND_ROUTING.items() if routing in gate.ENFORCED_ROUTINGS
+)
+
+_GENERIC_SANDBOX_REMEDY = "Set agent.sandbox to 'standard' or 'strict'"
 
 
 # ── Truth: what the verdict says ─────────────────────────────────────────────
@@ -680,3 +690,134 @@ def test_nested_sandbox_passthrough_refuses_an_enforced_adapter(
     monkeypatch.setattr(sandbox, "_macos_sandbox_state", lambda: None)
     with pytest.raises(gate.ToolGateUnroutable):
         gate.enforce_sandbox_floor(ACP_BACKEND_CODEX, "standard")
+
+
+def _pin_no_sandbox_backend(monkeypatch: pytest.MonkeyPatch, *, opted_in: bool = False) -> None:
+    """Pin the probes ``credential_mask_applies`` reads; never the operator config."""
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+    monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: opted_in)
+
+
+def _assert_windows_sandbox_refusal(exc: BaseException, backend: str) -> None:
+    """The Windows copy names this harness and does not recommend a sandbox toggle."""
+    msg = str(exc)
+    assert type(exc) is gate.ToolGateUnroutable
+    assert gate.label_for(backend) in msg
+    assert "native Windows" in msg
+    assert "no supported OS sandbox backend" in msg
+    assert "Kiro CLI" in msg
+    assert "Settings → Agent Backend" in msg
+    assert "new session" in msg
+    assert _GENERIC_SANDBOX_REMEDY not in msg
+    assert "sandbox_allow_unsandboxed_exec" not in msg
+
+
+@pytest.mark.parametrize("mode", ["auto", "standard", "strict", "off"])
+@pytest.mark.parametrize("opted_in", [True, False])
+def test_windows_refuses_opencode_for_every_sandbox_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str, opted_in: bool
+) -> None:
+    """Native Windows has no Crew sandbox backend, so OpenCode cannot start.
+
+    Changing agent.sandbox cannot create one, and the unsandboxed-exec opt-in is
+    not a recovery path. Revert-verified: the generic refusal recommends
+    standard/strict and fails the copy assertions below.
+    """
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _pin_no_sandbox_backend(monkeypatch, opted_in=opted_in)
+    with pytest.raises(gate.ToolGateUnroutable) as excinfo:
+        gate.enforce_sandbox_floor(ACP_BACKEND_OPENCODE, mode)
+    _assert_windows_sandbox_refusal(excinfo.value, ACP_BACKEND_OPENCODE)
+    assert "OpenCode" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("backend", ENFORCED_BACKENDS)
+def test_windows_refusal_uses_the_enforced_harness_label(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    """Every enforced harness gets its own display name, not the OpenCode example."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _pin_no_sandbox_backend(monkeypatch)
+    with pytest.raises(gate.ToolGateUnroutable) as excinfo:
+        gate.enforce_sandbox_floor(backend, "standard")
+    _assert_windows_sandbox_refusal(excinfo.value, backend)
+
+
+@pytest.mark.parametrize("mode", ["off", "standard"])
+def test_kiro_cli_is_unaffected_on_windows(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    """Platform messaging is reached only after the enforced-harness guard.
+
+    Kiro CLI is not an enforced harness, so a simulated Windows host with
+    sandbox off still starts it. Revert-verified: moving the Windows branch
+    above ``is_enforced`` refuses the first-class path.
+    """
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _pin_no_sandbox_backend(monkeypatch)
+    gate.enforce_sandbox_floor(ACP_BACKEND_KIRO, mode)
+
+
+def test_windows_still_passes_when_the_mask_applies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows copy is refusal text, not a second admission rule.
+
+    A working backend whose governance floor raises ``off`` still starts on a
+    simulated Windows host, matching the non-Windows governed-floor path.
+    """
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "standard")
+    monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+    monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "namespace")
+    gate.enforce_sandbox_floor(ACP_BACKEND_OPENCODE, "off")
+
+
+@pytest.mark.parametrize("mode,detect", [("off", "namespace"), ("standard", "none")])
+def test_non_windows_keeps_the_generic_sandbox_refusal(
+    monkeypatch: pytest.MonkeyPatch, mode: str, detect: str
+) -> None:
+    """A host that CAN have a backend still gets the set-standard-or-strict remedy."""
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: None)
+    monkeypatch.setattr(sandbox, "detect_backend", lambda **_: detect)
+    monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
+    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: False)
+    with pytest.raises(gate.ToolGateUnroutable) as excinfo:
+        gate.enforce_sandbox_floor(ACP_BACKEND_OPENCODE, mode)
+    msg = str(excinfo.value)
+    assert "OpenCode" in msg
+    assert "native Windows" not in msg
+    assert _GENERIC_SANDBOX_REMEDY in msg
+
+
+def test_sandbox_preflight_retains_the_windows_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spawn-path translation keeps the platform-aware remedy.
+
+    ``acp/client.py::_sandbox_preflight`` wraps ``ToolGateUnroutable`` in
+    ``AcpToolGateUnroutable``. A translation that dropped the message would send
+    the operator back to the generic sandbox advice that cannot succeed on
+    native Windows. Uses the real preflight; does not start a child.
+    """
+    from kiro_crew.acp import client as acp_client
+    from kiro_crew.acp.client import AcpToolGateUnroutable
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    _pin_no_sandbox_backend(monkeypatch)
+    with pytest.raises(AcpToolGateUnroutable) as excinfo:
+        acp_client._sandbox_preflight(ACP_BACKEND_OPENCODE, "standard")
+    msg = str(excinfo.value)
+    assert "OpenCode" in msg
+    assert "native Windows" in msg
+    assert "Kiro CLI" in msg
+    assert "Settings → Agent Backend" in msg
+    assert _GENERIC_SANDBOX_REMEDY not in msg
+    assert "sandbox_allow_unsandboxed_exec" not in msg
