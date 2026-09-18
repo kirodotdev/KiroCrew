@@ -5130,6 +5130,8 @@
       "installs": "installs",
       "license": "License:",
       "loading_preview": "Loading preview...",
+      "preview_try_again": "Try again",
+      "preview_failed_generic": "Couldn't load the preview. Check the connection and try again.",
       "overwrite": "Overwrite",
       "select_a_skill_to_preview": "Select a skill to preview",
       "skill_search_results": "Skill search results",

@@ -13,8 +13,8 @@ them — and those guards are the security-relevant part of this module:
     the ``AGENTS.md``-only bundle that is copied to ``SKILL.md``, and the
     containment refusal when the provider directory is a symlink out of the
     skills root;
-  * **preview** — the missing-parameter 400, the unavailable-provider 404, and
-    the two ``_empty`` responses (fetch raised, content empty).
+  * **preview** — the missing-parameter 400, the unavailable-provider 404, the
+    502 when the fetch raises and the 404 when the content is blank.
 
 Handlers are invoked through ``make_mocked_request`` (no socket bound), the
 provider is a local double (no network), ``_skills_dir`` is pinned into
@@ -345,23 +345,71 @@ async def test_install_404_when_the_provider_returns_nothing(
 async def test_install_413_when_the_bundle_exceeds_the_size_limit(
     state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
 ) -> None:
-    big = "x" * (5 * 1024 * 1024 + 1)
+    big = "x" * (10 * 1024 * 1024 + 1)
     registry.register(_BundleProvider(bundle=[("SKILL.md", big)]))
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
     response = await h.api_skills_discover_install(request)
     assert response.status == 413
-    assert "5 MiB" in _body(response)["error"]
+    body = _body(response)
+    assert body["code"] == "too_large"
+    assert "above the 10.0 MiB limit" in body["error"]
+    assert body["error"].startswith("Skill bundle is just over 10.0 MiB")
+    kwargs = sel_mock.log_tool_invocation.call_args.kwargs
+    assert kwargs["outcome"] == "error"
+    assert kwargs["error"] == "too_large"
+    assert kwargs["downstream_service"] == "covprov"
+
+
+@pytest.mark.asyncio
+async def test_install_413_counts_the_skill_md_synthesized_from_agents_md(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
+) -> None:
+    """An AGENTS.md-only bundle is written twice (the loader needs a SKILL.md),
+    so a bundle just over half the budget exceeds what gets written."""
+    half_plus = "a" * (5 * 1024 * 1024 + 1)
+    registry.register(_BundleProvider(bundle=[("AGENTS.md", half_plus)]))
+    request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
+    response = await h.api_skills_discover_install(request)
+    assert response.status == 413
+    assert _body(response)["code"] == "too_large"
+    assert sel_mock.log_tool_invocation.call_args.kwargs["error"] == "too_large"
+
+
+@pytest.mark.asyncio
+async def test_install_accepts_an_agents_md_bundle_whose_copy_fits_the_budget(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock, skills_root: Path
+) -> None:
+    under_half = "a" * (4 * 1024 * 1024)
+    registry.register(_BundleProvider(bundle=[("AGENTS.md", under_half)]))
+    request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
+    response = await h.api_skills_discover_install(request)
+    assert response.status == 200
+    assert (skills_root / "covprov" / "cov-skill" / "SKILL.md").exists()
 
 
 @pytest.mark.asyncio
 async def test_install_413_when_single_file_content_exceeds_the_size_limit(
     state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
 ) -> None:
-    registry.register(_SingleFileProvider(content="y" * (5 * 1024 * 1024 + 1)))
+    registry.register(_SingleFileProvider(content="y" * (10 * 1024 * 1024 + 1)))
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
     response = await h.api_skills_discover_install(request)
     assert response.status == 413
-    assert _body(response)["error"] == "Skill content exceeds size limit"
+    assert _body(response)["code"] == "too_large"
+    assert "above the 10.0 MiB limit" in _body(response)["error"]
+
+
+@pytest.mark.asyncio
+async def test_install_accepts_a_bundle_between_the_old_and_new_budget(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
+) -> None:
+    """A public slide-deck skill ships a multi-MiB bundle: the wire cap and the
+    install cap are ONE 10 MiB budget, so a 6 MiB bundle installs."""
+    big = "x" * (6 * 1024 * 1024)
+    registry.register(_BundleProvider(bundle=[("SKILL.md", "# s\n"), ("assets/big.txt", big)]))
+    request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
+    response = await h.api_skills_discover_install(request)
+    assert response.status == 200
 
 
 @pytest.mark.asyncio
@@ -561,7 +609,7 @@ async def test_preview_falls_back_to_single_file_fetch_when_the_bundle_is_empty(
 
 
 @pytest.mark.asyncio
-async def test_preview_returns_empty_when_the_fetch_raises(
+async def test_preview_answers_502_when_the_fetch_raises(
     state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
 ) -> None:
     provider = _BundleProvider()
@@ -570,19 +618,21 @@ async def test_preview_returns_empty_when_the_fetch_raises(
     )
     registry.register(provider)
     request = _mk("GET", "/p?provider=covprov&id=cov-skill", state=state)
-    payload = _body(await h.api_skills_discover_preview(request))
-    assert payload == {"description": "", "name": "", "content": "", "files": [], "file_count": 0}
+    response = await h.api_skills_discover_preview(request)
+    assert response.status == 502
+    assert _body(response)["code"] == "fetch_failed"
     assert sel_mock.log_tool_invocation.call_args.kwargs["error"] == "fetch_failed"
 
 
 @pytest.mark.asyncio
-async def test_preview_returns_empty_when_the_content_is_blank(
+async def test_preview_answers_404_when_the_content_is_blank(
     state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
 ) -> None:
     registry.register(_SingleFileProvider(content=""))
     request = _mk("GET", "/p?provider=covprov&id=cov-skill", state=state)
-    payload = _body(await h.api_skills_discover_preview(request))
-    assert payload["file_count"] == 0
+    response = await h.api_skills_discover_preview(request)
+    assert response.status == 404
+    assert _body(response)["code"] == "empty_content"
     assert sel_mock.log_tool_invocation.call_args.kwargs["error"] == "empty_content"
 
 

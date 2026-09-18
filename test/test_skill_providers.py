@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.skill_providers.base import ProviderRegistry, SkillSearchResult
+from kiro_crew.skill_providers.base import (
+    ProviderRegistry,
+    SkillBadFormat,
+    SkillSearchResult,
+)
 from kiro_crew.skill_providers.skillsh import (
     SkillsShConfig,
     SkillsShProvider,
@@ -288,7 +292,7 @@ class TestSkillsShDownloadUrl:
     async def test_download_url_preserves_path_slashes(self):
         captured = {}
 
-        def fake_fetch(url):
+        def fake_fetch(url, max_bytes=None):
             captured["url"] = url
             return {"files": [{"path": "SKILL.md", "contents": "# ok"}]}
 
@@ -311,7 +315,7 @@ class TestSkillsShDownloadUrl:
     async def test_download_url_still_encodes_query_and_fragment(self):
         captured = {}
 
-        def fake_fetch(url):
+        def fake_fetch(url, max_bytes=None):
             captured["url"] = url
             return {"files": [{"path": "SKILL.md", "contents": "# ok"}]}
 
@@ -331,7 +335,7 @@ class TestSkillsShDownloadUrl:
     async def test_download_rejects_traversal_ids(self):
         calls = {"n": 0}
 
-        def fake_fetch(url):
+        def fake_fetch(url, max_bytes=None):
             calls["n"] += 1
             return {"files": [{"path": "SKILL.md", "contents": "x"}]}
 
@@ -355,27 +359,32 @@ class TestSkillsShBundleMalformedInput:
     AttributeError at f.get(); a non-string ``path`` raised TypeError at the
     ``".." in path`` check; and a truthy non-string ``contents`` (e.g. a JSON
     number) slipped through and later blew up the install handler's
-    ``c.encode("utf-8")``. Each must now yield a clean None / dropped entry."""
+    ``c.encode("utf-8")``. A malformed payload is a typed ``SkillBadFormat``
+    (the caller answers 502 with a reason), a malformed entry is dropped."""
 
     @pytest.mark.asyncio
-    async def test_non_object_payload_returns_none(self):
+    async def test_non_object_payload_is_bad_format(self):
         # A list / string / number body (API error, maintenance page, CDN SPA)
-        # must not raise — it should be treated as "no bundle".
+        # must not crash at .get() — it is a bad-format outcome, never a
+        # misleading "not found".
         for payload in ([{"path": "SKILL.md", "contents": "x"}], "html", 42, None):
             with patch(
                 "kiro_crew.skill_providers.skillsh._sync_fetch_json",
                 return_value=payload,
             ):
-                assert await SkillsShProvider().fetch_skill_bundle("o/r/s") is None
+                with pytest.raises(SkillBadFormat) as exc:
+                    await SkillsShProvider().fetch_skill_bundle("o/r/s")
+                assert exc.value.http_status == 502 and exc.value.code == "bad_format"
 
     @pytest.mark.asyncio
-    async def test_non_list_files_returns_none(self):
-        for files in ("abc", {"a": 1}, 5):
+    async def test_non_list_files_is_bad_format(self):
+        for files in ("abc", {"a": 1}, 5, []):
             with patch(
                 "kiro_crew.skill_providers.skillsh._sync_fetch_json",
                 return_value={"files": files},
             ):
-                assert await SkillsShProvider().fetch_skill_bundle("o/r/s") is None
+                with pytest.raises(SkillBadFormat):
+                    await SkillsShProvider().fetch_skill_bundle("o/r/s")
 
     @pytest.mark.asyncio
     async def test_non_dict_entries_are_dropped(self):

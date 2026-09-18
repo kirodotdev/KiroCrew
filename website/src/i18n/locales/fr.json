@@ -7785,6 +7785,8 @@
       "installs": "installations",
       "license": "Licence :",
       "loading_preview": "Chargement de l'aperçu...",
+      "preview_try_again": "Réessayer",
+      "preview_failed_generic": "Impossible de charger l'aperçu. Vérifiez la connexion et réessayez.",
       "no_preview_available": "Aucun aperçu disponible.",
       "overwrite": "Écraser",
       "select_a_skill_to_preview": "Sélectionnez une compétence pour l'aperçu",

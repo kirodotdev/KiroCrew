@@ -22,14 +22,33 @@ from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
-from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
-from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
+from kiro_crew.skill_providers.base import (
+    ProviderRegistry,
+    SkillFetchError,
+    SkillProvider,
+    SkillTooLarge,
+    provider_available,
+)
+from kiro_crew.skill_providers.skillsh import (
+    _MAX_BUNDLE_BYTES,
+    SkillsShConfig,
+    SkillsShProvider,
+)
 from kiro_crew.skills import skills_dir as _skills_dir
 
 logger = logging.getLogger(__name__)
 
 # Slug validation for skill installation (filesystem safety).
 _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+
+# Total-size guard for what one install may write (sum of the decoded file
+# contents, or the single SKILL.md). ONE budget with the provider's wire cap:
+# the bundle JSON is read under ``skillsh._MAX_BUNDLE_BYTES`` and its files are
+# written under this, so it is DERIVED from that constant rather than restated
+# -- two figures would let the smaller silently decide. Per-file safety
+# (traversal, containment, symlink parents) is separate and does not scale
+# with this number.
+_MAX_INSTALL_BYTES = _MAX_BUNDLE_BYTES
 
 
 # Credential-bearing URL query/fragment parameters. ``redact_credentials`` matches
@@ -420,6 +439,30 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             error="timeout",
         )
         return web.json_response({"error": "Fetch timed out"}, status=504)
+    except SkillFetchError as exc:
+        # A DEFINITIVE answer from the provider -- too large, not found, rate
+        # limited, wrong format, unreachable -- mapped to its own status so the
+        # user can tell them apart. Raised out of the bundle fetch, so the
+        # single-file fallback below never re-requests the same bundle. The
+        # message carries sizes and status codes only, never the remote body.
+        # Provider name and outcome code only: the id is request-controlled and
+        # the outcome is the whole signal, so nothing here needs redacting.
+        logger.info("Skill fetch from %s ended with %s", provider_name, exc.code)
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="install_skill_from_provider",
+            tool_kind="skill_provider_install",
+            outcome="error",
+            downstream_service=provider_name,
+            error=exc.code,
+        )
+        # The message names the requested skill id (request-controlled) and the
+        # provider's display name; route it through the same egress scrub as
+        # every other provider-facing string, so a credential-shaped id can
+        # never echo back verbatim.
+        return web.json_response(
+            {"error": _redact_external(exc.message), "code": exc.code}, status=exc.http_status
+        )
     except Exception as exc:
         scrubbed, _ = redact_credentials(str(exc))
         scrubbed, _ = redact_exfiltration_urls(scrubbed)
@@ -439,17 +482,32 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {"error": f"Skill '{skill_id}' not found or empty on {provider_name}"}, status=404
         )
 
-    # Size guard: total bundle must not exceed 5 MiB.
-    max_bundle_size = 5 * 1024 * 1024
+    # Size guard: what gets written must not exceed the install budget. Same
+    # wording as the provider's wire-side refusal, so the user reads one rule.
+    # The writer below copies AGENTS.md to SKILL.md when the bundle ships no
+    # SKILL.md, so that copy is part of what gets written and counts here.
     if bundle:
         total_size = sum(len(c.encode("utf-8")) for _, c in bundle)
-        if total_size > max_bundle_size:
-            return web.json_response(
-                {"error": "Skill bundle exceeds size limit (5 MiB)"}, status=413
-            )
-    elif content and len(content.encode("utf-8")) > max_bundle_size:
+        paths = {p for p, _ in bundle}
+        if "SKILL.md" not in paths and "AGENTS.md" in paths:
+            total_size += sum(len(c.encode("utf-8")) for p, c in bundle if p == "AGENTS.md")
+    else:
+        total_size = len((content or "").encode("utf-8"))
+    if total_size > _MAX_INSTALL_BYTES:
+        too_large = SkillTooLarge(total_size, _MAX_INSTALL_BYTES)
+        # Audited like every other refusal on this path: a bundle the
+        # provider served but the install budget rejects is a security
+        # control firing, not a silent no-op.
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="install_skill_from_provider",
+            tool_kind="skill_provider_install",
+            outcome="error",
+            downstream_service=provider_name,
+            error=too_large.code,
+        )
         return web.json_response(
-            {"error": "Skill content exceeds size limit"}, status=413
+            {"error": too_large.message, "code": too_large.code}, status=too_large.http_status
         )
 
     # Write to local skills directory.
@@ -646,8 +704,6 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
             {"error": f"Provider '{provider_name}' is not available"}, status=404
         )
 
-    _empty = {"description": "", "name": "", "content": "", "files": [], "file_count": 0}
-
     # Prefer the bundle fetch: one request yields both the SKILL.md content
     # and the full file manifest for the detail panel.
     content: str | None = None
@@ -672,7 +728,32 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
             content = await asyncio.wait_for(
                 provider.fetch_skill_content(skill_id), timeout=10.0
             )
-    except (asyncio.TimeoutError, Exception):
+    except asyncio.TimeoutError:
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="preview_skill_from_provider",
+            tool_kind="skill_provider_preview",
+            outcome="error",
+            downstream_service=provider_name,
+            error="timeout",
+        )
+        return web.json_response({"error": "Fetch timed out", "code": "timeout"}, status=504)
+    except SkillFetchError as exc:
+        # Same definitive-failure mapping as install: the detail pane shows the
+        # reason (size vs not found vs rate limit) instead of an empty preview,
+        # and the single-file fallback above never re-requested the bundle.
+        _sel().log_tool_invocation(
+            session_key=request.get("session_key", "dashboard"),
+            tool_name="preview_skill_from_provider",
+            tool_kind="skill_provider_preview",
+            outcome="error",
+            downstream_service=provider_name,
+            error=exc.code,
+        )
+        return web.json_response(
+            {"error": _redact_external(exc.message), "code": exc.code}, status=exc.http_status
+        )
+    except Exception:
         _sel().log_tool_invocation(
             session_key=request.get("session_key", "dashboard"),
             tool_name="preview_skill_from_provider",
@@ -681,7 +762,10 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
             downstream_service=provider_name,
             error="fetch_failed",
         )
-        return web.json_response(_empty)
+        return web.json_response(
+            {"error": "Failed to fetch skill from provider", "code": "fetch_failed"},
+            status=502,
+        )
 
     if not content:
         _sel().log_tool_invocation(
@@ -692,7 +776,15 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
             downstream_service=provider_name,
             error="empty_content",
         )
-        return web.json_response(_empty)
+        return web.json_response(
+            {
+                "error": _redact_external(
+                    f"Skill '{skill_id}' on {provider_name} has no SKILL.md to preview"
+                ),
+                "code": "empty_content",
+            },
+            status=404,
+        )
 
     # Parse the frontmatter with the same grammar the skills loader applies
     # after install, so the preview description matches the installed one.

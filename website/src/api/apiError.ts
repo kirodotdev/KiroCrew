@@ -50,11 +50,55 @@ export const isNotFoundError = (e: unknown): boolean =>
   typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404
 
 /**
+ * The gateway's machine-readable reason for a refusal: the string `code` of a
+ * `{"error": "...", "code": "..."}` JSON body (`too_large`, `not_found`,
+ * `rate_limited`, `unreachable`, `timeout`, `bad_format`, ...), or `''` when
+ * the body is not that shape — an empty body, an edge proxy's own envelope, an
+ * HTML error page, or a `code` that is not a string.
+ *
+ * Reads `body`, the response text `toApiError` stores verbatim on the
+ * `ApiError` (`friendlyErrText` unwraps only the human `error` sentence into
+ * `message`, so the code survives nowhere else). Duck-typed on `body` like
+ * {@link isNotFoundError}, so a mocked `ApiError`-shaped rejection counts too.
+ * Callers branch on the code so the SAME status can mean different things (a
+ * 502 from an unreachable registry is retryable; a 502 for a malformed bundle
+ * is not) without matching words in the message.
+ */
+export const gatewayErrorCode = (e: unknown): string => {
+  const body = typeof e === 'object' && e !== null ? (e as { body?: unknown }).body : undefined
+  if (typeof body !== 'string') return ''
+  const trimmed = body.trim()
+  if (!trimmed.startsWith('{')) return ''
+  try {
+    const code = JSON.parse(trimmed)?.code
+    return typeof code === 'string' ? code : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * A body whose first markup is a document type: both doctype spellings, plus a
  * bare `<html>` from a proxy that emits none. Deliberately does NOT match every
  * `<`-leading body, so an XML error envelope still reaches the caller whole.
  */
 const HTML_DOCUMENT_START = /^<(?:!doctype\s|html[\s>])/i
+
+/**
+ * The message of a gateway-authored refusal: a JSON object carrying BOTH a
+ * string `error` and a string `code`. The edge's throttle body has neither
+ * key, so it never matches; `''` when the body is not that shape.
+ */
+const structuredGatewayError = (trimmed: string): string => {
+  if (!trimmed.startsWith('{')) return ''
+  try {
+    const parsed = JSON.parse(trimmed)
+    const msg = parsed?.error
+    const code = parsed?.code
+    if (typeof msg === 'string' && msg.trim() && typeof code === 'string' && code) return msg
+  } catch { /* not JSON */ }
+  return ''
+}
 
 /**
  * Map raw edge/proxy error bodies to a human-readable message. A dashboard
@@ -69,13 +113,19 @@ const HTML_DOCUMENT_START = /^<(?:!doctype\s|html[\s>])/i
  * one place. The raw body remains on `ApiError.body` for diagnostics.
  */
 export const friendlyErrText = (status: number, body: string): string => {
+  const trimmed = body.trim()
   if (status === 429) {
+    // The gateway's OWN 429 is a structured `{error, code}` refusal — e.g. a
+    // skill provider that is rate-limiting us — and its message is the one the
+    // user needs. Only a bodyless or foreign 429 (the tunnel edge's opaque
+    // `{"message":"Rate exceeded"}`) gets the tunnel hint.
+    const structured = structuredGatewayError(trimmed)
+    if (structured) return structured
     return i18nT('api.client.rate_limited_by_the_tunnel_edge_http_429_too_man')
   }
   // Backends return errors as {"error": "…"} (or detail/message). Unwrap the
   // field so the UI shows the human message with its real newlines, not the
   // raw JSON envelope with escaped \n and \".
-  const trimmed = body.trim()
   if (trimmed.startsWith('{')) {
     try {
       const parsed = JSON.parse(trimmed)

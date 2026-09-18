@@ -47,6 +47,29 @@ describe('toApiError', () => {
     expect(e.body).toBe(page)
   })
 
+  it('keeps the gateway\'s own message on a structured 429, and only maps a bare edge 429', async () => {
+    // A skill provider that is rate-limiting us answers through the gateway as
+    // `{error, code: "rate_limited"}`; that message is the actionable one. The
+    // tunnel edge's `{"message":"Rate exceeded"}` has neither key and still
+    // gets the tunnel hint, as does an empty 429 body.
+    const structured = JSON.stringify({
+      error: 'skills.sh is rate-limiting requests; try again shortly',
+      code: 'rate_limited',
+    })
+    expect(friendlyErrText(429, structured)).toBe(
+      'skills.sh is rate-limiting requests; try again shortly',
+    )
+    const edge = friendlyErrText(429, '{"message":"Rate exceeded","throttlingReasons":null}')
+    expect(edge).not.toContain('Rate exceeded')
+    expect(edge).toBe(friendlyErrText(429, ''))
+    // An `error` without a `code` is not the gateway's structured shape.
+    expect(friendlyErrText(429, '{"error":"x"}')).toBe(friendlyErrText(429, ''))
+    // Non-429 handling is untouched: the structured body still unwraps.
+    expect(friendlyErrText(413, structured)).toBe(
+      'skills.sh is rate-limiting requests; try again shortly',
+    )
+  })
+
   it('flags an auth-expiry refusal so callers can drop futile retries', async () => {
     const e = await toApiError(res(403, 'invalid signature', { 'X-Auth-Required': 'true' }))
     expect(e.authRequired).toBe(true)

@@ -7673,6 +7673,8 @@
       "installs": "Installationen",
       "license": "Lizenz:",
       "loading_preview": "Vorschau wird geladen…",
+      "preview_try_again": "Erneut versuchen",
+      "preview_failed_generic": "Die Vorschau konnte nicht geladen werden. Prüfe die Verbindung und versuche es erneut.",
       "no_preview_available": "Keine Vorschau verfügbar.",
       "overwrite": "Überschreiben",
       "select_a_skill_to_preview": "Wählen Sie einen Skill für die Vorschau",

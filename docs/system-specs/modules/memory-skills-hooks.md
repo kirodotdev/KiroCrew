@@ -3793,8 +3793,14 @@ scan; observer failures in either phase are logged and swallowed.
 The agent-facing twins of the dashboard's Skills → Discover panel, covering the
 skills that are *not* on disk. Both are read-only and reach the existing
 `skill_providers/` registry (skills.sh today) through the gateway rather than the
-network directly, so provider timeouts, the 1 MiB response cap, the SSRF
-denylist, and `_redact_external` all still apply:
+network directly, so provider timeouts, the response budgets (1 MiB for a search
+page, 10 MiB for a `/download` bundle -- `skillsh._MAX_RESPONSE_BYTES` /
+`_MAX_BUNDLE_BYTES`, read in 64 KiB chunks and abandoned at the limit; the
+install handler's total-size guard `_MAX_INSTALL_BYTES` is derived from the
+bundle budget), the SSRF denylist, and `_redact_external` all still apply. A
+fetch failure is a typed `SkillFetchError` (`too_large` / `not_found` /
+`rate_limited` / `http_status` / `bad_format` / `unreachable`), mapped by the
+discover handlers to 413 / 404 / 429 / 502 with an `{error, code}` body:
 
 | Tool | Endpoint | Returns |
 |------|----------|---------|

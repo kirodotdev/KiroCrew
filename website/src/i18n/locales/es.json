@@ -7785,6 +7785,8 @@
       "installs": "instalaciones",
       "license": "Licencia:",
       "loading_preview": "Cargando la vista previa...",
+      "preview_try_again": "Reintentar",
+      "preview_failed_generic": "No se pudo cargar la vista previa. Comprueba la conexión e inténtalo de nuevo.",
       "no_preview_available": "No hay vista previa disponible.",
       "overwrite": "Sobrescribir",
       "select_a_skill_to_preview": "Selecciona una skill para ver la vista previa",

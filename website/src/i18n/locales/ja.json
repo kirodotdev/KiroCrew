@@ -7561,6 +7561,8 @@
       "installs": "インストール",
       "license": "ライセンス:",
       "loading_preview": "プレビューを読み込み中…",
+      "preview_try_again": "再試行",
+      "preview_failed_generic": "プレビューを読み込めませんでした。接続を確認して再試行してください。",
       "no_preview_available": "プレビューはありません。",
       "overwrite": "上書き",
       "select_a_skill_to_preview": "プレビュー対象のスキルを選択してください",

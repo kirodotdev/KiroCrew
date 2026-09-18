@@ -31,6 +31,112 @@ def provider_available(provider: SkillProvider) -> bool:
         return False
 
 
+class SkillFetchError(Exception):
+    """A skill fetch failed for a reason the caller must tell the user apart.
+
+    Raised by a provider's ``fetch_skill_bundle`` / ``fetch_skill_content``
+    instead of collapsing every failure into ``None``: a bundle above the size
+    budget, a registry 404, a rate limit and an HTML error page each need a
+    different HTTP status and message on the way back to the dashboard, and a
+    caller must not retry (or fall back to a second download of the same
+    bundle) after a DEFINITIVE failure. ``http_status`` is the status the
+    gateway answers with; ``code`` is the machine-readable reason; ``message``
+    carries only what the caller may show -- sizes and status codes, never a
+    byte of the remote body.
+    """
+
+    code: str = "fetch_failed"
+    http_status: int = 502
+
+    def __init__(self, message: str, *, code: str | None = None, http_status: int | None = None):
+        super().__init__(message)
+        self.message = message
+        if code is not None:
+            self.code = code
+        if http_status is not None:
+            self.http_status = http_status
+
+
+class SkillTooLarge(SkillFetchError):
+    """The bundle exceeds the budget. ``size`` is exact when the whole body was
+    measured (decoded files, or a declared Content-Length refused before
+    reading); with ``aborted=True`` it is the bytes read before the stream was
+    abandoned -- a lower bound, and the message says "more than"."""
+
+    code = "too_large"
+    http_status = 413
+
+    def __init__(self, size: int, limit: int, *, aborted: bool = False):
+        self.size = size
+        self.limit = limit
+        self.aborted = aborted
+        if aborted:
+            shown = f"more than {_mib(size)}"
+        elif _mib(size) == _mib(limit):
+            # One decimal hides a 1-byte overage: "10.0 MiB, above the 10.0 MiB
+            # limit" reads as a contradiction, so say what the rounding hides.
+            shown = f"just over {_mib(limit)}"
+        else:
+            shown = _mib(size)
+        super().__init__(f"Skill bundle is {shown}, above the {_mib(limit)} limit")
+
+
+class SkillNotFound(SkillFetchError):
+    code = "not_found"
+    http_status = 404
+
+    def __init__(self, skill_id: str, provider: str):
+        super().__init__(f"Skill '{skill_id}' was not found on {provider}")
+
+
+class SkillRateLimited(SkillFetchError):
+    code = "rate_limited"
+    http_status = 429
+
+    def __init__(self, provider: str):
+        super().__init__(f"{provider} is rate-limiting requests; try again shortly")
+
+
+class SkillUpstreamStatus(SkillFetchError):
+    """The registry answered a non-2xx status that is not a 404 or 429."""
+
+    code = "http_status"
+    http_status = 502
+
+    def __init__(self, status: int, provider: str):
+        self.status = status
+        super().__init__(f"{provider} answered HTTP {status}")
+
+
+class SkillBadFormat(SkillFetchError):
+    """The body was not the JSON bundle the API promises (an HTML page, a
+    non-object payload, a bundle with no files)."""
+
+    code = "bad_format"
+    http_status = 502
+
+    def __init__(self, provider: str, detail: str = "unexpected response format"):
+        super().__init__(f"{provider} returned an {detail}")
+
+
+class SkillUnreachable(SkillFetchError):
+    """No usable HTTP response: DNS/TLS/connection failure, timeout, or a
+    request the SSRF guard refused to make."""
+
+    code = "unreachable"
+    http_status = 502
+
+    def __init__(self, provider: str):
+        super().__init__(f"Could not reach {provider}")
+
+
+def _mib(n: int) -> str:
+    """Human size for error text: one decimal in MiB, or whole KiB below 1 MiB."""
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MiB"
+    return f"{max(1, n // 1024)} KiB"
+
+
 def _stamp_provenance(results: object, name: str) -> "list[SkillSearchResult]":
     """Re-stamp each result row's ``provider`` with the registration key.
 

@@ -7785,6 +7785,8 @@
       "installs": "installazioni",
       "license": "Licenza:",
       "loading_preview": "Caricamento dell'anteprima...",
+      "preview_try_again": "Riprova",
+      "preview_failed_generic": "Impossibile caricare l'anteprima. Controlla la connessione e riprova.",
       "no_preview_available": "Nessuna anteprima disponibile.",
       "overwrite": "Sovrascrivi",
       "select_a_skill_to_preview": "Seleziona una skill di cui vedere l'anteprima",

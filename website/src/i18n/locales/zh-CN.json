@@ -7561,6 +7561,8 @@
       "installs": "次安装",
       "license": "许可证：",
       "loading_preview": "正在加载预览…",
+      "preview_try_again": "重试",
+      "preview_failed_generic": "无法加载预览。请检查网络连接后重试。",
       "no_preview_available": "无可用预览。",
       "overwrite": "覆盖",
       "select_a_skill_to_preview": "选择技能以预览",

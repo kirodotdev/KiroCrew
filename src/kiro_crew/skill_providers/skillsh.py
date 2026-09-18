@@ -18,7 +18,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.security import canonicalize_ip
-from kiro_crew.skill_providers.base import SkillSearchResult
+from kiro_crew.skill_providers.base import (
+    SkillBadFormat,
+    SkillFetchError,
+    SkillNotFound,
+    SkillRateLimited,
+    SkillSearchResult,
+    SkillTooLarge,
+    SkillUnreachable,
+    SkillUpstreamStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +40,21 @@ _TIMEOUT = 5
 # User-Agent for our requests (good citizenship)
 _USER_AGENT = "KiroCrew/1.0 (skill-discovery)"
 
-# Maximum response body size (1 MiB) — ``_read_bounded`` accumulates the body
-# in memory, so this bounds the bytes one fetch RETAINS. It is not a peak-memory
-# figure: joining the chunks and decoding them each allocate another copy.
-# It is also what bounds DISK: a download response carries the install bundle,
-# and the discover handler writes those files out under a looser 5 MiB guard of
-# its own, so this ceiling is the one that binds first. Raise it only having
-# accounted for both. SKILL.md files are typically <50 KB.
+# Maximum SEARCH response body size (1 MiB) — ``_read_bounded`` accumulates the
+# body in memory, so this bounds the bytes one fetch RETAINS. It is not a
+# peak-memory figure: joining the chunks and decoding them each allocate another
+# copy. A search page is a few KB per row; a 1 MiB response is already an
+# anomaly.
 _MAX_RESPONSE_BYTES = 1 * 1024 * 1024
+
+# Maximum DOWNLOAD (bundle) body size (10 MiB). A bundle carries every file of a
+# skill as JSON, and real public bundles (a slide-deck skill with its assets)
+# run past 2 MiB, so the search budget cannot serve it. ``_read_bounded`` still
+# aborts mid-stream the moment the running total crosses this, so no more than
+# this is ever retained. The install handler's total-size guard
+# (``discover.py``) is set to the same figure: the two are one budget, applied
+# once on the wire and once on the decoded files.
+_MAX_BUNDLE_BYTES = 10 * 1024 * 1024
 
 # Per-chunk read size while draining a response body (64 KiB).
 _HTTP_READ_CHUNK_BYTES = 64 * 1024
@@ -105,8 +121,12 @@ class SkillsShProvider:
             return []
 
         url = f"{self._config.api_base}/search?q={urllib.parse.quote(query)}&limit={limit}"
-        data = await _fetch_json(url)
-        if data is None:
+        try:
+            data = await _fetch_json(url, _MAX_RESPONSE_BYTES)
+        except SkillFetchError:
+            # A search is best-effort fan-out: a failing registry contributes
+            # no rows rather than failing the aggregate.
+            logger.debug("skills.sh search failed", exc_info=True)
             return []
 
         # skills.sh returns {"skills": [...]} or a flat list — handle both.
@@ -160,6 +180,8 @@ class SkillsShProvider:
         Uses GET /api/download/{id} which returns a JSON bundle with all
         skill files. We extract SKILL.md (or AGENTS.md as fallback) from
         the bundle. For full bundle installation, use fetch_skill_bundle().
+        Raises the same :class:`SkillFetchError` family as
+        ``fetch_skill_bundle``; ``None`` means the bundle holds no markdown.
         """
         bundle = await self.fetch_skill_bundle(skill_id)
         if bundle is None:
@@ -178,8 +200,15 @@ class SkillsShProvider:
     async def fetch_skill_bundle(self, skill_id: str) -> list[tuple[str, str]] | None:
         """Fetch the full skill bundle (all files) from skills.sh.
 
-        Returns a list of (relative_path, content) tuples, or None on failure.
-        Uses GET /api/download/{id} which returns all skill files.
+        Returns a list of (relative_path, content) tuples. Raises a
+        :class:`SkillFetchError` subclass for every DEFINITIVE failure — the
+        bundle is above ``_MAX_BUNDLE_BYTES`` (``SkillTooLarge``, with the size),
+        the registry answered 404 (``SkillNotFound``), 429
+        (``SkillRateLimited``) or another non-2xx (``SkillUpstreamStatus``),
+        the body was not a JSON bundle (``SkillBadFormat``), or no response
+        could be obtained at all (``SkillUnreachable``). Returns ``None`` only
+        for a malformed id, which no request is made for. Uses
+        GET /api/download/{id} which returns all skill files.
         """
         # The skills.sh id is an "owner/repo/skill" path whose slashes are real
         # path segments. The download route is /api/download/{owner}/{repo}/{skill},
@@ -195,19 +224,22 @@ class SkillsShProvider:
             logger.debug("Rejecting malformed skill_id for download: %r", skill_id)
             return None
         url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='/')}"
-        data = await _fetch_json(url)
+        try:
+            data = await _fetch_json(url, _MAX_BUNDLE_BYTES)
+        except SkillNotFound:
+            # Re-raised with the id the caller asked for, so the message names
+            # the skill rather than the URL.
+            raise SkillNotFound(skill_id, self.display_name) from None
         # skills.sh is untrusted external input: an error/maintenance payload (or
         # a CDN interposing its SPA HTML) can be valid JSON that is not an object,
         # so guard the shape before .get() — a bare data.get() on a list/str/number
-        # raises AttributeError and the caller converts a clean not-found into a
-        # misleading 502 + spurious error audit. Mirrors the isinstance guard in
-        # search() above.
+        # raises AttributeError. Mirrors the isinstance guard in search() above.
         if not isinstance(data, dict):
-            return None
+            raise SkillBadFormat(self.display_name, "unexpected payload instead of a bundle")
 
         files = data.get("files")
         if not isinstance(files, list) or not files:
-            return None
+            raise SkillBadFormat(self.display_name, "empty bundle")
 
         result: list[tuple[str, str]] = []
         for f in files:
@@ -230,37 +262,85 @@ class SkillsShProvider:
                 continue
             result.append((path, contents))
 
-        return result if result else None
+        if not result:
+            raise SkillBadFormat(self.display_name, "bundle with no usable files")
+        return result
 
 
-async def _fetch_json(url: str) -> Any | None:
-    """Fetch JSON from a URL. Returns None on any failure."""
+async def _fetch_json(url: str, max_bytes: int) -> Any:
+    """Fetch JSON from a URL off-loop, retaining at most *max_bytes* of body.
+
+    Raises a :class:`SkillFetchError` subclass for every failure; never returns
+    ``None`` for one. Anything else the worker raises (a bug, a cancelled
+    executor) is reported as ``SkillUnreachable`` so callers see one family.
+    """
     try:
-        return await asyncio.get_running_loop().run_in_executor(None, _sync_fetch_json, url)
+        return await asyncio.get_running_loop().run_in_executor(
+            None, _sync_fetch_json, url, max_bytes
+        )
+    except SkillFetchError:
+        raise
     except Exception:
         logger.debug("Failed to fetch JSON from %s", url, exc_info=True)
-        return None
+        raise SkillUnreachable("skills.sh") from None
 
 
-def _sync_fetch_json(url: str) -> Any | None:
-    """Synchronous JSON fetch (for run_in_executor)."""
+def _sync_fetch_json(url: str, max_bytes: int) -> Any:
+    """Synchronous JSON fetch (for run_in_executor).
+
+    Classifies the outcome instead of collapsing it: an SSRF-refused or
+    unreachable URL, a non-2xx status (404 / 429 / other), a body over
+    *max_bytes* (abandoned mid-stream, size reported from Content-Length when
+    the registry sent one), and a non-JSON body each raise their own
+    :class:`SkillFetchError`. Nothing from the remote body reaches a message.
+    """
+    provider = "skills.sh"
     # Pre-connect SSRF check on the initial URL
     if _is_internal_url(url):
-        return None
+        raise SkillUnreachable(provider)
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         resp = _open_no_internal_redirect(req)
-        if resp is None:
-            return None
+    except urllib.error.HTTPError as exc:
+        # urlopen raises on 4xx/5xx; the status is the whole signal we keep.
+        raise _status_error(exc.code, provider) from None
+    if resp is None:
+        raise SkillUnreachable(provider)
+    try:
         if resp.status != 200:
-            resp.close()
-            return None
-        data = _read_bounded(resp, _MAX_RESPONSE_BYTES)
+            raise _status_error(resp.status, provider)
+        declared = _declared_length(resp)
+        if declared is not None and declared > max_bytes:
+            # The registry told us up front; no need to read a byte of it.
+            raise SkillTooLarge(declared, max_bytes)
+        data, read = _read_bounded(resp, max_bytes)
+    finally:
         resp.close()
-        if data is None:
-            return None
+    if data is None:
+        # Aborted mid-stream past the budget. The bytes actually read are the
+        # only trustworthy figure (a lower bound); the declared length is
+        # untrusted and is used only for the pre-read refusal above.
+        raise SkillTooLarge(read, max_bytes, aborted=True)
+    try:
         return json.loads(data.decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise SkillBadFormat(provider, "non-JSON response") from None
+
+
+def _status_error(status: int, provider: str) -> SkillFetchError:
+    if status == 404:
+        return SkillNotFound("requested skill", provider)
+    if status == 429:
+        return SkillRateLimited(provider)
+    return SkillUpstreamStatus(status, provider)
+
+
+def _declared_length(resp) -> int | None:
+    """Content-Length as an int, or None when absent or unparseable."""
+    raw = resp.headers.get("Content-Length") if getattr(resp, "headers", None) else None
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
         return None
 
 
@@ -413,16 +493,22 @@ def _open_no_internal_redirect(req: urllib.request.Request):
     opener = urllib.request.build_opener(_SafeRedirectHandler)
     try:
         return opener.open(req, timeout=_TIMEOUT)
+    except urllib.error.HTTPError:
+        # A 4xx/5xx is a real answer from the registry; the caller classifies
+        # it by status. Re-raised, never folded into the "no response" None.
+        raise
     except urllib.error.URLError:
         return None
 
 
-def _read_bounded(resp, max_bytes: int) -> bytes | None:
-    """Read response body up to max_bytes. Returns None if exceeded.
+def _read_bounded(resp, max_bytes: int) -> tuple[bytes | None, int]:
+    """Read response body up to max_bytes; ``(body, bytes_read)``.
 
     The check is against the RUNNING total, so an oversized body is abandoned
     mid-stream rather than accumulated whole — *max_bytes* bounds the bytes
-    retained here, not just a verdict on the finished body.
+    retained here, not just a verdict on the finished body. On abort the body
+    is ``None`` and the count is what was read before stopping: a lower bound
+    on the true size, and the only size figure that is not remote-controlled.
     """
     chunks: list[bytes] = []
     total = 0
@@ -433,6 +519,6 @@ def _read_bounded(resp, max_bytes: int) -> bytes | None:
         total += len(chunk)
         if total > max_bytes:
             logger.warning("Response exceeded %d bytes, aborting read", max_bytes)
-            return None
+            return None, total
         chunks.append(chunk)
-    return b"".join(chunks)
+    return b"".join(chunks), total

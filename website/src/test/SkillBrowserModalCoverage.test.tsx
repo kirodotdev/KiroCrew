@@ -13,10 +13,17 @@ import type { DiscoveredSkill, DiscoverInstallResult, DiscoverSkillPreview } fro
 const { mockApi, MockApiError } = vi.hoisted(() => {
   class MockApiError extends Error {
     readonly status: number
-    constructor(status: number, message: string) {
+    /** Raw wire body, the shape the real ApiError keeps so a caller can read
+     *  the structured `code` the message unwrapping drops. */
+    readonly body: string
+    /** The real ApiError's auth-expiry flag (403 + `X-Auth-Required`). */
+    readonly authRequired: boolean
+    constructor(status: number, message: string, body = '', authRequired = false) {
       super(message)
       this.name = 'ApiError'
       this.status = status
+      this.body = body
+      this.authRequired = authRequired
     }
   }
   return {
@@ -53,7 +60,7 @@ vi.mock('../components/SkillDirectoryBrowser', () => ({
   ),
 }))
 
-import SkillBrowserModal, { formatInstalls } from '../components/SkillBrowserModal'
+import SkillBrowserModal, { formatInstalls, classifyPreviewFailure } from '../components/SkillBrowserModal'
 
 /* ── Fixtures ── */
 const aSkill = (over: Partial<DiscoveredSkill> = {}): DiscoveredSkill => ({
@@ -79,6 +86,15 @@ const anInstall = (over: Partial<DiscoverInstallResult> = {}): DiscoverInstallRe
   file_count: 1,
   ...over,
 })
+
+/** A gateway refusal exactly as the wire carries it: status + `{error, code}`. */
+const aRefusal = (status: number, error: string, code: string) =>
+  new MockApiError(status, error, JSON.stringify({ error, code }))
+
+const CONNECTION_HINT = "Couldn't load the preview. Check the connection and try again."
+const TOO_LARGE = 'Skill bundle is 12.3 MiB, above the 10.0 MiB limit'
+const BAD_FORMAT = 'skills.sh returned an unexpected response format'
+const RATE_LIMITED = 'skills.sh is rate-limiting requests; try again shortly'
 
 const SKILL_MD = [
   '---',
@@ -120,6 +136,16 @@ async function search(text: string) {
   await act(async () => { await vi.advanceTimersByTimeAsync(350) })
 }
 
+/** Search, select the one result, and wait for its preview notice. */
+async function openFailedPreview(rejection: unknown) {
+  mockApi.discoverSkills.mockResolvedValue({ results: [aSkill()], providers: ['skillsh'] })
+  mockApi.previewDiscoveredSkill.mockRejectedValue(rejection)
+  renderModal()
+  await search('widget')
+  fireEvent.click(await screen.findByRole('option', { name: 'widget-wrangler' }))
+  return screen.findByTestId('skill-preview-error')
+}
+
 // The modal debounces the query behind a 300ms setTimeout. Fake timers keep
 // that callback on a clock this file controls, and clearAllTimers drops any
 // pending one at teardown so it cannot fire into a torn-down document.
@@ -137,6 +163,55 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
+})
+
+describe('classifyPreviewFailure', () => {
+  it('is null without an error, and connectivity for a rejection that is not an ApiError', () => {
+    expect(classifyPreviewFailure(null)).toBeNull()
+    expect(classifyPreviewFailure(undefined)).toBeNull()
+    expect(classifyPreviewFailure(new TypeError('Failed to fetch')))
+      .toEqual({ message: CONNECTION_HINT, retry: true })
+  })
+
+  it('lets a recognized code win over a conflicting status', () => {
+    // A proxy that rewrites the status (a 504 wrapped around the gateway's
+    // too_large body) must not turn a definitive refusal into connection
+    // advice with a dead retry.
+    expect(classifyPreviewFailure(aRefusal(504, TOO_LARGE, 'too_large')))
+      .toEqual({ message: TOO_LARGE, retry: false })
+    expect(classifyPreviewFailure(aRefusal(504, BAD_FORMAT, 'bad_format')))
+      .toEqual({ message: BAD_FORMAT, retry: false })
+    // And the other way round: a connectivity or transient code under a
+    // definitive-looking status keeps its own class.
+    expect(classifyPreviewFailure(aRefusal(413, 'Could not reach skills.sh', 'unreachable')))
+      .toEqual({ message: CONNECTION_HINT, retry: true })
+    expect(classifyPreviewFailure(aRefusal(404, RATE_LIMITED, 'rate_limited')))
+      .toEqual({ message: RATE_LIMITED, retry: true })
+  })
+
+  it('lets an expired session win over both status and code', () => {
+    const expired = new MockApiError(
+      504, 'Session expired', JSON.stringify({ error: 'Session expired', code: 'timeout' }), true,
+    )
+    expect(classifyPreviewFailure(expired)).toEqual({ message: 'Session expired', retry: false })
+    expect(classifyPreviewFailure(new MockApiError(403, 'Session expired', '', true)))
+      .toEqual({ message: 'Session expired', retry: false })
+  })
+
+  it('falls back to the status only when the body carries no recognized code', () => {
+    expect(classifyPreviewFailure(new MockApiError(504, 'HTTP 504')))
+      .toEqual({ message: CONNECTION_HINT, retry: true })
+    expect(classifyPreviewFailure(new MockApiError(413, 'HTTP 413')))
+      .toEqual({ message: 'HTTP 413', retry: false })
+    expect(classifyPreviewFailure(new MockApiError(404, 'HTTP 404')))
+      .toEqual({ message: 'HTTP 404', retry: false })
+    // An unrecognized code is no code: the status decides.
+    expect(classifyPreviewFailure(aRefusal(413, 'refused', 'something_new')))
+      .toEqual({ message: 'refused', retry: false })
+    // Any other bare status keeps the gateway message and stays retryable.
+    expect(classifyPreviewFailure(new MockApiError(502, 'HTTP 502')))
+      .toEqual({ message: 'HTTP 502', retry: true })
+  })
 })
 
 describe('SkillBrowserModal', () => {
@@ -238,6 +313,9 @@ describe('SkillBrowserModal', () => {
     expect(screen.getByText('3 files')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Source/ }))
       .toHaveAttribute('href', 'https://github.com/acme/widget-wrangler')
+    // A successful preview shows no failure notice and no retry.
+    expect(screen.queryByTestId('skill-preview-error')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('skill-preview-retry')).not.toBeInTheDocument()
   })
 
   it('falls back to the search-result tags and author when the preview omits them', async () => {
@@ -305,6 +383,122 @@ describe('SkillBrowserModal', () => {
 
     expect(await screen.findByText('No preview available.')).toBeInTheDocument()
     expect(screen.queryByTestId('meta-strip')).not.toBeInTheDocument()
+  })
+
+  it('a too-large bundle (413 too_large) shows the size and the limit, with no retry and no connection advice', async () => {
+    // The gateway measured the bundle; the same request refuses the same way
+    // every time, so a retry is a dead button and "check the connection" is
+    // the wrong diagnosis.
+    const alert = await openFailedPreview(aRefusal(413, TOO_LARGE, 'too_large'))
+    expect(alert).toHaveTextContent(TOO_LARGE)
+    expect(alert).not.toHaveTextContent(CONNECTION_HINT)
+    expect(screen.queryByTestId('skill-preview-retry')).not.toBeInTheDocument()
+    expect(screen.queryByText('No preview available.')).not.toBeInTheDocument()
+  })
+
+  it('a browser-side fetch failure gets the connection words and a retry that refetches', async () => {
+    const alert = await openFailedPreview(new TypeError('Failed to fetch'))
+    expect(alert).not.toHaveTextContent('Failed to fetch')
+    expect(alert).toHaveTextContent(CONNECTION_HINT)
+    // The retry re-requests the preview; a later success replaces the notice.
+    mockApi.previewDiscoveredSkill.mockResolvedValue({
+      name: 'widget-wrangler',
+      description: 'now it loads',
+      content: '# Widget Wrangler\n\nbody',
+    } satisfies DiscoverSkillPreview)
+    fireEvent.click(screen.getByTestId('skill-preview-retry'))
+    await waitFor(() => expect(mockApi.previewDiscoveredSkill).toHaveBeenCalledTimes(2))
+    expect(await screen.findByTestId('md')).toBeInTheDocument()
+    expect(screen.queryByTestId('skill-preview-error')).not.toBeInTheDocument()
+  })
+
+  it('Try again is disabled while a refetch over a cached preview is in flight, so a second click cannot queue a duplicate', async () => {
+    // With no cached preview a retry shows the loading state (the notice and
+    // its button unmount, so there is nothing to double-click). With a cached
+    // preview the query keeps its error while refetching, the notice stays up,
+    // and the button itself has to refuse the second click.
+    mockApi.discoverSkills.mockResolvedValue({ results: [aSkill()], providers: ['skillsh'] })
+    mockApi.previewDiscoveredSkill.mockResolvedValue({
+      name: 'widget-wrangler',
+      description: 'Preview description',
+      content: '# first',
+    } satisfies DiscoverSkillPreview)
+    const { qc } = renderModal()
+    await search('widget')
+    fireEvent.click(await screen.findByRole('option', { name: 'widget-wrangler' }))
+    expect(await screen.findByTestId('md')).toHaveTextContent('# first')
+
+    // A later refetch fails: the notice appears over the cached preview.
+    mockApi.previewDiscoveredSkill.mockRejectedValue(new TypeError('Failed to fetch'))
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['skill-preview'] }) })
+    expect(await screen.findByTestId('skill-preview-error')).toHaveTextContent(CONNECTION_HINT)
+    expect(mockApi.previewDiscoveredSkill).toHaveBeenCalledTimes(2)
+
+    const pending = deferred<DiscoverSkillPreview>()
+    mockApi.previewDiscoveredSkill.mockReturnValue(pending.promise)
+    expect(screen.getByTestId('skill-preview-retry')).not.toBeDisabled()
+    fireEvent.click(screen.getByTestId('skill-preview-retry'))
+    await waitFor(() => expect(screen.getByTestId('skill-preview-retry')).toBeDisabled())
+    expect(screen.getByTestId('skill-preview-error')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('skill-preview-retry'))
+    expect(mockApi.previewDiscoveredSkill).toHaveBeenCalledTimes(3)
+
+    await act(async () => {
+      pending.settle({ name: 'widget-wrangler', description: 'now it loads', content: '# second' })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(await screen.findByTestId('md')).toHaveTextContent('# second')
+    expect(screen.queryByTestId('skill-preview-error')).not.toBeInTheDocument()
+  })
+
+  it('an unreachable registry (502 unreachable) and a timeout (504 timeout) are connectivity, not a verdict on the skill', async () => {
+    const alert = await openFailedPreview(aRefusal(502, 'Could not reach skills.sh', 'unreachable'))
+    expect(alert).toHaveTextContent(CONNECTION_HINT)
+    expect(alert).not.toHaveTextContent('Could not reach')
+    expect(screen.getByTestId('skill-preview-retry')).toBeInTheDocument()
+
+    mockApi.previewDiscoveredSkill.mockRejectedValue(aRefusal(504, 'Fetch timed out', 'timeout'))
+    fireEvent.click(screen.getByTestId('skill-preview-retry'))
+    await waitFor(() => expect(mockApi.previewDiscoveredSkill).toHaveBeenCalledTimes(2))
+    expect(await screen.findByTestId('skill-preview-error')).toHaveTextContent(CONNECTION_HINT)
+    expect(screen.getByTestId('skill-preview-retry')).toBeInTheDocument()
+  })
+
+  it('a malformed registry payload (502 bad_format) keeps the gateway reason: no connection words, no retry', async () => {
+    // Same status as an unreachable registry; the structured code tells them
+    // apart, and a payload the registry serves wrong does not fix itself on a
+    // second request.
+    const alert = await openFailedPreview(aRefusal(502, BAD_FORMAT, 'bad_format'))
+    expect(alert).toHaveTextContent(BAD_FORMAT)
+    expect(alert).not.toHaveTextContent(CONNECTION_HINT)
+    expect(screen.queryByTestId('skill-preview-retry')).not.toBeInTheDocument()
+  })
+
+  it('a missing skill (404 not_found) is final: the gateway reason, no retry', async () => {
+    const alert = await openFailedPreview(
+      aRefusal(404, "Skill 'acme/widget-wrangler' was not found on skills.sh", 'not_found'),
+    )
+    expect(alert).toHaveTextContent("Skill 'acme/widget-wrangler' was not found on skills.sh")
+    expect(alert).not.toHaveTextContent(CONNECTION_HINT)
+    expect(screen.queryByTestId('skill-preview-retry')).not.toBeInTheDocument()
+  })
+
+  it('shows a provider rate-limit message on the preview pane and on the install row, with a retry', async () => {
+    mockApi.discoverSkills.mockResolvedValue({ results: [aSkill()], providers: ['skillsh'] })
+    mockApi.previewDiscoveredSkill.mockRejectedValue(aRefusal(429, RATE_LIMITED, 'rate_limited'))
+    mockApi.installDiscoveredSkill.mockRejectedValue(aRefusal(429, RATE_LIMITED, 'rate_limited'))
+    renderModal()
+    await search('widget')
+    const row = await screen.findByRole('option', { name: 'widget-wrangler' })
+    fireEvent.click(row)
+    const alert = await screen.findByTestId('skill-preview-error')
+    expect(alert).toHaveTextContent(RATE_LIMITED)
+    expect(alert).not.toHaveTextContent(CONNECTION_HINT)
+    // A rate limit clears with time, so the retry stays.
+    expect(screen.getByTestId('skill-preview-retry')).toBeInTheDocument()
+    fireEvent.click(within(row).getByRole('button', { name: 'Install' }))
+    // Both the row's failure line and the detail pane's copy carry the message.
+    await waitFor(() => expect(screen.getAllByText(RATE_LIMITED).length).toBeGreaterThanOrEqual(2))
   })
 
   it('lists the bundle manifest when the skill ships more than one file', async () => {

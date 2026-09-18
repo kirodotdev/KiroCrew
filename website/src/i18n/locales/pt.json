@@ -7785,6 +7785,8 @@
       "installs": "instalações",
       "license": "Licença:",
       "loading_preview": "Carregando prévia...",
+      "preview_try_again": "Tentar novamente",
+      "preview_failed_generic": "Não foi possível carregar a prévia. Verifique a conexão e tente novamente.",
       "no_preview_available": "Nenhuma prévia disponível.",
       "overwrite": "Substituir",
       "select_a_skill_to_preview": "Selecione uma habilidade para visualizar",

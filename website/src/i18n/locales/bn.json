@@ -7673,6 +7673,8 @@
       "installs": "ইনস্টল",
       "license": "লাইসেন্স:",
       "loading_preview": "প্রিভিউ লোড হচ্ছে...",
+      "preview_try_again": "আবার চেষ্টা করো",
+      "preview_failed_generic": "প্রিভিউ লোড করা যায়নি। সংযোগ পরীক্ষা করে আবার চেষ্টা করো।",
       "no_preview_available": "কোনো প্রিভিউ নেই।",
       "overwrite": "ওভাররাইট করুন",
       "select_a_skill_to_preview": "প্রিভিউ দেখতে একটি স্কিল নির্বাচন করুন",

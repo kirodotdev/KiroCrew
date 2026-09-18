@@ -7673,6 +7673,8 @@
       "installs": "इंस्टॉल",
       "license": "लाइसेंस:",
       "loading_preview": "पूर्वावलोकन लोड हो रहा है...",
+      "preview_try_again": "फिर से कोशिश करें",
+      "preview_failed_generic": "पूर्वावलोकन लोड नहीं हो सका। कनेक्शन जांचें और फिर से कोशिश करें।",
       "no_preview_available": "कोई प्रीव्यू उपलब्ध नहीं।",
       "overwrite": "अधिलेखित करें",
       "select_a_skill_to_preview": "पूर्वावलोकन के लिए कोई स्किल चुनें",
