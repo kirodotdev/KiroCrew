@@ -180,6 +180,9 @@ class TestPrivateLoginDir:
         # -f %Lp. A shim with that surface stands in for Darwin on a Linux
         # host: it rejects -c the way BSD does and answers -f %Lp from the real
         # stat, so a GNU-only read-back fails here exactly as it does on macOS.
+        # The answer is fetched with whichever spelling the host's real stat
+        # accepts, so the same test runs on a Darwin runner, where the real
+        # stat is BSD and has no -c of its own.
         real_stat = shutil.which("stat")
         assert real_stat is not None
         shim = tmp_path / "shim"
@@ -189,7 +192,8 @@ class TestPrivateLoginDir:
             "#!/bin/sh\n"
             'case "$1" in\n'
             '  -c) echo "stat: illegal option -- c" >&2; exit 1 ;;\n'
-            f'  -f) [ "$2" = "%Lp" ] || exit 1; exec "{real_stat}" -c %a "$3" ;;\n'
+            '  -f) [ "$2" = "%Lp" ] || exit 1\n'
+            f'      "{real_stat}" -c %a "$3" 2>/dev/null || exec "{real_stat}" -f %Lp "$3" ;;\n'
             "  *) exit 1 ;;\n"
             "esac\n"
         )
