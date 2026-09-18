@@ -19,6 +19,11 @@ from collections.abc import Iterator
 # identity (PoolKey hashes env).
 KIROCREW_SPAWNED_ENV = "KIROCREW_SPAWNED"
 KIROCREW_SPAWNED_VALUE = "1"
+# Per-spawn incarnation of an agent runtime, set on the root's environment and
+# inherited by its whole tree. KIROCREW_SPAWNED says "a Kiro Crew spawned this";
+# this one says WHICH spawn, so a teardown that has lost its root can still tell
+# the root's own tree from a fresh runtime that took the root's recycled pid.
+KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
 
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ

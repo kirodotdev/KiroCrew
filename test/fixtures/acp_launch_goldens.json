@@ -22,6 +22,7 @@
     "env_added": {
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "PATH": "<augmented-path>"
     },
     "env_removed": [],
