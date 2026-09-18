@@ -4114,6 +4114,10 @@ async def _spawn_admitted_prefetch(
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
         _requested_model = slot.model or agent_model or default_model or ""
+        # The same resolver the side turn reads: a cleared slot states a concrete
+        # directory here rather than an empty one, or this eager spawn lands on
+        # the factory's "no cwd" branch and can inherit the removed directory.
+        _spawn_cwd = await slot.resolved_cwd(session_key)
         try:
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,
@@ -4125,7 +4129,7 @@ async def _spawn_admitted_prefetch(
                 # alias applied, so no override applies.
                 crew_agent=crew_alias,
                 model=_requested_model or None,
-                cwd=slot.project or None,
+                cwd=_spawn_cwd,
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
@@ -8810,6 +8814,10 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        # Same resolver as the eager-spawn path above, for the same reason: the
+        # two must agree or a cleared slot's turn allocation would bind a
+        # directory the eager session did not.
+        _turn_cwd = await slot.resolved_cwd(session_key)
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -8817,7 +8825,7 @@ async def _run_chat(
             # carry different watchdog windows.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=_turn_cwd,
             # The persisted channel stays separate from the dashboard-owned key
             # so provider startup can distinguish a linked dispatcher from a
             # direct dashboard turn.

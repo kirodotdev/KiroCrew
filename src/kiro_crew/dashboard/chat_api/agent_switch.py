@@ -427,6 +427,7 @@ async def switch_slot_agent(
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        pre_await_project_cleared = slot.project_cleared
         pre_await_memory_store = slot.memory_store
 
         # Resolve workspace from agent bindings. The response value is seeded
@@ -681,7 +682,14 @@ async def switch_slot_agent(
         if slot.workspace == pre_await_workspace:
             slot.workspace = _CommitToken(new_workspace)
             committed_workspace = slot.workspace
-        if slot.project == pre_await_project:
+        if slot.project == pre_await_project and slot.project_cleared == pre_await_project_cleared:
+            # The marker joins this compare because the project VALUE alone cannot see a
+            # clear: clearing an already-empty project leaves the value at "" and only
+            # raises the marker, so a project-only compare still passes and the rollback
+            # below would restore the marker to its pre-await False, silently retracting a
+            # clear this request never owned.
+            # No retraction here: the setter does it, and only for a TRUTHY binding. A switch
+            # to an agent with no workspace and no folder leaves ``new_project`` empty.
             slot.project = _CommitToken(new_project)
             committed_project = slot.project
         # The store is the THIRD field of that binding, and leaving it behind
@@ -737,6 +745,7 @@ async def switch_slot_agent(
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+                slot.project_cleared = pre_await_project_cleared
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's

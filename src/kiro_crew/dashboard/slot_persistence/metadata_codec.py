@@ -733,8 +733,18 @@ def _read_app_agent_owner(r: _Read) -> None:
 
 
 def _read_project(r: _Read) -> None:
-    if r.meta.get("project"):
+    # Read by identity, because a stored ``"false"`` string is truthy. The upsert
+    # cannot delete a key, so a cleared slot's line carries BOTH -- and the stale
+    # ``project`` is DROPPED rather than paired with the marker: only ``resolved_cwd``
+    # consults the marker, so a reader taking the raw field would spawn its turn in
+    # the directory the user removed. Restoring the pair would also stand the
+    # ``project`` setter's invariant on its head.
+    cleared = r.meta.get("project_cleared") is True
+    if cleared:
+        r.slot.project = ""
+    elif r.meta.get("project"):
         r.slot.project = r.meta["project"]
+    r.slot.project_cleared = cleared
 
 
 def _read_executor(r: _Read) -> None:
@@ -1123,6 +1133,22 @@ FIELDS: tuple[Field, ...] = (
         merge=_always(lambda s: s.project),
         read=_read_project,
     ),
+    # Written beside the ``project`` it qualifies, and as a value rather than by
+    # absence. The pair is mutually exclusive -- the ``project`` setter retracts the
+    # marker -- so a slot carrying a project can never carry the marker too, and a
+    # writer that omitted the false half could never satisfy the slot-owned coverage
+    # contract for the line form. Both readers test ``is True``, so a written
+    # ``false`` and an absent key are the same answer. A slot with neither still
+    # omits it, which keeps a bare line bare; the merge, which cannot delete a key,
+    # writes it always so a stale clear cannot sit beside a reselected project.
+    Field(
+        "project_cleared",
+        _ALL,
+        attr="project_cleared",
+        line=lambda s, f: bool(s.project_cleared) if (s.project or s.project_cleared) else OMIT,
+        merge=_always(lambda s: bool(s.project_cleared)),
+        why="read with the project",
+    ),
     # Written while a local turn is between admission and teardown and omitted
     # otherwise -- slot ownership makes the omission the durable clear; the merge,
     # which cannot delete a key, writes the cleared ``0`` / ``None``.
@@ -1498,6 +1524,7 @@ LINE_ORDER: tuple[str, ...] = (
     "agent_kind",
     "app_agent_owner",
     "project",
+    "project_cleared",
     "executor",
     "instance_id",
     "remote_slot",
@@ -1557,6 +1584,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "agent_kind",
     "app_agent_owner",
     "project",
+    "project_cleared",
     "app",
     "origin",
     "created_by",

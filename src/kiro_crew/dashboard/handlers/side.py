@@ -438,8 +438,10 @@ async def _run_side_turn(
         # project and the spawn happen in the new one, loading a file the check
         # never saw. A change is picked up by the NEXT turn, whose binding then
         # differs and cold-starts under its own derivation.
-        project: str | None = slot.project or None
         slot_agent: str | None = slot.agent or None
+        # Read after the agent: the resolver hops off the loop, so a hop landing between
+        # the two would split the single reading this block depends on.
+        project: str | None = await slot.resolved_cwd(side_key)
         # The READ_ONLY policy's classifier is the gateway's ONE live hook gate,
         # the same object the main chat consults (``chat_runner`` reads
         # ``state.context_builder.hooks``). Settings > Security hot-reloads that

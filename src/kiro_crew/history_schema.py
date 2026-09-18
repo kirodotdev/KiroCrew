@@ -58,6 +58,9 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # session that carries none clears it instead of inheriting a stale one.
         "app_agent_owner",
         "project",
+        # Persisted because the upsert cannot DELETE a key: in-memory only, the marker
+        # would die at restart and the rehydrate would restore the stale directory.
+        "project_cleared",
         # Remote-execution binding: owned by the slot, so clearing it in memory
         # clears it on disk. Left unowned, a rebind or an unbind would be undone
         # on the next save by the carried-forward copy.

@@ -1302,7 +1302,7 @@ def test_the_golden_bytes_are_sensitive_to_the_line_fold(tmp_path, monkeypatch, 
 _GOLDEN: dict[str, dict] = {
     "full_save": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "memory_mode": "persistent", "title": "Golden", "title_origin": "auto", "title_refresh_mark": 3, "title_low_signal": false, "agent": "writer", "model": "model-x", "autocompact_pct": 55.0, "mode": "focus", "project": "/srv/project", "folder_id": "folder-1", "pinned": true, "color_index": 2, "color_hex": "#aabbcc", "tags": ["tag-1"], "last_user_at": "2026-01-02T03:04:06", "tab_id": "tab-golden-full"}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "memory_mode": "persistent", "title": "Golden", "title_origin": "auto", "title_refresh_mark": 3, "title_low_signal": false, "agent": "writer", "model": "model-x", "autocompact_pct": 55.0, "mode": "focus", "project": "/srv/project", "project_cleared": false, "folder_id": "folder-1", "pinned": true, "color_index": 2, "color_hex": "#aabbcc", "tags": ["tag-1"], "last_user_at": "2026-01-02T03:04:06", "tab_id": "tab-golden-full"}\n'
             '{"role": "user", "content": "hello", "ts": "2026-01-02T03:04:06", "source_thread": "dashboard", "source_user": "dashboard", "meta": {"mid": "m-1", "human": true}}\n'
             '{"role": "assistant", "content": "the key is [REDACTED: credential]", "ts": "2026-01-02T03:04:07", "source_thread": "dashboard", "source_user": "dashboard", "meta": {"mid": "m-2"}}\n'
             '{"role": "system", "content": "a notice", "ts": "2026-01-02T03:04:08", "source_thread": "dashboard", "source_user": "dashboard", "meta": {"mid": "m-3"}}\n'
@@ -1312,7 +1312,7 @@ _GOLDEN: dict[str, dict] = {
     },
     "empty_window_merge": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "app_agent_owner": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "app_agent_owner": "", "project": "", "project_cleared": false, "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
         ),
         "ok": True,
     },
