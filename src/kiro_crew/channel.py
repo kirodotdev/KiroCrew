@@ -326,6 +326,12 @@ class Channel:
     _save_fn: Any = None  # set by ChannelManager
     _max_agents: int = _MAX_AGENTS
     max_exchanges: int = _MAX_A2A_EXCHANGES
+    # Serializes an append against a clear-all: the clear awaits member teardown before
+    # wiping, and an append in that window is acknowledged then persisted away.
+    _log_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    #: Set by `ChannelManager.close` while it holds `_log_lock`. A post that was parked on
+    #: that lock reads it before appending, so it cannot persist a channel already unlinked.
+    _closed: bool = field(default=False, repr=False)
 
     def add_agent(
         self,
@@ -399,7 +405,7 @@ class Channel:
         mention: str | list[str] | None = None,
         msg_type: str = "progress",
         thread_id: str | None = None,
-    ) -> ChannelMessage:
+    ) -> ChannelMessage | None:
         # Normalize mentions to a set
         mentions: set[str] = set()
         if isinstance(mention, list):
@@ -408,113 +414,126 @@ class Channel:
             mentions = {mention}
         mentions.discard(from_id)  # no self-mentions
 
-        # Resolve reply_to from thread parent
-        reply_to: str | None = None
-        if thread_id:
-            parent = self._msg_index.get(thread_id)
-            if parent:
-                reply_to = parent.from_id
-                parent.reply_count += 1
+        # Resolution must share the append's lock: a clear-all wipes `_msg_index` at its
+        # own turn under that lock, so a parent read outside it can be gone by the append.
+        async with self._log_lock:
+            if self._closed:
+                # A close won this lock and unlinked the file. Appending now would persist
+                # the channel back through `_save()` for `_load_all` to restore at boot.
+                return None
+            reply_to: str | None = None
+            if thread_id:
+                parent = self._msg_index.get(thread_id)
+                if parent:
+                    reply_to = parent.from_id
+                    parent.reply_count += 1
+                else:
+                    # The transcript hides every message carrying a `thread_id`, and a thread
+                    # pane opens only from a parent that still exists.
+                    thread_id = None
 
-        msg = ChannelMessage(
-            id=uuid.uuid4().hex[:8],
-            from_id=from_id,
-            from_role=from_role or from_id,
-            content=content,
-            mention=list(mentions) if mentions else None,
-            msg_type=msg_type,
-            thread_id=thread_id,
-            reply_to=reply_to,
-        )
-        self.messages.append(msg)
-        self._msg_index[msg.id] = msg
-        if len(self.messages) > _MAX_MESSAGES:
-            removed = self.messages.pop(0)
-            self._msg_index.pop(removed.id, None)
+            msg = ChannelMessage(
+                id=uuid.uuid4().hex[:8],
+                from_id=from_id,
+                from_role=from_role or from_id,
+                content=content,
+                mention=list(mentions) if mentions else None,
+                msg_type=msg_type,
+                thread_id=thread_id,
+                reply_to=reply_to,
+            )
+            self.messages.append(msg)
+            self._msg_index[msg.id] = msg
+            if len(self.messages) > _MAX_MESSAGES:
+                removed = self.messages.pop(0)
+                self._msg_index.pop(removed.id, None)
 
-        # Human message resets A2A exchange budget — agents get fresh rounds
-        if from_id == "human":
-            self.exchange_counts.clear()
+            # Human message resets A2A exchange budget — agents get fresh rounds
+            if from_id == "human":
+                self.exchange_counts.clear()
 
-        for agent in self.members.values():
-            if agent.id == from_id or agent.state in ("done", "failed"):
-                continue
-            if agent.listen_mode == ListenMode.SILENT:
-                continue
-
-            is_human = from_id == "human"
-
-            # Thread routing: default listener = parent sender
-            if thread_id and reply_to == agent.id and not mentions:
-                await agent.inbox.put(msg)
-                continue
-
-            # Thread fallback: if reply_to doesn't match any agent (e.g. system message),
-            # route human thread replies to orchestrator
-            if (
-                thread_id
-                and is_human
-                and not mentions
-                and agent.is_orchestrator
-                and reply_to not in self.members
-            ):
-                await agent.inbox.put(msg)
-                continue
-
-            # Orchestrator gets all top-level human messages (no @mention needed)
-            if is_human and not mentions and not thread_id and agent.is_orchestrator:
-                await agent.inbox.put(msg)
-                continue
-
-            # Everyone else: strict @mention only
-            if agent.id not in mentions:
-                continue
-
-            # A2A exchange limit
-            if not is_human:
-                pair = (from_id, agent.id)
-                if self.exchange_counts.get(pair, 0) >= self.max_exchanges:
-                    logger.info(
-                        "A2A limit reached: %s → %s in channel %s",
-                        from_id,
-                        agent.id,
-                        self.id,
-                    )
+            # Delivery and persistence stay under the lock: releasing here let a clear
+            # wipe and persist between the append and this, delivering an unlogged message.
+            for agent in self.members.values():
+                if agent.id == from_id or agent.state in ("done", "failed"):
                     continue
-                self.exchange_counts[pair] = self.exchange_counts.get(pair, 0) + 1
+                if agent.listen_mode == ListenMode.SILENT:
+                    continue
 
-            await agent.inbox.put(msg)
+                is_human = from_id == "human"
 
-        # Dead agent bounce
-        for mid in mentions:
-            target = self.members.get(mid)
-            if target and target.state in ("done", "failed"):
-                bounce = ChannelMessage(
-                    id=uuid.uuid4().hex[:8],
-                    from_id="system",
-                    from_role="System",
-                    mention=None,
-                    msg_type="system",
-                    content=f"⚠️ @{target.role} is no longer active.",
-                )
-                self.messages.append(bounce)
-                self._msg_index[bounce.id] = bounce
-                if len(self.messages) > _MAX_MESSAGES:
-                    removed = self.messages.pop(0)
-                    self._msg_index.pop(removed.id, None)
-                self._broadcast(
-                    "channel_message", {"channel_id": self.id, "message": bounce.to_dict()}
-                )
+                # Thread routing: default listener = parent sender
+                if thread_id and reply_to == agent.id and not mentions:
+                    await agent.inbox.put(msg)
+                    continue
 
-        # Always broadcast to frontend
-        self._broadcast(
-            "channel_message",
-            {
-                "channel_id": self.id,
-                "message": msg.to_dict(),
-            },
-        )
-        self._save()
+                # Thread fallback: if reply_to doesn't match any agent (e.g. system message),
+                # route human thread replies to orchestrator
+                if (
+                    thread_id
+                    and is_human
+                    and not mentions
+                    and agent.is_orchestrator
+                    and reply_to not in self.members
+                ):
+                    await agent.inbox.put(msg)
+                    continue
+
+                # Orchestrator gets all top-level human messages (no @mention needed)
+                if is_human and not mentions and not thread_id and agent.is_orchestrator:
+                    await agent.inbox.put(msg)
+                    continue
+
+                # Everyone else: strict @mention only
+                if agent.id not in mentions:
+                    continue
+
+                # A2A exchange limit
+                if not is_human:
+                    pair = (from_id, agent.id)
+                    if self.exchange_counts.get(pair, 0) >= self.max_exchanges:
+                        logger.info(
+                            "A2A limit reached: %s → %s in channel %s",
+                            from_id,
+                            agent.id,
+                            self.id,
+                        )
+                        continue
+                    self.exchange_counts[pair] = self.exchange_counts.get(pair, 0) + 1
+
+                await agent.inbox.put(msg)
+
+            # Dead agent bounce
+            for mid in mentions:
+                target = self.members.get(mid)
+                if target and target.state in ("done", "failed"):
+                    bounce = ChannelMessage(
+                        id=uuid.uuid4().hex[:8],
+                        from_id="system",
+                        from_role="System",
+                        mention=None,
+                        msg_type="system",
+                        content=f"⚠️ @{target.role} is no longer active.",
+                    )
+                    self.messages.append(bounce)
+                    self._msg_index[bounce.id] = bounce
+                    if len(self.messages) > _MAX_MESSAGES:
+                        removed = self.messages.pop(0)
+                        self._msg_index.pop(removed.id, None)
+                    self._broadcast(
+                        "channel_message",
+                        {"channel_id": self.id, "message": bounce.to_dict()},
+                    )
+
+            # Always broadcast to frontend
+            self._broadcast(
+                "channel_message",
+                {
+                    "channel_id": self.id,
+                    "message": msg.to_dict(),
+                },
+            )
+            self._save()
         return msg
 
     async def subscribe(self, agent_id: str):
@@ -675,6 +694,11 @@ class ChannelManager:
         directory creation inside the ``try`` would newly swallow a "cannot
         create the channels directory" failure that callers see raised today.
         """
+        if self._channels.get(channel.id) is not channel:
+            # A detached channel's file is already unlinked, so persisting it here is what
+            # `_load_all` restores at boot. One check covers every `_save()` caller.
+            logger.debug("Skipping save for channel %s: no longer registered", channel.id)
+            return
         os.makedirs(self._CHANNELS_DIR, exist_ok=True)
         path = os.path.join(self._CHANNELS_DIR, f"{channel.id}.json")
         try:
@@ -734,6 +758,7 @@ class ChannelManager:
         channel = self._channels.pop(channel_id, None)
         if not channel:
             return False
+        channel._closed = True
         for agent in channel.members.values():
             agent.state = "done"
             if agent._task and not agent._task.done():
@@ -907,6 +932,21 @@ async def run_channel_agent(
         )
         sessions.release(agent.session_key)
         logger.info("Channel agent %s (%s) finished: %s", agent.id, agent.role, agent.state)
+
+
+def has_queued_work(agent: ChannelAgent) -> bool:
+    """Whether *agent* holds an acknowledged message it has not begun yet.
+
+    A post is acknowledged to its sender and persisted once it reaches the inbox, but the
+    turn is only declared when the member dequeues it. Between the two the session reports
+    no active turn while work that WILL run is already owed, so a teardown that consults the
+    turn alone tears down a member that then answers into whatever replaced the log.
+
+    Determined positively: an inbox whose depth is unreadable states nothing, so it resolves
+    to no queued work and the turn remains the question, rather than refusing every clear.
+    """
+    depth = getattr(getattr(agent, "inbox", None), "qsize", lambda: None)()
+    return isinstance(depth, int) and depth > 0
 
 
 async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:

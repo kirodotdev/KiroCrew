@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from kiro_crew.channel import (
@@ -190,6 +192,31 @@ class TestChannelRouting:
         assert not orch.inbox.empty()
 
     @pytest.mark.asyncio
+    async def test_a_reply_whose_parent_vanished_is_not_stamped_with_a_dead_thread_id(self):
+        """A reply carrying a thread id no reader can resolve is invisible in the dashboard.
+
+        The parent lookup shares the append's lock, so a clear-all can wipe `_msg_index`
+        between a reply being accepted and its parent being read. The transcript view filters
+        out every message that carries a thread id, and a thread can only be opened from a
+        parent that still exists, so keeping the dead id persists the reply -- and the agent's
+        answer to it -- where neither view can ever show it.
+        """
+        ch, orch, spec = self._make_channel_with_agents()
+        parent = await ch.post(orch.id, "initial", from_role="Orch")
+        # What a concurrent clear-all leaves behind: the parent is gone from the index.
+        ch._msg_index.pop(parent.id, None)
+        ch.messages.remove(parent)
+
+        reply = await ch.post("human", "reply", from_role="Human", thread_id=parent.id)
+
+        assert reply is not None, "precondition: the post itself must still be accepted"
+        assert reply.thread_id is None, (
+            "the reply kept a thread id whose parent is gone, so the transcript filters it "
+            f"out and no thread pane can reach it; got {reply.thread_id!r}"
+        )
+        assert reply in ch.messages, "and it must still be in the log, just at top level"
+
+    @pytest.mark.asyncio
     async def test_human_message_resets_exchange_counts(self):
         ch, orch, spec = self._make_channel_with_agents()
         # Exhaust the A2A budget
@@ -280,3 +307,54 @@ class TestChannelManager:
         mgr.create("a")
         mgr.create("b")
         assert len(mgr.list_channels()) == 2
+
+
+class TestAClosedChannelIsNotResurrected:
+    """`close` unlinks the channel's file, so nothing may persist it afterwards.
+
+    A writer resolves the channel before taking `_log_lock`, so a close can pop it and delete
+    its file in between. Writing the detached object back recreates the file, and `_load_all`
+    restores at boot a channel the user deleted, holding whatever state the writer left.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _channels_dir(self, tmp_path):
+        self._dir = str(tmp_path / "channels")
+        (tmp_path / "channels").mkdir()
+
+    def _file(self, channel_id: str) -> str:
+        return os.path.join(self._dir, f"{channel_id}.json")
+
+    @pytest.mark.asyncio
+    async def test_a_post_parked_on_the_lock_does_not_recreate_a_closed_channel(self):
+        mgr = ChannelManager(channels_dir=self._dir)
+        ch = mgr.create("t")
+        ch.add_agent(role="A", agent_name="a", task="t")
+        assert os.path.exists(self._file(ch.id)), "precondition: the channel was persisted"
+
+        assert mgr.close(ch.id)
+        assert not os.path.exists(self._file(ch.id)), "precondition: close unlinked the file"
+
+        msg = await ch.post("human", "landed after the close")
+
+        assert msg is None, "a post into a closed channel must not be accepted"
+        assert not os.path.exists(self._file(ch.id)), (
+            "the post recreated the deleted channel file, so `_load_all` restores a channel "
+            "the user closed"
+        )
+
+    def test_a_save_on_a_detached_channel_is_skipped(self):
+        """The catch-all: every `_save()` caller, not only the ones with their own guard."""
+        mgr = ChannelManager(channels_dir=self._dir)
+        ch = mgr.create("t")
+        assert mgr.close(ch.id)
+        assert not os.path.exists(self._file(ch.id)), "precondition: close unlinked the file"
+
+        # What `api_channel_update_agent` and `api_channel_approve_agent` reach: a mutation on
+        # a channel already popped, followed by its own `_save()`.
+        ch.topic = "mutated after the close"
+        ch._save()
+
+        assert not os.path.exists(
+            self._file(ch.id)
+        ), "a detached channel persisted itself, so the close is undone on the next boot"
