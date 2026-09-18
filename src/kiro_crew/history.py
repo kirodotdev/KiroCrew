@@ -825,6 +825,17 @@ def carry_provenance(dest: dict, src: dict) -> None:
             dest[field] = value
 
 
+#: ``meta`` key marking a row a PERSON authored, set by the send paths a human
+#: actually reaches. An ALLOWLIST on purpose: ``role == "user"`` does not mean a
+#: person typed it, because the gateway drives agent turns through the same shape
+#: -- ``_ChatSlot.enqueue_or_run_prompt`` appends ``("user", prompt, "msg msg-u")``
+#: for an Issue Radar wake, identical in role AND presentation class to a typed
+#: message. So a reader that wants human activity must require this marker rather
+#: than exclude the machine callers it happens to know about: an unmarked row
+#: simply does not count, which keeps the next machine caller harmless by default.
+HUMAN_TURN_META_KEY = "human"
+
+
 def _safe_mtime(path: Path) -> float | None:
     """Return a file's mtime, or None if it can't be stat'd."""
     try:

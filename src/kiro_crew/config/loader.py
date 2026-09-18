@@ -3132,6 +3132,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         use_tunnel_url=bool(slack_data.get("use_tunnel_url", False)),
         show_thinking=bool(slack_data.get("show_thinking", True)),
         home_tab_sessions_per_kind=_safe_int(slack_data.get("home_tab_sessions_per_kind", 5), 5),
+        sessions_limit=_safe_int(slack_data.get("sessions_limit", 10), 10),
     )
 
 

@@ -159,7 +159,12 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
-from kiro_crew.history import carry_provenance, is_incognito_transcript, transcript_stems
+from kiro_crew.history import (
+    HUMAN_TURN_META_KEY,
+    carry_provenance,
+    is_incognito_transcript,
+    transcript_stems,
+)
 from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.messaging.link import is_channel_session_key
@@ -967,9 +972,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # reply so every pane sees the user row in order, independently of when the
     # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
     # callers without a correlation id keep their existing delivery contract.
-    _user_row = slot.append(
-        "user", message, "msg msg-u", meta=_redact_meta(user_meta) if user_meta else None
-    )
+    _user_row_meta = _redact_meta(user_meta) if user_meta else {}
+    # A PERSON typed this. Marked explicitly rather than inferred, because the
+    # row's role and presentation class cannot tell it apart from a turn the
+    # gateway drives on its own (see history.HUMAN_TURN_META_KEY).
+    _user_row_meta[HUMAN_TURN_META_KEY] = True
+    _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
     _user_mid = _user_row.get("meta", {}).get("mid")
     if ws_mode and user_meta and user_meta.get("sendId"):
         # Raw user content belongs on the per-client slot-authorized WS path.

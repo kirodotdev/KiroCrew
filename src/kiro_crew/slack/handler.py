@@ -76,7 +76,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import append_and_surface
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.history import ConversationLog, HistoryConsolidator
+from kiro_crew.history import HUMAN_TURN_META_KEY, ConversationLog, HistoryConsolidator
 from kiro_crew.hooks import (
     HOOK_REPLY,
     TOOL_AUTO_APPROVE,
@@ -158,9 +158,9 @@ from kiro_crew.slack.format import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (
-    _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
+    _message_surface_limit,
 )
 from kiro_crew.stats import Stats
 from kiro_crew.subagent import SubagentManager
@@ -5258,7 +5258,10 @@ async def handle_message(
                 slot_name = linked_session_key.removeprefix("dashboard:")
                 slot = getattr(ds, "_slots", {}).get(slot_name)
                 if slot:
-                    slot.append("user", text, "msg msg-u")
+                    # The person typed this in Slack; mirroring it into the
+                    # linked slot keeps it a human turn (see
+                    # history.HUMAN_TURN_META_KEY).
+                    slot.append("user", text, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
                     slot.append("assistant", accumulated, "msg msg-a")
                     if slot._on_message:
                         slot._on_message(
@@ -6017,7 +6020,9 @@ async def _handle_sessions_command(
     # the access attempt would be invisible to the security pipeline.
     # Mirrors the slash and Home Tab error-path patterns.
     try:
-        rows = await _collect_recent_sessions_off_loop(sessions, limit=_SESSIONS_DEFAULT_LIMIT)
+        rows = await _collect_recent_sessions_off_loop(
+            sessions, limit=_message_surface_limit(slack_cfg().slack.sessions_limit)
+        )
     except Exception as exc:
         # Redact-then-truncate: redact() first so credential / exfil
         # patterns aren't split mid-string by the truncation step.

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import _redact_for_display, _redact_meta
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
+from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -564,7 +565,13 @@ async def steer_into_running_turn(
     _state = (
         STEER_STATE_CONSUMED if (not still_registered and _had_evidence) else STEER_STATE_WRITTEN
     )
-    meta: dict[str, Any] = {"steer": True, "steerState": _state}
+    meta: dict[str, Any] = {
+        "steer": True,
+        "steerState": _state,
+        # A PERSON typed this, same as an ordinary send. See
+        # history.HUMAN_TURN_META_KEY for why the marker is explicit.
+        HUMAN_TURN_META_KEY: True,
+    }
     if send_id:
         # Persist the client correlation id alongside the steer flag: the
         # transcript page is what mergePreservedThinking reads to resolve an

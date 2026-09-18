@@ -4269,6 +4269,7 @@
         "reactions_enabled": true,
         "show_thinking": true,
         "home_tab_sessions_per_kind": 5,
+        "sessions_limit": 10,
         "use_tunnel_url": false,
         "session_folder": ""
       }
@@ -4528,6 +4529,22 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5
+    },
+    {
+      "path": "slack.sessions_limit",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Sessions List Length",
+      "help": "Max sessions listed by the Slack 'sessions' DM keyword and the 'sessions' slash command. Raise it on an install with many background sessions, where the ones worth resuming are pushed past the end of the list.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10
     },
     {
       "path": "slack.use_tunnel_url",

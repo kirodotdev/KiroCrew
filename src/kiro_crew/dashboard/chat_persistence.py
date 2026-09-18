@@ -64,6 +64,7 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
+    HUMAN_TURN_META_KEY,
     ROWS_ONLY_DEFERRED_META_KEYS,
     ROWS_ONLY_OWNED_META_KEYS,
     SLOT_OWNED_META_KEYS,
@@ -83,6 +84,76 @@ from kiro_crew.session_agent_selection import session_agent_selection_name
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
+
+#: Metadata-line field holding the instant of a session's newest HUMAN turn.
+#: Deliberately absent from :data:`SLOT_OWNED_META_KEYS`: the window this save
+#: serializes is BOUNDED, so a save whose window has scrolled past the last user
+#: row derives nothing, and an owned key's absence would erase a valid stamp.
+#: Unowned means ``carry_unowned_metadata`` keeps the stored value instead.
+_META_LAST_USER_AT = "last_user_at"
+
+
+def _latest_stamp(*candidates: str) -> str:
+    """The latest usable transcript stamp among *candidates*, or ``""``.
+
+    :func:`latest_transcript_ts` compares through ``transcript_sort_key``, which
+    resolves a NAIVE value with ``astimezone()`` -- and that raises at the
+    representable boundary, measured: ``ValueError: year 0 is out of range`` for
+    ``0001-01-01T00:00:00``, and ``year 10000`` for ``9999-12-31T23:59:59``. Such
+    a stamp PARSES, so the unparseable path does not catch it, and the raise would
+    abort the whole slot save rather than cost one row its stamp.
+
+    Folded one candidate at a time so a single unusable value costs only itself
+    instead of discarding every stamp passed beside it.
+    """
+    best = ""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            best = latest_transcript_ts(best, candidate) or best
+        except (ValueError, OverflowError, OSError):
+            continue
+    return best
+
+
+def _newest_human_turn_ts(rows: "list[dict] | tuple[dict, ...]") -> str:
+    """The ``ts`` of the newest row a PERSON authored in *rows*, or ``""``.
+
+    Gated on :data:`~kiro_crew.history.HUMAN_TURN_META_KEY`, which the send paths
+    a human reaches set on the row. ``role == "user"`` is NOT enough on its own:
+    the gateway drives agent turns through the same shape, and
+    ``_ChatSlot.enqueue_or_run_prompt`` appends ``("user", prompt, "msg msg-u")``
+    for an Issue Radar wake -- identical in role and in presentation class to a
+    typed message. Requiring the marker rather than excluding the machine callers
+    we happen to know about is what keeps the NEXT such caller from silently
+    advancing a session's human-activity stamp.
+
+    An unmarked row therefore does not count, which is the safe direction: a
+    session whose human turns predate the marker keeps ranking by ``st_mtime``,
+    exactly as it does today.
+
+    The marker is the WHOLE gate. There is deliberately no ``role == "user"``
+    check beside it: only a human send path sets the marker, so the role is
+    implied, and a second condition no input can distinguish is dead weight that
+    reads as defence.
+
+    Ordering goes through :func:`_latest_stamp`, never string comparison: rows
+    carry both naive and offset-aware stamps, so ``"a" > "b"`` on the raw text
+    compares two different domains and can pick the earlier row.
+    """
+    stamps: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_meta = row.get("meta")
+        if not isinstance(row_meta, dict) or row_meta.get(HUMAN_TURN_META_KEY) is not True:
+            continue
+        ts = row.get("ts")
+        if isinstance(ts, str) and ts:
+            stamps.append(ts)
+    return _latest_stamp(*stamps)
+
 
 # Custom session color contract: lowercase-normalized #rrggbb only. Canonical
 # home of the regex (chat_handlers imports it from here to avoid an import
@@ -3887,6 +3958,25 @@ def _save_slot_to_history(
             # entry to the save that actually writes its row. Row and
             # retirement land in one atomic file replace; a crash on either
             # side re-delivers rather than loses.
+            # Ranking signal for every "recent sessions" list: the instant of
+            # this session's newest HUMAN turn. Derived here because this save
+            # already rebuilds the metadata line and already holds the window,
+            # so it costs no extra I/O and reads no transcript.
+            #
+            # MONOTONIC, via the later of the derived value and the one on disk.
+            # The window is BOUNDED, so a save can legitimately see no user row
+            # (the last one has scrolled out of it) or an older one than the
+            # stamp already stored (a rewind, a fork). Folding the stored value
+            # in means a save can only move this forward, which is what makes
+            # the field safe to leave unowned: nothing here can retract a turn
+            # that really happened.
+            _stored_human_ts = existing_meta.get(_META_LAST_USER_AT)
+            _latest_human_ts = _latest_stamp(
+                _stored_human_ts if isinstance(_stored_human_ts, str) else "",
+                _newest_human_turn_ts(window),
+            )
+            if _latest_human_ts:
+                meta_line[_META_LAST_USER_AT] = _latest_human_ts
             window_note_ids: set[str] = set()
             for row in window:
                 row_meta = row.get("meta")

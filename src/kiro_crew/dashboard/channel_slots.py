@@ -64,7 +64,7 @@ from kiro_crew.dashboard.channel_folders import lookup_channel_folder
 from kiro_crew.dashboard.chat_title import _persist_title
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count, row_mid
-from kiro_crew.history import carry_provenance, is_incognito_transcript
+from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
@@ -162,6 +162,9 @@ def project_channel_turn_live(
                     user_text,
                     "msg msg-u",
                     broadcast_user=broadcast_user,
+                    # A PERSON sent this into the channel. See
+                    # history.HUMAN_TURN_META_KEY for why the marker is explicit.
+                    meta={HUMAN_TURN_META_KEY: True},
                 )
             )
             or ""

@@ -2500,6 +2500,17 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    sessions_limit: int = field(
+        default=10,
+        metadata=_meta(
+            "Sessions List Length",
+            "Max sessions listed by the Slack 'sessions' DM keyword and the "
+            "'sessions' slash command. Raise it on an install with many "
+            "background sessions, where the ones worth resuming are pushed past "
+            "the end of the list.",
+            tags=["slack"],
+        ),
+    )
     use_tunnel_url: bool = field(
         default=False,
         metadata=_meta(

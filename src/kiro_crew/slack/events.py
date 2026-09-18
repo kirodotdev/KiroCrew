@@ -104,9 +104,9 @@ from kiro_crew.slack.sessions_view import (
     _HOME_TAB_SESSIONS_PER_KIND,
     _SESSION_KIND_DASHBOARD,
     _SESSION_KIND_TASKRUNNER,
-    _SESSIONS_DEFAULT_LIMIT,
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
+    _message_surface_limit,
 )
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.stats import Stats
@@ -718,7 +718,7 @@ async def _handle_sessions(
     try:
         rows = await _collect_recent_sessions_off_loop(
             orch.sessions if orch is not None else None,
-            limit=_SESSIONS_DEFAULT_LIMIT,
+            limit=_message_surface_limit(slack_cfg(orch).slack.sessions_limit),
         )
     except Exception as exc:
         # Redact-then-truncate: redact() first so credential / exfil
