@@ -759,7 +759,7 @@ class TestPinEnforcement:
         cfg.save()
         # No real provider or embedding process runs in this stream harness.
         # Keep private ownership and the protected session binding real.
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.title_then_refresh", AsyncMock())
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
         monkeypatch.setattr(
             "kiro_crew.config.loader._materialized_kiro_agent",

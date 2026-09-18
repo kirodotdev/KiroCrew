@@ -64,7 +64,7 @@ def _no_cycle_background_tasks(monkeypatch):
     session summary): both hop to executor threads (config load, transcript
     flush) that would outlive the test and can re-create the per-test dir
     after teardown."""
-    monkeypatch.setattr(cr, "maybe_refresh_title", AsyncMock())
+    monkeypatch.setattr(cr, "title_then_refresh", AsyncMock())
     monkeypatch.setattr(cr, "generate_session_summary", AsyncMock())
 
 

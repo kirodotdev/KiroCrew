@@ -106,10 +106,9 @@ from kiro_crew.dashboard.chat_tag_grants import refresh_cache as refresh_tag_gra
 from kiro_crew.dashboard.chat_tags import resolve_board_tags
 from kiro_crew.dashboard.chat_title import (
     _extract_and_redact_plan_metadata,
-    _maybe_auto_title,
     _rephrase_plan_lite,
     _reset_auto_run_for_new_plan,
-    maybe_refresh_title,
+    title_then_refresh,
 )
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
@@ -7886,18 +7885,20 @@ async def _finish_queue_cycle(
         # result to title or summarize. Its terminal lifecycle is complete;
         # the next landed turn owns the ordinary post-processing attempt.
         return
-    if not slot._titled:
-        title_task = asyncio.create_task(_maybe_auto_title(state, slot))
-        state._background_tasks.add(title_task)
-        title_task.add_done_callback(state._background_tasks.discard)
-    else:
-        # Already titled: re-examine an AUTO title at bounded milestones so
-        # long sessions aren't stuck with a name generated from their very
-        # first message. Self-guarding (origin/milestone/in-flight checks in
-        # maybe_refresh_title) — the common case returns without any LLM call.
-        refresh_task = asyncio.create_task(maybe_refresh_title(state, slot))
-        state._background_tasks.add(refresh_task)
-        refresh_task.add_done_callback(state._background_tasks.discard)
+    # Chain the titling attempt into a refresh check, waiting out a
+    # still-running on-send attempt first (see title_then_refresh). Both the
+    # untitled and the already-titled case go through the same chain: an
+    # already-locked title makes _maybe_auto_title a no-op, and the refresh
+    # self-guards (origin/milestone/in-flight checks in maybe_refresh_title) —
+    # the common case returns without any LLM work. Routing the titled branch
+    # through the wait matters too: an on-send attempt that locked a LOW-SIGNAL
+    # title (a URL/ticket-key echo — see chat_title._is_low_signal_title) can
+    # still hold the in-flight guard here, and a direct maybe_refresh_title
+    # would bounce off it — with no later chat_done for a one-message session
+    # to catch the early milestone.
+    title_task = asyncio.create_task(title_then_refresh(state, slot))
+    state._background_tasks.add(title_task)
+    title_task.add_done_callback(state._background_tasks.discard)
 
     # Intent summary for the chat summary panel. Self-guarding: the common case
     # (feature disabled) returns before any work, and an unchanged transcript is

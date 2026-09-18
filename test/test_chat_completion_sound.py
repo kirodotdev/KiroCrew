@@ -22,7 +22,7 @@ def completion_state(tmp_path, monkeypatch):
     state.broadcast_ws = MagicMock()
     slot = state.get_or_create_slot("chat-sound")
     slot._titled = True
-    monkeypatch.setattr(cr, "maybe_refresh_title", AsyncMock())
+    monkeypatch.setattr(cr, "title_then_refresh", AsyncMock())
     monkeypatch.setattr(cr, "generate_session_summary", AsyncMock())
     monkeypatch.setattr(autonudge, "get_instance", lambda: None)
     return state, slot

@@ -2202,9 +2202,11 @@ class _ChatSlot:
         "_title_origin",
         "_title_epoch",
         "_title_refresh_mark",
+        "_title_low_signal",
         "_auto_tagged",
         "_title_in_flight",
         "_title_retry_pending",
+        "_title_task",
         "_summary_in_flight",
         "_summary_turn_mark",
         "_detail_render_lock",
@@ -2564,10 +2566,25 @@ class _ChatSlot:
         # the refresh token budget is hard-bounded. Persisted so a gateway
         # restart cannot re-spend consumed milestones.
         self._title_refresh_mark: int = 0
+        # True when the current AUTO title was derived from a low-signal first
+        # message (URL/identifier-dominated, e.g. a pasted ticket link) — the
+        # one case where the name can only restate the link. Makes the title
+        # refresh due once the first turn's transcript exists (see
+        # chat_title._TITLE_EARLY_REFRESH_MILESTONE) instead of waiting for the
+        # first ordinary milestone. Persisted as ``title_low_signal`` and
+        # rehydrated in chat_persistence; absent on legacy sessions = False.
+        self._title_low_signal: bool = False
         self._auto_tagged: bool = False  # True once auto-tag has been attempted
         # Guards against concurrent LLM auto-title attempts (on-send trigger vs
         # the end-of-turn chat_done trigger racing on the same slot).
         self._title_in_flight: bool = False
+        # Handle of the on-send auto-title task (chat_handlers), so chat_done's
+        # chained title→refresh pass can WAIT for the in-flight attempt to
+        # settle instead of bouncing off the ``_title_in_flight`` guard. Without
+        # the wait, a slow on-send attempt locks a low-signal title AFTER both
+        # chained calls returned — and a one-message session gets no later
+        # chat_done to spend its early refresh milestone. Never persisted.
+        self._title_task: asyncio.Task[None] | None = None
         # Records a chat_done retry that arrived during the on-send attempt.
         self._title_retry_pending: bool = False
         # Excludes concurrent session-summary generations for this slot. A

@@ -94,7 +94,7 @@ def _turn_state(tmp_path, monkeypatch):
     state.sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
     state.sessions.consume_replay_suppression = MagicMock(return_value=False)
     state.sessions.record_failure = AsyncMock()
-    monkeypatch.setattr(chat_runner, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
     monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
     monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
     return state
@@ -1759,7 +1759,7 @@ def _prewarmed_member_state(tmp_path, monkeypatch, *, sid: str | None):
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock(return_value=True)
     monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
-    monkeypatch.setattr(chat_runner, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
     holder = {"sid": sid}
     state.sessions.resumable_sid = MagicMock(side_effect=lambda _key: holder["sid"])
 

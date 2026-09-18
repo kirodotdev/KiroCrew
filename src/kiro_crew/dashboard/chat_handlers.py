@@ -1280,6 +1280,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # 60-char provisional stays as the fallback if the LLM SKIPs or errors.
     if not slot._titled and not slot._title_in_flight:
         _tt = asyncio.create_task(_maybe_auto_title(state, slot))
+        # Expose the handle so chat_done's chained title→refresh pass can wait
+        # for this attempt to settle (see _title_then_refresh in chat_runner).
+        slot._title_task = _tt
         state._background_tasks.add(_tt)
         _tt.add_done_callback(state._background_tasks.discard)
 

@@ -203,7 +203,7 @@ def dashboard_capability_world(world, tmp_path, monkeypatch):
     monkeypatch.setattr("kiro_crew.config.loader.kiro_agents_dir", lambda: specs)
     refresh_materialized_agents()
     monkeypatch.setattr(chat_handlers, "schedule_eager_spawn", lambda *a, **kw: None)
-    monkeypatch.setattr(chat_runner, "_maybe_auto_title", AsyncMock())
+    monkeypatch.setattr(chat_runner, "title_then_refresh", AsyncMock())
     monkeypatch.setattr(chat_runner, "generate_session_summary", AsyncMock())
     monkeypatch.setattr(chat_runner, "_EAGER_SPAWN_DEBOUNCE_SECS", 0)
     monkeypatch.setattr(chat_runner, "_prewarm_allowance", lambda: 1)

@@ -8720,7 +8720,7 @@ class TestRuntimeWiring:
             ctx_builder, "build_message", lambda *a, **kw: mock_build_message(ctx_builder, *a, **kw)
         )
         monkeypatch.setattr(ctx_builder, "ensure_store", AsyncMock(return_value=object()))
-        monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.title_then_refresh", AsyncMock())
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
 
         state = _make_state(tmp_path, context_builder=ctx_builder)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import unicodedata
 from typing import Any
 
@@ -46,6 +47,19 @@ _TITLE_ORIGINS = frozenset({_TITLE_ORIGIN_AUTO, _TITLE_ORIGIN_USER})
 # (a KEEP/SKIP/error consumes the milestone; see maybe_refresh_title), and the
 # consumed mark is persisted so restarts cannot re-spend it.
 _TITLE_REFRESH_MILESTONES: tuple[int, ...] = (8, 24)
+
+# Extra refresh milestone for a title born LOW-SIGNAL (see
+# ``_is_low_signal_title``): a first message dominated by a pasted link or an
+# opaque ticket identifier gives the initial titler nothing but the link to
+# restate, so the name stays a URL/id echo until user-turn 8 — forever, for the
+# common one-message "investigate this ticket" session. Once the first turn's
+# transcript exists the real topic is visible, so the refresh becomes due at
+# ONE user message instead. Gated by ``slot._title_low_signal`` (set only at
+# auto-title lock time, by a deterministic text test — no extra LLM call), so
+# an ordinary session whose opening message named its topic never spends this:
+# at most ONE extra one-liner per session lifetime, attempt-counted exactly
+# like the ordinary milestones.
+_TITLE_EARLY_REFRESH_MILESTONE = 1
 
 # Transcript window for every title prompt, in messages. The initial prompt
 # reads the FIRST window (a session's opening turns state its topic), while the
@@ -310,9 +324,7 @@ _TITLE_KO_SENTENCE_ENDINGS = (
 
 def _unspaced_script_chars(s: str) -> int:
     """Count characters belonging to a script written without word spaces."""
-    return sum(
-        1 for ch in s if any(lo <= ord(ch) <= hi for lo, hi in _UNSPACED_SCRIPT_RANGES)
-    )
+    return sum(1 for ch in s if any(lo <= ord(ch) <= hi for lo, hi in _UNSPACED_SCRIPT_RANGES))
 
 
 def _looks_like_prose(title: str) -> bool:
@@ -1045,19 +1057,19 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
             fields["title_origin"] = origin
         if slot._title_refresh_mark:
             fields["title_refresh_mark"] = slot._title_refresh_mark
+        # Written unconditionally (unlike the mark, which only grows): the flag
+        # goes True -> False when the early refresh consumes it, and a stale
+        # True on disk would re-arm the early milestone on every restart.
+        fields["title_low_signal"] = slot._title_low_signal
         try:
-            await asyncio.to_thread(
-                state.conversation_log.update_metadata, history_key, fields
-            )
+            await asyncio.to_thread(state.conversation_log.update_metadata, history_key, fields)
             logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)
             return False
         if slot._title_epoch == epoch:
             return True
-        logger.debug(
-            "Explicit title landed during persist for slot %s; re-persisting", slot.key
-        )
+        logger.debug("Explicit title landed during persist for slot %s; re-persisting", slot.key)
 
 
 def _fallback_title_from_messages(messages: list[dict[str, Any]]) -> str:
@@ -1089,6 +1101,41 @@ def _fallback_title_from_messages(messages: list[dict[str, Any]]) -> str:
     if " " in cut:
         cut = cut[: cut.rindex(" ")].rstrip()
     return f"{cut}…"
+
+
+# An opaque identifier inside a title: a run of six or more digits, as found in
+# ticket/issue keys (V2371928461, INC0012345) and in no ordinary topic phrase.
+# Short numbers ("port 8080", a 4-digit change id) stay below the bar on
+# purpose — a title that NAMES a small number is usually describing its topic,
+# not echoing a key.
+_TITLE_OPAQUE_ID_RE = re.compile(r"\d{6,}")
+
+
+def _is_low_signal_title(title: str, messages: list[dict[str, Any]]) -> bool:
+    """True when an auto title can only be restating its low-signal source.
+
+    Decides (deterministically — no LLM call) whether a freshly locked AUTO
+    title should be re-examined as soon as the first turn's transcript exists
+    (see ``_TITLE_EARLY_REFRESH_MILESTONE``). Three signatures, each an echo of
+    a source that named no topic:
+
+    - the title carries a URL: the opening message was a pasted link, and the
+      link is all the titler had;
+    - the title carries an opaque identifier (a long digit run, e.g. a ticket
+      key): "Research ticket V2371919238" names the key, not the problem;
+    - the title IS the truncated-first-message fallback: the titler already
+      declined to name a topic from this text.
+
+    A false positive costs one bounded refresh call whose common outcome is a
+    one-token KEEP; a false negative leaves a link as the session's name until
+    the first ordinary milestone (user-turn 8, unreachable for a one-message
+    session). The test is therefore biased slightly toward firing.
+    """
+    if "://" in title or "www." in title:
+        return True
+    if _TITLE_OPAQUE_ID_RE.search(title):
+        return True
+    return title == _fallback_title_from_messages(messages)
 
 
 async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
@@ -1127,6 +1174,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             slot.title = _fallback_title_from_messages(slot.messages)
             slot._titled = True
             slot._title_origin = _TITLE_ORIGIN_AUTO
+            # The fallback is an echo of the first message — flag it so the
+            # refresh becomes due immediately rather than at the next milestone.
+            slot._title_low_signal = _is_low_signal_title(slot.title, slot.messages)
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
         return
@@ -1169,6 +1219,10 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             slot.title = title
             slot._titled = True
             slot._title_origin = _TITLE_ORIGIN_AUTO
+            # A title generated from a link/ticket-key opener can only restate
+            # the link; flag it so the background refresh re-examines it as
+            # soon as the first turn's transcript names the real topic.
+            slot._title_low_signal = _is_low_signal_title(title, messages)
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, title)
         else:
@@ -1184,6 +1238,11 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             slot._titled = attempt_has_assistant
             if attempt_has_assistant:
                 slot._title_origin = _TITLE_ORIGIN_AUTO
+                # A definitive fallback is an echo of the first message — flag
+                # it so the refresh prompt (which reads the conversational tail
+                # and frames the task as keep-or-rename rather than
+                # title-or-SKIP) gets one immediate shot at a real name.
+                slot._title_low_signal = _is_low_signal_title(slot.title, slot.messages)
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
             logger.info(
@@ -1221,6 +1280,31 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
                 logger.debug("Folder suggestion failed for slot %s", slot.key, exc_info=True)
 
 
+async def title_then_refresh(state: DashboardState, slot: _ChatSlot) -> None:
+    """Chain the end-of-turn titling attempt into a refresh check (chat_done).
+
+    When the attempt locks a LOW-SIGNAL title (a URL/ticket-key echo — see
+    ``_is_low_signal_title``), the early refresh milestone is already due at
+    that same chat_done, and a one-message session gets no later chat_done to
+    catch it. For an ordinary title the chained refresh returns without any
+    LLM work (not due).
+
+    If the ON-SEND titling attempt (chat_handlers) is still running, wait for
+    it to settle first: otherwise ``_maybe_auto_title`` below returns through
+    its in-flight guard and ``maybe_refresh_title`` returns through its
+    not-titled guard, then the on-send attempt locks the low-signal title
+    AFTER both — leaving the echo title unchanged indefinitely.
+    ``asyncio.wait`` neither cancels the task nor re-raises its outcome (the
+    attempt does its own error handling); a cancelled or failed attempt simply
+    leaves the retry below to do the work.
+    """
+    pending = slot._title_task
+    if pending is not None and not pending.done():
+        await asyncio.wait([pending])
+    await _maybe_auto_title(state, slot)
+    await maybe_refresh_title(state, slot)
+
+
 async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     """Background task: re-examine an AUTO title as the conversation evolves.
 
@@ -1239,8 +1323,11 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
       rename is final; legacy titles with no stored origin rehydrate as "user"
       and are equally final.
     - Each milestone fires at most ONCE, attempt-counted: a KEEP/SKIP/prose
-      reply or an error consumes it (no retries). Two milestones = at most two
-      extra one-liner calls over a session's whole lifetime.
+      reply or an error consumes it (no retries). Two ordinary milestones plus
+      the low-signal early milestone = at most three extra one-liner calls over
+      a session's whole lifetime, and the early one only exists for sessions
+      whose title locked as a URL/ticket-key echo or as the truncated
+      first-message fallback (see ``_is_low_signal_title``).
     - The consumed mark is persisted (``title_refresh_mark``) so a gateway
       restart cannot re-spend it.
     - The prompt is bounded exactly like the initial titling prompt (ten
@@ -1256,17 +1343,28 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     if slot._title_in_flight:
         return
     user_count = sum(1 for m in slot.messages if m.get("role") == "user")
+    # A low-signal title (URL/ticket-key echo — see _is_low_signal_title) adds
+    # the early milestone: the first turn's transcript is the FIRST moment the
+    # session's real topic is visible, and a one-message "investigate this
+    # link" session never reaches the ordinary milestones at all.
+    milestones = _TITLE_REFRESH_MILESTONES
+    if slot._title_low_signal:
+        milestones = (_TITLE_EARLY_REFRESH_MILESTONE, *milestones)
     # NOTE deliberate under-spend: one attempt consumes EVERY milestone at or
     # below user_count (the mark jumps past them all). A session that first
     # becomes refresh-eligible at turn >= 24 — e.g. rehydrated mid-life — gets
     # ONE refresh, not a catch-up burst. The budget is a ceiling, not a quota.
-    due = any(slot._title_refresh_mark < m <= user_count for m in _TITLE_REFRESH_MILESTONES)
+    due = any(slot._title_refresh_mark < m <= user_count for m in milestones)
     if not due:
         return
     slot._title_in_flight = True
     # Consume the milestone up-front: a failed/KEEP attempt must not be retried
     # on the next turn — the budget is per-milestone, not per-success.
     slot._title_refresh_mark = user_count
+    # The early milestone is spent with this attempt regardless of outcome —
+    # clear the flag so it can never re-arm (and so the cleared state is what
+    # ``_persist_title`` writes below).
+    slot._title_low_signal = False
     epoch = slot._title_epoch
     logger.info("Title refresh: attempting for slot %s (turn %d)", slot.key, user_count)
     try:
@@ -1359,6 +1457,9 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
         # epoch bump makes any in-flight background attempt stand down instead
         # of clobbering the title the user just asked for.
         slot._title_origin = _TITLE_ORIGIN_AUTO
+        # Generated from the recent conversational tail, so it is not a
+        # first-message echo — the early low-signal refresh must not re-fire.
+        slot._title_low_signal = False
         slot._title_epoch += 1
         await _persist_title(state, slot)
         state.push_slot_title(slot.key, title)
