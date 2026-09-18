@@ -33,18 +33,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
+    config_dir,
     default_project_dir,
     resolve_agent_bindings,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
-from kiro_crew.dashboard.chat_folders import _unhide_folder
+from kiro_crew.dashboard.chat_folders import _resolve_folder_project_dir, _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
 from kiro_crew.dashboard.chat_utils import (
@@ -891,6 +894,68 @@ def _resolve_slot(state: "DashboardState", target: str) -> "_ChatSlot | None":
     return found[0] if found else None
 
 
+def _folder_creation_values(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[bool, object, object]:
+    """Return existence plus the nearest inherited project and default agent.
+
+    The values stay raw so the same pure read can be repeated under the folder
+    lock immediately before allocation. Filesystem validation happens separately,
+    off the event loop, after this snapshot is captured.
+    """
+    by_id = {
+        str(folder.get("id") or ""): folder
+        for folder in _safe_folder_tree(folders)
+        if isinstance(folder, dict)
+    }
+    if folder_id not in by_id:
+        return False, "", ""
+    project: object = ""
+    default_agent: object = ""
+    seen: set[str] = set()
+    current_id = folder_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        folder = by_id.get(current_id)
+        if folder is None:
+            break
+        if not project and folder.get("project_dir"):
+            project = folder.get("project_dir")
+        if not default_agent and folder.get("default_agent"):
+            default_agent = folder.get("default_agent")
+        if project and default_agent:
+            break
+        current_id = str(folder.get("parent_id") or "")
+    return True, project, default_agent
+
+
+def _folder_workspace_name(config: KiroCrewConfig, project_dir: str) -> str:
+    """Return the unique configured workspace rooted at *project_dir*.
+
+    Folder targeting never uses the loader's unknown-name fallback: two names
+    resolving to the base workspace, or two configured names resolving to one
+    directory, would make the requested memory boundary ambiguous.
+    """
+    matches: list[str] = []
+    for name, workspace_config in config.workspaces.items():
+        raw = Path(workspace_config.dir).expanduser()
+        candidate = raw if raw.is_absolute() else config_dir() / raw
+        if os.path.realpath(str(candidate)) == project_dir:
+            matches.append(name)
+    if not matches:
+        raise SessionControlError(
+            "folder project is not the root of a configured workspace",
+            code="folder_workspace_unmapped",
+        )
+    if len(matches) != 1:
+        raise SessionControlError(
+            "folder project maps to more than one configured workspace",
+            code="folder_workspace_ambiguous",
+            status=409,
+        )
+    return matches[0]
+
+
 async def create_session(
     state: "DashboardState",
     *,
@@ -969,23 +1034,33 @@ async def create_session(
         caller_slot.memory_store,
     )
 
-    # The child is created in the CALLER'S workspace, not the default one.
-    # Workspace is the memory boundary and `authorize_target` refuses a
-    # cross-workspace target, so a child left in "default" would be a boundary
-    # crossing its own creator could not then read or stop.
-    workspace = getattr(caller_slot, "workspace", "default") or "default"
-    # An unnamed agent inherits the CALLER'S, not the global default: the caller is
-    # already running in this workspace, so its agent is the one bound here, and
-    # falling to the global default would put the child on another workspace's
-    # memory store the moment the default is bound elsewhere. It also matches what
-    # creating a session to hand work to means -- the same kind of session.
-    # Sanitized like `title` below, and for the same reason: this value arrives
-    # from the calling model, is persisted verbatim to the metadata line, and is
-    # pushed to every dashboard client. The schema caps its LENGTH; sanitizing is
-    # what keeps a credential-shaped string out of storage and out of the sidebar.
-    # An inherited caller agent is already internal, but running both through the
-    # same call keeps the guard on the field rather than on one of its sources.
-    agent_name = sanitize_outbound(agent.strip() or (getattr(caller_slot, "agent", "") or ""))
+    caller_workspace = getattr(caller_slot, "workspace", "default") or "default"
+    workspace = caller_workspace
+    project_dir = ""
+    folder_values: tuple[bool, object, object] | None = None
+    folder_project = ""
+    folder_agent = ""
+    if folder_id:
+        folder_snapshot = await state.read_folders(
+            lambda folders: [dict(folder) for folder in folders]
+        )
+        folder_values = _folder_creation_values(folder_snapshot, folder_id)
+        exists, raw_project, raw_agent = folder_values
+        if not exists:
+            raise SessionControlError("folder not found", code="folder_not_found")
+        if raw_agent and not isinstance(raw_agent, str):
+            raise SessionControlError(
+                "folder default_agent must be a string", code="folder_agent_invalid"
+            )
+        folder_agent = raw_agent.strip() if isinstance(raw_agent, str) else ""
+        folder_project, folder_project_error = await asyncio.to_thread(
+            _resolve_folder_project_dir, folder_snapshot, folder_id
+        )
+        if folder_project_error:
+            raise SessionControlError(
+                f"invalid folder project: {folder_project_error}",
+                code="folder_project_invalid",
+            )
 
     log = state.conversation_log
     if log is None:
@@ -997,60 +1072,61 @@ async def create_session(
             code="history_unavailable",
         )
 
-    # Resolved BEFORE the slot exists, because `get_or_create_slot` publishes into
-    # the slot table and `await` is a suspension point: a slot that is visible
-    # while its agent and project are still unset can be addressed in that window,
-    # and `/api/chat` would then resolve bindings from a blank agent -- running the
-    # turn against the DEFAULT workspace's memory store rather than this one.
-    # `default_project_dir` needs only the workspace name, so nothing forces it to
-    # run after construction.
-    #
-    # Offloaded: it resolves a realpath, stats the directory and screens it against
-    # the sensitive-path list, so it is filesystem work the loop should not wait on.
-    # The rule's own tiebreaker applies -- a leaked worker thread is survivable, a
-    # frozen loop is not.
-    project_dir = await asyncio.to_thread(default_project_dir, workspace)
-
-    # ONE invariant covers every branch of agent resolution: the agent that will
-    # actually ANSWER must be bound to the caller's workspace. Authorization reads
-    # `slot.workspace` while execution follows the agent's own binding, so any
-    # branch where those disagree carries another workspace's memory store into
-    # the child. Enumerating the branches instead of stating the invariant is how
-    # the empty-agent case was missed:
-    #
-    #   agent given, binding matches   -> allowed, dispatches that agent
-    #   agent given, binding differs   -> refused (agent_workspace_mismatch)
-    #   agent given, name unresolvable -> refused (agent_unresolved), because the
-    #                                     default would answer under the requested
-    #                                     name
-    #   agent omitted                  -> `resolve_agent_bindings` falls to
-    #                                     config.default_agent, so the SAME check
-    #                                     applies to whatever would answer; an
-    #                                     omitted agent is not an unchecked one
-    #   config unreadable              -> refused (agent_unverifiable), because
-    #                                     "cannot verify" must not read as "fine"
-    #
-    # Resolved with the child's own `project_dir`: a materialized kiro agent is
-    # declared per project directory rather than registered in `config.agents`, so
-    # resolving without it reports an app's agent as unresolvable and would refuse
-    # a name that does resolve for the session being created.
     try:
-        # Offloaded: a cache miss reads and validates the config file, so leaving it
-        # on the loop stalls every other gateway task, not just this request. It is
-        # awaited HERE, still ahead of the caller re-resolve below, so the decisions
-        # that authorize the allocation are all made after the last suspension.
+        # A folder-linked project is authority only when it is the unique root of
+        # a workspace the operator already configured. No request field can name
+        # a workspace or path directly. The member-only cross-workspace branch is
+        # what keeps ordinary sessions and scheduled runs under their existing
+        # boundary while allowing a member DM to dispatch project-local work.
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if folder_project:
+            workspace = await asyncio.to_thread(_folder_workspace_name, cfg, folder_project)
+            if workspace != caller_workspace and not _member_caller(caller_key):
+                raise SessionControlError(
+                    "only a crew member DM can create a worker in another workspace",
+                    code="folder_workspace_forbidden",
+                )
+            project_dir = folder_project
+        else:
+            project_dir = await asyncio.to_thread(default_project_dir, workspace)
+
+        # An explicit agent remains an override. A configured folder otherwise
+        # uses its nearest inherited default, then the global default, matching
+        # the dashboard's folder create semantics. A filing-only folder with no
+        # project retains caller-agent inheritance for compatibility.
+        inherited_agent = (
+            folder_agent or cfg.default_agent
+            if folder_project
+            else (getattr(caller_slot, "agent", "") or "")
+        )
+        agent_name = sanitize_outbound(agent.strip() or inherited_agent)
         bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, agent_name, project_dir)
+    except SessionControlError:
+        raise
     except Exception:
         raise SessionControlError(
             "cannot verify the effective agent's workspace binding",
             code="agent_unverifiable",
         ) from None
-    agent_workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+
+    if folder_project:
+        binding_dir = Path(bindings.workspace_dir).expanduser()
+        binding_project = os.path.realpath(
+            str(binding_dir if binding_dir.is_absolute() else config_dir() / binding_dir)
+        )
+        try:
+            agent_workspace = _folder_workspace_name(cfg, binding_project)
+        except SessionControlError:
+            raise SessionControlError(
+                "cannot uniquely verify the effective agent's workspace binding",
+                code="agent_unverifiable",
+            ) from None
+    else:
+        agent_workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
     if agent_workspace != workspace:
         who = repr(agent_name) if agent_name else "the default agent"
         raise SessionControlError(
-            f"{who} is bound to workspace {agent_workspace!r}, not the caller's " f"{workspace!r}",
+            f"{who} is bound to workspace {agent_workspace!r}, not the target's " f"{workspace!r}",
             code="agent_workspace_mismatch",
         )
     if not bindings.requested_resolved:
@@ -1151,21 +1227,21 @@ async def create_session(
         ) from None
 
     if folder_id:
-        # Confirmed under the folder-store lock -- the only place existence
-        # cannot go stale against a concurrent delete (see `read_folders`) --
-        # and READ-ONLY on purpose: the Model-B un-hide is a durable mutation,
-        # and it runs only after the filing actually lands (below, after the
-        # persist), so a create the re-gate refuses leaves no folder-tree state
-        # behind. Placed BEFORE the re-gate so the last suspension this
-        # coroutine takes is here: after the re-gate nothing suspends until the
-        # slot is fully configured, so the folder confirmed here cannot be
-        # deleted before the assignment lands (folder mutations run on this
-        # loop).
-        def _exists(folders: list[dict[str, Any]]) -> bool:
-            return any(str(f.get("id") or "") == folder_id for f in _safe_folder_tree(folders))
-
-        if not await state.read_folders(_exists):
+        # Recompute the inherited values under the folder lock as the LAST await
+        # before allocation. A rename or visual move is irrelevant, but changing
+        # the project, default agent, parent chain, or deleting the folder revokes
+        # the target decision made above.
+        current_folder_values = await state.read_folders(
+            lambda folders: _folder_creation_values(folders, folder_id)
+        )
+        if not current_folder_values[0]:
             raise SessionControlError("folder not found", code="folder_not_found")
+        if current_folder_values != folder_values:
+            raise SessionControlError(
+                "folder target changed while the session was being created",
+                code="folder_target_changed",
+                status=409,
+            )
 
     # Re-resolved and re-gated HERE, adjacent to the allocation, because every
     # decision above was made before this coroutine suspended -- for the
@@ -1191,13 +1267,10 @@ async def create_session(
     live_caller = state.get_slot(caller_key)
     if live_caller is None or live_caller is not caller_slot:
         raise SessionControlError("caller session is not open", code="caller_not_open", status=404)
-    # A slot that survived but MOVED workspaces has invalidated both decisions that
-    # read it: the memory boundary the child inherits, and the agent-binding check
-    # above, whose whole question was whether the answering agent is bound to THIS
-    # workspace. Re-running that check here is not an option -- it needs
-    # `KiroCrewConfig.load()`, which is filesystem work that must not run on the
-    # event loop -- so a moved caller is refused instead of re-authorized.
-    if (getattr(live_caller, "workspace", "default") or "default") != workspace:
+    # A slot that survived but MOVED workspaces invalidates the caller identity
+    # authorizing this create. Compare against its entry-time workspace, not the
+    # child's folder-derived target workspace.
+    if (getattr(live_caller, "workspace", "default") or "default") != caller_workspace:
         raise SessionControlError(
             "caller session changed workspace while the session was being created",
             code="caller_workspace_changed",
@@ -1728,9 +1801,21 @@ def authorize_target(
             "mirrored_caller",
         )
 
-    if getattr(slot, "workspace", "default") != getattr(caller_slot, "workspace", "default"):
-        # Workspaces are the memory boundary; reaching across one would let a
-        # session act on work it cannot see.
+    workspace_differs = getattr(slot, "workspace", "default") != getattr(
+        caller_slot, "workspace", "default"
+    )
+    member_folder_child = (
+        _member_caller(caller_key)
+        and bool(getattr(slot, "folder_id", ""))
+        and getattr(slot, "_created_by", "") == caller_key
+        and (getattr(slot, "memory_store", "") or "default")
+        == (getattr(caller_slot, "memory_store", "") or "default")
+    )
+    if workspace_differs and not member_folder_child:
+        # A member's directly-created folder worker is the sole exception. The
+        # folder create path uniquely maps its project to configured workspace,
+        # and matching protected stores keep the memory silo unchanged. Every
+        # other cross-workspace target retains the existing refusal.
         raise deny("target session belongs to a different workspace", "workspace_mismatch")
     if (
         _caller_is_ownership_fenced(state, caller_key)

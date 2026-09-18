@@ -424,13 +424,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "agent": {
                         "type": "string",
                         "description": (
-                            "Agent to bind the session to. Omitting it inherits the "
-                            "CALLER'S OWN agent, not a global default: create_session "
-                            "falls back to the calling slot's agent so the child stays in "
-                            "this workspace's memory boundary. A conductor that omits it "
-                            "therefore gets a second conductor, which has no fs_write and "
-                            "cannot do the work. Name the agent the child needs "
-                            "explicitly \u2014 kirocrew-worker for a leaf work item."
+                            "Agent to bind the session to. For a project-linked folder, "
+                            "omitting it uses the nearest inherited folder default agent, "
+                            "then the global default; otherwise it inherits the caller's "
+                            "agent. An explicit agent must resolve in the target workspace. "
+                            "Name kirocrew-worker explicitly for ordinary leaf work when no "
+                            "folder default applies."
                         ),
                     },
                     "folder": {
@@ -439,7 +438,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "Sidebar folder to file the new session into, atomically with "
                             "creation — a folder id or a '/'-separated human path. Missing "
                             "path segments are created (mkdir -p), like chat_folder_create's "
-                            "`parent`. Omit to leave the session at the top level."
+                            "`parent`. A crew-member DM may target another workspace only "
+                            "when this folder's inherited project is the unique root of an "
+                            "existing configured workspace. Omit to leave the session at "
+                            "the top level in the caller's workspace."
                         ),
                     },
                 },

@@ -16,7 +16,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation |
+| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, or for a crew-member DM in the unique configured workspace named by a project-linked folder; optionally file it into that folder at creation |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn |
@@ -67,17 +67,31 @@ An unresolvable folder refuses the whole create — nothing exists yet, so refus
 loses nothing — existence is confirmed read-only under the folder-store lock
 (`read_folders`) before the allocation, and the move path's Model-B un-hide runs
 only after the filing has landed, so a refused create leaves no folder-tree
-mutation behind.
+mutation behind. For a folder with an inherited `project_dir`, creation resolves
+the nearest inherited `default_agent` independently, validates the project path,
+and requires that path to be the unique root of an existing configured workspace.
+An unmapped or multiply-mapped project refuses rather than using the loader's
+unknown-workspace fallback. Only a crew-member DM may use that folder authority
+to cross from its own workspace; an explicit agent remains an override but must
+resolve in the target workspace. The effective folder project/default-agent pair
+is re-read under the folder lock as the last suspension before allocation, so a
+concurrent reparent or configuration change revokes the decision. A folder with
+no inherited project remains filing-only and keeps caller workspace/agent
+inheritance for compatibility.
 
 ### What a created child inherits
 
 Creation copies two different kinds of state, and the split is deliberate.
 
-**Identity** — the child is created in the caller's workspace (the memory
-boundary; a child left in `default` would be both a boundary crossing and
-unaddressable by its own creator), inherits the caller's agent when none is
-named, takes that workspace's project directory as its cwd, and is attributed to
-the caller via `created_by` so the per-creator slot ceiling is countable.
+**Identity** — by default the child is created in the caller's workspace (the
+memory boundary), inherits the caller's agent when none is named, and takes that
+workspace's project directory as its cwd. A project-linked folder changes those
+inputs only for a crew-member DM: its validated project must uniquely map to a
+configured workspace, and an omitted agent uses the nearest inherited folder
+default then the global default. The selected agent must bind to that target
+workspace, and the memory-delegation gate below still requires the child's store
+to be one the caller may delegate to. Every child is attributed to the caller via
+`created_by` so the per-creator slot ceiling and ownership fence are countable.
 
 **Approval posture** — the caller's `_trust` and `_trust_reads` transfer, so a
 trusted operator's dispatched worker does not stall on a prompt nobody is
@@ -162,7 +176,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is app-scoped | 403 | App sessions are the app's, not a peer's |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
 | Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors |
-| Target is in another workspace | 403 | Workspaces are the memory boundary |
+| Target is in another workspace | 403 | Workspaces are the default memory boundary. Sole exception: a crew-member DM may control the direct child it created through the project-folder route when caller and child retain the same memory store. The folder path was uniquely mapped to configured workspace at birth and `created_by` keeps the reach on that one child; ordinary callers, crons, descendants, foreign targets and cross-store children remain refused |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
 
