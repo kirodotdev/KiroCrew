@@ -576,6 +576,9 @@ class SessionManager:
     set_lifecycle_turn_active = _claims.set_lifecycle_turn_active
     mark_lifecycle_lease = _claims.mark_lifecycle_lease
     has_session = _claims.has_session
+    resolve_arm_cwd = _claims.resolve_arm_cwd
+    mark_retire_on_next_claim = _claims.mark_retire_on_next_claim
+    drop_resume_outside = _claims.drop_resume_outside
     get_provider = _claims.get_provider
     session_generation = _claims.session_generation
     _advance_session_generation = _claims._advance_session_generation
