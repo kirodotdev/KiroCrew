@@ -197,12 +197,24 @@ never hand-roll a green result by filtering only check conclusions. Unknown or
 unmapped states fail closed. Mergeability can be asynchronous: `unknown`,
 `checking` or `unchecked` means wait, never pass; a closed object may never settle.
 Collapse superseded attempts to the newest per workflow/check identity when you
-read the rollup yourself and a start time orders the attempts; keep every row you
-cannot strictly order. A typed provider does not collapse: a display label cannot
-prove that two rows are one dispatch retried, so it keeps same-labelled rows
-independent and a `checks_failed` wake can name an attempt a newer run already
-replaced. On such a wake, resolve the newest run for that identity before treating
-the failure as live.
+read the rollup yourself, ordering by the RUN ID, which increases monotonically --
+never a job's start time, which waits on a runner queue, nor the run's creation time,
+which is second-granular and often tied. Keep every row you cannot strictly order.
+A typed provider collapses the same way,
+keyed on the workflow DEFINITION's id plus the check name rather than the display name,
+since two files may share one `name:`, and on the run's triggering event, since one file
+on `push` and `pull_request` dispatches twice for one commit. Highest RUN ID wins, but
+recency alone licenses nothing: the rollup has no lineage edge. Drop a row only
+when its own RUN concluded CANCELLED, the row itself is COMPLETED+CANCELLED, and a newer
+run of its identity exists. Read that cancellation from the RUN, never the row:
+`fail-fast`, a failed `needs`, or an operator cancelling one job all leave a CANCELLED
+row inside a run that concluded FAILURE and is live. Conversely, a cancelled NEWEST run
+is never droppable; that revives the verdict it superseded. Two
+rows of ONE run are not a retry and both stay, because a workflow can publish a check
+run under its own job's display name. Finally,
+any completed row of a replaced round still reads as live, not only a cancelled one.
+The bundled `pr_status.py` does NOT yet follow this rule and can drop a live failure;
+issue #11832 tracks it.
 
 Green checks do not answer review threads or advisory findings. Establish once
 per repo what its reviewer check means, and repeat when its fleet changes:

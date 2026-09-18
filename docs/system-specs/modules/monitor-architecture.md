@@ -590,15 +590,64 @@ These are code, or say in their own text where an implementation still diverges
 enforced nowhere:
 
 - An unclassified provider state is `unknown` and counts as **not passing**.
-- Superseded attempts collapse to the newest per check identity. A host keeps
-  cancelled earlier attempts in its rollup, and counting them reports a live
-  failure that no longer exists. The two current implementations **disagree on
-  this today**: the skill's status tool collapses to the newest attempt per
-  identity in `collapse_superseded`, while the structured provider gives each
-  `CheckRun` row a per-row group key in `_normalize_checks` -- `StatusContext` rows
-  it does group, by context -- and maps `CANCELLED` to failed in `_normalize_check`.
-  Since the state fold prefers `failed`, a superseded cancelled attempt reads as a
-  live failure and can wake on a phantom.
+- Superseded attempts collapse to the newest per check identity. A host leaves a
+  replaced round's completed rows in its rollup, and counting them reports a failure
+  that is not live. The structured provider collapses in
+  `_collapse_superseded_rows`, which runs before `_normalize_checks` groups rows; the
+  skill's status tool collapses in `collapse_superseded`, and the two **diverge on both
+  halves of the rule**. On identity, that one keys CheckRuns on
+  `("run", workflowName, name)`, so it groups two workflow files sharing a single
+  `name:` and ignores the run's trigger. On ordering, it takes the newest by the check
+  row's `startedAt`, which is when the JOB got a runner, so a queue can invert it. Both
+  drop a live row rather than over-report, and its displaced row is overwritten instead
+  of joining its `undecidable` list. Tracked as issue #11832; this module's rule is what
+  the provider enforces, not what that tool does.
+  Identity is the workflow DEFINITION plus the check name
+  (`checkSuite.workflowRun.workflow.databaseId`) and the RUN's triggering
+  `checkSuite.workflowRun.event`, because one workflow file can declare several
+  triggers and a file on `push` and `pull_request` produces two runs of itself on one
+  commit; those are concurrent dispatches, so only a later run of the SAME trigger
+  replaces an earlier one. Ordering is the monotonic
+  `checkSuite.workflowRun.databaseId`, which also groups the rows. Not a timestamp: a
+  check row's `startedAt` is when its JOB got a runner, so a queue can invert it, and
+  `WorkflowRun.createdAt` resolves only to the second, which two runs of one workflow on
+  one head routinely share -- `synchronize` and `edited` are both `pull_request`, so such
+  a pair shares this identity, and a tie leaves both rows live so the fold reports the
+  replaced one. `pr-readiness.yml` reached the same conclusion for the required
+  aggregate and records the reasoning there. Two rules about `cancelled` point in opposite directions and must not be
+  conflated. A row is dropped ONLY when its own RUN concluded `CANCELLED` AND that row
+  itself is `COMPLETED`+`CANCELLED` AND a newer run of its identity exists: the rollup
+  carries no lineage edge, so recency alone does not
+  license removing a row, while a cancellation by the concurrency group does establish
+  displacement. Displacement is a property of the RUN and is read from the run, never
+  inferred from the row: a row reaches `CANCELLED` inside runs that were never
+  displaced -- `fail-fast` cancelling a matrix job's siblings, a job cancelled because
+  something in its `needs` failed, an operator cancelling one job -- and in each the
+  run concluded `FAILURE` and is live, so reading the row's own cancellation as
+  displacement drops a row out of a live run and reports it ready. The row's own
+  cancellation is required in addition, because a cancelled run can still hold a row
+  that reached a real verdict before the cancel landed. The run's conclusion is read
+  from `CheckSuite.conclusion`, the run's own status container, because `WorkflowRun`
+  exposes no `conclusion` and `CheckSuite.workflowRun` is the inverse of the edge the
+  selection follows. Separately, the NEWEST run being
+  cancelled is never a reason to drop it, because that would revive the verdict of the
+  run it superseded. Consequence, stated rather than hidden: a replaced round that
+  COMPLETED keeps its rows, so a phantom survives that case. Two rows of ONE run are **not** a retry
+  and both survive: a workflow can publish a check run through the Checks API under
+  its own job's display name, so both are live at once and collapsing them by start
+  time would let the later row erase the earlier row's failure.
+  `CANCELLED` is one instance rather than the mechanism -- any completed row of a
+  replaced round reads as live, and keying on the run instead of on the row's
+  conclusion is
+  what covers all of them. A row is never collapsed on an id the response withheld:
+  both ids are nullable `Int` on the wire even though the objects carrying them are
+  not, so either absence exempts the row, which also leaves it out of the
+  comparison that picks the newest run. An absent run conclusion exempts the row from
+  removal too, but not from that comparison: such a row can still be the newest run,
+  and so still drop an older cancelled row. `CheckSuite.conclusion` is null while a
+  run is still going, and evidence the host withheld is not evidence a row was
+  replaced. Over-reporting costs a turn; hiding a
+  live failure costs the watch.
 - A published aggregate is one signal in the worst-wins fold, never an override
   of the rows. It is read like any other row: a `PR Readiness` StatusContext with
   state FAILURE is a failing row and makes the verdict red, and one with state

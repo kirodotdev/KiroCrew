@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
+from kiro_crew.monitoring import github_pull_request
 from kiro_crew.monitoring.github_pull_request import _normalize_checks
 from kiro_crew.probes.targets import infer
 
@@ -29,6 +30,7 @@ BABYSIT_SKILL = (
     ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "babysit" / "SKILL.md"
 )
 SPEC = ROOT / "docs" / "system-specs" / "modules" / "babysit-pr-watch.md"
+MONITOR_SPEC = ROOT / "docs" / "system-specs" / "modules" / "monitor-architecture.md"
 
 _URL = re.compile(r"https://github\.com/\S+?/pull/\d+")
 
@@ -68,36 +70,102 @@ def test_a_bare_number_is_still_refused_so_the_ratchet_means_something() -> None
     assert infer("Check https://github.com/<owner>/<repo>/pull/123 now.") is None
 
 
-def test_the_skill_warns_that_a_typed_provider_keeps_same_labelled_rows_apart() -> None:
+def test_the_monitor_spec_names_the_function_that_enforces_the_collapse() -> None:
+    """A rule whose named enforcer does not exist is a rule enforced nowhere.
+
+    That section's own framing is that each rule is code, or says in its own text
+    where an implementation still diverges. So it names the function carrying this
+    one: a rename leaves the sentence pointing at nothing while still reading as an
+    enforced guarantee, and a note that the two implementations diverge sends an
+    agent to reconcile by hand what the engine settles for it.
+    """
+    spec = " ".join(MONITOR_SPEC.read_text(encoding="utf-8").split())
+
+    assert "_collapse_superseded_rows" in spec
+    assert callable(github_pull_request._collapse_superseded_rows)
+    assert "diverge on both halves of the rule" in spec, (
+        "a divergence declared for one half sends a reader to reconcile the wrong one; "
+        "the sibling differs on identity AND on ordering"
+    )
+    assert (
+        "On ordering, it takes the newest by the check row's `startedAt`" in spec
+    ), "the ordering half has to name the field, or the declaration cannot be checked"
+    skill = " ".join(BABYSIT_SKILL.read_text(encoding="utf-8").split())
+    assert "does NOT yet follow this rule" in skill, (
+        "an agent reading the bundled tool's output has to know it can drop a live "
+        "failure the typed provider keeps"
+    )
+    assert "workflow DEFINITION plus the check name" in spec, (
+        "the spec has to name the identity the engine keys on; a reader told only "
+        "that it collapses cannot tell a label-keyed collapse from this one"
+    )
+
+
+def test_the_skill_states_the_collapse_rule_the_typed_provider_implements() -> None:
     """The collapse rule and the provider must not disagree in silence.
 
-    A hand-read rollup collapses re-run attempts to the newest per identity. The
-    structured provider does not, because a display label cannot prove that two
-    rows are one dispatch retried, so a ``checks_failed`` wake can name an attempt
-    a newer run already replaced. The skill stated the collapse without naming the
-    reader it governs, which left an agent on a structured watch acting on a rule
-    the engine contradicts. This asserts the sentence against the real
-    normalization rather than against a spelling.
+    A hand-read rollup collapses re-run attempts to the newest per identity, and
+    the structured provider does the same, keyed on the workflow RUN rather than on
+    the display label: a label cannot prove two rows are one dispatch retried, but
+    two different run ids can. Guidance saying the typed provider skips the collapse
+    sends an agent chasing a row the provider already dropped, so the skill's
+    sentence and the engine have to state one rule. This asserts both halves of it
+    against the real normalization rather than against a spelling.
     """
-    older_failure = {
+    superseded = {
         "__typename": "CheckRun",
         "name": "test",
         "workflowName": "CI",
+        "workflowDefinitionId": 7,
+        "workflowRunEvent": "pull_request",
+        "workflowRunId": 100,
+        "workflowRunConclusion": "CANCELLED",
         "status": "COMPLETED",
-        "conclusion": "FAILURE",
+        "conclusion": "CANCELLED",
+        "workflowRunCreatedAt": "2026-08-21T00:00:00Z",
     }
-    newer_success = {**older_failure, "conclusion": "SUCCESS"}
+    replacement = {
+        **superseded,
+        "workflowRunId": 200,
+        "workflowRunConclusion": "SUCCESS",
+        "conclusion": "SUCCESS",
+        "workflowRunCreatedAt": "2026-08-22T00:00:00Z",
+    }
+    same_run_publisher = {
+        **superseded,
+        "conclusion": "SUCCESS",
+        "workflowRunCreatedAt": "2026-08-21T00:00:02Z",
+    }
+    live_run_cancelled_row = {
+        **superseded,
+        "workflowRunConclusion": "FAILURE",
+    }
 
-    normalized = _normalize_checks([older_failure, newer_success])
+    across_runs = _normalize_checks([superseded, replacement])
+    within_one_run = _normalize_checks([superseded, same_run_publisher])
+    live_run = _normalize_checks([live_run_cancelled_row, replacement])
 
-    assert sorted(check.state for check in normalized) == ["failed", "passed"], (
-        "the provider keeps same-labelled check rows independent; if it ever "
-        "collapses them, the skill's wake warning is what has to change"
+    assert sorted(check.state for check in across_runs) == ["passed"], (
+        "a newer run displaces the CANCELLED attempt it replaced, so that row must "
+        "not survive to wake the session; a row that reached a verdict is kept"
+    )
+    assert sorted(check.state for check in within_one_run) == ["failed", "passed"], (
+        "two rows of ONE run are concurrent, so collapsing them by start time "
+        "would erase a live failure the job actually reported"
+    )
+    assert sorted(check.state for check in live_run) == ["failed", "passed"], (
+        "the row's own cancellation is not displacement: its RUN concluded FAILURE, "
+        "so the row is live and dropping it would report a failed run as ready"
     )
     body = BABYSIT_SKILL.read_text(encoding="utf-8")
     collapsed = " ".join(body.split())
-    assert "A typed provider does not collapse" in collapsed
-    assert "can name an attempt a newer run already replaced" in collapsed
+    assert "keyed on the workflow DEFINITION's id plus the check name" in collapsed
+    assert "Two rows of ONE run are not a retry and both stay" in collapsed
+    assert "any completed row of a replaced round still reads as live" in collapsed
+    assert "its own RUN concluded CANCELLED" in collapsed, (
+        "displacement is the RUN's cancellation, so the skill must not tell an agent "
+        "to read the row's own conclusion as proof a newer run replaced it"
+    )
 
 
 def test_the_spec_states_the_arming_gate_default_the_chokepoint_implements() -> None:
