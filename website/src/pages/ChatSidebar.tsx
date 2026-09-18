@@ -73,6 +73,7 @@ import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgen
 import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import MoveUndoBar from '../components/MoveUndoBar'
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import { usePendingSourceUnlinks } from '../components/SourceLinksSubmenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
@@ -811,6 +812,11 @@ interface Slot {
     // What the link points at. OPTIONAL on the wire — absent means 'change', so
     // older payloads and existing fixtures keep rendering as PR/MR chips.
     kind?: 'change' | 'issue'
+    // Opaque serialized `SourceRef.identity`, passed straight back to the
+    // unlink DELETE endpoint. OPTIONAL on the wire so a bundle newer than its
+    // gateway still renders chips (they just cannot be unlinked until the
+    // gateway sends it — the affordance hides when it is absent).
+    identity?: string
   }>
   source_links_total?: number
 }
@@ -979,6 +985,7 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
   onActivateSlot: () => void
 }) {
   const [wantsExpanded, setWantsExpanded] = useState(false)
+  const pendingUnlinks = usePendingSourceUnlinks(slotKey)
 
   /** What the slots payload currently says this row's links are.
    *
@@ -1032,10 +1039,16 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
     ;(want === 'collapse' ? collapseRef : expandRef).current?.focus()
   }, [isExpanded])
 
-  const shown = isExpanded && fetchedLinks ? fetchedLinks : links
-  // Derived from what is actually on screen, so it lands on 0 once expanded and
-  // self-corrects if a payload ever reports a total below the links it carries.
-  const hidden = typeof total === 'number' ? Math.max(0, total - shown.length) : 0
+  const shownAll = isExpanded && fetchedLinks ? fetchedLinks : links
+  // Pending mutations from any session menu hide chips; failure restores them.
+  const shown = shownAll.filter(link => !link.identity || !pendingUnlinks.includes(link.identity))
+  // Derived from the UNFILTERED set, so the optimistic-unlink filter only
+  // removes visible chips and never inflates the overflow count: computing this
+  // against `shown` would subtract an already-hidden chip from the stale server
+  // `total` and render a phantom "+1 more" for the round-trip window until the
+  // slots push refreshes `total`. Lands on 0 once expanded and self-corrects if
+  // a payload ever reports a total below the links it carries.
+  const hidden = typeof total === 'number' ? Math.max(0, total - shownAll.length) : 0
   const changeLinks = shown.filter(link => (link.kind ?? 'change') !== 'issue')
   const issueLinks = shown.filter(link => (link.kind ?? 'change') === 'issue')
 

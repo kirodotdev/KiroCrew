@@ -1017,7 +1017,6 @@ test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py
 test/test_workflows_dsl.py
-test/test_workflows_inject.py
 test/test_workflows_invariants.py
 test/test_workflows_resilience.py
 test/test_workflows_run_bounds.py

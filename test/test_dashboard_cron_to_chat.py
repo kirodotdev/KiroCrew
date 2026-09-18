@@ -150,6 +150,11 @@ def _inject(state, job, result_text, **kw):
         "history",
         state.conversation_log.read_messages(f"cron:{job.id}") if state.conversation_log else [],
     )
+    # Production's async caller prefetches the transcript's dismissed set
+    # off-loop and passes it in; the fallback binds only when it was READABLE.
+    # These synchronous tests mirror that with a readable (empty) set so the
+    # bind/hydrate/deliver path runs (an absent value would defer the bind).
+    kw.setdefault("dismissed", [])
     inject_cron_result_to_dashboard(state, job, result_text, **kw)
 
 
