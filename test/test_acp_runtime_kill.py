@@ -27,6 +27,7 @@ def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     r._session_queues = {}
     r._stderr_lines = []
     r._pid = pid
+    r._child_pids = {}
     r._reader_task = None
     r._stderr_task = None
     r._sandbox_cleanup = None
@@ -73,6 +74,47 @@ async def test_kill_keeps_pid_tracked_when_process_survives(monkeypatch):
     untrack.assert_not_called()
     assert r._process is None
     assert r._dead is True
+
+
+@pytest.mark.asyncio
+async def test_kill_untracks_only_the_descendants_that_died(monkeypatch):
+    """A descendant that escaped the group kill keeps its entry.
+
+    That entry is the only handle the periodic sweep and the next startup
+    cleanup have on it; untracking a survivor is the leak the tracking exists
+    to close. Pruning is by the descendant's own liveness, not the root's.
+    """
+    r = _bare_runtime()
+    r._child_pids = {700: ("s700", b"agent-chat"), 800: ("s800", b"node")}
+    monkeypatch.setattr(rt.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(rt, "_untrack_pid", lambda pid: None)
+    monkeypatch.setattr(rt, "_untrack_session_pid", lambda pid: None)
+    # 700 escaped the killpg (its own setsid); 800 went down with the group.
+    monkeypatch.setattr(rt, "_pid_gone_or_unmanaged", lambda pid: pid == 800)
+    untracked: list[dict] = []
+    monkeypatch.setattr(rt, "_untrack_child_pids", untracked.append)
+
+    await r.kill()
+
+    assert [sorted(d) for d in untracked] == [[800]]
+    assert r._child_pids == {}
+
+
+@pytest.mark.asyncio
+async def test_kill_prunes_descendants_even_when_the_root_survives(monkeypatch):
+    """The root's fate says nothing about a child that left the process group."""
+    r = _bare_runtime()
+    r._child_pids = {900: ("s900", b"node")}
+    monkeypatch.setattr(rt.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt.platform_compat, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(rt, "_pid_gone_or_unmanaged", lambda pid: True)
+    untracked: list[dict] = []
+    monkeypatch.setattr(rt, "_untrack_child_pids", untracked.append)
+
+    await r.kill()
+
+    assert [sorted(d) for d in untracked] == [[900]]
 
 
 @pytest.mark.asyncio

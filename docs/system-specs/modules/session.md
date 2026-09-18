@@ -546,10 +546,64 @@ send time.
   promoting the severity of errors the lifted inline blocks swallowed). The
   hooks are assembled through the `SessionManager` facade so existing
   monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
-  `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
+  `reap_agent_scopes`, `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
   `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
   sandbox-artifact, bytecode-cache, periodic tracked-PID, and untracked-MCP
   sweeps.
+- **Reaping abandoned agent scopes** (`session_scope_reap.py`,
+  Linux/systemd only): each agent session runs inside a transient
+  `systemd-run --user --scope` under a per-instance child of
+  `kirocrew-agents.slice` (`sandbox._agents_slice_name`). `--scope` GCs a
+  transient unit only after its process exits, so a hard gateway kill or restart
+  strands the whole tree: the leader dies, the `launcher`/`kiro-cli`/
+  `kiro-cli-chat` + MCP children reparent to the systemd user manager, and
+  nothing reaps the scope — the idle/RSS watchdog iterates only
+  `_sessions`, the PID sweeps know only tracked roots, and
+  `session_pid._is_untracked_managed_agent_orphan` is report-only. The reaper
+  reconciles the cgroup tree (the only authority on what this instance leaked)
+  against the live registry. It runs on every cleanup tick via the
+  `reap_agent_scopes` hook — never on the gateway boot path
+  (`AUTOSDE.yaml` `no-new-work-on-gateway-boot-path`: an orphan sweep whose
+  cost scales with leaked state must not delay `KIROCREW_READY`), so the first
+  tick after a restart is what picks up a previous gateway's strays; the hook
+  gathers the live provider/pool/in-flight
+  PID set (so a scope containing any live tree is never touched) and the reaper
+  requires a complete tracked-PID snapshot from the `session_pid` files. An
+  unreadable or malformed snapshot aborts that tick before any scope is scanned.
+  A scope is reclaimed
+  only when ALL hold: (i) no member PID is tracked or a live provider; (ii-a)
+  AT LEAST ONE member has positive agent-runtime argv identity — the generated
+  launcher, an exact argv0 basename of `kiro-cli`, `kiro-cli-chat`,
+  `claude-agent-acp`, or `claude`, or a marked MCP launcher — which is the
+  scope-wide stop authorization; (ii-b) EVERY member is this install's own — it
+  carries the `KIROCREW_SPAWNED` marker, or its `ppid` chain reaches a
+  marker-bearing member without leaving the scope's member set (ownership is by
+  tree: env-clearing grandchildren such as `chrome-headless` renderers under a
+  playwright `node` daemon carry no marker, and that leaked daemon tree is the
+  multi-GB survivor users report); an unreadable `environ` fails closed to "not
+  reclaimable"; (iii) the group leader is dead OR the
+  scope's `ActiveEnterTimestampMonotonic` predates this gateway's boot stamp;
+  and (iv) the scope is older than the module's 600-second grace floor. Reclaim is
+  `systemctl --user stop <unit>`, then a fallback SIGTERM → 3s → SIGKILL that
+  re-reads `cgroup.procs`, opens a pidfd, requires a post-pin `cgroup.procs`
+  read to retain that PID in the same scope, re-derives tree ownership, and
+  signals through that pidfd. A recycled PID can therefore never redirect a
+  signal; a host without pidfd support leaves the member untouched. `pid <= 1` and the
+  gateway's own PID are never signalled, and each reclaimed scope emits a SEL
+  `agent_scope_reap` event. Only THIS install's per-instance child slice is
+  enumerated: a degraded instance token (no per-instance child) is treated as
+  "nothing to reap here" rather than reaching into a co-resident gateway's
+  scopes. A no-op off Linux or without cgroup v2 delegation
+  (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
+  a scope-wide stop, so an intentional detached server left after its agent
+  runtime exits is preserved. The accepted fail-closed residual is that a scope
+  whose runtime-anchor members have all died is never reclaimed, even if every
+  survivor still has the marker or is an attributable env-cleared descendant;
+  old skipped scopes are summarized at INFO by stable reason category, making
+  that residual operator-visible. Stale
+  `session_pid_<pid>.txt`/`.sig` files are separately pruned by
+  `_prune_stale_session_pid_files` (below); the reaper adds no second deletion
+  path.
 - **Stuck-turn reporting** (`_stuck_turn_check`, threshold
   `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
   consumer has stopped pulling events. Exists because the per-turn watchdog in
@@ -1691,15 +1745,87 @@ the internal MCP server, slack-mcp) in separate process groups.  When a
 session dies, `killpg` only reaches the kiro-cli process group — MCP servers
 in other groups get reparented to init and leak memory.
 
-**Tracking**: at session init, `AcpClient.ensure_ready()` snapshots all
-descendant PIDs and persists them to `kiro_pids.txt` as
-`child_pid:parent_pid[:start-id]` entries via
-`_track_child_pids(pids, parent_pid=self._pid)`; the third field is the
+**Tracking**: both transports snapshot their descendant PIDs and persist
+them to `kiro_pids.txt` as `child_pid:parent_pid[:start-id]` entries —
+`AcpClient` appends them with `_track_child_pids(pids, parent_pid=<root pid>)`,
+`AcpRuntime` rewrites its root's whole block with `_replace_child_pids` (see
+below); the third field is the
 child's process-start identity (`_pid_start_token`, colon-free, in-process
 and non-blocking on every platform), omitted only when unreadable at track
-time.  On clean shutdown,
-`_reset_state()` removes them via `_untrack_child_pids()`.  If the gateway
-crashes, the entries remain in the file for the next startup.
+time.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
+`_snapshot_descendants()`, called repeatedly for a reason the one-shot client
+scan does not face: the runtime's registered PID is the sandbox launcher, and
+the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
+so the scan runs when the initialize handshake proves the agent came up and
+then at the end of every `create_session()` and `load_session()`,
+because each session start — fresh or resumed — forks another agent process
+and re-initializes MCP servers the earlier scan could not have seen.
+
+Nothing announces a descendant's exit: they are the gateway's
+GRANDchildren, so there is no `SIGCHLD` to catch and no wait to reap (the
+gateway does not set `PR_SET_CHILD_SUBREAPER`).  Looking is the only way to
+learn, so each pass re-enumerates the tree and writes the whole answer through
+`_replace_child_pids(records, parent_pid=<root>, drop=<gone>)` — one lock, one
+atomic rewrite, a `bool` back.
+
+One rule governs every field-3 write, and the reason is asymmetric harm.  A
+token that is stale costs a MISSED reap: the sweep compares live against
+recorded, sees them differ, and prunes the line without killing — a leak, and
+the sweep still reports it.  A token that names the wrong process costs a WRONG
+KILL: live and recorded agree (both the stranger's), the recycle guard does not
+fire, and `_cleanup_orphaned_mcp_servers` signals a process that merely reused
+the number.  So when identity is in doubt the answer is always "do not record",
+never "record whatever holds the number now":
+
+> **An identity may be written only if it was captured while that pid was
+> confirmed to be ours.**
+
+Everything else follows from it:
+
+- **The writer never reads a live identity.**  `_replace_child_pids` persists
+  `_recorded_start_token` of the mapping's value — the token its caller
+  captured — and calls no reader of its own.  An append-based writer had no
+  such hazard because it never refreshed field 3 at all.
+- **A pid in the tree is confirmed by a second walk before its fresh identity
+  is kept.**  One released between the enumeration and the capture can be held
+  by an unrelated process when its identity is read; absent from the second
+  walk it is not a descendant of this root, and it is dropped.  The window is
+  not closed — crossing it now needs a pid to become a stranger and then become
+  our descendant again.
+- **A pid outside the tree is kept by IDENTITY, not liveness.**
+  `_escapee_is_still_ours` compares its live start id against the recorded one.
+  Liveness alone is the kill-a-stranger case: a descendant that exited and had
+  its number taken reads as alive.  A match keeps the child that left the
+  process group, whose record is the only handle anything has on it; a mismatch,
+  an unreadable identity and an exit are all "not ours" and drop the line.
+- **The root is bracketed too.**  `_root_identity_holds` compares the runtime's
+  own pid against the start id recorded at spawn, before the first walk and
+  again before the write, because a walk from a recycled root enumerates a
+  stranger's whole tree.  No recorded identity means nothing is recorded.
+- **Only the caller's own children are rewritten.**  A line is removed when its
+  child pid is named in `records` or in `drop`, never merely for sitting under
+  this `parent_pid`: a root pid is reused like any other, and a descendant that
+  outlived an earlier runtime holding this number is still tracked under it.
+- **One pass at a time per runtime.**  Each pass rewrites the block from what it
+  read, so two overlapping passes let the older read win and drop the newer
+  descendants; sessions start concurrently on a shared runtime, so the pass is
+  serialized on a per-runtime lock.
+- **The file is written before the in-memory record.**  A `False` publishes
+  nothing, so the record never claims a line the file does not carry, and the
+  next pass retries.
+- **A failure never raises, a cancellation always does.**  Losing a snapshot
+  must not fail a live session, so every `Exception` is logged at WARNING and
+  swallowed.  A `CancelledError` is not a failure and reaches the caller's
+  cleanup guard, which kills the half-built runtime or terminates the session
+  it owns.
+
+On clean shutdown each transport prunes entries by the DESCENDANT's own
+liveness, never by the root's fate: `AcpClient._reset_state()` and
+`AcpRuntime._kill_inner()` (through `_prune_dead_descendants`) untrack only the
+children confirmed gone and log the survivors at WARNING.  A child that
+escaped the group kill by calling `setsid` keeps its entry, because that entry
+is the only handle the periodic sweep and the next startup cleanup have on it.
+If the gateway crashes, the entries remain in the file for the next startup.
 
 **Detection**: reads `kiro_pids.txt`, processes only `child:parent` lines
 (bare PID lines are kiro-cli parents handled by `cleanup_orphaned_sessions()`).

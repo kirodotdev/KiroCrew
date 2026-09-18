@@ -15,6 +15,7 @@ from kiro_crew.memory_stores import (
     UnknownMemoryStore,
     archive_member_memory_store,
     provision_member_memory,
+    require_member_memory_not_archived,
     require_member_memory_store,
 )
 
@@ -261,12 +262,8 @@ class TestSyncRefusesCredentialShapedNames:
         assert "oncall-triage" in cfg.agents
         store = cfg.agents["oncall-triage"].memory_store
         assert cfg.written_doc["agents"]["oncall-triage"]["memory_store"] == store
-        assert cfg.written_doc["memory_stores"][store] == {
-            "owner_member": "oncall-triage",
-            "memory_version": 2,
-            "description": "",
-            "embedding_provider": "",
-        }
+        assert store == "default"
+        assert cfg.written_doc["memory_stores"] == {}
 
     @pytest.mark.asyncio
     async def test_reinstalled_package_member_gets_fresh_memory(self):
@@ -282,7 +279,10 @@ class TestSyncRefusesCredentialShapedNames:
         fresh = cfg.agents["oncall"].memory_store
         assert fresh != retired_store
         assert retired_store in cfg.memory_stores
-        assert cfg.written_doc["memory_stores"][fresh]["owner_member"] == "oncall"
+        assert fresh == "default"
+        assert cfg.written_doc["memory_stores"] == {}
+        with pytest.raises(UnknownMemoryStore, match="archived"):
+            require_member_memory_not_archived(retired_store, expected_owner="oncall")
 
 
 class TestAgentSyncFsCheckIsOffloaded:

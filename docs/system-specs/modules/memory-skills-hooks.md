@@ -56,12 +56,18 @@ including a member selected by `default_agent`. The UI labels that memory V1.
 The owner can choose Create private memory in Crew Manager, the member's
 Workspace · Memory pane. That explicit choice creates an empty V2 store and
 preserves the V1 source; Copy memories transfers only selected records.
-New members receive V2 automatically. An existing V2 member never becomes V1
+Discovery sync registers ordinary agents with Global V1; it never allocates a
+private store or treats template discovery as owner consent. Repeated sync leaves
+existing Global V1, named V1 and V2 bindings unchanged. A reinstalled package
+agent starts on V1 rather than inheriting its archived private store. Explicit
+member creation still creates V2, and a discovered V1 agent can use the existing
+Create private memory action to opt in.
+An existing V2 member never becomes V1
 because its configuration, manifest, database or protected session record is
 missing or damaged. Such failures require recovery and cannot initialize a
 replacement or silently change the conversation's authority.
 
-Dashboard creation, discovery sync and explicit V1-to-V2 setup, plus CLI creation
+Dashboard member creation and explicit V1-to-V2 setup, plus CLI creation
 and `--provision-memory`, check the member DM's effective backend and OS sandbox
 before allocating private files or publishing its binding. Unsupported execution
 returns an actionable refusal (`409 member_memory_unavailable` on HTTP, exit 1
@@ -79,9 +85,11 @@ member archives that member; it neither pauses discovery of other members nor
 blocks another creation request, so deletion cannot serve this operator policy.
 The owner sets this central policy through the existing typed
 `PATCH /api/config/kirocrew` or configuration
-file. Dashboard create, discovery sync with new members, CLI create and explicit
-V1-to-V2 setup then refuse before allocation and before V1 provider retirement;
-they never substitute a new V1 binding. The next admission reads the current
+file. Dashboard member creation, CLI create and explicit V1-to-V2 setup then
+refuse before allocation and before V1 provider retirement; they never substitute
+a new V1 binding. Ordinary discovery sync remains available even when private
+provisioning is paused or private execution is unsupported, because it creates
+no private store. The next admission reads the current
 configuration, without requiring a gateway restart. A present non-boolean field
 loads as false, while an absent field retains the true default; API writes require
 an actual JSON boolean. Existing V2 execution, management, backup and recovery
@@ -1252,8 +1260,9 @@ term-overlap one while still printing a plausible F1.
 
 ### Member memory experience and lifecycle
 
-Global Memory is **V1**. New members receive a unique empty **V2** store before
-creation is published. Existing members keep their exact V1 binding until the
+Global Memory is **V1**. Explicit member creation allocates a unique empty **V2**
+store before publication. Automatic discovery registers agents on Global V1.
+Existing members keep their exact V1 binding until the
 owner chooses private memory. Store ownership and algorithm version are recorded
 in config, the protected manifest and the database. Private stores cannot be
 shared or rebound. Choosing V2 preserves the V1 source and imports nothing

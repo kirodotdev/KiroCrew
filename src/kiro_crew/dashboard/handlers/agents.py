@@ -125,7 +125,6 @@ from kiro_crew.memory_stores import (
     memory_store_namespace_lock,
     persist_member_config,
     provision_member_memory,
-    require_member_memory_not_archived,
     retire_unpublished_member_memory_store,
     rollback_member_memory_archive_if_active,
 )
@@ -3985,7 +3984,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
     synced: list[str] = []
     pruned: list[str] = []
     prune_candidates: dict[str, dict] = {}
-    prior_stores: dict[str, str] = {}
     try:
         discovered_agents = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), lambda: list(list_agents())
@@ -4043,7 +4041,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         getattr(disc, "source", "?"),
                     )
                     continue
-                await _drained_to_thread(require_member_memory_creation, disc.name)
                 _has_on_disk = await asyncio.to_thread(
                     lambda: (kiro_agents_dir_path() / f"{_dn}.json").exists()
                     or _namespaced_agent_file_exists(_dn)
@@ -4063,8 +4060,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     description=disc.description,
                     source=disc.source,
                 )
-                prior_stores[disc.name] = cfg.agents[disc.name].memory_store
-                await _drained_to_thread(provision_member_memory, cfg, disc.name)
+                # Discovery registers a template, not consent to private memory.
+                # The owner can opt in through the existing member update action.
                 synced.append(disc.name)
 
         # Prune agents whose kiro_agent file no longer exists on disk.
@@ -4091,17 +4088,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     del cfg.agents[name]
                     pruned.append(name)
     except BaseException as exc:
-        await _retire_failed_member_allocations(cfg, prior_stores)
-        if isinstance(exc, UnknownMemoryStore):
-            return web.json_response(
-                {
-                    "ok": False,
-                    "error": str(exc),
-                    "code": "member_memory_unavailable",
-                    "synced": [],
-                },
-                status=409,
-            )
         if not isinstance(exc, Exception):
             raise
         logger.warning("Failed to scan installed agents", exc_info=True)
@@ -4127,18 +4113,10 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
             # them. _drained_to_thread so a cancellation cannot release the
             # asyncio lock while the worker is mid-write.
             to_add = {n: cfg.agents[n] for n in synced if n in cfg.agents}
-            to_add_stores = {
-                n: (
-                    cfg.agents[n].memory_store,
-                    dataclasses.asdict(cfg.memory_stores[cfg.agents[n].memory_store]),
-                )
-                for n in to_add
-            }
 
             def _write_sync() -> list[str]:
                 retired_stores: list[str] = []
                 created_archives: list[tuple[str, str]] = []
-                skipped_allocations: list[tuple[str, str]] = []
 
                 def _mutate(doc: dict) -> dict | None:
                     agents = coerce_dict_section(doc, "agents")
@@ -4146,18 +4124,8 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                     changed = False
                     for aname, acfg in to_add.items():
                         if aname not in agents:
-                            store_name, store_record = to_add_stores[aname]
-                            existing = stores.get(store_name)
-                            if existing is not None and existing != store_record:
-                                raise UnknownMemoryStore(
-                                    f"memory store {store_name!r} ownership changed concurrently"
-                                )
-                            require_member_memory_not_archived(store_name, expected_owner=aname)
-                            stores[store_name] = store_record
                             agents[aname] = dataclasses.asdict(acfg)
                             changed = True
-                        else:
-                            skipped_allocations.append((to_add_stores[aname][0], aname))
                     # Prune ONLY this sync's snapshot candidates, and only
                     # while the in-lock entry still equals the snapshot entry:
                     # an agent (re)added or edited between the discovery
@@ -4196,8 +4164,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                         raise
                 from kiro_crew.context import release_cached_memory_store
 
-                for store_name, owner in skipped_allocations:
-                    retire_unpublished_member_memory_store(store_name, owner)
                 for store_name in retired_stores:
                     release_cached_memory_store(store_name)
                 return retired_stores
@@ -4209,7 +4175,6 @@ async def _do_agents_sync(request: web.Request) -> web.Response:
                 for store_name in retired_stores:
                     await release_markdown_memory_store(state, store_name)
         except BaseException as exc:
-            await _retire_failed_member_allocations(cfg, prior_stores)
             if not isinstance(exc, Exception):
                 raise
             logger.warning("Failed to save config after agent sync", exc_info=True)
