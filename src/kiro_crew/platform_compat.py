@@ -3812,19 +3812,33 @@ def process_command_line(pid: int) -> str:
             powershell_bin = trusted_system_bin("powershell")
             if powershell_bin is None:
                 return ""
+            # A command line is arbitrary user text (an install path under a
+            # non-ASCII account name is the common case), and PowerShell is one
+            # of the console-encoding children ``subprocess_utf8`` says NOT to
+            # decode as UTF-8: it writes stdout in ``[Console]::OutputEncoding``,
+            # so pinning UTF-8 on this end alone raises UnicodeDecodeError on a
+            # legacy code page. Set the child's output encoding instead, which
+            # makes the encoding KNOWN and so brings the site inside that
+            # module's own precondition. UTF8Encoding(false) rather than
+            # ``[Text.Encoding]::UTF8`` so no host can prepend a BOM to the
+            # first field. Without this the code page silently best-fits an
+            # unrepresentable character away (cp950 turns "é" into "e"), and the
+            # callers below compare the result to decide whether a listening PID
+            # is our own gateway -- a corrupted string fails that check quietly.
             out = subprocess.check_output(
                 [
                     powershell_bin,
                     "-NoProfile",
                     "-NonInteractive",
                     "-Command",
+                    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
                     f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}')"
                     ".CommandLine",
                 ],
-                text=True,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
                 creationflags=_SUBPROCESS_NO_WINDOW,
+                **UTF8_TEXT,
             )
             return out.strip()
     except (OSError, subprocess.SubprocessError, ValueError):

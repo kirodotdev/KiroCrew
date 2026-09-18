@@ -49,7 +49,7 @@
 1 src/kiro_crew/env.py
 1 src/kiro_crew/mcp_core.py
 1 src/kiro_crew/mcp_shared.py
-4 src/kiro_crew/platform_compat.py
+3 src/kiro_crew/platform_compat.py
 1 src/kiro_crew/pod/launchd.py
 1 src/kiro_crew/pod/runtime.py
 2 src/kiro_crew/sandbox.py

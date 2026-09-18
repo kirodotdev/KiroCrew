@@ -627,6 +627,53 @@ class TestProcessCommandLine:
         # A non-existent PID yields "" (fail-closed), never an exception.
         assert pc.process_command_line(2_000_000_000) == ""
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="the WMI/PowerShell arm is Windows-only")
+    def test_windows_cmdline_survives_a_character_outside_the_code_page(self):
+        # The Windows arm reads the command line back through PowerShell, and
+        # both ends of that pipe are pinned to UTF-8 so a character the host
+        # code page cannot represent survives the round trip. With either end
+        # left on the code page it is silently best-fitted away and the probe
+        # answers a plausible string that does not equal the real command line
+        # -- which is what the callers compare to decide whether a listening
+        # PID is our own gateway.
+        #
+        # The needle is chosen against the live code page rather than hardcoded:
+        # which characters are lost depends on the host (cp1252 loses the CJK
+        # one, cp950 loses the accented one), and on a UTF-8 host nothing is
+        # lost and there is nothing to assert.
+        import locale
+
+        code_page = locale.getpreferredencoding(False)
+        needle = ""
+        for candidate in ("張", "é", "Ж", "क"):
+            try:
+                candidate.encode(code_page)
+            except UnicodeEncodeError:
+                needle = candidate
+                break
+        if not needle:
+            pytest.skip(f"{code_page} encodes every probe character; no divergence to assert")
+        # Guard the guard: an encodable needle would make this test pass against
+        # the unfixed decode, so prove the chosen one really is unrepresentable.
+        with pytest.raises(UnicodeEncodeError):
+            needle.encode(code_page)
+
+        child = subprocess.Popen(
+            [sys.executable, "-c", f"import time; _ = {needle!r}; time.sleep(30)"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            cl = pc.process_command_line(child.pid)
+            # "" stays tolerated for the same reason as the probe above: a cold
+            # PowerShell plus a WMI query can exceed the 10s timeout on a loaded
+            # runner, and that is the documented failure return, not a defect.
+            # A NON-empty answer, though, is the real command line or it is wrong.
+            if cl:
+                assert needle in cl
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+
 
 class TestProcessOwnerUid:
     """`process_owner_uid` backs the ownership half of the CLI's port-trust gate,
