@@ -367,6 +367,18 @@ class FargateSigninHandle:
     def close(self) -> None:
         """Nothing to release. No browser, no device-code poller, no session."""
 
+    def abort(self) -> bool:
+        """Nothing to stop, and this lane says so rather than leaving it inferred.
+
+        ``True`` here means "confirmed there is no remote login to leave running",
+        not "killed one": the container never runs a device-code login (the
+        credential arrives as an environment variable), so a cancelled sign-in on
+        this lane has no poller that could complete the sign-in later. Explicit
+        so that :func:`~kiro_crew.cloud.launch_job._abort_signin` never has to
+        guess what a missing method means.
+        """
+        return True
+
 
 #: A ``started_by`` value the engine derives from the launch tag, in the charset
 #: ``RunTask`` accepts. It correlates a task to the launcher that started it, which

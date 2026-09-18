@@ -156,6 +156,12 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/cloud/launch/{id}", handlers_cloud.api_cloud_launch_get)
     app.router.add_post("/api/cloud/launch/{id}/cancel", handlers_cloud.api_cloud_launch_cancel)
     app.router.add_post("/api/cloud/launch/{id}/signin", handlers_cloud.api_cloud_launch_signin)
+    # Re-runs ONLY the sign-in step on a crew that ended up unsigned; never
+    # re-provisions (see api_cloud_launch_signin_restart).
+    app.router.add_post(
+        "/api/cloud/launch/{id}/signin/restart",
+        handlers_cloud.api_cloud_launch_signin_restart,
+    )
     app.router.add_post("/api/cloud/{tag}/stop", handlers_cloud.api_cloud_stop)
     app.router.add_post("/api/cloud/{tag}/start", handlers_cloud.api_cloud_start)
     app.router.add_delete("/api/cloud/{tag}", handlers_cloud.api_cloud_destroy)

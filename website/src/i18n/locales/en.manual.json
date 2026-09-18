@@ -5684,7 +5684,6 @@
       "remoteCrewPanel": {
         "auto_connect": "Auto-connect crews",
         "auto_connect_desc": "When on, opening the web app connects every crew automatically, and reconnects them when you come back to the tab. Turn off to connect a crew only when you switch to it.",
-        "copy_failed": "Copy failed. Select the text and copy it manually.",
         "launch_status_unavailable": "Could not refresh the setup progress. The card below shows the last state received.",
         "copy_policy_failed": "Could not copy the policy JSON to the clipboard. Try again, or allow clipboard access for this site."
       },

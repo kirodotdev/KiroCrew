@@ -140,7 +140,7 @@ def test_signin_handle_has_every_signin_handle_protocol_member() -> None:
     attributes = set(typing.get_type_hints(SigninHandle))
     methods = {n for n, _ in inspect.getmembers(SigninHandle, inspect.isfunction) if n[0] != "_"}
     assert attributes == {"already_logged_in", "url", "code", "ports", "error"}
-    assert methods == {"wait", "close"}
+    assert methods == {"wait", "close", "abort"}
     for name in attributes | methods:
         assert hasattr(handle, name), f"FargateSigninHandle is missing {name}"
 

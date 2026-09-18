@@ -117,6 +117,38 @@ class _RealSigninHandle:
         except Exception:  # pragma: no cover - best effort
             logger.info("device-login prompt close failed (non-fatal)", exc_info=True)
 
+    def abort(self) -> bool:
+        """Stop the remote login — for a CANCELLED sign-in only.
+
+        Separate from :meth:`close`, which every path calls: an unconfirmed
+        sign-in deliberately leaves its login polling so the preserved device code
+        can still be approved from the dashboard. Only a cancel means the opposite,
+        that no later approval should land. Deliberately NOT ``login.logout``: the
+        box may hold an older, valid session the cancelled attempt never touched.
+
+        Returns whether the remote cleanup is CONFIRMED to have run.
+        ``cancel_device_login`` already answers that, and discarding its answer
+        made the one state this method exists to prevent — a login still polling
+        on the box after the owner cancelled — indistinguishable from a clean
+        stop. A caught exception is also ``False``. Never raises: the caller is
+        unwinding a cancellation, so a failure is reported (WARNING here, and on
+        the job by :func:`~kiro_crew.cloud.launch_job._abort_signin`) rather than
+        propagated.
+        """
+        try:
+            stopped = bool(login.cancel_device_login(self._iid, self._profile, self._region))
+        except Exception:  # noqa: BLE001 - cleanup, and the caller is unwinding
+            logger.warning("could not stop the Kiro login on %s", self._iid, exc_info=True)
+            return False
+        if not stopped:
+            # WARNING, not INFO: a device code still being polled can sign this
+            # crew in minutes after the owner said no.
+            logger.warning(
+                "the Kiro login on %s was not confirmed stopped; it may still complete",
+                self._iid,
+            )
+        return stopped
+
 
 class RealLaunchEngine:
     """Drives a launch against the user's AWS account via the ``cloud/`` engine."""

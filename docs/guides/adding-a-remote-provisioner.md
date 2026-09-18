@@ -90,7 +90,7 @@ A descriptor says which lanes exist and how to draw each one. It never says how 
 |---|---|---|
 | `preflight(profile, region)` | Fails the launch on any raise | Raise if the launch cannot possibly succeed. Run your own authorization here; a frontend form cannot skip a check by not drawing it |
 | `provision(tag, size_key, profile, region)` | Stored as `job.instance_id`, passed to `begin_signin` and `register` | Return the identity `register` accepts. **Also tag the resource with `tag`** — that is the only handle `teardown` gets. Validate your own `size_key` here |
-| `begin_signin(instance_id, profile, region)` | Reads `already_logged_in`, `url`, `code`, `ports`; calls `wait(cancel)` then `close()` | Return a handle — **do not raise for a sign-in that merely did not complete.** Set `already_logged_in` when there is nothing to do; leave `url` empty to skip without blocking |
+| `begin_signin(instance_id, profile, region, login_target=None)` | Reads `already_logged_in`, `error`, `url`, `code`, `ports`; calls `wait(cancel)` then `close()`; on a **cancelled** sign-in calls `abort()` first | Return a `SigninHandle` — **do not raise for a sign-in that merely did not complete.** Set `already_logged_in` when there is nothing to do; leave `url` empty to skip without blocking. `abort()` must answer whether the login on the box is confirmed stopped; see *The sign-in handle* below |
 | `register(instance_id, tag, profile, region)` | Nothing — it is the last step | **Raise loudly if the registry write fails.** `register_instance` is best-effort by contract and returns `None` on failure; swallowing that marks the launch done while the user pays for an invisible machine |
 | `teardown(tag, profile, region)` | `True` is reported to the user as removed | Return `True` only when the resource is **confirmed** gone. An accepted delete request that later fails is not a `True`. Note it receives `tag`, never `provision`'s return |
 
@@ -180,6 +180,14 @@ Five methods, with the guarantees from the table in section B. Three are worth r
 `register` must raise on failure. Mirror `RealLaunchEngine.register`: it checks `register_instance`'s return for `None` and raises a message naming the resource, so a machine that was created but never registered is still recoverable by hand.
 
 `begin_signin` must not raise for an incomplete sign-in. It runs after `provision` and before `register`, which is the one window rollback does not cover.
+
+### The sign-in handle
+
+`begin_signin` returns a `src/kiro_crew/cloud/launch_job.py::SigninHandle`. Core reads its `already_logged_in`, `error`, `url`, `code` and `ports`, calls `wait(cancel)` while a code is being polled, and always calls `close()`. One more method is part of the contract and easy to miss because the happy path never calls it:
+
+`abort() -> bool` runs **only when the user cancels** a launch or a sign-in retry while a login may be polling on the box. It must stop that login — the built-in lane runs `cancel_device_login`, which kills the `kiro-cli login` process and removes its code files **without** signing the box out — and return `True` only when the stop is **confirmed**. Anything else (`False`, `None`, a raise, a missing method) is recorded on the job as `ABORT_UNCONFIRMED_NOTE`: "the Kiro sign-in on the instance was NOT confirmed stopped", with a warning in the gateway log. Core never infers a clean stop from silence, because a device code left polling can sign the crew in minutes after the owner said no.
+
+A lane whose sign-in involves **no remote login** — one that hands the box a credential at provision time, say, and whose `begin_signin` answers `already_logged_in` — should still implement `abort()` and return `True`, with the reason in its docstring: there was never a login to stop, so the stop is trivially confirmed. `src/kiro_crew/cloud/fargate_engine.py::FargateSigninHandle.abort` is the in-tree example. Do **not** leave the method off and rely on the fallback: that fallback is the unconfirmed note, and its text is about a polling device code your lane does not have.
 
 ### 4. Choose the transport at `register` time
 
