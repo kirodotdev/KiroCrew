@@ -237,7 +237,7 @@ Resolution order:
 
 Values from (1) and (2) lose one surrounding quote pair and have `~` expanded; a non-absolute result is logged and replaced by (3).
 
-Each session/task gets an isolated subdirectory under this root via `_session_work_dir(key)`:
+Each session/task gets an isolated subdirectory under this root via `session_default_cwd(key)`:
 - Chat sessions: `kirocrew-workspace/cli_chat`, `kirocrew-workspace/{thread_ts}`
 - Background: `kirocrew-workspace/_bg`
 - Cron: `kirocrew-workspace/cron_{job_id}`

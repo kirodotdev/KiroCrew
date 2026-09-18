@@ -194,6 +194,9 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # and an unowned key would carry the stale "template" forward forever.
         "agent_kind",
         "project",
+        # Persisted because the upsert cannot DELETE a key: in-memory only, the marker
+        # would die at restart and the rehydrate would restore the stale directory.
+        "project_cleared",
         # Remote-execution binding: owned by the slot, so clearing it in memory
         # clears it on disk. Left unowned, a rebind or an unbind would be undone
         # on the next save by the carried-forward copy.

@@ -8,7 +8,7 @@ import uuid
 
 from kiro_crew.agent_discovery import _read_agent_spec, spec_str
 from kiro_crew.agent_spec_format import is_agent_spec_name, is_markdown_spec, spec_stem
-from kiro_crew.config.loader import _session_work_dir
+from kiro_crew.config.loader import session_default_cwd
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
 from kiro_crew.history import ConversationLog
@@ -179,7 +179,7 @@ class MemberSessionRunner(SessionAgentRunner):
         key = f"auto-improvement-{uuid.uuid4().hex}"
         # Pin the same default the provider factory uses, so omitted cwd cannot
         # bypass admission or resolve to a different workspace after the check.
-        cwd = kwargs["cwd"] or await _io(_session_work_dir, key)
+        cwd = kwargs["cwd"] or await _io(session_default_cwd, key)
         kwargs["cwd"] = str(cwd)
         await _io(_require_unshadowed_templates, kwargs["cwd"])
         log = ConversationLog()

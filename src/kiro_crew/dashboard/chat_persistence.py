@@ -1526,8 +1526,18 @@ def _rehydrate_slot_from_history(
         # same-name member row. Only the two known values are honoured.
         if meta.get("agent_kind") in ("member", "template"):
             slot.agent_kind = meta["agent_kind"]
-        if meta.get("project"):
+        # Read by identity, because a stored ``"false"`` string is truthy. The upsert
+        # cannot delete a key, so a cleared slot's line carries BOTH -- and the stale
+        # ``project`` is DROPPED rather than paired with the marker: only ``claim_cwd``
+        # consults the marker, so a reader taking the raw field would spawn its turn in
+        # the directory the user removed. Restoring the pair would also stand the
+        # ``project`` setter's invariant on its head.
+        cleared = meta.get("project_cleared") is True
+        if cleared:
+            slot.project = ""
+        elif meta.get("project"):
             slot.project = meta["project"]
+        slot.project_cleared = cleared
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
         # history JSONL is a file on disk, so a truncated write or a hand-edit can
         # leave the ``executor="remote"`` marker without a valid instance_id /
@@ -2177,8 +2187,14 @@ def _apply_recent_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("agent_kind") in ("member", "template"):
         slot.agent_kind = meta["agent_kind"]
-    if meta.get("project"):
+    # Mirror of the _rehydrate_slot_from_history restore above, including dropping the
+    # stale ``project`` a cleared line still carries.
+    cleared = meta.get("project_cleared") is True
+    if cleared:
+        slot.project = ""
+    elif meta.get("project"):
         slot.project = meta["project"]
+    slot.project_cleared = cleared
     if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
         slot.mode = _mode
     if meta.get("created_by"):
@@ -3735,6 +3751,9 @@ def _save_slot_to_history(
                 # omitting a cleared project leaves the previous directory on disk to be read
                 # back as though the clear never happened.
                 fields["project"] = slot.project
+                # Clearable like memory_store: the merge cannot delete a key, so writing
+                # only the true half leaves a stale clear beside a reselected project.
+                fields["project_cleared"] = bool(slot.project_cleared)
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:
@@ -4124,6 +4143,10 @@ def _save_slot_to_history(
                 meta_line["agent_kind"] = slot.agent_kind
             if slot.project:
                 meta_line["project"] = slot.project
+            # Slot-owned, so ABSENCE retracts it -- and it must reach disk because
+            # the upsert cannot delete the stale ``project`` sitting beside it.
+            if slot.project_cleared:
+                meta_line["project_cleared"] = True
             # Remote-execution binding. All three are written together or not at
             # all: a half-restored binding (executor="remote" with no peer slot)
             # is the fail-closed refusal case, so persisting the marker without

@@ -1060,9 +1060,18 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     clear = bool(args.get("clear"))
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
+    old_project_cleared = bool(getattr(slot, "project_cleared", False))
     if clear or not project:
         slot.project = ""
-        if old_project:
+        # ``project=""`` alone cannot say whether the user removed a project or
+        # never set one, and only the removal invalidates a stored cwd.
+        slot.project_cleared = True
+        # Armed when the MARKER moves, not only when the project text does: a
+        # slot with no project can still be bound to a live session resumed onto
+        # a stored cwd, and a clear is precisely the statement that invalidates
+        # that binding. Gating on ``old_project`` alone leaves such a session
+        # running in the directory the user just removed.
+        if old_project or not old_project_cleared:
             slot._pending_reset_history_key = effective_session_key(slot)
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
