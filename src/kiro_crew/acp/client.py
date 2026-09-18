@@ -258,7 +258,11 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
-from kiro_crew.config.paths import config_dir, kiro_sessions_dir
+from kiro_crew.config.paths import (  # noqa: F401 - re-exported for existing importers
+    config_dir,
+    default_workspace_dir,
+    kiro_sessions_dir,
+)
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.env import (
@@ -1871,7 +1875,7 @@ class AcpClient:
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = default_workspace_dir()
         # Once-per-instance guard for the ensure_ready work-dir check: True
         # after the first (off-loop) mkdir, so the per-prompt warm path pays
         # no filesystem syscall at all.

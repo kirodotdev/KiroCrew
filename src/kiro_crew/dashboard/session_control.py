@@ -111,6 +111,7 @@ from kiro_crew.dashboard.state import (
     SlotOrigin,
     _normalize_slot_key,
     _safe_folder_tree,
+    record_project,
 )
 from kiro_crew.dashboard.stop_retry import allow_escalation
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
@@ -3162,7 +3163,7 @@ async def create_session(
         # resolve against a directory the slot does not claim -- the same
         # authorization-vs-execution split as the agent binding, one layer down.
         if not slot.project:
-            slot.project = project_dir
+            record_project(slot, project_dir)
         if folder_id:
             # Filed inside the same synchronous window that configures the slot, so
             # the session is never observable unfiled -- that atomicity is the point.

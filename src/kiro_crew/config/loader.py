@@ -858,7 +858,13 @@ def workspace_root(*, create: bool = True) -> Path:
 
 
 def _session_work_dir(session_key: str | None) -> Path:
-    """Return a per-session subdirectory under workspace_root()."""
+    """The directory a provider for *session_key* binds when given no ``cwd``.
+
+    The provider factory binds this, and ``resolved_cwd`` has to answer the SAME directory
+    or a cleared project compares against one no provider binds -- so both go through this
+    one symbol rather than agreeing by convention, the same reason
+    :func:`default_workspace_dir` is one.
+    """
     root = workspace_root()
     if session_key:
         return root / _safe_dir_name(session_key)
