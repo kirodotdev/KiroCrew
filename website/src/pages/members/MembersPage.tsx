@@ -33,8 +33,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Plus, Route, Square, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Plus, Route, Square, Star, Webhook, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
+import { CrewMemberMark } from '../../components/CrewMemberMark'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
 import {
@@ -1615,14 +1616,20 @@ export default function MembersPage() {
         <div className={LIST_HEADER_CLS}>
           {/* pl-1.5 is the sidebar's title inset when no rail toggle sits
               before it; the page icon leads the title where the sidebar's
-              reads bare, because this header names a page, not a pane. */}
+              reads bare, because this header names a page, not a pane.
+              The icon is the same two-ghost brand mark the nav rail draws
+              for this page (`components/CrewMemberMark.tsx`), so the rail
+              row and the page it opens name the thing with one glyph. */}
           <div className="flex items-center gap-1.5 min-w-0 flex-1 pl-1.5">
-            <Users size={15} className="lucide-inline text-muted shrink-0" />
+            <CrewMemberMark size={15} className="inline-block text-muted shrink-0" />
             <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
           </div>
           {/* Adding a member IS creating a crew, and the crew manager is the
               only write path — so this is a navigation, not an inline form.
-              It lands ON the create form, not on the crew list (#9513). */}
+              It lands ON the create form, not on the crew list (#9513).
+              A bare `Plus`, not `UserPlus`: the page icon beside it already
+              says "members", and a person-figure here would be the one
+              Lucide person on a page whose members are drawn as ghosts. */}
           <button
             onClick={() => navigate(CREW_CREATE_PATH)}
             className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
@@ -1630,7 +1637,7 @@ export default function MembersPage() {
             title={t('pages.membersPage.add_member')}
             data-testid="member-add"
           >
-            <UserPlus size={15} />
+            <Plus size={15} />
           </button>
         </div>
         <div className={`px-4 pb-2 ${ROW_STATUS_CLS} text-muted`} data-testid="member-count">
@@ -1824,7 +1831,7 @@ export default function MembersPage() {
                 className="mt-2 inline-flex items-center gap-1 text-[11.5px] px-2 py-1 rounded border border-border hover:bg-accent/40"
                 data-testid="member-empty-cta"
               >
-                <UserPlus size={12} className="lucide-inline" />
+                <Plus size={12} className="lucide-inline" />
                 {t('pages.membersPage.add_member')}
               </button>
             </li>

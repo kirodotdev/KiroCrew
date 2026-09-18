@@ -1055,6 +1055,25 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
   })
 
+  it('the page header draws the same two-ghost brand mark as the nav rail, and both add entries a bare plus', async () => {
+    await renderPage([])
+    const roster = await screen.findByTestId('member-roster')
+    // The nav rail names this page with `CrewMemberMark` (surfaces/builtins),
+    // so the header that opens under that row must not switch to Lucide's
+    // person-pair `Users` — one glyph for one thing. The mark is a CSS mask
+    // over currentColor, so it is found by its test id, not an svg class.
+    expect(within(roster).getByTestId('crew-member-mark')).toBeInTheDocument()
+    // Both "add member" entries carry a bare `Plus`, not `UserPlus`: the page
+    // icon already says "members", and `UserPlus` would put the one Lucide
+    // person figure on a page whose members are ghosts. Asserting on the
+    // rendered svg class pins the glyph, not just that some icon rendered.
+    for (const id of ['member-add', 'member-empty-cta']) {
+      const icon = screen.getByTestId(id).querySelector('svg')
+      expect(icon).toHaveClass('lucide-plus')
+      expect(icon).not.toHaveClass('lucide-user-plus')
+    }
+  })
+
   // The fold is by LOCAL calendar day (`groupActivityDays` floors each entry
   // with `setHours(0,0,0,0)`), so every fixture timestamp is built the same
   // way: a wall-clock time on a calendar day, not `now - k*86400`. The live
