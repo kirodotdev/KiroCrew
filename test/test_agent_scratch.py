@@ -123,6 +123,33 @@ class TestLivenessSweep:
 
         assert path.exists() and removed == 0
 
+    def test_out_of_range_owner_is_kept_without_blocking_later_cleanup(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        real_scandir = os.scandir
+        reaped: list[Path] = []
+        corrupt = sc.allocate_scratch("a-out-of-range")
+        sc.record_owner(corrupt, 10**100)
+        self._age(corrupt, 2 * sc._UNOWNED_GRACE_SECONDS)
+        self._age(corrupt / sc.OWNER_FILENAME, 2 * sc._UNOWNED_GRACE_SECONDS)
+        dead = sc.allocate_scratch("z-dead-after-corrupt")
+        sc.record_owner(dead, 2**22 - 1)  # almost surely dead
+        self._age(dead, 2 * sc._UNOWNED_GRACE_SECONDS)
+        self._age(dead / sc.OWNER_FILENAME, 2 * sc._UNOWNED_GRACE_SECONDS)
+
+        with monkeypatch.context() as ordered:
+            ordered.setattr(
+                os,
+                "scandir",
+                lambda path: sorted(real_scandir(path), key=lambda entry: entry.name),
+            )
+            ordered.setattr(sc.shutil, "rmtree", lambda path, **_kwargs: reaped.append(path))
+            removed = sc.sweep_dead_scratch()
+
+        assert corrupt.exists(), "an invalid identity is not evidence that its owner is dead"
+        assert dead in reaped, "one corrupt marker must not abort cleanup of later entries"
+        assert removed == 1
+
     def test_missing_root_returns_zero(self, scratch_root: Path) -> None:
         assert sc.sweep_dead_scratch() == 0
 
