@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
     config_dir,
     resolve_effective_agent,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.constants import (  # noqa: F401 -- DENY_CAUSE_* / STEER_NOTICE_BOUND_SECS re-exported
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -2562,6 +2563,28 @@ def stage_boundary_for(slot: object) -> StageBoundary:
     return boundary
 
 
+def record_project(slot: Any, project: str) -> None:
+    """Move a slot's project and its cleared marker together.
+
+    The marker keys on the TRANSITION rather than on emptiness, because a cleared project
+    and one never set both leave ``project`` empty while meaning different things to a warm
+    pooled child: clearing a slot that held a directory invalidates that child's binding,
+    clearing one that never had a directory invalidates nothing and must keep stating no
+    requirement. Every site that moves ``project`` routes here, so no path can drop the
+    marker and leave ``claim_cwd`` reporting "no requirement" over a directory the user just
+    cleared, which is what lets allocation restore it from the persisted record.
+
+    A free function rather than a slot method so that it also applies to the duck-typed
+    slots the channel and MCP paths hand in, which are not ``_ChatSlot`` instances.
+    """
+    had_project = bool(getattr(slot, "project", "") or "")
+    slot.project = project
+    if project:
+        slot.project_cleared = False
+    elif had_project:
+        slot.project_cleared = True
+
+
 class _ChatSlot:
     """Independent chat session that runs server-side."""
 
@@ -2595,6 +2618,7 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "project",
+        "project_cleared",
         "created_at",
         "messages",
         "total_messages",
@@ -2749,6 +2773,8 @@ class _ChatSlot:
         "_origin",
         "_pending_variants",
         "_lock",
+        "_key_settling",
+        "_key_deferred",
         "forked_from",
         "_fork_lock",
         "_model_pick_lock",
@@ -2907,6 +2933,8 @@ class _ChatSlot:
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
         self.project: str = ""
+        # Cleared vs never-set both leave ``project`` empty; only a clear invalidates a bind.
+        self.project_cleared: bool = False
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -3604,6 +3632,10 @@ class _ChatSlot:
         # Regenerate feature: variants pending attachment to next finalized assistant message
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
+        # Excludes a ``linked_session_key`` rebind while an arm settles onto that key. Not
+        # ``slot._lock``: see ``chat_utils.settling_key``. A depth, because regions nest.
+        self._key_settling: int = 0
+        self._key_deferred: str | None = None
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         # Serialises explicit model-pick transactions (check → mutate → live
@@ -3932,6 +3964,23 @@ class _ChatSlot:
         leave a later ``begin_close`` reading as not-closing.
         """
         self._closing = max(0, self._closing - 1)
+
+    @property
+    def claim_cwd(self) -> str | None:
+        """The cwd a claim must state for this slot, or ``None`` to state none.
+
+        ``CWD_CLEARED`` is reserved for a project that was actually cleared, because that is
+        when a warm pooled child's binding has been invalidated. A slot that never had a
+        project states nothing, keeping the warm pool and its stored-cwd resume override.
+
+        The cleared MARKER is read before the project, so a value that outlived its clear
+        cannot win. A persisted record is merged by an upsert that cannot delete a key, so a
+        slot cleared after `/old` was written still carries `/old` on disk; honoring that
+        resumes relative writes into the former directory with nothing to signal it.
+        """
+        if getattr(self, "project_cleared", False):
+            return CWD_CLEARED
+        return self.project or None
 
     @property
     def _dirty(self) -> bool:
@@ -6896,6 +6945,14 @@ class DashboardState:
         # its success path (see the comment there); do not change one side alone.
         if name in getattr(self, "_slots_under_construction", ()):
             raise ValueError(f"slot {name} is still being built; retry once it is ready")
+
+        # circular import: chat_utils imports state at module scope.
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        # A new slot on a recycled key inherits nothing: the close/sweep paths run
+        # ``remove``, which preserves the previous slot's retirement arm by design.
+        if self.sessions:
+            self.sessions.supersede_arm_for_new_slot(_history_key_for(name))
         requested_name = creation.requested_name
         minted_new = creation.minted_new
         slot = _ChatSlot(
@@ -6973,10 +7030,9 @@ class DashboardState:
             # that a channel path already claimed.
             slot.channel_origin = True
         if linked_session_key:
-            slot.linked_session_key = linked_session_key
-            # Every path that sets a link records the class it just changed. Free when
-            # the slot has no live session yet, which is the common case here.
-            self.note_crew_log_class(slot)
+            from kiro_crew.dashboard.chat_utils import bind_linked_session_key
+
+            bind_linked_session_key(slot, linked_session_key, self)
         elif self.sessions and not app:
             # No caller-supplied binding, but a channel-stem name means this slot
             # displays a conversation that runs on the channel's own session.
@@ -6999,8 +7055,9 @@ class DashboardState:
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
                 if isinstance(resolved, str) and is_channel_session_key(resolved):
-                    slot.linked_session_key = resolved
-                    self.note_crew_log_class(slot)
+                    from kiro_crew.dashboard.chat_utils import bind_linked_session_key
+
+                    bind_linked_session_key(slot, resolved, self)
         try:
             if self.sessions:
                 from kiro_crew.dashboard.chat_utils import effective_session_key

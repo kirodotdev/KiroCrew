@@ -67,13 +67,12 @@ from kiro_crew.dashboard.channel_folders import (
     lookup_channel_folder,
 )
 from kiro_crew.dashboard.chat_title import _persist_title
-from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots, effective_session_key
-from kiro_crew.dashboard.state import (
-    _normalize_slot_key,
-    durable_row_count,
-    note_crew_log_class,
-    row_mid,
+from kiro_crew.dashboard.chat_utils import (
+    _sync_dashboard_slots,
+    bind_linked_session_key,
+    effective_session_key,
 )
+from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count, row_mid
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
@@ -484,8 +483,10 @@ def _rebind_unbound_channel_slot(
         return False
     if not session_key or not is_channel_session_key(session_key):
         return False
-    slot.linked_session_key = session_key
-    note_crew_log_class(state, slot)
+    # Single writer: records the class, and PARKS rather than move the key under a settling
+    # arm. Parked means nothing is bound yet, so neither line below may announce one.
+    if not bind_linked_session_key(slot, session_key, state):
+        return False
     # Flagged, or the periodic flush skips it and the next restart refuses all over again.
     slot._dirty = True
     # The rebind changes the slot's effective key, so the registry still holds the
@@ -616,6 +617,9 @@ def surface_channel_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
+    if meta.get("project_cleared") is True:
+        # Truth-tested above, and a cleared slot persists an EMPTY project, so restore this.
+        slot.project_cleared = True
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the

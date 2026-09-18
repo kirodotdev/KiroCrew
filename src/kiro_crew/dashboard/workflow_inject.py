@@ -17,13 +17,8 @@ import json
 import re
 from typing import Any, Callable, Optional
 
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
-from kiro_crew.dashboard.state import (
-    DashboardState,
-    append_and_surface,
-    note_crew_log_class,
-    row_mid,
-)
+from kiro_crew.dashboard.chat_utils import bind_linked_session_key, dashboard_slot_key
+from kiro_crew.dashboard.state import DashboardState, append_and_surface, row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -168,8 +163,7 @@ def inject_workflow_result(
                 return False
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
             if not getattr(slot, "linked_session_key", ""):
-                slot.linked_session_key = session_key
-                note_crew_log_class(state, slot)
+                bind_linked_session_key(slot, session_key, state)
             slot.title = f"Workflow: {snapshot.get('name') or run_id}"
 
         # Dedup: don't double-inject the same result on a re-fire.

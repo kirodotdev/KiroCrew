@@ -32,16 +32,7 @@ ANNOUNCER = "_note_bind"
 #: ``<path relative to src/kiro_crew>:<function>``. A site missing from both this map and
 #: the recorder's callers fails; an entry here naming a site that does not assign a
 #: link fails as well.
-LINK_EXEMPT: dict[str, str] = {
-    "dashboard/chat_persistence.py:_apply_recent_session": (
-        "a restore replays a link that was already recorded when it was first set, and "
-        "it runs before the restored slot takes a turn, so the opening entry of its next "
-        "session states the class it comes back with"
-    ),
-    "dashboard/chat_persistence.py:_rehydrate_slot_from_history": (
-        "same as the restore above: replay, before any turn"
-    ),
-}
+LINK_EXEMPT: dict[str, str] = {}
 
 
 def _tree(path: Path) -> ast.Module:
