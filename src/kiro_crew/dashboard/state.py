@@ -2246,6 +2246,7 @@ class _ChatSlot:
         "_slack_channel",
         "_slack_thread_ts",
         "channel_origin",
+        "_channel_runtime_origin",
         "folder_id",
         "_folder_changed",
         "_folder_suggested",
@@ -3193,6 +3194,12 @@ class _ChatSlot:
         # name would let `POST /api/chat/slots` with a colliding `slack_<ts>`
         # name write a fresh conversation into an existing thread's transcript.
         self.channel_origin: bool = False
+        # Set ONLY by the path that surfaced this slot from a channel session THIS
+        # process observed. `channel_origin` cannot carry that weight: it round-trips
+        # through the transcript's own metadata line, which an agent can write, so a
+        # lookalike named for a live stem can arrive already claiming it. Never
+        # persisted, so a restored slot always starts without it.
+        self._channel_runtime_origin: bool = False
         self._side: SideState | None = None
         # Live inner AcpClient for the in-flight turn, published by _run_chat at
         # turn start and cleared in its finally. Lets a concurrent request (the

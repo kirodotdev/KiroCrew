@@ -29,6 +29,7 @@ from kiro_crew.messaging.link import (
     channel_namespace_of,
     is_channel_session_key,
 )
+from kiro_crew.session_surface import has_dashboard_surface
 
 # Shared time origin for session stamps. Captured at import, so any test whose
 # production path reads the LIVE clock must also pin that clock to NOW (see
@@ -333,6 +334,70 @@ class TestSurfaceChannelSession:
         assert slot.key == "slack_1.1"
         assert slot.linked_session_key == "slack:1.1"
 
+    @pytest.mark.parametrize(
+        "live",
+        [
+            "whatsapp:+15551234567",
+            "imessage:user@example.com",
+            "discord:crew_agent:direct:user_1",
+            "teams:19:meeting_abc@thread.v2",
+            "webex:user@example.com",
+            "wecom:crew_agent:direct:user_1",
+        ],
+    )
+    def test_an_unbound_survivor_is_healed_from_the_trusted_map(
+        self, dashboard_state: Any, live: str
+    ) -> None:
+        """A slot surfaced unbound is rebound once the map can answer for its stem.
+
+        The reconciler returned early for an already-present slot, so a slot surfaced
+        without a resolvable key stayed silent until someone re-linked it by hand.
+        Parametrised across the reply-token-bound transports as well, because those go
+        quiet on the same path and a Slack-only proof leaves them unestablished.
+        """
+        from kiro_crew.history import transcript_stem
+
+        assert channel_slots.is_channel_session_key(live), f"precondition: {live} is a channel key"
+        stem = transcript_stem(live)
+
+        created = channel_slots.surface_channel_session(
+            dashboard_state, _session(stem), {}, [], session_key=live
+        )
+        assert created is not None and created.linked_session_key == live
+
+        # Exactly what an unresolvable-key surface leaves behind: the slot survives, unbound.
+        created.linked_session_key = ""
+        created._dirty = False
+
+        channel_slots.surface_channel_session(
+            dashboard_state, _session(stem), {}, [], session_key=live
+        )
+        assert created.linked_session_key == live, "the trusted map answer did not heal the slot"
+        assert created._dirty, "an unflagged heal is lost on restart, so the silence would repeat"
+
+    def test_a_slot_without_channel_provenance_is_never_rebound(self, dashboard_state: Any) -> None:
+        """A NAME is not provenance, and the rebind reaches an existing slot whoever made it.
+
+        Any caller can create a slot named for a live channel stem. Binding on the name
+        alone would route that tab's later turns into the channel's conversation, so the
+        rebind requires the marker only a channel path sets.
+        """
+        from kiro_crew.history import transcript_stem
+
+        live = "slack:1785370133.085469"
+        stem = transcript_stem(live)
+        impostor = dashboard_state.get_or_create_slot(name=channel_slots.channel_slot_name(stem))
+        assert not impostor.channel_origin, "precondition: a plain caller sets no provenance"
+        assert impostor.linked_session_key == "", "precondition: the impostor starts unbound"
+
+        channel_slots.surface_channel_session(
+            dashboard_state, _session(stem), {}, [], session_key=live
+        )
+
+        assert (
+            impostor.linked_session_key == ""
+        ), "a slot with no channel provenance was bound to a channel conversation"
+
     def test_an_unresolvable_session_key_surfaces_the_slot_unbound(
         self, dashboard_state: Any
     ) -> None:
@@ -511,6 +576,114 @@ class TestReconcilePass:
         # get_or_create_slot broadcasts on create; the pass adds a final push so
         # a rebind-only pass (no create) still reaches connected clients.
         assert pushes, "the pass must broadcast the new slots"
+
+    def test_an_unbound_survivor_is_rebound_by_a_full_reconcile_pass(
+        self, dashboard_state: Any
+    ) -> None:
+        """The heal must fire from the pass, not only from a direct surface call.
+
+        ``pending`` excludes a slot that already exists and ``_window_refresh_is_safe``
+        rejects one with no linked key, so a survivor from an earlier pass reaches
+        neither bucket: without the rebind bucket the pass skips it on every tick and
+        the tab stays one-way for the process lifetime even once the stem resolves.
+        """
+        # Stem form, as list_sessions serves it: the ':' fold is what makes the session
+        # map the only way back to the real key.
+        log = _FakeLog([_session("slack_1.1")], {})
+        dashboard_state.conversation_log = log
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        # Pass 1: the map cannot answer for the stem, so the slot surfaces unbound.
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        slot = dashboard_state._slots["slack_1.1"]
+        assert slot.linked_session_key == "", "precondition: the survivor starts unbound"
+        assert slot.channel_origin, "precondition: the pass stamped channel provenance"
+        slot._dirty = False
+        reads_after_surface = list(log.message_reads)
+
+        # Pass 2: the map now resolves the stem. Nothing else about the session changed.
+        _map_stems(dashboard_state, "slack:1.1")
+        pushes: list[int] = []
+        dashboard_state.push_slots_update = lambda: pushes.append(1)  # type: ignore[method-assign]
+        surfaced = asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
+
+        assert surfaced == 0, "the pass surfaced no new slot, so it can only have rebound one"
+        assert slot.linked_session_key == "slack:1.1", "the pass did not heal the survivor"
+        assert slot._dirty, "an unflagged heal is lost on restart, so the silence would repeat"
+        assert pushes, "a rebind-only pass must still reach connected clients"
+        assert log.message_reads == reads_after_surface, "a rebind must not re-read the transcript"
+
+    def test_a_rebound_pass_republishes_the_slot_to_the_surface_registry(
+        self, dashboard_state: Any
+    ) -> None:
+        """A rebind changes the slot's effective key, so the registry must be rebuilt.
+
+        Every gate asking whether a session has an open tab reads that registry, so a
+        rebound-but-unpublished tab is falsely refused a question card, an approval
+        prompt or a tab-directed event until some unrelated slot change republishes.
+        The reconciler's own sync is gated on a surfaced count that a rebind never
+        increments, which is why the rebind itself has to republish.
+        """
+        dashboard_state.conversation_log = _FakeLog([_session("slack_1.1")], {})
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 1
+        slot = dashboard_state._slots["slack_1.1"]
+        assert slot.linked_session_key == "", "precondition: the survivor starts unbound"
+        assert not has_dashboard_surface(
+            "slack:1.1"
+        ), "precondition: an unbound slot publishes its dashboard phantom, not the channel key"
+
+        _map_stems(dashboard_state, "slack:1.1")
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert slot.linked_session_key == "slack:1.1", "precondition: the pass healed the survivor"
+
+        assert has_dashboard_surface(
+            "slack:1.1"
+        ), "the rebound tab never reached the surface registry"
+
+    def test_a_pass_never_rebinds_a_slot_without_channel_provenance(
+        self, dashboard_state: Any
+    ) -> None:
+        """A NAME is not provenance.
+
+        A plain tab that happens to be named for a live channel stem must not be bound
+        to that conversation, or the pass would route its later turns into the channel.
+        """
+        dashboard_state.conversation_log = _FakeLog([_session("slack_1.1")], {})
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        impostor = dashboard_state.get_or_create_slot(name="slack_1.1")
+        assert not impostor.channel_origin, "precondition: a plain caller sets no provenance"
+        _map_stems(dashboard_state, "slack:1.1")
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert impostor.linked_session_key == "", "the pass bound a tab with no channel provenance"
+
+    def test_a_pass_never_rebinds_a_slot_whose_provenance_came_only_from_disk(
+        self, dashboard_state: Any
+    ) -> None:
+        """Persisted provenance is agent-writable, so it cannot authorize a rebind.
+
+        ``channel_origin`` reaches a rehydrated slot from the transcript's own metadata
+        line, so whoever can write that file can hand a lookalike named for a live stem
+        the marker and the restore arrives already carrying it. Binding on it would route
+        that tab's turns into the real conversation, which is why the rebind additionally
+        requires the in-process record that this run surfaced the slot itself.
+        """
+        dashboard_state.conversation_log = _FakeLog([_session("slack_1.1")], {})
+        dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
+        forged = dashboard_state.get_or_create_slot(name="slack_1.1", channel_origin=True)
+        assert forged.channel_origin, "precondition: the restore path's marker is set"
+        assert (
+            not forged._channel_runtime_origin
+        ), "precondition: no pass surfaced this slot, so it holds no runtime provenance"
+        assert forged.linked_session_key == "", "precondition: the forged slot starts unbound"
+        _map_stems(dashboard_state, "slack:1.1")
+
+        assert asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30)) == 0
+        assert (
+            forged.linked_session_key == ""
+        ), "a marker restored from an agent-writable file authorized a rebind"
 
     def test_a_closed_tab_is_not_reopened_by_the_next_pass(self, dashboard_state: Any) -> None:
         """Closing the tab is a statement about the conversation, and the next
