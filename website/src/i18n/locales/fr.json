@@ -6583,6 +6583,7 @@
       "icon": "Icône",
       "icon_cleared_hint": "Vide conserve l'icône de dossier par défaut — Générer automatiquement en choisit une nouvelle.",
       "icon_default_hint": "Laissez vide pour conserver l'icône de dossier par défaut.",
+      "icon_invalid_hint": "Utilisez un seul emoji, ou laissez le champ vide pour l'icône de dossier par défaut.",
       "icon_placeholder": "Un emoji",
       "icon_regenerate": "Générer automatiquement",
       "icon_regenerate_pending": "Après l'enregistrement, si possible, une icône sera choisie à partir du nom du dossier.",

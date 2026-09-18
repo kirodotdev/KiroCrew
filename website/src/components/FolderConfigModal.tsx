@@ -8,6 +8,8 @@ import ProjectPicker from './ProjectPicker'
 import SimpleSelect from './SimpleSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
+import { ApiError } from '../api/apiError'
+import { parseErrorCode } from '../utils/errorReport'
 import { resolveFolderAgent, resolveFolderProjectDir } from '../utils/folderAgent'
 import { ChatFolder, ChatTag } from '../types'
 import { i18nT } from '../i18n/t'
@@ -116,6 +118,11 @@ export default function FolderConfigModal({
   // feedback. Hold the modal open until the save actually lands.
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState('')
+  // A rejected icon (`icon_invalid` / `regenerate_icon_invalid` from the
+  // server) renders AT the Icon field, localized — not as the raw English
+  // server message in the modal's top alert, which names no field. Only the
+  // icon codes route here; every other failure keeps the top alert.
+  const [iconErr, setIconErr] = useState(false)
   // What the draft looked like when the modal opened — the baseline for
   // "has the user actually typed something worth protecting?".
   const seedRef = useRef<FolderConfigDraft>(EMPTY)
@@ -172,7 +179,7 @@ export default function FolderConfigModal({
     setDraft(seeded)
     seedRef.current = seeded
     setPickerOpen(false)
-    setSaving(false); setSaveErr('')
+    setSaving(false); setSaveErr(''); setIconErr(false)
   }, [open, mode, seedKey])
 
   // Focus the name field on open. rAF + preventScroll for the same reason the
@@ -255,12 +262,22 @@ export default function FolderConfigModal({
     if (draft.projectDir !== seeded.projectDir) edited.push('projectDir')
     if (draft.defaultAgent !== seeded.defaultAgent) edited.push('defaultAgent')
     if (tagsEdited) edited.push('tags')
-    setSaving(true); setSaveErr('')
+    setSaving(true); setSaveErr(''); setIconErr(false)
     try {
       await onSubmit({ ...draft, name: trimmedName, touched: edited })
     } catch (e) {
-      // Stay open, keep every field, and say why.
-      setSaveErr(e instanceof Error && e.message ? e.message : i18nT('components.folderConfigModal.save_failed'))
+      // Stay open, keep every field, and say why. An icon rejection is the one
+      // failure with a field to point at: anchor it there, localized, instead
+      // of echoing the server's English text in the top alert. Only
+      // `icon_invalid` routes here — `regenerate_icon_invalid` is a request-
+      // SHAPE error (non-boolean `regenerate_icon`, which this modal can never
+      // send), and the field hint would misdescribe it.
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      if (code === 'icon_invalid') {
+        setIconErr(true)
+      } else {
+        setSaveErr(e instanceof Error && e.message ? e.message : i18nT('components.folderConfigModal.save_failed'))
+      }
     } finally {
       setSaving(false)
     }
@@ -401,28 +418,41 @@ export default function FolderConfigModal({
                 placeholder={i18nT('components.folderConfigModal.icon_placeholder')}
                 maxLength={16}
                 value={draft.regenerateIcon ? '' : draft.icon}
-                onChange={e => setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false }))}
+                onChange={e => { setIconErr(false); setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false })) }}
               />
               {mode === 'edit' && (
                 <Btn
                   data-testid="folder-config-icon-regenerate"
-                  onClick={() => setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true }))}
+                  onClick={() => { setIconErr(false); setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true })) }}
                 >
                   {i18nT('components.folderConfigModal.icon_regenerate')}
                 </Btn>
               )}
             </div>
-            <span className="text-[11px] text-muted-strong">
-              {draft.regenerateIcon
-                ? i18nT('components.folderConfigModal.icon_regenerate_pending')
-                : mode === 'create'
-                  ? draft.icon
-                    ? ''
-                    : i18nT('components.folderConfigModal.icon_default_hint')
-                  : draft.icon
-                    ? ''
-                    : i18nT('components.folderConfigModal.icon_cleared_hint')}
-            </span>
+            {iconErr ? (
+              /* No hand-off: the rejected icon sits inside the same unsaved
+                 folder form — navigating away would discard the whole draft
+                 the keep-open-on-error path exists to preserve. The fix is a
+                 one-field edit right here (type a single emoji or clear it). */
+              <ErrorNotice
+                variant="inline"
+                className="text-[11px]"
+                message={i18nT('components.folderConfigModal.icon_invalid_hint')}
+                testId="folder-config-icon-error"
+              />
+            ) : (
+              <span className="text-[11px] text-muted-strong">
+                {draft.regenerateIcon
+                  ? i18nT('components.folderConfigModal.icon_regenerate_pending')
+                  : mode === 'create'
+                    ? draft.icon
+                      ? ''
+                      : i18nT('components.folderConfigModal.icon_default_hint')
+                    : draft.icon
+                      ? ''
+                      : i18nT('components.folderConfigModal.icon_cleared_hint')}
+              </span>
+            )}
           </label>
 
           {/* Tags — chips from the tag vocabulary, copied onto every new chat

@@ -6583,6 +6583,7 @@
       "icon": "Ícone",
       "icon_cleared_hint": "Vazio mantém o ícone de pasta padrão — Gerar automaticamente escolhe um novo.",
       "icon_default_hint": "Deixe vazio para manter o ícone de pasta padrão.",
+      "icon_invalid_hint": "Use um único emoji, ou deixe o campo vazio para manter o ícone de pasta padrão.",
       "icon_placeholder": "Um emoji",
       "icon_regenerate": "Gerar automaticamente",
       "icon_regenerate_pending": "Após salvar, se possível, um ícone será escolhido a partir do nome da pasta.",

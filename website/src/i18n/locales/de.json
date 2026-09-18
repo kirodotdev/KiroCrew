@@ -6483,6 +6483,7 @@
       "icon": "Symbol",
       "icon_cleared_hint": "Leer behält das Standard-Ordnersymbol — Automatisch generieren wählt ein neues.",
       "icon_default_hint": "Leer lassen, um das Standard-Ordnersymbol zu behalten.",
+      "icon_invalid_hint": "Ein einzelnes Emoji verwenden, oder das Feld leer lassen für das Standard-Ordnersymbol.",
       "icon_placeholder": "Ein Emoji",
       "icon_regenerate": "Automatisch generieren",
       "icon_regenerate_pending": "Nach dem Speichern wird nach Möglichkeit ein Symbol aus dem Ordnernamen ausgewählt.",

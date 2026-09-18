@@ -6383,6 +6383,7 @@
       "icon": "아이콘",
       "icon_cleared_hint": "비워 두면 기본 폴더 아이콘이 유지됩니다. 자동 생성을 누르면 새 아이콘을 선택합니다.",
       "icon_default_hint": "비워 두면 기본 폴더 아이콘이 유지됩니다.",
+      "icon_invalid_hint": "이모지 하나를 입력하거나, 비워 두면 기본 폴더 아이콘이 사용됩니다.",
       "icon_placeholder": "이모지 1개",
       "icon_regenerate": "자동 생성",
       "icon_regenerate_pending": "저장하면 가능한 경우 폴더 이름에서 아이콘을 선택합니다.",

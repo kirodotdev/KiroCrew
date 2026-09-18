@@ -6383,6 +6383,7 @@
       "icon": "图标",
       "icon_cleared_hint": "留空将保留默认文件夹图标 — 自动生成会选择一个新图标。",
       "icon_default_hint": "留空将保留默认文件夹图标。",
+      "icon_invalid_hint": "请使用单个表情符号，或将此栏留空以使用默认文件夹图标。",
       "icon_placeholder": "一个表情符号",
       "icon_regenerate": "自动生成",
       "icon_regenerate_pending": "保存后将尽可能根据文件夹名称选择一个图标。",

@@ -6583,6 +6583,7 @@
       "icon": "Icona",
       "icon_cleared_hint": "Vuoto mantiene l'icona predefinita della cartella — Genera automaticamente ne sceglie una nuova.",
       "icon_default_hint": "Lascia vuoto per mantenere l'icona predefinita della cartella.",
+      "icon_invalid_hint": "Usa una singola emoji, oppure lascia il campo vuoto per l'icona predefinita della cartella.",
       "icon_placeholder": "Un'emoji",
       "icon_regenerate": "Genera automaticamente",
       "icon_regenerate_pending": "Dopo il salvataggio, se possibile, un'icona verrà scelta dal nome della cartella.",
