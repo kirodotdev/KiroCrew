@@ -61,7 +61,12 @@ state are composed behind that facade:
 - `session_lifecycle.py` — refresh/reload, reset/remove/destroy/discard,
   identity retirement, stop, drain, and close ordering
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
-  policy, and process/filesystem sweeps
+  policy, and process/filesystem sweeps. Its existing maintenance tick advances
+  a bounded canonical member-process record scan independently of txt mappings;
+  the streaming cursor is closed at exhaustion or cleanup-loop shutdown. On
+  cancellation, repeated requests remain shielded until the executor settles;
+  cleanup then closes the returned cursor once and propagates cancellation. See
+  [security](security.md) for the shared publication/reclamation lock contract.
 
 A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
 `remote_relay.create_peer_slot()` always includes the validated `memory_mode` in

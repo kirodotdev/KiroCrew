@@ -5316,6 +5316,11 @@ def _build_launcher_script(
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
     sandbox_level_json = json.dumps(sandbox_level)
+    # Read at build time so the launcher and the gateway publisher share one bound.
+    from kiro_crew import member_process_records as _records
+
+    record_lock_wait_secs = float(_records.LOCK_WAIT_SECS)
+    record_lock_poll_secs = float(_records._LOCK_POLL_SECS)
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
     )
@@ -5338,10 +5343,13 @@ import sys
 # from the filesystem.
 sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
+import fcntl
 import json
 import os
+import signal
 import stat
 import tempfile
+import time
 
 # Hoisted from Steps 5/6 (used only AFTER unshare()+mount isolation): a
 # FIRST-TIME stdlib import reads module files off disk, and once the child has
@@ -5504,6 +5512,89 @@ SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
 SANDBOX_LEVEL = {sandbox_level_json}
+# Bounded contention wait shared with member_process_records (the gateway side).
+RECORD_LOCK_WAIT_SECS = {record_lock_wait_secs!r}
+RECORD_LOCK_POLL_SECS = {record_lock_poll_secs!r}
+
+def _namespace_record_directory():
+    """Pin the protected directory; never follow a replaced path component."""
+    home = {str(config_dir().resolve())!r}
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open("/", flags)
+    try:
+        for component in home.strip("/").split("/"):
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        for component in (None, "member-memory-bindings", "pids"):
+            if component is not None:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(component, flags, dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            info = os.fstat(fd)
+            if info.st_uid != REAL_UID or info.st_mode & 0o022:
+                raise PermissionError("unsafe namespace record directory")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+def _namespace_record_lock(directory, wait=0.0):
+    """Same stable lock/flags as member_process_records.record_lock (Linux).
+
+    ``wait`` bounds a retry on contention only (BlockingIOError: the gateway
+    sweep or another publisher holds the lock). Unsafe/replaced lock objects
+    raise at once. The lock call itself never blocks, so the bound holds.
+    """
+    fd = os.open(".reclaim.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+                 | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != REAL_UID
+                or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise PermissionError("unsafe process record lock")
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(RECORD_LOCK_POLL_SECS)
+        current = os.stat(".reclaim.lock", dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)):
+            raise PermissionError("process record lock changed")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+def _retire_namespace_record(directory, name, owned_fd):
+    """Retire only our inode, under the common publication/reclamation lock."""
+    if name is None or owned_fd is None:
+        return
+    lock = None
+    try:
+        lock = _namespace_record_lock(directory)
+        expected = os.fstat(owned_fd)
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (stat.S_ISREG(current.st_mode) and current.st_uid == REAL_UID
+                and current.st_nlink == 1
+                and (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino)):
+            os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        sys.stderr.write("sandbox: WARNING -- namespace record retirement skipped\\n")
+    finally:
+        if lock is not None:
+            os.close(lock)
 
 def main():
     argv = sys.argv[1:]
@@ -5528,39 +5619,107 @@ def main():
         # ── Parent: write identity UID/GID map ──
         os.close(c2p_w)
         os.close(p2c_r)
-        os.read(c2p_r, 1)  # wait for child to unshare(NEWUSER)
-        with open(f"/proc/{{pid}}/setgroups", "w") as f:
-            f.write("deny")
-        with open(f"/proc/{{pid}}/uid_map", "w") as f:
-            f.write(f"{{REAL_UID}} {{REAL_UID}} 1\\n")
-        with open(f"/proc/{{pid}}/gid_map", "w") as f:
-            f.write(f"{{REAL_GID}} {{REAL_GID}} 1\\n")
-        os.write(p2c_w, b"x")  # signal child to proceed
-        # The bound PID is this unsandboxed launcher, not its child. Publish
-        # the child's real namespace pair from the trusted side of the fence
-        # before allowing it to run. A nested private view cannot forge this.
-        if os.read(c2p_r, 1) != b"n":
-            sys.exit("sandbox: FATAL - child did not publish its namespace readiness")
-        os.close(c2p_r)
-        _namespace_dir = {str(config_dir().resolve() / "member-memory-bindings" / "pids")!r}
-        os.makedirs(_namespace_dir, mode=0o700, exist_ok=True)
-        _namespaces = []
-        for _kind in ("user", "mnt"):
-            _info = os.stat(f"/proc/{{pid}}/ns/{{_kind}}")
-            _namespaces.append([_info.st_dev, _info.st_ino])
-        with open("/proc/self/stat") as _handle:
-            _stat = _handle.read()
-        _start = _stat[_stat.rfind(")") + 2:].split()[19]
-        _fd, _temporary = tempfile.mkstemp(dir=_namespace_dir, suffix=".tmp")
-        with os.fdopen(_fd, "w") as _handle:
-            json.dump({{"process_start": _start, "namespaces": _namespaces,
-                       "private_memory": {private_memory!r}}}, _handle)
-        os.replace(_temporary, os.path.join(_namespace_dir, f"{{os.getpid()}}.namespace.json"))
-        os.write(p2c_w, b"n")
-        os.close(p2c_w)
-        _, status = os.waitpid(pid, 0)
-        code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
-        sys.exit(code)
+        _directory = _owned_fd = _temporary = _published = None
+        _shutdown_signal = None
+        _waiting = False
+
+        def _request_shutdown(signum, frame):
+            nonlocal _shutdown_signal, _waiting
+            _shutdown_signal = signum
+            if _waiting:
+                _waiting = False
+                raise SystemExit(128 + signum)
+
+        def _parent_wait(operation, *args):
+            # Only interrupt pipe/wait calls, never inode acquisition,
+            # publication or retirement. The inner finally disarms raising
+            # before the outer finally, including on repeated signals.
+            nonlocal _waiting
+            try:
+                _waiting = True
+                if _shutdown_signal is not None:
+                    raise SystemExit(128 + _shutdown_signal)
+                return operation(*args)
+            finally:
+                _waiting = False
+
+        signal.signal(signal.SIGTERM, _request_shutdown)
+        signal.signal(signal.SIGINT, _request_shutdown)
+        try:
+            _parent_wait(os.read, c2p_r, 1)  # wait for child to unshare(NEWUSER)
+            with open(f"/proc/{{pid}}/setgroups", "w") as f:
+                f.write("deny")
+            with open(f"/proc/{{pid}}/uid_map", "w") as f:
+                f.write(f"{{REAL_UID}} {{REAL_UID}} 1\\n")
+            with open(f"/proc/{{pid}}/gid_map", "w") as f:
+                f.write(f"{{REAL_GID}} {{REAL_GID}} 1\\n")
+            _parent_wait(os.write, p2c_w, b"x")  # signal child to proceed
+            # Publish from the trusted parent before releasing the child.
+            if _parent_wait(os.read, c2p_r, 1) != b"n":
+                sys.exit("sandbox: FATAL - child did not publish its namespace readiness")
+            # Optional authority publication: an unsafe/unavailable root skips
+            # at once; a lock the gateway sweep holds is waited for, bounded.
+            # Neither ever runs an unlocked writer.
+            _lock = None
+            try:
+                _directory = _namespace_record_directory()
+                _lock = _namespace_record_lock(_directory, wait=RECORD_LOCK_WAIT_SECS)
+            except BlockingIOError:
+                sys.stderr.write(
+                    "sandbox: WARNING -- skipping namespace record publication; "
+                    f"process record lock held for more than {{RECORD_LOCK_WAIT_SECS:g}}s "
+                    "by another publisher or the reclaim sweep (member memory denied "
+                    "for this launch).\\n"
+                )
+            except OSError:
+                sys.stderr.write(
+                    "sandbox: WARNING -- skipping namespace record publication; "
+                    "protected directory/lock unavailable (member memory denied). "
+                    "Check ownership and chmod 0700 on the protected directories.\\n"
+                )
+            if _lock is not None:
+                try:
+                    _namespaces = []
+                    for _kind in ("user", "mnt"):
+                        _info = os.stat(f"/proc/{{pid}}/ns/{{_kind}}")
+                        _namespaces.append([_info.st_dev, _info.st_ino])
+                    with open("/proc/self/stat") as _handle:
+                        _stat = _handle.read()
+                    _start = _stat[_stat.rfind(")") + 2:].split()[19]
+                    _target = f"{{os.getpid()}}.namespace.json"
+                    try:
+                        _existing = os.stat(_target, dir_fd=_directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if (not stat.S_ISREG(_existing.st_mode) or _existing.st_uid != REAL_UID
+                                or _existing.st_nlink != 1):
+                            raise PermissionError("unsafe namespace record target")
+                    # mkstemp has no dir_fd parameter. procfs reaches the pinned
+                    # directory, not a path that can redirect after validation.
+                    _owned_fd, _path = tempfile.mkstemp(
+                        dir=f"/proc/self/fd/{{_directory}}", suffix=".tmp")
+                    _temporary = os.path.basename(_path)
+                    with os.fdopen(os.dup(_owned_fd), "w") as _handle:
+                        json.dump({{"process_start": _start, "namespaces": _namespaces,
+                                   "private_memory": {private_memory!r}}}, _handle)
+                    os.replace(
+                        _temporary, _target, src_dir_fd=_directory, dst_dir_fd=_directory)
+                    _published = _target
+                finally:
+                    os.close(_lock)
+            _parent_wait(os.write, p2c_w, b"n")
+            _, status = _parent_wait(os.waitpid, pid, 0)
+            code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
+            sys.exit(code)
+        finally:
+            # Keep the inode open until retirement so inode reuse cannot
+            # mistake a replacement for ours. SIGKILL cannot run this block.
+            _retire_namespace_record(_directory, _published, _owned_fd)
+            _retire_namespace_record(_directory, _temporary, _owned_fd)
+            for _close_fd in (_owned_fd, _directory, c2p_r, p2c_w):
+                if _close_fd is not None:
+                    os.close(_close_fd)
     else:
         # ── Child: unshare, wait for maps, mount, exec ──
         os.close(c2p_r)

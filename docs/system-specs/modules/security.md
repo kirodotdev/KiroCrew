@@ -78,11 +78,72 @@ Ordinary V1 runtimes have explicit process-start-bound V1 records, allowing thei
 sandboxed MCP descendants to continue using Global V1. On Linux those descendants
 must share both namespaces with the recorded V1 runtime. The record is not a
 member binding and cannot mint a member proof; shared V1 session rekeys remain
-global. Failure to publish the namespace identity aborts the launcher with the
-existing `sandbox: FATAL` prefix so dashboard callers report an isolation refusal.
+global. The publication and retirement contract below applies to both V1 and
+private runtimes.
 Pure V1 installations retain the existing internal contract. Pooled MCP
 refuses a missing/mismatched caller before forwarding when the originating
 process has a protected private identity.
+
+Linux namespace publication has a launcher-owned lifetime. The unsandboxed
+parent keeps its staging inode open, publishes before releasing the child, and
+retires only that inode after normal/nonzero completion or setup failure.
+SIGTERM/SIGINT interrupt pipe handshakes and child waits with `128 + signal`;
+publication and cleanup defer signals, including repeated signals. A signal
+during cleanup does not replace an already collected child exit status.
+
+All current producers, invalidators and reclaimers of `<pid>.json` and
+`<pid>.namespace.json` coordinate on the one stable protected
+`member-memory-bindings/pids/.reclaim.lock`. Sharing one data home requires all
+record publishers and reclaimers to use the coordinated current version.
+The lock is never replaced or
+removed. Protected directory handles, owner checks and no-follow regular-file
+checks reject redirected roots, foreign writers, hardlinks and special files.
+Windows pins directories against rename and validates their local ACLs; POSIX
+addresses children through directory descriptors. On Windows the actual owner
+must be the current user or one of the existing local trusted principals
+(SYSTEM, Administrators, TrustedInstaller), matching the accepted writer set.
+Only after local-volume and actual-owner validation may an Owner Rights
+(`S-1-3-4`) writer refer to that owner. It is not a globally trusted owner SID.
+This accepts the existing lockdown helper's Owner Rights plus current-user
+DACL, including elevated-created objects, without changing ownership or grants.
+An unavailable current SID, remote volume, unrelated owner or writer, NULL DACL,
+unreadable descriptor or unknown ACE type still refuses. POSIX ownership checks
+and authentication readers are unchanged. Lock acquisition failure skips
+publication or reclamation, never permits an unlocked mutation. Contention is
+distinguished from refusal: a publisher (the gateway's `publish_binding` on a
+maintenance worker, or the launcher's unsandboxed parent) that finds the lock
+held retries the non-blocking acquire for at most `LOCK_WAIT_SECS` (2 s; POSIX
+never enters an unbounded `flock`) and publishes if the holder releases within
+that ceiling, so a launch or turn that races a sweep pass is not skipped merely
+because the pass was in progress. The sweep's hold time per pass is bounded by
+`SCAN_BUDGET` entries but not measured; the ceiling is a cap, not an
+expectation. Contention that outlives the ceiling skips this attempt and says
+so: the gateway logs a warning naming the pid and the ceiling, the launcher
+writes a distinct "lock held" warning to stderr. Nothing is written on a skip,
+so the record keeps whatever the previous publication left, and the next turn
+boundary republishes. An unsafe or replaced lock object or an unavailable root
+skips at once without waiting, with the existing message. Reclamation and
+launcher retirement never wait; a contended tick or retirement is retried by
+the next maintenance pass. A shutdown signal that arrives during the launcher's
+wait is deferred like any other publication-time signal and is honored, with
+owned records retired, at the next interruptible handshake after the wait ends. The launcher
+warns and continues without publishing authority when the protected directory
+or lock is unavailable. An unsafe target or a publication failure still refuses
+the launch. Anonymous staging files are cleaned only by their owning writer.
+
+The existing session maintenance tick advances a streaming directory cursor,
+off-loop, bounded by all enumerated names (including non-records). This sweeps
+both canonical families independently of `session_pid_*.txt`, with no new timer
+or per-PID lock. The cursor closes at exhaustion or shutdown. A record is removed
+under the common lock only if its complete recognized schema matches its name
+and its recorded process is positively absent or has a different live start
+identity. Windows absence requires `OpenProcess` reporting an absent PID or a
+successful exited-process query; access denial and other errors preserve it.
+Age, missing start probes and malformed/future records never authorize deletion.
+Live V1/V2 records and all non-record names remain untouched. The auth readers
+and grants are unchanged: publication failure creates no authority. Crashes or
+filesystem refusal can leave canonical records for the next maintenance pass;
+unowned anonymous temps remain outside the sweeper's authority.
 
 The local-secret owner-token mint endpoint also checks kernel identity when
 private members exist. A private process, corrupt binding or unverifiable peer

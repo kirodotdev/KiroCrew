@@ -1695,8 +1695,8 @@ class TestLauncherStagingSitesArePrefixed:
             for call in calls
             if any(
                 keyword.arg == "dir"
-                and isinstance(keyword.value, ast.Name)
-                and keyword.value.id == "_namespace_dir"
+                and ast.dump(keyword.value)
+                == ast.dump(ast.parse('f"/proc/self/fd/{_directory}"', mode="eval").body)
                 for keyword in call.keywords
             )
         ]
@@ -1726,12 +1726,14 @@ class TestLauncherStagingSitesArePrefixed:
             for node in ast.walk(statement)
             if isinstance(node, ast.Assign)
             and any(
-                isinstance(target, ast.Name) and target.id == "_namespace_dir"
+                isinstance(target, ast.Name) and target.id == "_directory"
                 for target in node.targets
             )
+            and isinstance(node.value, ast.Call)
         )
-        assert isinstance(directory, ast.Constant)
-        assert Path(directory.value).parts[-2:] == ("member-memory-bindings", "pids")
+        assert ast.dump(directory) == ast.dump(
+            ast.parse("_namespace_record_directory()", mode="eval").body
+        )
         for call in calls:
             if call is journal:
                 continue
