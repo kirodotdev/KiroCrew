@@ -290,7 +290,7 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |
 | `await-fast-gate` | Polls the `Fast Gate` run for this exact head commit and **fails closed** in all three ways it can go wrong: a run that never appears (180s budget), one that never completes (720s budget), and one that completes non-success. A barrier that passed when it could not read its subject would be worse than none, because the matrix would run anyway and the log would claim it was cleared to. One extra ~1-minute job buys the whole matrix the right to not start |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink — and `scripts/check_subprocess_encoding.py` (self-test first) — no text-mode subprocess call without an explicit `encoding=`, `**UTF8_TEXT`, or a `# subprocess-encoding: locale` marker, outside `.github/subprocess-encoding-baseline.txt`, which can only shrink — and `scripts/check_sync_io_in_async.py` (self-test first) — no blocking db / subprocess / http / `time.sleep` call inside an `async def` under `src/`, outside `.github/sync-io-in-async-baseline.txt`, which can only shrink. A stall past `dashboard.loop_stall_exit_after_secs` (25s) makes the watchdog kill the gateway and drop every in-flight turn (#3057, #1572); the escape is an offload (`await asyncio.to_thread(...)`, or a named lane from `src/kiro_crew/executors.py`) or a `# on-loop-io-ok: <why it cannot block>` marker whose reason is mandatory. All four baselined gates in this job read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
-| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Runner routing is unchanged by file sharding (pilot, below) |
+| `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Shard 1 runs on the **CodeBuild-hosted runner** behind the `run-as-runner` non-root boundary (canary; the other shards stay `ubuntu-latest` until it is green three runs in a row — pilot, below) |
 | `backend-test-windows` | windows-latest, 8 whole-file shards assigned before import, `--no-cov`, 180s per-test timeout. The backend supports Windows natively via `platform_compat`, and nothing else in CI holds that line |
 | `backend-test-windows-fail-closed` | windows-latest, single `-n0` run of `test/test_windows_fail_closed_optin.py` BY NODE ID with the pass count grepped, so a silent skip cannot go green. It is the only lane that boots a real gateway and drives one ACP prompt turn on Windows, against real filesystem state instead of a `sys.platform` mock: the pair of assertions [PR #8117](https://github.com/kirodotdev/KiroCrew/pull/8117) broke and no test could see |
 | `backend-test-sandbox` | The one job that clears the AppArmor userns restriction, so the tests guarded by `skipif(not userns_available())` EXECUTE instead of skipping. Runs all eleven sandbox-dependent suites. The shards collect the same files — nothing is deselected — but there the sandbox-guarded tests skip, so this is the only lane where those 85 assertions (the `~/.kiro/crew` keystone among them) actually execute |
@@ -433,18 +433,74 @@ Details worth knowing:
   `scripts/`) gained coverage numbers of their own, which the per-file gate
   failed. `website/vite.config.ts` now excludes every non-`src/` directory of
   `website/` by name, anchored on `website/`, which is a no-op on hosted paths.
-  **`backend-test` stays on `ubuntu-latest`**, and not for lack
-  of trying: the first pilot run routed its four shards to CodeBuild large and
-  each failed 37–42 tests (25k passed), because the CodeBuild runner executes
-  the job as root — this suite asserts permission semantics (read-only
-  refusals, root-owned-ancestor checks, `PermissionError`) that root does not
-  have, and the code refuses to run providers as root by design — and because
-  the `standard:7.0` image ships jq 1.6 where the hosted image has 1.7. AWS
-  documents no non-root mode for the CodeBuild GitHub Actions runner, so those
-  shards move only once a custom image (non-root user, hosted-parity tools)
-  exists. Peak-hour measurement behind the move (2026-09-11, 38 runs):
-  backend shards queued p90 521 s / max 763 s, frontend shards p90 569 s / max
-  813 s, with 103 of these jobs running at once. Things to know when touching it:
+  **`backend-test` runs behind a non-root boundary, one shard at a time.**
+  The first pilot run routed its four shards to CodeBuild large and each failed
+  37–42 tests (25k passed), because the CodeBuild runner executes the job as
+  root — this suite asserts permission semantics (read-only refusals,
+  root-owned-ancestor checks, `PermissionError`) that root does not have, and
+  the code refuses to run providers as root by design — and because the
+  `standard:7.0` image lacks parts of the hosted toolchain (jq 1.6 where the
+  repo's jq programs need 1.7, no `lsof`, and a setup-python toolcache whose
+  libpython needs `LD_LIBRARY_PATH`, which this suite deliberately strips when
+  it spawns a sanitized subprocess). AWS documents no non-root mode for the
+  CodeBuild GitHub Actions runner, and a custom image was assumed to be the
+  prerequisite. It is not: `.github/actions/run-as-runner` closes all of it
+  inside the job. The runner process and the `setup-*` actions stay root; the
+  action then creates an unprivileged `runner` user, hands it the workspace
+  (`chown`, never `chmod 777`) and gives the job temp `/tmp` semantics —
+  root-owned, world-writable, **sticky** — rather than chowning it: that
+  directory holds the runner's file-command directory (`$GITHUB_ENV` and
+  siblings, which the runner process applies **as root** to the NEXT step) and
+  the checkout's transient git credentials config, and sticky is what stops a
+  non-owner renaming an entry it does not own. Then it registers the toolcache lib
+  dirs with `ldconfig`, installs the two missing tools, and installs
+  `/usr/local/bin/ci-shell` — a `shell:` program the steps that must not be root
+  declare as their shell. On `ubuntu-latest` ci-shell is a bash passthrough and
+  the action changes nothing, so one workflow expression serves both runners.
+  Measured on the spike (run 34717454028, one shard of four): 25,224 passed / 77
+  skipped / 4 failed — not one of the four a root-semantic failure (missing
+  `lsof`; a 1.6013 s reading against a 1.6000 s latency bound; two eager-session
+  scheduling assertions). Measured again on the shard this file now routes (job
+  105495676140, when the matrix stood at eight): `uid=1002(runner)`,
+  `HOME=/home/runner`, workspace `runner:runner`, `$RUNNER_TEMP` `root:root` and
+  sticky, the file-command directory not writable, jq 1.7.1 and lsof 4.93.2
+  present, libpython resolving without `LD_LIBRARY_PATH`, `unshare NEWNS`
+  refused — and **14,248 passed / 54 skipped / 0 failed** in 38 min, coverage
+  written and uploaded by the unprivileged process. Repeated three more times
+  while the matrix stood at four (jobs 105528057411, 105537187805, 105555046095):
+  **28,606 / 28,635 / 28,636 passed, 97 skipped, 0 failed**, 23–24 min each, the
+  same identity assertions passing every time. Per-shard counts move with the
+  shard count, so read them as repeatability evidence, not as a target.
+  The spike's three timing
+  residuals did not recur and were not touched. Peak-hour measurement behind the
+  original move (2026-09-11, 38 runs): backend shards queued p90 521 s / max
+  763 s, frontend shards p90 569 s / max 813 s, with 103 of these jobs running
+  at once. Things to know when touching it:
+  - **Only shard 1 is routed, on purpose.** `runs-on` reads
+    `${{ matrix.group == 1 && needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}`,
+    so shards 2–8 stay hosted and act as controls while also exercising the
+    passthrough. The remaining shards move only after the canary is green on
+    three consecutive runs including one rerun, with coverage uploaded by the
+    unprivileged process each time.
+  - **The boundary is asserted, not assumed.** A CodeBuild-only step asserts
+    `id -u != 0`, `HOME=/home/runner`, a writable workspace, a job temp that is
+    writable but root-owned and sticky, a NOT-writable file-command directory,
+    and a present `lsof` before any test runs, and
+    `test/test_ci_nonroot_boundary.py` pins the workflow half: the action is
+    invoked, it comes after the `setup-*` actions and before every step that
+    declares `shell: /usr/local/bin/ci-shell {0}`, the action grants no sudoers
+    rule and makes nothing world-writable, and every download it performs is
+    sha256-pinned. A step that silently loses its `shell:` runs as root again,
+    which reappears as dozens of permission failures nobody reads as a routing
+    bug — that is what these pins exist to name.
+  - **The namespace jobs are a different problem and stay hosted.**
+    `unshare --mount --map-root-user true` returns `Operation not permitted` on
+    this CodeBuild project, so dropping privilege buys `backend-test-sandbox`,
+    `e2e`, `release-candidate-tests` and `gui-user-test` nothing: they verify a
+    real user namespace, and routing them would turn an enforcement check into a
+    skip. Moving them needs its own compute (a deliberately reviewed privileged
+    CodeBuild configuration, or an ephemeral EC2 runner with unprivileged user
+    namespaces), evaluated separately.
   - **Forks never see it.** The label is computed once, in the `changes` job
     (outputs `linux_runner` and `linux_runner_large`), and the routed jobs read
     it as `runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`,
