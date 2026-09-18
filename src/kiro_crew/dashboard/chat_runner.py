@@ -489,8 +489,27 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
     rather than duplicated inline where a key rename could silently break a
     consumer while its producer's own tests stay green.
     """
+    # BEFORE the authorization filter below, not merely before the drain: assigning
+    # `_ctx_inflight` further down would DESTROY entries a dead turn left undelivered.
+    _orphans = [
+        e
+        for e in (getattr(slot, "_ctx_inflight", None) or [])
+        if not context_entry_expired(e, time.time())
+    ]
+    if _orphans:
+        logger.warning(
+            "Recovering %d undelivered pending-context entr%s for slot=%s: a previous "
+            "turn drained them but never reached delivery",
+            len(_orphans),
+            "y" if len(_orphans) == 1 else "ies",
+            slot.key,
+        )
+        slot._pending_context[:0] = _orphans
+        slot._ctx_inflight = []
     # A note's halves resolve their destination here, not at the POST, so a slot
     # rebound since the write must not hand its content to the new session.
+    # ORDER IS LOAD-BEARING: it walks `_pending_context`, never `_ctx_inflight`, so
+    # recovering afterwards would splice unchecked entries in behind its back.
     slot.drop_foreign_authorized_notes()
     if not slot._pending_context:
         return ""
@@ -510,8 +529,103 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
             f'{entry["content"]}\n'
             f"[End of background context]\n"
         )
+    # `_dirty` is deliberately NOT set here: it arms a TIMER flush that nothing orders
+    # after delivery, which would durably empty the queue for content never delivered.
+    slot._ctx_inflight = [e for e in slot._pending_context if not context_entry_expired(e, now)]
     slot._pending_context.clear()
+    # Bump the generation so a save that exported this queue from its executor thread
+    # discards its now-stale copy instead of writing it back over the drained one.
+    slot._pending_context_gen += 1
     return "\n".join(ctx_parts) + "\n" if ctx_parts else ""
+
+
+#: Event kinds that prove THIS prompt reached the provider. ALLOWLIST, not a denylist.
+_PROMPT_ATTRIBUTABLE_EVENTS = frozenset(
+    {
+        EVENT_TEXT_CHUNK,
+        EVENT_THINKING_CHUNK,
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_CALL_UPDATE,
+        EVENT_TOOL_RESULT,
+        EVENT_PERMISSION_REQUEST,
+        EVENT_COMPLETE,
+    }
+)
+
+
+#: The ONLY stop reasons that prove the provider answered this prompt. An ALLOWLIST,
+#: deliberately: a denylist fails OPEN on every reason it has not enumerated.
+_DELIVERY_STOP_REASONS = frozenset(
+    {
+        STOP_REASON_END_TURN,
+        STOP_REASON_REFUSAL,
+    }
+)
+
+
+def event_confirms_delivery(event: object) -> bool:
+    """True when this event proves THIS prompt reached the provider.
+
+    The streaming kinds are self-proving: the provider emitted something.
+    ``EVENT_COMPLETE`` is not, because it is also SYNTHESIZED locally when a turn ends
+    without a result -- a stale turn, a local timeout, an unacked cancel, a tool stall,
+    a failed compaction -- so accepting it bare would retire context never delivered.
+
+    The reason set is an ALLOWLIST because a denylist fails OPEN: several terminal
+    events carry a bare literal reason rather than a module constant, so a refuse-set
+    silently admits what it has not enumerated. ``refusal`` is admitted on purpose --
+    the provider answering "no" proves it received the prompt.
+
+    ATTRIBUTION IS CHECKED FIRST: the kind alone does not say whose prompt an event
+    answers. ``runtime_global`` marks a frame fanned out to every session on the
+    runtime, and a non-empty ``sub_session_id`` names another session's sub-agent.
+    """
+    if getattr(event, "runtime_global", False):
+        return False
+    if getattr(event, "sub_session_id", ""):
+        return False
+    kind = getattr(event, "kind", None)
+    if kind not in _PROMPT_ATTRIBUTABLE_EVENTS:
+        return False
+    if kind != EVENT_COMPLETE:
+        return True
+    if getattr(event, "synthetic_completion", False):
+        return False
+    return getattr(event, "stop_reason", "") in _DELIVERY_STOP_REASONS
+
+
+def commit_drained_context(slot: "_ChatSlot") -> None:
+    """Retire drained entries once the prompt has been handed to the client.
+
+    This is the ONLY path that durably empties the queue, so the retirement is
+    committed strictly after delivery. Idempotent, and a no-op when nothing was
+    drained.
+
+    THE CALLER MUST GATE ON :func:`event_confirms_delivery`. "An event came back" is
+    NOT proof this prompt was delivered: the runtime is shared, so an unrelated
+    passive event can be the first thing the stream yields. Committing on one of those
+    is unrecoverable, because this clears ``_ctx_inflight`` -- exactly what the next
+    drain's orphan recovery needs to put the entries back.
+
+    ``EVENT_TODO_UPDATE`` is deliberately absent from the allowlist: it can follow the
+    model's own tool call, but it is not exclusively prompt-driven.
+    """
+    if not getattr(slot, "_ctx_inflight", None):
+        return
+    slot._ctx_inflight = []
+    # SEATS FREE HERE, not at the drain: promoting earlier was refused and never retried,
+    # so acknowledged surplus expired undelivered. Promoted entries stay origin-owned.
+    _promote = getattr(slot, "promote_overflow_context", None)
+    if callable(_promote):
+        _n = _promote()
+        if _n:
+            logger.info(
+                "promoted %d overflow context entr(y/ies) for %s",
+                _n,
+                getattr(slot, "key", "?"),
+            )
+    slot._pending_context_gen += 1
+    slot._dirty = True
 
 
 def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
@@ -9577,6 +9691,8 @@ async def _run_chat(
             _user_msg_for_mirror = message
             # Drain pending context injections (silent background context
             # from apps/subagents).  Expired entries are discarded.
+            # The drain HANDS OFF rather than retires: entries move to `_ctx_inflight`,
+            # which the export still reports, so a crash here persists ONE copy.
             _ctx_prefix = drain_pending_context(slot)
             if _ctx_prefix:
                 message = _ctx_prefix + message
@@ -10257,6 +10373,8 @@ async def _run_chat(
         _crew_log_step = crew_log_emit.on_step_started(_crew_log_sid, _crew_log_turn_no)
         _crew_log_step_t0 = time.monotonic()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
+        # `client.stream(...)` is LAZY -- the provider turn opens on the first iteration
+        # -- so committing at construction would retire content that reached nobody.
         async for event in event_stream:
             # Async-generator creation is not prompt acceptance. The first
             # provider event is the earliest evidence that the replay-bearing
@@ -10267,6 +10385,15 @@ async def _run_chat(
             if _replay_pending and not is_slash:
                 _replay_pending = False
                 _replay_accepted_this_turn = True
+            # DELIVERY IS PROVEN ONLY BY A PROMPT-ATTRIBUTABLE EVENT. The runtime is
+            # shared, so a passive one can arrive without this prompt being seen.
+            if event_confirms_delivery(event):
+                _was_inflight = bool(getattr(slot, "_ctx_inflight", None))
+                commit_drained_context(slot)
+                if _was_inflight:
+                    # DURABLE RETIREMENT, not merely dirty: a crash before the periodic flush
+                    # left the on-disk copy still holding them, so a restart re-injected them.
+                    await save_slot_off_loop(state, slot)
             # Heartbeat every 5s during long operations
             if time.time() - last_heartbeat > 5:
                 state.broadcast_ws("heartbeat", {"slot": slot.key, "ts": time.time()})
@@ -14952,6 +15079,8 @@ async def _run_chat(
         if not is_slash:
             await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
+        # No explicit requeue: a cancellation leaves the entries in `_ctx_inflight`, which the
+        # next drain's orphan recovery returns to the live queue for every termination path.
         _crew_log_error = "CancelledError"
         _persist_partial_reply()
     except AcpAuthRequired as exc:

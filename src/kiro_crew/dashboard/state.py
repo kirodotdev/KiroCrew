@@ -2194,6 +2194,8 @@ class _ChatSlot:
         "memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_pending_context_gen",
+        "_ctx_inflight",
         "_deferred_notes",
         "_dropped_note_ids",
         "_app",
@@ -2887,6 +2889,12 @@ class _ChatSlot:
         self.memory_mode: str = memory_mode
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
+        #: Bumped when the queue is CONSUMED, never on an append: persisting a subset is
+        #: safe because the next save catches up, persisting a consumed entry is not.
+        self._pending_context_gen: int = 0
+        # Entries DRAINED but not yet known-delivered. They stay visible to the export, so
+        # a crash in this window persists ONE copy rather than an empty queue.
+        self._ctx_inflight: list[dict[str, Any]] = []
         self._deferred_notes: list[dict[str, Any]] = []
         # Note ids dropped at the flush's rebind seam. A dropped
         # note has no delivery obligation left, but its durable entry may only

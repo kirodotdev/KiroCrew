@@ -67,6 +67,10 @@ class TestPrepareMirrorMsg:
             # authorization filter, so making it tolerate a slot without the
             # method would silently skip it for every such caller.
             drop_foreign_authorized_notes=lambda: 0,
+            # Supplied rather than guarded in the drain: tolerating a slot without
+            # the counter would silently disable the stale-export check.
+            _pending_context_gen=0,
+            _ctx_inflight=[],
         )
         context_block = drain_pending_context(slot)
         message = context_block + "\n" + message
