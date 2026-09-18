@@ -1834,9 +1834,23 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     """Map a live provider's advertised models to the API shape, per namespace.
 
     ``model_name`` is the advertised id verbatim: it is the wire value sent back
-    on selection, and the adapter only accepts ids it advertised. Returns ``[]``
-    when no session of that namespace has initialized or the backend advertised
-    nothing.
+    on selection, and the adapter only accepts ids it advertised.
+
+    **A live session wins; the PERSISTED snapshot is the floor.** When no session
+    of this namespace is up, this falls back to
+    ``model_registry.advertised_models(namespace)`` -- the cross-session sidecar
+    every such session writes at init -- instead of answering ``[]``. Answering
+    empty hands ``_cc_models`` its "nothing advertised" branch, which shows the
+    static registry UNFILTERED: on a cold dashboard the picker then offered
+    models the account cannot run and HID the ones it can, because an id the
+    registry does not list (a model newer than this build) reaches the picker
+    only through the advertised half. The snapshot can be stale where a live list
+    cannot, but it describes THIS account, which the static catalog never did --
+    and the live list overrides it the moment a session comes up.
+
+    Returns ``[]`` only when neither source has anything: a first run before any
+    session has ever initialized, which is the one state where the registry
+    superset really is the best answer available.
 
     Two filters, and both are load-bearing. The CAPABILITY gate
     (``SessionCapabilities.resolves_model_from_advertised_list``) is the property
@@ -1855,7 +1869,12 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
         state: DashboardState = request.app["state"]
         providers = state.sessions.active_providers()
     except (KeyError, AttributeError):
-        return []
+        # No session registry to ask (early boot, or a request built without
+        # one). That is the same "nothing live" state the loop below falls out
+        # of, so it takes the same snapshot rather than its own empty answer --
+        # a second early return here is how the cold picker kept reaching the
+        # unfiltered registry even once the fallback existed.
+        return _cached_advertised_models(namespace)
     for provider in reversed(providers):
         # Read each field straight off ``capabilities_of(provider)``: binding it to a
         # local would be a second spelling of the question, which the one-spelling
@@ -1881,7 +1900,32 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
                 for m in advertised
                 if m.get("modelId")
             ]
-    return []
+    return _cached_advertised_models(namespace)
+
+
+def _cached_advertised_models(namespace: str) -> list[dict]:
+    """The persisted advertised snapshot for *namespace*, in the API shape.
+
+    The fallback half of :func:`_advertised_cc_models`, split out so the reason
+    it exists is readable on its own: the sidecar
+    (``model_registry.advertised_models``) is written by every session that
+    advertises, so after the first one the right answer is on disk even when no
+    session is currently up.
+
+    The sidecar stores IDS ONLY -- a display name and a description are session
+    payload the cache never carried -- so both fields fall back to the id, which
+    is exactly what the live path does for a row whose ``name`` is absent. A row
+    rendered as its bare id is the same shape a forward-compat advertised model
+    already gets, so the picker needs no new case.
+
+    In-memory: the cache is loaded once at import, so this adds no disk read to
+    the request path.
+    """
+    return [
+        {"model_name": model_id, "display_name": model_id, "description": ""}
+        for model_id in model_registry.advertised_models(namespace)
+        if model_id
+    ]
 
 
 def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
