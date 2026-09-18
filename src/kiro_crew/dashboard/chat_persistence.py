@@ -3732,8 +3732,10 @@ def _save_slot_to_history(
                 # Clearable like memory_store: a name-only pick after a template
                 # pick must not keep advertising the template namespace.
                 fields["agent_kind"] = slot.agent_kind
-                if slot.project:
-                    fields["project"] = slot.project
+                # Written even when EMPTY: the merge is an upsert that cannot delete a key, so
+                # omitting a cleared project leaves the previous directory on disk to be read
+                # back as though the clear never happened.
+                fields["project"] = slot.project
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:
