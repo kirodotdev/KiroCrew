@@ -409,6 +409,8 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
         owner._compact_cooldown_until.clear()
         self._suppress_replay.clear()
         owner._compact_pending_verdict.clear()
+        closing_alloc = owner._allocation_boundary()
+        closing_alloc.discard_all_retire_arms()
         # Same lock hold as the clear: the whole drained set is accounted for
         # in one call, so the awaited unlink cannot be cancelled between two
         # keys. Per-key awaits would leave every key after the cancellation

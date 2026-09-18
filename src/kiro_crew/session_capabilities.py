@@ -46,25 +46,34 @@ class CapabilityStartupError(RuntimeError):
     """A fresh runtime could not prove it loaded the selected member spec."""
 
 
-def prepare_runtime(
-    agent: str | None, crew_agent: str | None, cwd: str | None
-) -> CapabilityPreparation:
-    """Off-loop cold-start preparation; do not call for an existing session."""
-    cfg = KiroCrewConfig.load()
+def _enrolled_intent(
+    cfg: KiroCrewConfig, agent: str | None, crew_agent: str | None
+) -> tuple[str, dict | None]:
+    """The member a claim resolves to and its capability intent, as ``prepare_runtime`` reads them."""
     member = resolve_crew_identity(cfg, agent, crew_agent)
     if not member:
-        return CapabilityPreparation("")
+        return "", None
     binding = cfg.agents.get(member)
     if binding is None:
         raise CapabilityStartupError("capability_member_missing")
     try:
-        intent = agent_state.get_capabilities(binding.kiro_agent)
+        return member, agent_state.get_capabilities(binding.kiro_agent)
     except (OSError, ValueError):
         # Enrollment lives in the one shared sidecar. An unreadable file
         # cannot prove this member is NOT enrolled, so inferring legacy mode
         # would start an enrolled member on the shared warm process. Refuse
         # with a closed code; non-crew sessions never reach this read.
         raise CapabilityStartupError("capability_state_unreadable") from None
+
+
+def prepare_runtime(
+    agent: str | None, crew_agent: str | None, cwd: str | None
+) -> CapabilityPreparation:
+    """Off-loop cold-start preparation; do not call for an existing session."""
+    cfg = KiroCrewConfig.load()
+    member, intent = _enrolled_intent(cfg, agent, crew_agent)
+    if not member:
+        return CapabilityPreparation("")
     if intent is None:
         return CapabilityPreparation(member)
     try:
@@ -89,6 +98,18 @@ def prepare_runtime(
         tuple(prepared.get("mcp_servers", ())),
         tuple(prepared.get("tool_limited_servers", ())),
     )
+
+
+def cleared_claim_dir(agent: str | None, crew_agent: str | None) -> str | None:
+    """Where ``prepare_runtime`` binds an empty cwd for an enrolled member, else ``None``."""
+    cfg = KiroCrewConfig.load()
+    try:
+        member, intent = _enrolled_intent(cfg, agent, crew_agent)
+    except CapabilityStartupError:
+        return None
+    if intent is None:
+        return None
+    return str(Path(default_project_dir(cfg.agents[member].workspace)).resolve())
 
 
 def verify_saved(prepared: CapabilityPreparation, cwd: str) -> None:

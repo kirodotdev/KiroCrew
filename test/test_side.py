@@ -41,6 +41,7 @@ from side_helpers import (  # noqa: F401 -- the autouse fixture registers by imp
 )
 
 from kiro_crew import context as context_module
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers.side import _run_side_turn
 from kiro_crew.dashboard.side_state import SideState
@@ -429,7 +430,8 @@ async def test_side_turn_resolves_slot_agent_to_kiro_agent(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cleared", [False, True])
+async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch, cleared):
     """The side session is created with ``cwd=slot.project``.
 
     Regression: the side path resolved project-scope agents (via
@@ -441,7 +443,8 @@ async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
     _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")
     parent.agent = "default"
-    parent.project = str(tmp_path / "proj")
+    parent.project = "" if cleared else str(tmp_path / "proj")
+    parent.project_cleared = cleared
     parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
     parent._side.append_user("q")
     parent._side.last_run_id = "run-1"
@@ -472,8 +475,9 @@ async def test_side_turn_runs_in_the_slot_project_dir(tmp_path, monkeypatch):
     await _run_side_turn(state, parent, "run-1", "q", is_first_turn=True)
 
     assert (
-        captured["cwd"] == parent.project
+        captured["cwd"] == parent.claim_cwd
     ), f"side session created without the slot's project cwd: {captured.get('cwd')!r}"
+    assert (captured["cwd"] is CWD_CLEARED) is cleared
 
 
 @pytest.mark.asyncio

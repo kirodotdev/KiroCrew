@@ -25,6 +25,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import history_projection, pinned_fs, platform_compat
 from kiro_crew.acp_backends import ACP_BACKEND_KIRO
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.dashboard import chat_threads, ws
 from kiro_crew.dashboard.chat_threads import (
     THREAD_BOUNDARY_PROMPT,
@@ -1482,6 +1483,22 @@ async def test_turn_without_tools_uses_reject_all_and_the_no_tools_boundary(tmp_
     assert acquired["agent"] == "kirocrew"
     assert streamed["approval_policy"] == chat_threads.ToolApprovalPolicy.REJECT_ALL
     assert THREAD_BOUNDARY_PROMPT_NO_TOOLS in streamed["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleared", [False, True])
+async def test_a_thread_turn_claims_the_slots_claim_cwd(tmp_path, monkeypatch, cleared):
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    slot.project = "" if cleared else str(tmp_path)
+    slot.project_cleared = cleared
+    calls = _arm_turn(state, monkeypatch, answer="ok", backend="other-harness")
+    assert _seed_reply(state, slot, mid, "user", "hi") == "ok"
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    assert (acquired["cwd"] is CWD_CLEARED) if cleared else acquired["cwd"] == str(tmp_path)
 
 
 @pytest.mark.asyncio

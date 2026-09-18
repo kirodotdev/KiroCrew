@@ -928,7 +928,8 @@ async def _run_thread_turn(
         if log is None:
             _final(_FAILED_FALLBACK, is_error=True)
             return
-        project: str | None = slot.project or None
+        claim_cwd = slot.claim_cwd
+        project: str | None = claim_cwd or None
         slot_agent: str | None = slot.agent or None
         kiro_agent: str | None = None
         hooks: HookManager | None = (
@@ -1003,7 +1004,7 @@ async def _run_thread_turn(
         provider, _is_new, _resumed = await state.sessions.get_or_create(
             session_key,
             agent=agent,
-            cwd=project,
+            cwd=claim_cwd,
             start_priority=start_priority,
             **session_kwargs,
         )

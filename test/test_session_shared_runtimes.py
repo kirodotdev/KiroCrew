@@ -969,6 +969,22 @@ class TestOpenTaskSession:
     """The task runner shares ONE run-scoped AcpRuntime across all its steps."""
 
     @pytest.mark.asyncio
+    async def test_a_steps_repeated_claim_reuses_its_session(self, cfg, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "proj").mkdir()
+        created: list = []
+        mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))
+        parent, key = "taskrunner:run9:runtime", "taskrunner:run9:task0"
+
+        await mgr.open_task_session(parent, key, agent="kirocrew", cwd="~/proj")
+        runtime = created[0]
+        mgr._sessions[key].provider._handle._bound_cwd = str(tmp_path / "proj")
+        mgr.release(key)
+        _p, is_new, _ = await mgr.open_task_session(parent, key, agent="kirocrew", cwd="~/proj")
+        assert not is_new, "a step's repeated claim evicted its own session"
+        assert runtime.create_session.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_run_shares_one_runtime_across_sessions(self, cfg):
         created: list = []
         mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))

@@ -2956,6 +2956,21 @@ there, and an exempt method that stops releasing a runtime is reported so its ex
 never goes unchecked. The `ends_conversation=True` call sites are pinned separately, by
 path, because a structural ratchet cannot see a keyword and losing one is silent.
 
+### Clearing a chat's project
+
+A clear sets `slot.project = ""` and the persisted `project_cleared` marker, so `claim_cwd`
+returns `CWD_CLEARED`. Both writers re-check the slot after resolving, arm the key, drop a SID
+stored outside the default workspace and set the session map's durable `project_cleared` flag,
+which a later project change clears. A `CWD_CLEARED` claim skips the warm pool and binds the
+per-session default (or a crew member's workspace). A cwd-less claim takes the armed cwd, or with
+no arm reads a flagged entry still in the default workspace as `CWD_CLEARED`.
+
+`retire_arms` maps a key to the cwd its next claim must bind. Reuse accepts a session only when
+its binding agrees with the arm and the claim; a fresh start bound there spends the arm, and so
+does a claim stating its own cwd when the arm predates it. A session's `claimed_cwd` answers a
+repeat of its claim, and realpaths are compared off the lock. This lives in allocation because
+the dashboard's deferred reset declines while a session is busy and channel claims skip it.
+
 ### Load Recovery (stale native session lock — F2)
 
 On restart / Make-Live cutover the previous gateway's kiro-cli is killed. If it

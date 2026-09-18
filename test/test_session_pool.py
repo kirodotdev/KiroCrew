@@ -13,6 +13,7 @@ or a defaults refresh, in which workspace, and around the fill lock in
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,7 +27,9 @@ from session_pool_helpers import (  # noqa: F401 -- the autouse fixture register
 )
 
 from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import await_until
 
 # ---------------------------------------------------------------------------
 # _fill_warm_pool
@@ -593,6 +596,388 @@ class TestGetOrCreatePoolIntegration:
         assert factory.call_args.kwargs.get("cwd") == "/Users/alice/workspace/proj"
 
     @pytest.mark.asyncio
+    async def test_explicit_clear_skips_pool_while_no_preference_still_claims(self):
+        """An explicitly CLEARED project cold-starts; ``cwd=None`` still reaches the pool."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        await mgr.get_or_create("cleared-key", agent="kirocrew", cwd=CWD_CLEARED)
+        mgr._drain_and_claim.assert_not_awaited()
+
+        await mgr.get_or_create("no-pref-key", agent="kirocrew")
+        mgr._drain_and_claim.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_clear_refuses_the_stored_resume_sid(self):
+        """A cleared project must COLD-START, not ``session/load`` the conversation it dropped."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        with patch.object(mgr._session_map, "get", return_value="sid-abc"):
+            with patch.object(mgr._session_map, "clear_sid") as cleared:
+                await mgr.get_or_create("cleared-key", agent="kirocrew", cwd=CWD_CLEARED)
+            cleared.assert_called_once_with("cleared-key")
+            assert factory.call_args.kwargs.get("cwd") == CWD_CLEARED
+
+            with patch.object(mgr._session_map, "clear_sid") as kept:
+                await mgr.get_or_create("no-pref-key", agent="kirocrew")
+            kept.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_claim_resumes_the_sid_stored_in_the_default_workspace(self):
+        """Only a SID stored for ANOTHER directory is dropped; the replacement is resumed."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        default = resolved_cwd(CWD_CLEARED, mgr._fold_key("cleared-key"))
+
+        with patch.object(mgr._session_map, "get", return_value="sid-new"):
+            with patch.object(mgr._session_map, "get_cwd", return_value=default):
+                with patch.object(mgr._session_map, "clear_sid") as kept:
+                    await mgr.get_or_create("cleared-key", agent="kirocrew", cwd=CWD_CLEARED)
+            kept.assert_not_called()
+
+            with patch.object(mgr._session_map, "get_cwd", return_value="/Users/alice/old"):
+                with patch.object(mgr._session_map, "clear_sid") as dropped:
+                    await mgr.get_or_create("cleared-key-2", agent="kirocrew", cwd=CWD_CLEARED)
+            dropped.assert_called_once_with("cleared-key-2")
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_start_bound_where_the_arm_points_spends_it(self):
+        """A start bound where the arm points spends it; one stating its own directory replaces it."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        arms = mgr._allocation_boundary()
+        folded = mgr._fold_key("armed-key")
+
+        def _bound(cwd):
+            def _factory(*_a, **_kw):
+                provider = _make_provider()
+                provider.cwd = cwd
+                return provider
+
+            return _factory
+
+        arms.mark_retire_on_next_claim("armed-key", "/Users/alice/proj")
+        factory.side_effect = _bound("/Users/alice/other")
+        await mgr.get_or_create("armed-key", agent="kirocrew", cwd="/Users/alice/other")
+        assert folded not in arms.state.retire_arms
+        await mgr.reset("armed-key")
+
+        arms.mark_retire_on_next_claim("armed-key", "/Users/alice/proj")
+        factory.side_effect = _bound("/Users/alice/proj")
+        await mgr.get_or_create("armed-key", agent="kirocrew")
+        assert folded not in arms.state.retire_arms
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_member_claim_resumes_the_sid_stored_in_its_own_workspace(self):
+        """An enrolled member binds its own workspace on a clear, so that SID is the replacement."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        member_dir = "/Users/alice/member-ws"
+
+        with (
+            patch("kiro_crew.session_capabilities.cleared_claim_dir", return_value=member_dir),
+            patch.object(mgr._session_map, "get", return_value="sid-member"),
+            patch.object(mgr._session_map, "get_cwd", return_value=member_dir),
+            patch.object(mgr._session_map, "clear_sid") as kept,
+        ):
+            await mgr.get_or_create("member-key", agent="kirocrew", cwd=CWD_CLEARED)
+        kept.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_member_cleared_claim_reuses_its_own_workspace_binding(self):
+        """A member's cleared claim binds the member workspace, not the per-session default."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+
+        def _member(*_a, **_kw):
+            provider = _make_provider()
+            provider.cwd = "/members/ada/workspace"
+            return provider
+
+        factory.side_effect = _member
+        default = await mgr.resolve_arm_cwd("member-key", CWD_CLEARED)
+        assert default != "/members/ada/workspace", "the binding must differ, or this is vacuous"
+        mgr.mark_retire_on_next_claim("member-key", default)
+
+        _p, is_new, _ = await mgr.get_or_create("member-key", agent="kirocrew", cwd=CWD_CLEARED)
+        assert is_new
+        mgr.release("member-key")
+        _p, is_new, _ = await mgr.get_or_create("member-key", agent="kirocrew", cwd=CWD_CLEARED)
+        assert not is_new, "the member's own cleared claim evicted its session"
+        assert factory.call_count == 1
+
+    @staticmethod
+    def _bound_where_asked(*_a, **kw):
+        provider = _make_provider()
+        provider.cwd = kw.get("cwd") or ""
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_claim_stating_no_cwd_binds_the_armed_directory_and_then_reuses(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        factory.side_effect = self._bound_where_asked
+        armed = tmp_path / "armed"
+        armed.mkdir()
+        mgr.mark_retire_on_next_claim("armed-key", str(armed))
+        folded = mgr._fold_key("armed-key")
+        arms = mgr._allocation_boundary().state.retire_arms
+
+        _p, is_new, _ = await mgr.get_or_create("armed-key", agent="kirocrew")
+        assert is_new
+        mgr._drain_and_claim.assert_not_awaited()
+        assert factory.call_args.kwargs.get("cwd") == resolved_cwd(str(armed))
+        assert folded not in arms
+        mgr.release("armed-key")
+
+        _p, is_new, _ = await mgr.get_or_create("armed-key", agent="kirocrew")
+        assert not is_new, "a later claim stating no cwd cold-started again"
+        assert factory.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cwd_less_claim_of_an_armed_key_ignores_the_stored_cwd(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        old, armed = tmp_path / "old", tmp_path / "armed"
+        old.mkdir()
+        armed.mkdir()
+        mgr.mark_retire_on_next_claim("armed-key", str(armed))
+        with (
+            patch.object(mgr._session_map, "get", return_value="sid-old"),
+            patch.object(mgr._session_map, "get_cwd", return_value=str(old)),
+        ):
+            await mgr.get_or_create("armed-key", agent="kirocrew")
+        assert factory.call_args.kwargs.get("cwd") == resolved_cwd(str(armed))
+
+    @pytest.mark.asyncio
+    async def test_a_cwd_less_claim_of_a_cleared_arm_is_a_clear(self, tmp_path):
+        """An arm naming the default workspace makes a cwd-less claim drop the old SID too."""
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        old = tmp_path / "old"
+        old.mkdir()
+        default = resolved_cwd(CWD_CLEARED, mgr._fold_key("cleared-key"))
+        mgr.mark_retire_on_next_claim("cleared-key", default)
+        with (
+            patch.object(mgr._session_map, "get", return_value="sid-old"),
+            patch.object(mgr._session_map, "get_cwd", return_value=str(old)),
+            patch.object(mgr._session_map, "clear_sid") as dropped,
+        ):
+            await mgr.get_or_create("cleared-key", agent="kirocrew")
+        dropped.assert_called_once_with("cleared-key")
+        assert factory.call_args.kwargs.get("cwd") == CWD_CLEARED
+
+    @pytest.mark.asyncio
+    async def test_a_clear_outlives_a_restart_for_a_cwd_less_claim(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        old = tmp_path / "old"
+        old.mkdir()
+        smap, key = mgr._session_map, mgr._fold_key("restart-key")
+        smap.set(key, "sid-old", cwd=str(old))
+        default = await mgr.resolve_arm_cwd(key, CWD_CLEARED)
+        mgr.mark_retire_on_next_claim(key, default)
+        await mgr.drop_resume_outside(key, default)
+        mgr._allocation_boundary().discard_all_retire_arms()
+
+        with patch.object(smap, "get", side_effect=lambda k: smap._data[k]["sid"] or None):
+            await mgr.get_or_create(key, agent="kirocrew")
+        assert factory.call_args.kwargs.get("cwd") != str(old)
+        assert smap._data[key]["sid"] == ""
+
+    @pytest.mark.asyncio
+    async def test_the_stale_session_retry_of_a_cwd_less_claim_honours_the_arm(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        factory.side_effect = self._bound_where_asked
+        old, armed = tmp_path / "old", tmp_path / "armed"
+        old.mkdir()
+        armed.mkdir()
+        await mgr.get_or_create("armed-key", agent="kirocrew", cwd=str(old))
+        mgr.release("armed-key")
+        mgr.mark_retire_on_next_claim("armed-key", str(armed))
+
+        _p, is_new, _ = await mgr.get_or_create("armed-key", agent="kirocrew")
+        assert is_new
+        assert factory.call_count == 2
+        assert factory.call_args.kwargs.get("cwd") == resolved_cwd(str(armed))
+        assert mgr._fold_key("armed-key") not in mgr._allocation_boundary().state.retire_arms
+
+    @pytest.mark.asyncio
+    async def test_a_queued_cwd_less_claim_follows_a_clear_that_lands_while_it_waits(
+        self, tmp_path
+    ):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        factory.side_effect = self._bound_where_asked
+        old, b = tmp_path / "old", tmp_path / "b"
+        old.mkdir()
+        b.mkdir()
+        key = mgr._fold_key("queued-key")
+        await mgr.get_or_create(key, agent="kirocrew", cwd=str(old))
+        mgr.mark_retire_on_next_claim(key, str(b))
+        semaphore = mgr._allocation_boundary().state.sessions[key].semaphore
+        parked, acquire = asyncio.Event(), semaphore.acquire
+
+        async def park_then_acquire():
+            parked.set()
+            return await acquire()
+
+        semaphore.acquire = park_then_acquire
+        queued = asyncio.create_task(mgr.get_or_create(key, agent="kirocrew"))
+        await await_until(parked, what="the queued claim parks on the session")
+        assert semaphore.locked() and not queued.done()
+        mgr.mark_retire_on_next_claim(key, await mgr.resolve_arm_cwd(key, CWD_CLEARED))
+        mgr.release(key)
+        await await_until(queued, what="the queued claim allocates")
+        assert factory.call_args.kwargs.get("cwd") is CWD_CLEARED
+
+    @pytest.mark.asyncio
+    async def test_a_cwd_less_start_refuses_an_arm_that_moved_while_it_started(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        armed = tmp_path / "armed"
+        armed.mkdir()
+        key = mgr._fold_key("moved-key")
+        mgr.mark_retire_on_next_claim(key, str(armed))
+        default = await mgr.resolve_arm_cwd(key, CWD_CLEARED)
+        first = _make_provider()
+
+        def clear_during_the_first_start(*_a, **kw):
+            if factory.call_count == 1:
+                mgr.mark_retire_on_next_claim(key, default)
+                first.cwd = kw.get("cwd")
+                return first
+            return self._bound_where_asked(**kw)
+
+        factory.side_effect = clear_during_the_first_start
+        provider, is_new, _ = await mgr.get_or_create(key, agent="kirocrew")
+        assert is_new and provider is not first
+        first.shutdown.assert_awaited()
+        assert factory.call_args.kwargs.get("cwd") is CWD_CLEARED
+
+    @pytest.mark.asyncio
+    async def test_a_claim_stating_its_own_directory_replaces_an_older_arm(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        factory.side_effect = self._bound_where_asked
+        stale, new = tmp_path / "stale", tmp_path / "new"
+        stale.mkdir()
+        new.mkdir()
+        mgr.mark_retire_on_next_claim("switch-key", str(stale))
+
+        await mgr.get_or_create("switch-key", agent="kirocrew", cwd=str(new))
+        assert factory.call_args.kwargs.get("cwd") == str(new)
+        mgr.release("switch-key")
+        _p, is_new, _ = await mgr.get_or_create("switch-key", agent="kirocrew", cwd=str(new))
+        assert not is_new, "a stale arm evicted the session the slot's own claim bound"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_string_claim_restores_like_no_claim(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        old = tmp_path / "old"
+        old.mkdir()
+        with (
+            patch.object(mgr._session_map, "get", return_value="sid-old"),
+            patch.object(mgr._session_map, "get_cwd", return_value=str(old)),
+            patch.object(mgr._session_map, "clear_sid") as dropped,
+        ):
+            await mgr.get_or_create("empty-key", agent="kirocrew", cwd="")
+        dropped.assert_not_called()
+        assert factory.call_args.kwargs.get("cwd") == str(old)
+
+    @pytest.mark.asyncio
+    async def test_a_clear_with_no_sid_outlives_a_restart_and_skips_the_pool(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        key = mgr._fold_key("pool-key")
+        default = await mgr.resolve_arm_cwd(key, CWD_CLEARED)
+        mgr.mark_retire_on_next_claim(key, default)
+        await mgr.drop_resume_outside(key, default)
+        mgr._allocation_boundary().discard_all_retire_arms()
+        mgr._session_map.prune()
+
+        await mgr.get_or_create(key, agent="kirocrew")
+        mgr._drain_and_claim.assert_not_awaited()
+        assert factory.call_args.kwargs.get("cwd") is CWD_CLEARED
+        mgr.mark_retire_on_next_claim(key, str(tmp_path))
+        assert not mgr._session_map.get_flag(key, "project_cleared")
+
+    @pytest.mark.asyncio
+    async def test_a_never_cleared_key_in_its_default_workspace_keeps_the_pool(self, tmp_path):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+        key = mgr._fold_key("slack:never-cleared")
+        default = await mgr.resolve_arm_cwd(key, CWD_CLEARED)
+        mgr._session_map.set(key, "", cwd=default)
+
+        await mgr.get_or_create(key, agent="kirocrew")
+        mgr._drain_and_claim.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_retiring_claude_session_does_not_rewrite_a_recorded_clear(self, tmp_path):
+        import kiro_crew.session as session_module
+        from kiro_crew.session_allocation_parts.errors import SessionBusyError
+
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        old = tmp_path / "old"
+        old.mkdir()
+
+        def claude(*_a, **_kw):
+            provider = _make_provider()
+            provider.session_id, provider.cwd = "sid-old", str(old)
+            return provider
+
+        factory.side_effect = claude
+        key = mgr._fold_key("claude-key")
+        with patch.object(session_module, "_is_claude_provider", lambda _p: True):
+            await mgr.get_or_create(key, agent="kirocrew", cwd=str(old))
+            default = await mgr.resolve_arm_cwd(key, CWD_CLEARED)
+            mgr.mark_retire_on_next_claim(key, default)
+            await mgr.drop_resume_outside(key, default)
+            with pytest.raises(SessionBusyError):
+                await mgr.get_or_create(key, agent="kirocrew", wait_if_busy=False)
+        assert mgr._session_map.get_cwd(key) == default
+        assert mgr._session_map.get_flag(key, "project_cleared")
+
+    @pytest.mark.asyncio
+    async def test_a_claim_for_another_project_does_not_reuse_a_session_bound_to_the_first(
+        self, tmp_path
+    ):
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        factory.side_effect = self._bound_where_asked
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        await mgr.get_or_create("ab-key", agent="kirocrew", cwd=str(a))
+        mgr.release("ab-key")
+        _p, is_new, _ = await mgr.get_or_create("ab-key", agent="kirocrew", cwd=str(b))
+        assert is_new, "a project-B claim was served the session bound to project A"
+        assert factory.call_args.kwargs.get("cwd") == str(b)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("caller", ["cron", "subagent", "home-relative"])
+    async def test_a_callers_repeated_claim_reuses_its_session(self, tmp_path, monkeypatch, caller):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        real = tmp_path / "real"
+        real.mkdir()
+        (tmp_path / "link").symlink_to(real)
+        claim = {
+            "cron": str(tmp_path / "link"),
+            "subagent": f"{tmp_path}/link/",
+            "home-relative": "~/link",
+        }[caller]
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+
+        def reports_the_realpath(*_a, **kw):
+            provider = _make_provider()
+            provider.cwd = os.path.realpath(os.path.expanduser(kw["cwd"]))
+            return provider
+
+        factory.side_effect = reports_the_realpath
+        for _turn in range(2):
+            await mgr.get_or_create(f"{caller}:job", agent="kirocrew", cwd=claim)
+            mgr.release(f"{caller}:job")
+        assert factory.call_count == 1, "a repeated claim evicted its own session"
+
+    @pytest.mark.asyncio
     async def test_skips_pool_for_a_side_read_only_session(self):
         """A pooled child was started without the Side Chat read-only shape. A
         side key is stateless, so the session cold-starts and the factory
@@ -1019,3 +1404,55 @@ class TestPoolDisabledSkipsClaim:
 
         mgr._drain_and_claim.assert_not_awaited()
         factory.assert_called_once()
+
+
+class TestTheReuseComparisonSurvivesASymlinkedRoot:
+    """`_reacquire_and_validate` compares the claim against `provider.cwd` on EVERY reuse."""
+
+    @pytest.mark.asyncio
+    async def test_restating_the_same_symlinked_directory_does_not_evict(self, tmp_path):
+        from kiro_crew.session_allocation_parts.get_or_create import cwd_moved_for_reuse
+
+        real = tmp_path / "real-root"
+        real.mkdir()
+        link = tmp_path / "linked-root"
+        link.symlink_to(real, target_is_directory=True)
+        assert link.is_symlink(), "the fixture is not a symlink, so this proves nothing"
+
+        bound = str(link)
+        default = str(tmp_path / "per-session-default")
+
+        for spelling in (str(link), str(link) + "/", str(link) + "//"):
+            assert cwd_moved_for_reuse(bound, spelling, default) is False, spelling
+
+        for reported in (str(link) + "/", str(link) + "//", str(link) + "/."):
+            assert cwd_moved_for_reuse(reported, str(link), default) is False, reported
+
+        assert cwd_moved_for_reuse(bound, None, default) is False
+
+        assert cwd_moved_for_reuse(bound, str(tmp_path / "elsewhere"), default) is True
+        assert cwd_moved_for_reuse(bound, str(real), default) is True
+        assert cwd_moved_for_reuse("", str(link), default) is False
+        assert cwd_moved_for_reuse(None, str(link), default) is False
+
+    @pytest.mark.asyncio
+    async def test_a_backend_reporting_the_realpath_of_a_symlinked_claim_is_reused(self, tmp_path):
+        real = tmp_path / "real-root"
+        real.mkdir()
+        link = tmp_path / "linked-root"
+        link.symlink_to(real, target_is_directory=True)
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        def _bound_at_realpath(*_a, **kw):
+            provider = _make_provider()
+            provider.cwd = str(real.resolve())
+            return provider
+
+        factory.side_effect = _bound_at_realpath
+        await mgr.get_or_create("link-key", agent="kirocrew", cwd=str(link))
+        mgr.release("link-key")
+        # Restated in another spelling, so the start's own claimed_cwd does not answer it.
+        _p, is_new, _ = await mgr.get_or_create("link-key", agent="kirocrew", cwd=f"{link}/")
+        assert not is_new, "a realpath-reporting backend was evicted on reuse"
+        assert factory.call_count == 1
