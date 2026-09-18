@@ -84,17 +84,17 @@ class DivergenceUnreadable:
     detail: str = ""
 
 
-def divergence_count_args(upstream: str) -> list[str]:
-    """The ``git`` arguments (without the binary) that count HEAD vs *upstream*.
+def divergence_count_args(upstream: str, *, head: str = "HEAD") -> list[str]:
+    """The ``git`` arguments (without the binary) that count *head* vs *upstream*.
 
     The three-dot range with ``--count --left-right`` prints
-    ``"<ahead>\\t<behind>"``: left counts commits reachable from HEAD only,
+    ``"<ahead>\\t<behind>"``: left counts commits reachable from *head* only,
     right those reachable from *upstream* only. *upstream* is a caller choice
     because the surfaces genuinely differ — ``@{u}``/``@{upstream}`` where
     the tracked upstream is the comparison, ``origin/<branch>`` where the
     exact ref a reset targets is.
     """
-    return ["rev-list", "--count", "--left-right", f"HEAD...{upstream}"]
+    return ["rev-list", "--count", "--left-right", f"{head}...{upstream}"]
 
 
 def parse_divergence_counts(output: str) -> DivergenceCounts | None:

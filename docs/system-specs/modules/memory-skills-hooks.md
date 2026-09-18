@@ -3693,6 +3693,14 @@ comprehension over the assembled rows, and an end-to-end test drives two agents 
 real endpoint in both orders to keep that true rather than merely currently-true — a join that
 ever shared the FILTERED result would fail whichever agent asked second.
 
+The `kirocrew-dev` family is repository-maintainer guidance, not user-project
+advice. Its `kirocrew-codebase-refactor` skill owns repository-scale structural
+campaigns: hotspot baselines, coherent module ownership, non-overlapping worker
+waves, behavior-equivalence evidence, stale-work recovery, and landed structural
+metrics. It delegates isolated implementation, test authoring, PR delivery, and
+monitoring to `kirocrew-worktree-dev`, `writing-tests`, `prepare-pr`, and
+`babysit` respectively, so those contracts remain single-owned.
+
 The bundled `kirocrew-dev/babysit` skill is an on-demand, pointer-on-trigger recipe.
 Its explicit trigger vocabulary covers babysit/watch/monitor phrasing for pull
 requests, so ordinary requests reach the recipe without placing the whole body in
