@@ -92,6 +92,76 @@ class TestAdvertisedCcModels:
     def test_empty_when_no_active_sessions(self):
         assert _advertised_cc_models(_request_with_providers({}), "claude_code") == []
 
+
+class TestTheColdPickerFallsBackToThePersistedSnapshot:
+    """No live session is not the same fact as nothing advertised.
+
+    Every session that advertises writes the ids to a cross-session sidecar
+    (``model_registry.advertised_models``). Answering ``[]`` while that snapshot
+    exists sent ``_cc_models`` down its "entitlement unknown" branch, which shows
+    the STATIC registry unfiltered -- so a cold dashboard offered models the
+    account cannot run and HID the ones it can, because a model newer than this
+    build reaches the picker only through the advertised half. The snapshot is
+    the account's own answer; the registry never was.
+    """
+
+    def test_the_snapshot_answers_when_no_session_is_up(self, monkeypatch):
+        monkeypatch.setattr(
+            model_registry,
+            "advertised_models",
+            lambda ns: ["claude-fable-5-1[1m]", "opus"] if ns == "claude_code" else [],
+        )
+        out = _advertised_cc_models(_request_with_providers({}), "claude_code")
+        assert [m["model_name"] for m in out] == ["claude-fable-5-1[1m]", "opus"]
+
+    def test_a_request_carrying_no_session_registry_uses_it_too(self, monkeypatch):
+        """The early return had to change as well, not just the loop's fall-out.
+
+        ``request.app["state"]`` raising is the same "nothing live" fact the loop
+        below falls out of, and a second early return there is how the cold
+        picker kept reaching the unfiltered registry after the fallback existed.
+        """
+        monkeypatch.setattr(
+            model_registry, "advertised_models", lambda ns: ["claude-fable-5-1[1m]"]
+        )
+        bare = SimpleNamespace(app={})
+        out = _advertised_cc_models(bare, "claude_code")
+        assert [m["model_name"] for m in out] == ["claude-fable-5-1[1m]"]
+
+    def test_a_live_session_still_wins_over_the_snapshot(self, monkeypatch):
+        """Authority order is unchanged: stale-but-real loses to live-and-real."""
+        monkeypatch.setattr(model_registry, "advertised_models", lambda ns: ["stale-id"])
+        prov = _FakeProvider([{"modelId": "live-id", "name": "Live"}])
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
+        assert [m["model_name"] for m in out] == ["live-id"]
+
+    def test_the_snapshot_filters_the_registry_like_a_live_list(self, monkeypatch):
+        """The whole point: an unentitled registry row must go away when cold too.
+
+        This is the defect end to end -- the account serves Fable 5.1, the
+        registry lists Fable 5, and before this the cold picker offered the one
+        the account cannot run while never showing the one it can.
+        """
+        monkeypatch.setattr(
+            model_registry,
+            "advertised_models",
+            lambda ns: ["claude-fable-5-1[1m]"] if ns == "claude_code" else [],
+        )
+        names = [m["model_name"] for m in _cc_models(_request_with_providers({}))]
+        assert "claude-fable-5-1[1m]" in names, "the served model must be offered"
+        assert "fable-5-1m" not in names, "a model the account cannot run must not be"
+        assert names[0] == "auto"
+
+    def test_a_first_run_with_no_snapshot_still_shows_the_registry(self, monkeypatch):
+        """The one state where the superset really is the best answer available.
+
+        Nothing live AND nothing ever recorded is a genuinely unknown
+        entitlement, and an empty picker there is worse than a superset.
+        """
+        monkeypatch.setattr(model_registry, "advertised_models", lambda ns: [])
+        names = [m["model_name"] for m in _cc_models(_request_with_providers({}))]
+        assert set(_REGISTRY_NAMES) <= set(names)
+
     def test_skips_provider_without_accessor(self):
         prov = _FakeProvider([])
         prov.available_models = None

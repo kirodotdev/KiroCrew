@@ -26,7 +26,11 @@ from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
-from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
+from kiro_crew.agent_sdk.capabilities import (
+    MODEL_NAMESPACE_ACP,
+    capabilities_for,
+    capabilities_of,
+)
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps import permissions as app_permissions
 from kiro_crew.config.loader import (
@@ -7304,41 +7308,72 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     return web.json_response(resp_body)
 
 
-def _model_rejected_reason(model_name: str, provider: str | None = None) -> str | None:
-    """Reason to reject ``model_name`` for the active provider, or None to allow.
+def _model_rejected_reason(
+    model_name: str, provider: str | None = None, backend: str | None = None
+) -> str | None:
+    """Reason to reject ``model_name`` for the active harness, or None to allow.
 
     The dashboard model dropdown falls back to canonical registry keys (e.g.
     ``fable-5-1m``) when /api/models is unavailable (gateway restart / kiro-cli
-    cold-start timeout). Those keys are DISPLAY identifiers the ACP CLI rejects
-    as model ids (-32603 "model not available") — persisting one into
+    cold-start timeout). Those keys are DISPLAY identifiers the kiro ACP CLI
+    rejects as model ids (-32603 "model not available") — persisting one into
     ``slot.model`` breaks the next turn. This guard is defense-in-depth behind
-    the frontend's auto-only fallback: a stale client, a direct API
-    call, or the openai-compat path can never persist a canonical key. ``auto``
-    and ``""`` (provider default) always pass; for the ``claude_code`` provider
-    canonical keys ARE the wire format, so they pass there too.
+    the frontend's auto-only fallback: a stale client, a direct API call, or the
+    openai-compat path can never persist a canonical key. ``auto`` and ``""``
+    (provider default) always pass.
 
-    *provider* lets a caller that has already loaded the config supply it, so
-    this adds no read of its own: ``KiroCrewConfig.load()`` deep-copies the
-    validated dict even on a cache hit, and on a miss it reads and validates
-    files — work that must not land on the event loop under a held lock. Omit it
-    and the provider is resolved here, preserving the original behaviour.
+    **Keyed on the BACKEND's model-id namespace, not on ``agent.provider``.**
+    Whether a canonical key is display-only is a property of the harness that
+    receives it, and ``agent.provider`` cannot answer it: the config schema pins
+    that field to ``enum=["acp"]``, so every harness selected at
+    ``agent.acp_backend`` reads as the same provider and ``is_claude_code`` is a
+    branch that can never be taken. Reading it made the guard reject canonical
+    keys on EVERY backend — including claude-agent-acp, where
+    :func:`_wire_model_id` translates them through ``to_provider_id`` and they
+    are the wire format. That left a model the account can run unpickable, with
+    a message naming a provider that was not the reason. Off the ``acp``
+    namespace, ids are translated into the backend's own namespace, so a
+    canonical key is legitimate input there; the rejection stands only for the
+    kiro namespace, whose ids the registry key is merely a display name for.
+
+    *backend* and *provider* let a caller that has already loaded the config
+    supply them, so this adds no read of its own: ``KiroCrewConfig.load()``
+    deep-copies the validated dict even on a cache hit, and on a miss it reads
+    and validates files — work that must not land on the event loop under a held
+    lock. Omit them and the config is read here — but only for a value that IS a
+    canonical key, which is the sole case whose verdict depends on the harness.
+    Every other pick answers from memory, so the ordinary path costs no read
+    whether or not a caller supplied anything.
     """
     if not model_name or model_name == "auto":
         return None
-    if provider is None:
+    # FIRST, because it is the only question this guard asks that needs no
+    # config at all: anything that is not a canonical registry key cannot be a
+    # display-only spelling, whatever harness receives it. Asking it here is
+    # what keeps the config read off every ordinary pick -- a wire id, an
+    # advertised id, a ``provider/model`` pair -- rather than only off the
+    # callers that happen to supply the answer.
+    if not model_registry.is_canonical_key(model_name):
+        return None
+    if backend is None or provider is None:
         try:
-            provider = KiroCrewConfig.load().agent.provider
+            agent_cfg = KiroCrewConfig.load().agent
+            backend = agent_cfg.acp_backend if backend is None else backend
+            provider = agent_cfg.provider if provider is None else provider
         except Exception:  # pragma: no cover - config load is resilient
-            provider = ""
+            backend = "" if backend is None else backend
+            provider = "" if provider is None else provider
     if is_claude_code(provider):
         return None
-    if model_registry.is_canonical_key(model_name):
-        return (
-            f"{model_name!r} is a display-only model identifier the "
-            f"{provider or 'active'} provider does not accept; "
-            f"select a listed model or 'auto'."
-        )
-    return None
+    if capabilities_for(backend).model_id_namespace != MODEL_NAMESPACE_ACP:
+        # Ids are translated into this backend's own namespace, so a canonical
+        # key is legitimate input rather than a display-only spelling.
+        return None
+    return (
+        f"{model_name!r} is a display-only model identifier the "
+        f"{provider or 'active'} provider does not accept; "
+        f"select a listed model or 'auto'."
+    )
 
 
 def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
