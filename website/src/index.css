@@ -1560,7 +1560,10 @@ html[data-font-family="custom"][data-custom-ligatures="on"] body{font-variant-li
    JetBrains Mono keeps rendering =>/!=/-> under the initial `normal` value —
    only `none` actually turns them off. */
 html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-ligatures:none}
-.msg-content code,.msg-content pre{font-variant-ligatures:normal}
+/* Also cover Pierre's .code-block / .diff-block hosts: their lines are not
+   always <pre>, so without these selectors the OFF rule's `none` would leak
+   into rendered code and diffs by inheritance. */
+.msg-content code,.msg-content pre,.msg-content .code-block,.msg-content .diff-block{font-variant-ligatures:normal}
 
 /* ── Code in messages ── */
 .msg-content code{font-family:var(--mono);font-size:.9em}

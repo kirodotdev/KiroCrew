@@ -5030,6 +5030,7 @@
       },
       "displayTab": {
         "change_the_dashboard_font_family_persists_across": "Change the dashboard font family. Persists across sessions.",
+        "custom_font_configure_in_settings": "Custom font — choose the installed font in Settings → Display.",
         "choose_a_color_palette_each_theme_supports_dark": "Choose a color palette. Each theme supports dark and light modes. Custom themes are stored in ~/.kiro/crew/themes/.",
         "mono": "Mono",
         "native_window_zoom_tip": "Native window zoom, the same setting as {{mod}}+ / {{mod}}−. Click the percentage to reset to 100%.",

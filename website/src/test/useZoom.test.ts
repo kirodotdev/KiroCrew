@@ -204,6 +204,16 @@ test('cycleFamily rotates sans → mono → system → opendyslexic → sans', (
   expect(result.current.family).toBe('sans')
 })
 
+test('cycleFamily excludes custom: cycling from custom exits to sans', () => {
+  const { result } = renderHook(() => useZoom())
+  act(() => result.current.setFontFamily('custom'))
+  expect(result.current.family).toBe('custom')
+  // 'custom' is not a cycle stop (it needs the picker), so the keyboard cycle
+  // falls through to the first preset rather than dead-ending on a Sans look-alike.
+  act(() => result.current.cycleFamily())
+  expect(result.current.family).toBe('sans')
+})
+
 // ── OpenDyslexic (accessibility built-in) ──
 // A dedicated Font Family option that ships bundled proportional + monospace
 // faces (see index.css @font-face blocks). Distinct from Sans/Mono/System in two

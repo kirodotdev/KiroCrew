@@ -5,7 +5,12 @@ import { resolveCustomFontFamily, CUSTOM_FONT_STORAGE_KEY, CUSTOM_FONT_LIGATURES
 
 export type FontFamily = 'sans' | 'mono' | 'system' | 'opendyslexic' | 'custom'
 
-const FAMILIES: FontFamily[] = ['sans', 'mono', 'system', 'opendyslexic', 'custom']
+// The keyboard font-cycle rotates only the four presets — 'custom' is excluded
+// on purpose: it is meaningless without a font chosen in the picker (it would
+// land on a Sans look-alike dead stop), mirroring the DisplayTab quick-toggle
+// filter. Cycling while family === 'custom' falls through to 'sans' (indexOf
+// returns -1), a sensible exit back to the presets.
+const FAMILIES: Exclude<FontFamily, 'custom'>[] = ['sans', 'mono', 'system', 'opendyslexic']
 // The two theme-able options read a role token an installed pack can fill, so a
 // pack's proportional face reaches Sans and its monospace face reaches Mono. An
 // unfilled token falls through to Kiro Crew's own stack, which is what leaves a
@@ -201,7 +206,8 @@ export function useZoom() {
   }, [])
 
   const cycleFamily = useCallback(() => {
-    const next = FAMILIES[(FAMILIES.indexOf(family) + 1) % FAMILIES.length]
+    // 'custom' is not in FAMILIES → indexOf returns -1 → next falls to FAMILIES[0] ('sans').
+    const next = FAMILIES[(FAMILIES.indexOf(family as Exclude<FontFamily, 'custom'>) + 1) % FAMILIES.length]
     safeSetItem('mc-font-family', next)
     setFamily(next)
   }, [family])

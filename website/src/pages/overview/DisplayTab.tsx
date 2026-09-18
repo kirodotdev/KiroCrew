@@ -1,4 +1,5 @@
 import { Monitor, Sun, Moon, Pencil } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import { useTheme } from '../../hooks/useTheme'
 import { Card, CardTitle } from '../../components/ui'
@@ -34,6 +35,7 @@ export default function DisplayTab() {
   const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily } = useZoomCtx()
   const { preference, setTheme, colorTheme, setColorTheme, allThemes } = useTheme()
   const editor = useThemeEditor()
+  const navigate = useNavigate()
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
 
   return (
@@ -58,6 +60,19 @@ export default function DisplayTab() {
               {i18nT(FONT_FAMILY_LABEL_KEY[f])}
             </button>
           ))}
+          {/* When Custom is the active family, show it as a selected, non-toggling
+              chip so the setting never reads as unset here (a habitual click on a
+              preset would otherwise silently leave Custom). The picker itself
+              lives in Settings → Display, so this chip routes there instead. */}
+          {family === 'custom' && (
+            <button
+              className={BTN + ' ' + active(true)}
+              onClick={() => navigate('/settings/display')}
+              title={i18nT('pages.overview.displayTab.custom_font_configure_in_settings')}
+            >
+              {i18nT(FONT_FAMILY_LABEL_KEY.custom)}
+            </button>
+          )}
         </div>
       </Card>
       <Card>
