@@ -786,7 +786,8 @@ class TestSlotContextInject:
         entry = slot._pending_context[0]
         assert entry["content"] == "note"
         assert entry["source"] == "watch"
-        assert entry["ephemeral"] is False
+        # An EXPLICIT false opts in to durability, so no flag is stored on the entry.
+        assert "ephemeral" not in entry
         assert entry["maxAge"] == 300
         assert isinstance(entry["injectedAt"], float)
 
