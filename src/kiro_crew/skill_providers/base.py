@@ -125,6 +125,27 @@ class SkillProvider(Protocol):
         """
         ...
 
+    # ---- optional methods ------------------------------------------------
+    #
+    # Neither is part of the structural check: the discover handler probes for
+    # them with ``getattr``/``hasattr``, so a provider that omits both is a
+    # complete provider. They are documented here because a provider author
+    # cannot otherwise discover that they exist.
+    #
+    # ``fetch_skill_bundle(skill_id) -> list[tuple[str, str]] | None``
+    #     Every file of the skill as ``(relative_path, content)``, not just the
+    #     instruction file. Preferred by both preview and install when present;
+    #     ``fetch_skill_content`` is the single-file fallback.
+    #
+    # ``install_slug(skill_id) -> str``
+    #     The provider's own local key for a skill, used when the default
+    #     ``_slugify(skill_id)`` is not injective over that provider's ids --
+    #     slugify lowercases and folds ``/``, ``@`` and ``:`` onto ``-``, so two
+    #     distinct case-sensitive addresses can otherwise share one key and one
+    #     install overwrites the other skill. The returned value is still
+    #     slugified and still validated as a single safe path segment, so this
+    #     names a key, it does not widen what a key may be.
+
 
 class ProviderRegistry:
     """Registry of skill providers for fan-out search.

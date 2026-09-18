@@ -3,21 +3,21 @@
 skills.sh exposes a public REST API (no auth for reads) that returns
 skill metadata including GitHub repo URLs. Installation reads the skill's
 files out of the registry's own download bundle (``fetch_skill_bundle``).
+
+The SSRF screen, the redirect allowlist and the bounded body read all live in
+``_http`` and are shared with every other provider; the names re-exported below
+are thin bindings of this provider's own allowlist and audit label onto that one
+implementation.
 """
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
-import json
 import logging
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.security import canonicalize_ip
+from kiro_crew.skill_providers import _http
 from kiro_crew.skill_providers.base import SkillSearchResult
 
 logger = logging.getLogger(__name__)
@@ -25,23 +25,17 @@ logger = logging.getLogger(__name__)
 # skills.sh API base (no trailing slash)
 _API_BASE = "https://skills.sh/api"
 
-# Timeout for HTTP requests (seconds)
-_TIMEOUT = 5
+# Timeout for HTTP requests (seconds) — see ``_http.TIMEOUT_SECS``.
+_TIMEOUT = _http.TIMEOUT_SECS
 
 # User-Agent for our requests (good citizenship)
-_USER_AGENT = "KiroCrew/1.0 (skill-discovery)"
+_USER_AGENT = _http.USER_AGENT
 
-# Maximum response body size (1 MiB) — ``_read_bounded`` accumulates the body
-# in memory, so this bounds the bytes one fetch RETAINS. It is not a peak-memory
-# figure: joining the chunks and decoding them each allocate another copy.
-# It is also what bounds DISK: a download response carries the install bundle,
-# and the discover handler writes those files out under a looser 5 MiB guard of
-# its own, so this ceiling is the one that binds first. Raise it only having
-# accounted for both. SKILL.md files are typically <50 KB.
-_MAX_RESPONSE_BYTES = 1 * 1024 * 1024
+# Maximum response body size (1 MiB). Rationale in ``_http.MAX_RESPONSE_BYTES``.
+_MAX_RESPONSE_BYTES = _http.MAX_RESPONSE_BYTES
 
 # Per-chunk read size while draining a response body (64 KiB).
-_HTTP_READ_CHUNK_BYTES = 64 * 1024
+_HTTP_READ_CHUNK_BYTES = _http.READ_CHUNK_BYTES
 
 
 def _s(v: Any) -> str:
@@ -234,126 +228,42 @@ class SkillsShProvider:
 
 
 async def _fetch_json(url: str) -> Any | None:
-    """Fetch JSON from a URL. Returns None on any failure."""
-    try:
-        return await asyncio.get_running_loop().run_in_executor(None, _sync_fetch_json, url)
-    except Exception:
-        logger.debug("Failed to fetch JSON from %s", url, exc_info=True)
-        return None
+    """Fetch JSON from a URL. Returns None on any failure.
+
+    Calls the module-global ``_sync_fetch_json`` so a test may patch this
+    provider's fetch without reaching into ``_http``.
+    """
+    return await _http.run_off_loop(lambda: _sync_fetch_json(url))
 
 
 def _sync_fetch_json(url: str) -> Any | None:
-    """Synchronous JSON fetch (for run_in_executor)."""
-    # Pre-connect SSRF check on the initial URL
-    if _is_internal_url(url):
-        return None
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        resp = _open_no_internal_redirect(req)
-        if resp is None:
-            return None
-        if resp.status != 200:
-            resp.close()
-            return None
-        data = _read_bounded(resp, _MAX_RESPONSE_BYTES)
-        resp.close()
-        if data is None:
-            return None
-        return json.loads(data.decode("utf-8"))
-    except (urllib.error.URLError, json.JSONDecodeError, OSError):
-        return None
+    """Synchronous JSON fetch (for the executor), bounded and SSRF-screened."""
+    return _http.sync_fetch_json(
+        url,
+        allowed_hosts=_ALLOWED_HOSTS,
+        internal_check=_is_internal_url,
+        headers={"User-Agent": _USER_AGENT},
+        max_bytes=_MAX_RESPONSE_BYTES,
+    )
 
 
 def _audit_ssrf_blocked(url: str, host: str, canonical_host: str) -> None:
-    """Emit a SEL audit event for a blocked SSRF-to-internal-IP attempt.
+    """Emit a SEL audit event for a blocked SSRF-to-internal-IP attempt here.
 
-    Best-effort: a security event log failure must never turn the SSRF *defense*
-    into a crash, so every error is swallowed. Imported lazily to avoid a
-    module-load cycle (sel -> ... -> skill_providers).
+    A separate function rather than a direct ``_http.audit_ssrf_blocked``
+    reference so this provider's audit label is fixed in one place and so a test
+    can observe the guard firing by patching this name.
     """
-    try:
-        from kiro_crew.sel import sel  # circular import: sel -> ... -> skill_providers
-
-        detail = host if host == canonical_host else f"{host} -> {canonical_host}"
-        sel().log_api_access(
-            caller="skillsh",
-            operation="ssrf_blocked",
-            outcome="blocked",
-            source="skill_provider",
-            resources=f"{detail} ({url[:120]})",
-        )
-    except Exception:  # noqa: BLE001 — auditing must never break the guard
-        logger.debug("SEL audit of blocked SSRF failed", exc_info=True)
+    _http.audit_ssrf_blocked("skillsh", url, host, canonical_host)
 
 
 def _is_internal_url(url: str) -> bool:
-    """Return True if the URL resolves to a private/internal/loopback address.
+    """This provider's binding of the shared internal-address screen.
 
-    Uses urllib.parse + ipaddress module for robust detection that covers:
-    - IPv4 private ranges (10.x, 172.16.x, 192.168.x, 127.x, 169.254.x)
-    - IPv6 loopback (::1), link-local (fe80::), ULA (fd00::)
-    - IPv6-mapped IPv4 (::ffff:127.0.0.1)
-    - Hex/octal/decimal/short-form IP encodings (0x7f000001, 0177.0.0.1,
-      2130706433, 127.1) — normalized via ``canonicalize_ip`` before parsing
-    - localhost hostname
-
-    Called BEFORE AND AFTER redirect resolution to prevent both pre-connect
-    and post-redirect SSRF.
+    Reads ``_audit_ssrf_blocked`` from the module globals at call time, so
+    patching that name observes the guard.
     """
-    try:
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname  # lowercased, brackets stripped for IPv6
-        if not host:
-            return True  # no host = suspicious, block
-
-        # Block "localhost" explicitly (covers DNS that resolves to 127.0.0.1)
-        if host == "localhost":
-            return True
-
-        # Normalize alternate IPv4 encodings the OS resolver / libc inet_aton
-        # accept but ipaddress.ip_address() rejects — hex (0x7f000001), octal
-        # (0177.0.0.1), 32-bit decimal (2130706433), and short forms (127.1).
-        # Without this, ip_address() raises ValueError on those, we fall through
-        # to the hostname branch, and a redirect to e.g. http://2852039166/ (==
-        # 169.254.169.254, the cloud instance metadata endpoint) is treated as
-        # "not internal" — an SSRF-to-metadata credential-read bypass.
-        # canonicalize_ip (security.py) is the same hardened resolver used by the
-        # bash-command metadata gate; it returns the dotted-quad for any encoding,
-        # or the input unchanged for a real hostname.
-        canonical_host = canonicalize_ip(host)
-
-        # Try to parse as an IP address directly (now covers hex/octal/decimal/
-        # short forms via canonicalize_ip, plus IPv6 and IPv4-mapped IPv6).
-        try:
-            ip = ipaddress.ip_address(canonical_host)
-            internal = (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip.is_reserved
-                or ip.is_multicast
-                or ip.is_unspecified
-            )
-            if internal:
-                # A URL naming an internal IP literal is a genuine SSRF attempt
-                # (a legitimate skills.sh/github fetch never targets one). Emit a
-                # SEL audit event so blocked attempts are visible to audit tooling
-                # — especially the metadata-via-encoded-IP redirect vector this
-                # guard closes. canonical_host may differ from host (e.g.
-                # 0xa9fea9fe -> 169.254.169.254), so log both.
-                _audit_ssrf_blocked(url, host, canonical_host)
-            return internal
-        except ValueError:
-            pass  # not a literal IP — it's a hostname
-
-        # For hostnames: we cannot resolve DNS here (blocking call, and DNS
-        # rebinding would defeat it anyway). Non-IP hostnames pass THIS check;
-        # the redirect handler below additionally enforces _ALLOWED_HOSTS, so a
-        # redirect to an arbitrary DNS name that resolves to a private address
-        # is blocked by allowlist rather than by resolution.
-        return False
-    except Exception:
-        return True  # parse failure = suspicious, block
+    return _http.is_internal_url(url, audit=_audit_ssrf_blocked)
 
 
 # Hosts a fetch may be REDIRECTED to; the initial URL is checked by
@@ -379,60 +289,17 @@ _ALLOWED_HOSTS = frozenset(
 
 
 def _is_allowed_host(url: str) -> bool:
-    """True iff *url* is HTTPS on an explicitly allowlisted host."""
-    try:
-        parsed = urllib.parse.urlparse(url)
-        return parsed.scheme == "https" and (parsed.hostname or "") in _ALLOWED_HOSTS
-    except Exception:
-        return False
+    """True iff *url* is HTTPS on a host this provider may be redirected to."""
+    return _http.is_allowed_host(url, _ALLOWED_HOSTS)
 
 
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect handler that only follows redirects to allowlisted HTTPS hosts.
-
-    Prevents SSRF via 30x chains two ways: internal/private IP literals are
-    rejected (_is_internal_url), and — because a hostname can't be safely
-    resolved here (DNS rebinding) — any host outside _ALLOWED_HOSTS is
-    rejected outright. Checks run BEFORE following, so no TCP connection is
-    ever made to a disallowed target.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if _is_internal_url(newurl) or not _is_allowed_host(newurl):
-            raise urllib.error.URLError(
-                f"Blocked redirect to disallowed URL: {newurl[:80]}"
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _open_no_internal_redirect(req: urllib.request.Request):
-    """Open a URL request using a redirect handler that blocks internal IPs.
-
-    Returns the response object, or None if blocked/failed.
-    """
-    opener = urllib.request.build_opener(_SafeRedirectHandler)
-    try:
-        return opener.open(req, timeout=_TIMEOUT)
-    except urllib.error.URLError:
-        return None
+def _open_no_internal_redirect(req):  # type: ignore[no-untyped-def]
+    """Open a request with redirects held to ``_ALLOWED_HOSTS``. None if blocked."""
+    return _http.open_guarded(
+        req, allowed_hosts=_ALLOWED_HOSTS, internal_check=_is_internal_url
+    )
 
 
 def _read_bounded(resp, max_bytes: int) -> bytes | None:
-    """Read response body up to max_bytes. Returns None if exceeded.
-
-    The check is against the RUNNING total, so an oversized body is abandoned
-    mid-stream rather than accumulated whole — *max_bytes* bounds the bytes
-    retained here, not just a verdict on the finished body.
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = resp.read(_HTTP_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            logger.warning("Response exceeded %d bytes, aborting read", max_bytes)
-            return None
-        chunks.append(chunk)
-    return b"".join(chunks)
+    """Read a response body up to *max_bytes*. None if exceeded."""
+    return _http.read_bounded(resp, max_bytes)

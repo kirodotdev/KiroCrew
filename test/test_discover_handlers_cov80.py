@@ -159,17 +159,19 @@ def _body(response: web.StreamResponse) -> Any:
 # --- registry singleton ------------------------------------------------------
 
 
-def test_build_registry_registers_skillsh() -> None:
+def test_build_registry_registers_the_builtin_providers() -> None:
     reg = h._build_registry()
-    assert reg.provider_names == ["skillsh"]
+    # Registration order is the catalog order the Discover panel fans out in.
+    assert reg.provider_names == ["skillsh", "github"]
     assert reg.get("skillsh") is not None
+    assert reg.get("github") is not None
 
 
 def test_get_registry_is_lazily_built_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(h, "_registry", None)
     first = h._get_registry()
     assert first is h._get_registry()
-    assert first.provider_names == ["skillsh"]
+    assert first.provider_names == ["skillsh", "github"]
 
 
 def test_slugify_of_empty_string_is_empty() -> None:

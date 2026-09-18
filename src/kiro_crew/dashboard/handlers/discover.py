@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 # Slug validation for skill installation (filesystem safety).
 _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
+# The GitHub provider's identity, spelled out so the discovery policy can be
+# consulted BEFORE the module is imported (see ``_build_registry``). Pinned against
+# the provider's own ``name``/``api_base`` by a test, so this cannot drift into
+# gating one identity while registering another.
+_GITHUB_NAME = "github"
+_GITHUB_API_BASE = "https://api.github.com"
+
 
 # Credential-bearing URL query/fragment parameters. ``redact_credentials`` matches
 # credential SHAPES (AKIA…, xoxb-…, PEM headers) and ``redact_exfiltration_urls``
@@ -100,6 +107,25 @@ def _build_registry() -> ProviderRegistry:
     skillsh = SkillsShProvider(SkillsShConfig(enabled=True))
     if admits_registry("skill", skillsh.name, skillsh.api_base):
         registry.register(skillsh)
+
+    # GitHub repositories -- the user's own skills, addressed as
+    # ``owner/repo[@ref][:path]`` rather than searched, and imported pinned to the
+    # resolved commit. It is a built-in for the same reason skills.sh is: a provider
+    # registered here inherits the human-only install gate, the bundle writer's
+    # containment checks and the discovery policy, none of which an independent
+    # import path would.
+    #
+    # Imported INSIDE the policy check, not at module scope: a deployment whose
+    # discovery policy refuses GitHub then never imports the module at all, so an
+    # optional subsystem costs a refused deployment nothing on the gateway's import
+    # path. The identity handed to the gate is spelled here rather than read off an
+    # instance, because reading it would require the import this defers;
+    # ``test_the_gated_identity_matches_the_provider`` pins both literals against
+    # the provider's own values so they cannot drift.
+    if admits_registry("skill", _GITHUB_NAME, _GITHUB_API_BASE):
+        from kiro_crew.skill_providers.github import GitHubRepoProvider
+
+        registry.register(GitHubRepoProvider(), name=_GITHUB_NAME)
 
     # Edition-contributed providers (CPP seam). Each passes through the same
     # discovery-policy gate as the built-in provider, so a managed allowlist
@@ -226,7 +252,9 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         # Check if a skill with a matching provider/slug key is already installed.
         # Use exact key match only — no suffix matching to avoid false positives
         # (e.g. "my-team/docker" matching a remote "docker" skill).
-        slug = _slugify(r.id or r.name)
+        # Same derivation the install path uses, or the badge would point at a
+        # different key than installing would create.
+        slug = _install_slug(registry.get(provider_id), r.id, r.id or r.name)
         expected_key = f"{provider_id}/{slug}" if slug and provider_id else ""
         installed = bool(r.installed or (expected_key and expected_key in local_keys))
         # All provider-sourced fields are attacker-controllable -- redact
@@ -352,8 +380,13 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             {"error": f"Provider '{provider_name}' is not available"}, status=404
         )
 
-    # Determine the local slug for the installed skill.
-    slug = _slugify(custom_name or skill_id)
+    # Determine the local slug for the installed skill. An explicit user-supplied
+    # name still wins: the provider names the DEFAULT key, not the user's choice.
+    slug = (
+        _slugify(custom_name)
+        if custom_name
+        else _install_slug(provider, skill_id, skill_id)
+    )
     if not slug or not _SAFE_SLUG_RE.match(slug):
         return web.json_response(
             {"error": f"Cannot derive safe slug from '{skill_id}'"}, status=400
@@ -591,6 +624,42 @@ def _slugify(raw: str) -> str:
         return ""
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw.strip()).strip("-").lower()[:64].rstrip("-")
     return slug
+
+
+def _install_slug(provider: SkillProvider | None, skill_id: str, fallback: str) -> str:
+    """The local slug for *skill_id*, letting the provider name it.
+
+    ``_slugify`` lowercases and folds ``/``, ``@`` and ``:`` all onto ``-``, so it
+    is not injective over a provider whose ids are case-sensitive paths: the
+    distinct GitHub addresses ``Foo/bar`` and ``foo-bar`` produce ONE key, where
+    installing the second deletes the first. A provider that knows its own
+    identity space can supply a collision-resistant key instead.
+
+    Optional, like ``fetch_skill_bundle``: a provider without the method keeps the
+    derived-from-id behaviour unchanged. Whatever comes back is still run through
+    ``_slugify`` here and still has to satisfy ``_SAFE_SLUG_RE`` at the call site,
+    so a provider cannot widen what is allowed to become a path segment. A missing,
+    non-string, empty or raising implementation falls back to *fallback* rather than
+    failing the request -- provider code must not be able to break install, and that
+    includes a raising DESCRIPTOR, which fails on attribute read rather than on call.
+    """
+    supplied = ""
+    try:
+        # The getattr is INSIDE the try deliberately: reading an attribute executes
+        # a descriptor, so a provider exposing ``install_slug`` as a property that
+        # raises would take the whole discover response down here -- before the
+        # guard meant to contain it ever ran. ``_build_registry`` documents the same
+        # hazard for the runtime-checkable protocol check; this is the same rule.
+        method = getattr(provider, "install_slug", None)
+        if callable(method):
+            raw = method(skill_id)
+            supplied = raw if isinstance(raw, str) else ""
+    except Exception:
+        logger.warning(
+            "Provider install_slug failed; deriving the key from the id",
+            exc_info=True,
+        )
+    return _slugify(supplied or fallback)
 
 
 def _display_name(registry: ProviderRegistry, provider_name: str) -> str:

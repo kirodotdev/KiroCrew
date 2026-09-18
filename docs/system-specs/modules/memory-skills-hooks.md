@@ -3813,12 +3813,70 @@ delivery; that call is in-memory and safe inline. A cheap `SKILL.md` substring
 gate runs before the offload, so a tool call touching no skill costs a substring
 scan; observer failures in either phase are logged and swallowed.
 
+**Provider registry — two built-ins.** `_build_registry()` registers `skillsh`
+(the public catalog) and `github` (a repository *addressed* rather than searched),
+each through the same `admits_registry("skill", name, api_base)` policy gate, with
+edition-contributed providers appended after. The network layer is one
+implementation: `skill_providers/_http.py` owns the internal-address screen, the
+per-provider redirect allowlist and the bounded body read, and each provider binds
+its own allowlist and SEL audit label onto it. A provider carrying its own copy of
+those checks would drift, and the drift would be found as a bypass — so a new
+provider inherits the boundary instead of restating it.
+
+The `github` provider is an **import, not a subscription**, and that posture is
+what makes it safe without a review step: `owner/repo[@ref][:path]` resolves the
+ref to a commit ONCE, every discovered row's id carries that FULL commit (so the
+preview and the install fetch what discovery showed rather than re-resolving a
+branch that moved; an abbreviated ref would be re-resolved, and a branch whose
+name is hex can shadow a 7-character prefix), the bundle is read from
+`raw.githubusercontent.com` pinned to the full commit, and
+`.skill-import-source.json` records it beside the installed files. Nothing reads
+that record back, so upstream cannot change an imported skill; re-importing is the
+update path and goes through the same human-only gate.
+
+**A bundle is complete or it is refused**, which is one rule covering every way a
+file could be left out: a failed fetch, a body that is not UTF-8, a per-file or
+running-total size ceiling, a file count over the ceiling, two names that collide
+where case is ignored, a truncated git-tree response, an install key that the
+handler's 64-character `_slugify` would truncate onto another skill's key, and a
+directory that merely *contains* skills rather than being one. Each refusal logs
+its reason. The alternative — writing the subset — reports success for a skill
+missing a file its own instructions reference, so it fails later, elsewhere, as a
+puzzle. Paths go through ONE allowlist -- a segment matches
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, depth at most 4, no two paths equal under
+`casefold` -- which is narrower than any filesystem and narrower than the bundle
+writer's own `".." in rel_path` guard. An allowlist rather than a refusal list
+because a refusal list is something review can keep extending: successive rounds
+named Windows-illegal characters, control characters, trailing dots and spaces,
+byte-versus-character limits, Unicode normalisation, reserved device names and
+component length, each a separate clause. Stating what is permitted ends that.
+Three rules survive beside it, for the cases the shape permits: `..` anywhere, a
+trailing dot, and a reserved device stem. The cost is real and accepted -- a
+repository carrying `my file.md` is refused rather than imported -- and it buys the
+property that an import lands complete or names the file it cannot take.
+`TestWriterCompatibility` pins both directions. `fetch_skill_bundle` can only answer `None`, so the
+reason currently reaches the log rather than the user — an error channel on the
+`SkillProvider` Protocol is follow-up work. Branch tracking / re-sync is deliberately out of scope (#746 covers the
+adjacent design). Requests are unauthenticated (60/hour/IP), so private
+repositories are not reachable. An installed skill's key comes from the provider, not from its id:
+`_slugify` lowercases and folds `/`, `@` and `:` all onto `-`, so it is not
+injective over these ids and `foo-bar` would share a key with `foo/bar`. The
+optional `install_slug` hook (documented on the Protocol in `base.py`, probed by
+`_install_slug` in the handler) lets a provider supply
+`<label>-<12 hex of sha256(owner/repo:path)>` instead. The digest covers the
+case-sensitive identity and excludes the ref, so re-importing at a newer commit
+lands on the same key and hits the existing 409 -- an update, not a second copy.
+The hook is additive: a provider that omits it, including `skillsh`, keeps the
+derived-from-id key exactly, and whatever a provider returns is still slugified
+and still gated by `_SAFE_SLUG_RE`, so it names a key without widening what a key
+may be.
+
 **Registry discovery — `skill_discover` / `skill_fetch` MCP tools (`kirocrew-core`).**
 The agent-facing twins of the dashboard's Skills → Discover panel, covering the
 skills that are *not* on disk. Both are read-only and reach the existing
-`skill_providers/` registry (skills.sh today) through the gateway rather than the
-network directly, so provider timeouts, the 1 MiB response cap, the SSRF
-denylist, and `_redact_external` all still apply:
+`skill_providers/` registry through the gateway rather than the network directly,
+so provider timeouts, the 1 MiB response cap, the SSRF denylist, and
+`_redact_external` all still apply:
 
 | Tool | Endpoint | Returns |
 |------|----------|---------|

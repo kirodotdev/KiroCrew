@@ -76,7 +76,6 @@ src/kiro_crew/knowledge/readers.py 61.7   # 74/120
 src/kiro_crew/mcp_gateway/manager.py 28.7   # 96/335
 src/kiro_crew/mcp_gateway/stub.py 66.6   # 353/530
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
-src/kiro_crew/skill_providers/skillsh.py 64.0   # 137/214
 src/kiro_crew/slack/allowlist.py 57.1   # 68/119
 src/kiro_crew/slack/client.py 67.2   # 246/366
 src/kiro_crew/suggestions.py 18.7   # 31/166
