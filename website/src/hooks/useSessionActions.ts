@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
@@ -10,6 +10,9 @@ import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
+import { forkFailureNoticeOffsite } from '../utils/forkFailure'
+import type { ForkFailureNotice } from '../utils/forkFailure'
+import { errMessage } from '../utils/thunkError'
 import type { ChatSlot } from '../types'
 import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
 
@@ -68,6 +71,12 @@ function setSlotPinInOrder(key: string, pinned: boolean) {
 export interface SessionActions {
   /** Fork/duplicate a session. */
   duplicate: (slotKey: string) => void
+  /** A refused duplicate: the localized line PLUS the structured report, which the
+   * caller passes to `ErrorNotice` so the endpoint/status/code survive the
+   * localization. This hook deliberately raises no dialog of its own. */
+  forkError: (ForkFailureNotice & { slotKey: string }) | null
+  /** Dismiss the refusal above. */
+  clearForkError: () => void
   /** Toggle read/unread. */
   toggleRead: (slotKey: string) => void
   /** Toggle pinned. */
@@ -203,15 +212,37 @@ export function useSessionActions(mode?: string): SessionActions {
     }
   }, [dispatch, queryClient])
 
+  // Surfaced by the caller through ErrorNotice, not a native dialog: one refusal
+  // rendered three ways teaches three different recoveries for one cause.
+  const [forkError, setForkError] = useState<(ForkFailureNotice & { slotKey: string }) | null>(
+    null,
+  )
   const forkMutation = useMutation({
     mutationFn: (slot: string) => api.forkChatSlot(slot),
     onSuccess: (data) => {
       if (data?.ok && data.key) {
+        // A refusal describes a condition that no longer holds: leaving it under the row
+        // contradicts the tab this success just opened.
+        setForkError(null)
         queryClient.invalidateQueries({ queryKey: ['slots'] })
         dispatch(switchSlot(data.key))
       }
     },
+    // Same reasoning as the reload above: a whole-session fork can now REFUSE
+    // (over-capacity), and a spinner that simply stops reads as nothing happening.
+    onError: (err, slotKey) => {
+      const notice = forkFailureNoticeOffsite(
+        err instanceof ApiError ? err.body : '',
+        errMessage(err),
+        // Compact and named: the panel is the narrowest surface, and the notice renders at
+        // its root rather than beside the pressed row, so the copy must say which session.
+        true,
+        store.getState().dashboard.slots.find(s => s.key === slotKey)?.title || slotKey,
+      )
+      setForkError({ ...notice, slotKey })
+    },
   })
+  const clearForkError = useCallback(() => setForkError(null), [])
 
   const pinMutation = useMutation({
     mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => setSlotPinInOrder(key, pinned),
@@ -338,5 +369,5 @@ export function useSessionActions(mode?: string): SessionActions {
     if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
 }
