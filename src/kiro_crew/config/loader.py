@@ -4854,6 +4854,15 @@ class KiroCrewConfig:
         if isinstance(_gw_section, dict):
             _gw_section["stub_servers"] = list(self.mcp_gateway.stub_roster)
             _gw_section.pop("_stub_roster", None)
+        # ``telegram.accounts`` is deprecated and inert. It is kept on disk ONLY
+        # so an operator's named-account tokens survive the next save(); an
+        # empty map protects nothing, and writing it back materializes a
+        # deprecated key into every config Kiro Crew has ever saved -- which
+        # validation then announces as a deprecation on every launch, to an
+        # operator who never wrote it. Emit the map only when it holds accounts.
+        _tg_section = d.get("telegram")
+        if isinstance(_tg_section, dict) and not _tg_section.get("accounts"):
+            _tg_section.pop("accounts", None)
         # Re-emit unknown/edition-contributed top-level sections captured at
         # load() so save()/PATCH does not silently drop them. A known section
         # never appears here (only keys absent from d are restored), so this can

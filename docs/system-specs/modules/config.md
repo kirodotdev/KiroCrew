@@ -852,6 +852,31 @@ re-emitted with `asdict` and so lose unmodelled keys the same way a section
 does. `hooks` needs neither: it is emitted raw and round-trips whole. A record
 deleted in memory stays deleted — restore fills into existing records only.
 
+A top-level key the core does not model is captured into `_extra_sections` and
+round-tripped, and by default also reported as `Config: unrecognized top-level
+keys`. Two exclusions from that warning are named in code:
+
+- `CONFIG_RESERVED_TOP_KEYS` in `resolution.py` (`meta`, retired keys) — stamped
+  by `save()` itself or written by an older build; never parsed, never
+  captured, dropped on the next save, never warned about.
+- `validation._APP_OWNED_TOP_KEYS` (`dev_fleet`) — a section a builtin app reads
+  from the file directly (`dev_fleet.repo_path`, prescribed by the Dev Fleet
+  "no checkout found" banner). Captured and round-tripped like any unknown
+  section, and NOT reported as unrecognized: the product told the operator to
+  write it. Private to the warning that is its only consumer; a second member
+  is the point at which this becomes an app-declared registration.
+
+A deprecated field is announced only when it holds something: `null` and an
+empty map, list or string carry nothing to migrate, so `validation` stays
+silent on them (`False` and `0` are chosen values and are still announced). A
+schema entry that is marked `deprecated=True` therefore accepts that an empty
+value of its type gets no notice; a field for which `""` or `[]` is itself a
+meaningful choice must not rely on the deprecation notice to surface that
+value. `to_dict()` also omits `telegram.accounts` when the map is empty: the
+field exists only so an operator's named-account tokens survive a save, and
+writing back an empty default materialized a deprecated key into every config,
+which every launch then warned about.
+
 Both capture from the BASE view of the document, not the merged one. When
 `config.local.json` shadows an unknown key that `config.json` also holds, a
 capture of the merged value made `save()` emit the overlay's leaf, which the
