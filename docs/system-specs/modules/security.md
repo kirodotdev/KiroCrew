@@ -891,7 +891,9 @@ First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`
 - `aws sts assume-role` — cross-account access
 - AWS CLI commands (`describe-*`, `list-*`, `get-*`, `filter-*`, `s3 cp`, `s3 ls`, etc.) — work via `credential_process`
 
-**Destructive operation blocks**: `rm -rf`, `git push --force`, `aws * delete-*`, `aws ec2 terminate-instances`, `cdk destroy`, `terraform destroy`, etc.
+**Destructive operation blocks**: `rm -rf`, `git push --force`, `aws * delete-*`, `aws ec2 terminate-instances`,
+`cdk destroy`, `terraform destroy`, `dd` output to a raw disk device (`of=/dev/…`, with or without `if=` — `dd`
+reads stdin by default, so the `if=`-keyed row alone left the `of=`-only spelling allowed), etc.
 
 **Self-protection global options**: the `restart`, `update`, `cloud` lifecycle, and `gateway restart` self-management commands are enforced by the argv-structural floor alone (`_matches_self_subcommand`), which reads the CLI's leading operand words after any interposed top-level options and handles shell quoting for both flags and subcommands. The regex rows that once sat beside these floors (`.*kiro.?crew(?:<flag-run>)*\s+restart.*` and siblings) were deleted, not narrowed: each opened with an unbounded any-run before the product name, so the name in a worktree path plus the verb word anywhere later matched (`ls ~/kirocrew-wt/restart.log`), and a row that fires on the product's name appearing anywhere adds nothing to a predicate that requires the product to be the argv's own program. The floor covers the repeatable verbosity spellings (`-v`, `-vv`, `--verbose`) and `--no-jail`; adding or quoting a valid global option or subcommand must not turn a denied self-management command into an allowed one. The one self-management subcommand row that KEEPS a regex is `self-protection-cron-adopt`: it has no floor twin, and the ownership grab it refuses is real.
 

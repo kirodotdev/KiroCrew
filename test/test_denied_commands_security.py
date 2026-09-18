@@ -97,7 +97,9 @@ class TestCatalog:
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
-        assert len(BUILTIN_DENIED_RULES) == 112
+        # Then: the dd output-to-device row was added (112 -> 113) -- dd reads
+        # stdin by default, so an of=/dev/... target destroys data with no if=.
+        assert len(BUILTIN_DENIED_RULES) == 113
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -260,6 +262,51 @@ class TestCatalog:
     def test_pinned_builtin_command_ids_empty_in_standalone(self):
         # Fail-soft: standalone/ungoverned host has no governance pins.
         assert pinned_builtin_command_ids() == set()
+
+
+class TestDdOutputToDeviceDenied:
+    """``dd of=/dev/...`` with no ``if=`` must deny: dd reads stdin by default.
+
+    The ``local-destructive-dd-if`` row only fires when an ``if=`` operand is
+    present, so ``dd of=/dev/sda``, ``echo hi | dd of=/dev/sda`` and
+    ``dd </dev/zero of=/dev/sda`` all ran while the catalog claimed dd
+    coverage. ``local-destructive-dd-of-device`` keys on the destructive half
+    (a raw-disk ``of=`` target) instead of the input half. The device set is
+    deliberately narrow -- ``of=/dev/null`` and ``of=disk.img`` stay allowed.
+    """
+
+    DENIED = (
+        "dd of=/dev/sda bs=1M",
+        "dd bs=1M count=10 of=/dev/sda1",
+        "echo hi | dd of=/dev/sda",
+        "dd </dev/zero of=/dev/sda",
+        "dd of=/dev/nvme0n1",
+        "dd of=/dev/mmcblk0",
+        "dd of=/dev/dm-0",
+        "dd of=/dev/disk/by-id/ata-SSD",
+        "sudo dd of=/dev/sda",
+        'dd "of=/dev/sda" bs=1M',
+        "bash -c 'dd of=/dev/sda'",
+        "DD OF=/DEV/SDA",
+    )
+
+    ALLOWED = (
+        "dd of=disk.img bs=1M count=10",
+        "dd of=/dev/null bs=1M",
+        "dd bs=1M of=/dev/stdout",
+        "echo of=/dev/sda",
+        "grep -rn of=/dev/sda src/",
+    )
+
+    def test_of_device_without_if_is_denied(self):
+        for cmd in self.DENIED:
+            reason = is_denied(cmd)
+            assert reason is not None, f"raw-disk dd output allowed: {cmd!r}"
+            assert "of=/dev/" in reason, f"wrong rule decided {cmd!r}: {reason!r}"
+
+    def test_benign_of_targets_stay_allowed(self):
+        for cmd in self.ALLOWED:
+            assert is_denied(cmd) is None, f"benign dd output over-blocked: {cmd!r}"
 
 
 class TestSelfProtectionFlagInterposition:
