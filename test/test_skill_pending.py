@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import os
+import stat
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+import kiro_crew.skills as skills_mod
 from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    return SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    return SkillsLoader(install_builtins=False)
 
 
 def _prov(days_ago: float = 0) -> AutoSkillProvenance:
@@ -52,6 +55,54 @@ def test_staged_candidate_is_not_live_or_triggerable(loader):
     assert [p["slug"] for p in pend] == ["cand-one"]
 
 
+def test_windows_native_identity_keeps_pending_metadata_and_promotion(loader, monkeypatch):
+    """A true native handle identity must not collapse pending APIs to 409/empty."""
+    monkeypatch.setattr(skills_mod.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(skills_mod.pinned_fs, "supports_pinned_tree_walk", lambda: False)
+    identity_checks: list[str] = []
+
+    def native_identity_matches(_fd, path):
+        identity_checks.append(os.fspath(path))
+        return True
+
+    monkeypatch.setattr(
+        skills_mod.platform_compat,
+        "opened_path_identity_matches",
+        native_identity_matches,
+    )
+    # Model Windows CRT fields that disagree even though the native file ID is
+    # authenticated. The opposite native-identity mismatch remains covered by
+    # test_windows_snapshot_path_identity_mismatch_refuses.
+    real_samestat = skills_mod.os.path.samestat
+
+    def stale_file_identity(before, opened):
+        if stat.S_ISREG(before.st_mode) and stat.S_ISREG(opened.st_mode):
+            return False
+        return real_samestat(before, opened)
+
+    monkeypatch.setattr(skills_mod.os.path, "samestat", stale_file_identity)
+
+    assert _stage(loader, "native-identity") == "auto/native-identity"
+    pending = loader.list_pending_skills()
+    assert len(pending) == 1
+    assert pending[0]["slug"] == "native-identity"
+    assert pending[0]["description"] == "desc native-identity"
+    assert pending[0]["triggers"] == "native-identity"
+
+    detail = loader.get_pending_skill("native-identity")
+    assert detail is not None
+    assert detail["meta"]["slug"] == "native-identity"
+    assert "run it" in detail["content"]
+
+    # The move's pre/post name comparison is a separate mutation-boundary
+    # defense, so restore it before exercising the ordinary promotion path.
+    monkeypatch.setattr(skills_mod.os.path, "samestat", real_samestat)
+    assert loader.approve_pending_skill("native-identity") == "auto/native-identity"
+    assert loader.set_pinned("auto/native-identity", True) is True
+    assert "run it" in loader.read_auto_skill_body("auto/native-identity")
+    assert identity_checks
+
+
 def test_new_candidate_kind_defaults_and_no_update_fields(loader):
     """A plainly-staged candidate defaults to kind='new' with no target /
     base_version — the update fields are omitted for backward compatibility."""
@@ -77,13 +128,49 @@ def test_new_candidate_kind_defaults_and_no_update_fields(loader):
 
 def test_get_pending_returns_body_and_scripts(loader):
     _stage(loader, "with-script", scripts=[{"filename": "run.py", "content": "print(1)\n"}])
+    sf = loader._pending_root() / "with-script" / "scripts" / "run.py"
+    sf.write_bytes(b"print(1)\r\n")
     detail = loader.get_pending_skill("with-script")
     assert detail is not None
     assert "run it" in detail["content"]
     assert detail["scripts"] == [{"filename": "run.py", "content": "print(1)\n"}]
+    assert sf.read_bytes() == b"print(1)\r\n"
     # Pending scripts are NOT executable.
     sf = loader._pending_root() / "with-script" / "scripts" / "run.py"
     assert not (os.stat(sf).st_mode & 0o111)
+
+
+def test_pending_detail_uses_one_snapshot_for_metadata_body_and_scripts(loader, monkeypatch):
+    _stage(
+        loader,
+        "detail-snapshot",
+        scripts=[{"filename": "run.py", "content": "print('safe')\n"}],
+    )
+    pending = loader._pending_root() / "detail-snapshot"
+    (pending / "scripts" / "run.py").write_bytes(b"print('safe')\r\n")
+    original_snapshot = loader._skill_tree_snapshot
+    captures = 0
+
+    def capture_then_replace(path):
+        nonlocal captures
+        tree = original_snapshot(path)
+        if Path(path) == pending and captures == 0:
+            captures += 1
+            (pending / "SKILL.md").write_text("## Steps\n\nMUTATED\n", encoding="utf-8")
+            (pending / ".meta.json").write_text(
+                '{"description":"MUTATED","has_scripts":false}', encoding="utf-8"
+            )
+            (pending / "scripts" / "run.py").write_text("print('mutated')\n", encoding="utf-8")
+        return tree
+
+    monkeypatch.setattr(loader, "_skill_tree_snapshot", capture_then_replace)
+    detail = loader.get_pending_skill("detail-snapshot")
+
+    assert captures == 1
+    assert detail is not None
+    assert detail["meta"]["description"] == "desc detail-snapshot"
+    assert "run it" in detail["content"]
+    assert detail["scripts"] == [{"filename": "run.py", "content": "print('safe')\n"}]
 
 
 def test_approve_promotes_and_marks_scripts_executable(loader):
@@ -197,7 +284,7 @@ def test_failed_approval_preserves_meta(loader, monkeypatch):
     _stage(loader, "metakeep")
     meta = loader._pending_root() / "metakeep" / ".meta.json"
     assert meta.exists()
-    monkeypatch.setattr(loader, "_redact_file_in_place", lambda *a, **k: False)
+    monkeypatch.setattr(loader, "_validate_and_redact_snapshot", lambda *a, **k: None)
     assert loader.approve_pending_skill("metakeep") is None
     assert meta.exists()  # bookkeeping not destroyed by the failed approval
     assert not (loader._dir / "auto" / "metakeep").exists()
@@ -211,15 +298,15 @@ def test_redaction_breaking_script_aborts_promotion(loader, monkeypatch):
         "redactbreak",
         scripts=[{"filename": "run.py", "content": "import json\nprint(json.dumps({'a': 1}))\n"}],
     )
-    orig = loader._redact_file_in_place
+    original_redact = loader._redact_text
 
-    def corrupt(fp):
-        if fp.name == "run.py":
-            fp.write_text("def (:\n", encoding="utf-8")  # invalid syntax
-            return True
-        return orig(fp)
+    def corrupt(text):
+        normalized = text.replace("\r\n", "\n") if isinstance(text, str) else text
+        if isinstance(normalized, str) and normalized.startswith("import json\n"):
+            return "def (:\n"
+        return original_redact(text)
 
-    monkeypatch.setattr(loader, "_redact_file_in_place", corrupt)
+    monkeypatch.setattr(loader, "_redact_text", corrupt)
     assert loader.approve_pending_skill("redactbreak") is None
     assert (loader._pending_root() / "redactbreak").is_dir()
     assert not (loader._dir / "auto" / "redactbreak").exists()
@@ -236,34 +323,39 @@ def test_failed_move_restores_meta(loader, monkeypatch):
 
     _stage(loader, "movefail")
     meta = loader._pending_root() / "movefail" / ".meta.json"
-    orig_bytes = meta.read_bytes()
+    normalized = meta.read_bytes().replace(b"\r\n", b"\n")
+    orig_bytes = normalized.replace(b"\n", b"\r\n")
+    meta.write_bytes(orig_bytes)
 
-    def _boom(*a, **k):
-        raise OSError("dest unwritable")
+    real_rename = S.platform_compat.rename_no_replace
 
-    monkeypatch.setattr(S.shutil, "move", _boom)
+    def _boom(src, dest):
+        if Path(dest) == loader._dir / "auto" / "movefail":
+            raise OSError("dest unwritable")
+        return real_rename(src, dest)
+
+    monkeypatch.setattr(S.platform_compat, "rename_no_replace", _boom)
     assert loader.approve_pending_skill("movefail") is None
     assert meta.exists() and meta.read_bytes() == orig_bytes
     assert not (loader._dir / "auto" / "movefail").exists()
 
 
-def test_failed_meta_unlink_aborts_promotion(loader, monkeypatch):
-    """If the pending .meta.json can't be removed, promotion must abort so the
-    raw (possibly secret-bearing) metadata never rides into the live skill dir."""
+def test_publication_excludes_meta_without_mutating_claim_inode(loader, monkeypatch):
+    """Raw metadata never rides live, even when its claim inode is immutable."""
     import pathlib
 
     _stage(loader, "metafail")
-    orig = pathlib.Path.unlink
+    original_unlink = pathlib.Path.unlink
 
-    def guarded(self, *a, **k):
+    def guarded(self, *args, **kwargs):
         if self.name == ".meta.json":
             raise PermissionError("read-only pending dir")
-        return orig(self, *a, **k)
+        return original_unlink(self, *args, **kwargs)
 
     monkeypatch.setattr(pathlib.Path, "unlink", guarded)
-    assert loader.approve_pending_skill("metafail") is None
-    assert (loader._pending_root() / "metafail").is_dir()
-    assert not (loader._dir / "auto" / "metafail").exists()
+    assert loader.approve_pending_skill("metafail") == "auto/metafail"
+    assert not (loader._dir / "auto" / "metafail" / ".meta.json").exists()
+    assert not (loader._pending_root() / "metafail").exists()
 
 
 def test_meta_credential_key_is_redacted(loader):
@@ -283,6 +375,7 @@ def test_meta_credential_key_is_redacted(loader):
 def test_approve_refuses_symlink_in_candidate(loader):
     """A symlinked file in the candidate is refused at approve (TOCTOU guard)."""
     import os
+
     _stage(loader, "linky")
     pdir = loader._pending_root() / "linky"
     (pdir / "scripts").mkdir(parents=True, exist_ok=True)
@@ -309,7 +402,9 @@ def test_approve_revalidates_scripts_written_directly(loader):
     pdir = loader._pending_root() / "sneaky"
     (pdir / "scripts").mkdir(parents=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/sneaky\n---\nbody", encoding="utf-8")
-    (pdir / "scripts" / "wipe.py").write_text("import os\nos.system('rm -rf /')\n", encoding="utf-8")
+    (pdir / "scripts" / "wipe.py").write_text(
+        "import os\nos.system('rm -rf /')\n", encoding="utf-8"
+    )
     # Approve must refuse (dangerous script) and leave it live-free.
     assert loader.approve_pending_skill("sneaky") is None
     assert loader.list_auto_skills() == []
@@ -372,8 +467,10 @@ def test_restage_does_not_clobber_candidate_under_review(loader):
     (approval-integrity guard) AND must NOT silently drop the distinct candidate
     (consolidation advances its offset regardless): the reviewed candidate stays
     immutable and the distinct one is queued under a unique sibling slug."""
-    assert _stage(loader, "race-cand", scripts=[{"filename": "a.py", "content": "print(1)\n"}]) \
+    assert (
+        _stage(loader, "race-cand", scripts=[{"filename": "a.py", "content": "print(1)\n"}])
         == "auto/race-cand"
+    )
     first = loader.get_pending_skill("race-cand")
     # Background consolidation re-detects a DISTINCT skill that slugifies the same.
     second_name = loader.stage_skill_candidate(
@@ -406,10 +503,15 @@ def test_meta_credentials_are_redacted_in_list_and_detail(loader):
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/meta-leak\n---\n# x\n", encoding="utf-8")
     (pdir / ".meta.json").write_text(
-        _json.dumps({
-            "slug": slug, "name": f"auto/{slug}", "source": "crystallize",
-            "description": f"uses token {secret}", "triggers": "t",
-        }),
+        _json.dumps(
+            {
+                "slug": slug,
+                "name": f"auto/{slug}",
+                "source": "crystallize",
+                "description": f"uses token {secret}",
+                "triggers": "t",
+            }
+        ),
         encoding="utf-8",
     )
     listed = [s for s in loader.list_pending_skills() if s["slug"] == slug][0]
@@ -468,11 +570,83 @@ def test_nested_meta_credentials_redacted(loader):
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/nested-meta\n---\n# x\n", encoding="utf-8")
     (pdir / ".meta.json").write_text(
-        _json.dumps({
-            "slug": slug, "name": f"auto/{slug}",
-            "nested": {"note": f"token {secret}"}, "list": [f"x {secret}"],
-        }),
+        _json.dumps(
+            {
+                "slug": slug,
+                "name": f"auto/{slug}",
+                "nested": {"note": f"token {secret}"},
+                "list": [f"x {secret}"],
+            }
+        ),
         encoding="utf-8",
     )
     detail = loader.get_pending_skill(slug)
     assert secret not in _json.dumps(detail["meta"])
+
+
+def test_attended_new_skill_promotes_fresh_validated_inode(loader, monkeypatch):
+    """A post-validation mutation cannot change the published generation."""
+    _stage(loader, "attended-new-inode")
+    pending_body = loader._pending_root() / "attended-new-inode" / "SKILL.md"
+    retained_fd = None if os.name == "nt" else os.open(pending_body, os.O_WRONLY)
+    real_validate = loader._validate_and_redact_snapshot
+
+    def validate_then_mutate_claim(tree, name):
+        result = real_validate(tree, name)
+        if result is not None:
+            claim = next(loader._claims_root().glob("attended-new-inode--*"))
+            if retained_fd is None:
+                # A pre-opened child handle blocks the directory claim itself on
+                # Windows. Mutate the claimed path there; POSIX exercises the
+                # opposite retained-inode mode after rename.
+                (claim / "SKILL.md").write_bytes(b"## Steps\r\n\r\nPATH-TAMPER\r\n")
+            else:
+                os.lseek(retained_fd, 0, os.SEEK_SET)
+                os.ftruncate(retained_fd, 0)
+                os.write(retained_fd, b"## Steps\n\nRETAINED-HANDLE-TAMPER\n")
+        return result
+
+    monkeypatch.setattr(loader, "_validate_and_redact_snapshot", validate_then_mutate_claim)
+    try:
+        assert loader.approve_pending_skill("attended-new-inode") == "auto/attended-new-inode"
+    finally:
+        if retained_fd is not None:
+            os.close(retained_fd)
+
+    live = (loader._dir / "auto" / "attended-new-inode" / "SKILL.md").read_text(encoding="utf-8")
+    assert "run it" in live
+    assert "RETAINED-HANDLE-TAMPER" not in live
+    assert "PATH-TAMPER" not in live
+
+
+def test_new_skill_publish_crash_is_consumed_once_after_restart(loader, monkeypatch):
+    """Whole-tree publication plus prepared journal cannot resurrect the claim."""
+    _stage(
+        loader,
+        "new-publish-crash",
+        scripts=[{"filename": "run.py", "content": "print('new')\n"}],
+    )
+
+    class InjectedCrash(BaseException):
+        pass
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            loader,
+            "_write_completion_marker",
+            lambda _claim: (_ for _ in ()).throw(InjectedCrash()),
+        )
+        with pytest.raises(InjectedCrash):
+            loader.approve_pending_skill("new-publish-crash")
+
+    live = loader._dir / "auto" / "new-publish-crash" / "SKILL.md"
+    assert live.is_file()
+    restarted = loader.__class__(skills_path=loader._dir, install_builtins=False)
+    assert restarted.list_pending_skills() == []
+    assert restarted.list_pending_skills() == []
+    assert live.is_file()
+    live_script = live.parent / "scripts" / "run.py"
+    assert live_script.read_text(encoding="utf-8") == "print('new')\n"
+    if os.name != "nt":
+        assert live_script.stat().st_mode & 0o111
+    assert not restarted._claims_root().exists() or not list(restarted._claims_root().iterdir())

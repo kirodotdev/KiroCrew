@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -16,10 +17,11 @@ _OMITTED = object()
 class _Req:
     """Minimal aiohttp-request stand-in for handler unit tests."""
 
-    def __init__(self, loader, *, match=None, body=_OMITTED, query=None):
+    def __init__(self, loader, *, match=None, body=_OMITTED, query=None, method="GET"):
         state = SimpleNamespace(context_builder=SimpleNamespace(skills=loader))
         self.app = {"state": state}
         self.match_info = match or {}
+        self.method = method
         # `body or {}` would have turned a falsy-but-valid JSON body (`[]`, `0`,
         # `null`) into a dict inside the double — hiding exactly the non-object
         # bodies a handler has to survive. Only an OMITTED body defaults.
@@ -46,8 +48,8 @@ def _owner(monkeypatch):
 
 
 @pytest.fixture()
-def loader(tmp_path):
-    ld = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+def loader():
+    ld = SkillsLoader(install_builtins=False)
     ld.stage_skill_candidate(
         "deploy-helper",
         description="deploy helper",
@@ -74,6 +76,46 @@ async def test_detail(loader):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "attribute", "body"),
+    [("PUT", "update_skill", {"content": "updated"}), ("DELETE", "delete_skill", {})],
+)
+async def test_skill_detail_mutations_run_off_event_loop(
+    loader, monkeypatch, method, attribute, body
+):
+    event_loop_thread = threading.get_ident()
+    mutation_threads: list[int] = []
+
+    def mutate(*args):
+        mutation_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(loader, attribute, mutate)
+    resp = await H.api_skill_detail(
+        _Req(loader, match={"name": "auto/deploy-helper"}, body=body, method=method)
+    )
+
+    assert resp.status == 200
+    assert mutation_threads and mutation_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_skill_create_runs_off_event_loop(loader, monkeypatch):
+    event_loop_thread = threading.get_ident()
+    mutation_threads: list[int] = []
+
+    def create(*args):
+        mutation_threads.append(threading.get_ident())
+        return True
+
+    monkeypatch.setattr(loader, "create_skill", create)
+    resp = await H.api_skills_create(_Req(loader, body={"name": "new-skill", "content": "content"}))
+
+    assert resp.status == 200
+    assert mutation_threads and mutation_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
 async def test_detail_invalid_slug(loader):
     resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "../etc"}))
     assert resp.status == 400
@@ -90,7 +132,8 @@ async def test_pin_executor_failure_audits_and_500s(loader, monkeypatch):
     monkeypatch.setattr(loader, "set_pinned", _boom)
     events: list[dict] = []
     monkeypatch.setattr(
-        H, "_sel",
+        H,
+        "_sel",
         lambda: SimpleNamespace(log_tool_invocation=lambda **kw: events.append(kw)),
     )
     resp = await H.api_skill_pin(_Req(loader, body={"name": "auto/deploy-helper", "pinned": True}))
@@ -109,7 +152,8 @@ async def test_detail_executor_failure_audits_and_500s(loader, monkeypatch):
     monkeypatch.setattr(loader, "get_pending_skill", _boom)
     events: list[dict] = []
     monkeypatch.setattr(
-        H, "_sel",
+        H,
+        "_sel",
         lambda: SimpleNamespace(log_tool_invocation=lambda **kw: events.append(kw)),
     )
     resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper"}))
@@ -223,7 +267,8 @@ async def test_update_detail_includes_live_body(loader, monkeypatch):
         },
     )
     monkeypatch.setattr(
-        loader, "preview_pending_update",
+        loader,
+        "preview_pending_update",
         lambda slug: {
             "live_body": "## Steps\nOLD BODY\n",
             "proposed_body": "## Steps\nNEW BODY\n",
@@ -235,9 +280,7 @@ async def test_update_detail_includes_live_body(loader, monkeypatch):
         },
         raising=False,
     )
-    resp = await H.api_skill_pending_detail(
-        _Req(loader, match={"slug": "deploy-helper-update"})
-    )
+    resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper-update"}))
     data = _payload(resp)
     assert data["live_body"] == "## Steps\nOLD BODY\n"
     assert data["proposed_body"] == "## Steps\nNEW BODY\n"
@@ -261,11 +304,12 @@ async def test_update_detail_live_body_null_when_target_gone(loader, monkeypatch
         },
     )
     monkeypatch.setattr(
-        loader, "preview_pending_update", lambda slug: None, raising=False,
+        loader,
+        "preview_pending_update",
+        lambda slug: None,
+        raising=False,
     )
-    resp = await H.api_skill_pending_detail(
-        _Req(loader, match={"slug": "deploy-helper-update"})
-    )
+    resp = await H.api_skill_pending_detail(_Req(loader, match={"slug": "deploy-helper-update"}))
     data = _payload(resp)
     assert data["live_body"] is None
     assert data["diff"] is None
@@ -301,9 +345,7 @@ async def test_approve_routes_update_to_approve_pending_update(loader, monkeypat
     monkeypatch.setattr(loader, "approve_pending_update", _upd, raising=False)
     monkeypatch.setattr(loader, "approve_pending_skill", _new)
     monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
-    resp = await H.api_skill_pending_approve(
-        _Req(loader, match={"slug": "deploy-helper-update"})
-    )
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper-update"}))
     assert resp.status == 200
     assert _payload(resp)["approved"] == "auto/deploy-helper"
     assert called.get("update") == "deploy-helper-update"
@@ -338,8 +380,19 @@ async def test_dismiss_routes_update_candidate_by_slug(loader, monkeypatch):
         return True
 
     monkeypatch.setattr(loader, "dismiss_pending_skill", _dismiss)
-    resp = await H.api_skill_pending_dismiss(
-        _Req(loader, match={"slug": "deploy-helper-update"})
-    )
+    resp = await H.api_skill_pending_dismiss(_Req(loader, match={"slug": "deploy-helper-update"}))
     assert resp.status == 200
     assert seen["slug"] == "deploy-helper-update"
+
+
+@pytest.mark.asyncio
+async def test_approve_api_refuses_success_without_durable_consumption(loader, monkeypatch):
+    monkeypatch.setattr(loader, "_commit_claim_consumption", lambda *_args: False)
+
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+
+    assert resp.status == 409
+    assert _payload(resp)["error"] == (
+        "not found, a live skill already exists, or script validation failed"
+    )
+    assert (loader._dir / "auto" / "deploy-helper" / "SKILL.md").is_file()

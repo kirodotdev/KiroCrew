@@ -374,6 +374,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # appends above. Written and read only by the GATEWAY (dashboard tag CRUD
     # + the chat_tag applier); no in-sandbox code opens it.
     "tag-grants",
+    # Auto-skill claim/lock state (atomic candidate promotion). Only the gateway's
+    # promotion machinery opens this tree; agent file/shell tools are already
+    # fenced off it, so OS-masking closes the sideways path to a claimed
+    # candidate between validation and publication.
+    "skills/auto/.private",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -1060,6 +1065,13 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "tag-grants",
 )
 
+#: Nested HIDDEN roots that must exist before the namespace child starts. These are
+#: separate from ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` because every intermediate
+#: component is agent-writable and therefore has to be created and authenticated one
+#: component at a time with no-follow checks. A best-effort ``makedirs`` in the child
+#: left a fresh install unmasked whenever ``skills/`` did not exist yet.
+_CREW_PRECREATE_NESTED_HIDDEN_DIR_LEAVES: tuple[str, ...] = ("skills/auto/.private",)
+
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each
 #: holds. This is the per-leaf argument the sibling-gap note above asks for: ``mount(2)``
 #: cannot mask an absent path and the ``SENSITIVE_FILES`` loop guards on ``isfile``, so an
@@ -1652,6 +1664,138 @@ def _refuse_unless_sole_regular_link(target: str) -> None:
             f"'find {os.path.dirname(target)} -samefile {target}', remove the extra "
             "link(s), and restart."
         )
+
+
+_NESTED_MASK_DIR_FD_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and {os.open, os.mkdir, os.stat}.issubset(os.supports_dir_fd)
+)
+
+
+def _materialize_nested_maskable_dirs() -> list[str]:
+    """Create nested HIDDEN roots through pinned, no-follow ancestors.
+
+    Every mkdir is relative to the descriptor of its authenticated parent. A
+    same-UID writer may rename a component after it is opened, but cannot redirect
+    creation through that descriptor. The lexical chain is revalidated after each
+    mutation and before return so a swapped ancestor refuses the spawn instead of
+    handing the launcher a mask path for a different tree.
+    """
+    try:
+        configured_root = str(config_dir())
+        root = os.path.realpath(configured_root)
+        configured_info = os.stat(configured_root)
+        canonical_info = os.lstat(root)
+        if not stat.S_ISDIR(canonical_info.st_mode) or (
+            configured_info.st_dev,
+            configured_info.st_ino,
+        ) != (canonical_info.st_dev, canonical_info.st_ino):
+            raise OSError("configured data home does not resolve to one real directory")
+    except Exception as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot resolve the crew data home to materialise nested masked directories: {exc}"
+        ) from exc
+
+    if not _NESTED_MASK_DIR_FD_SUPPORTED:
+        raise SandboxCeilingUnsealable(
+            "cannot create nested masked directories without descriptor-relative no-follow traversal"
+        )
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        root_fd = os.open(root, flags)
+        opened_root = os.fstat(root_fd)
+        if (opened_root.st_dev, opened_root.st_ino) != (
+            canonical_info.st_dev,
+            canonical_info.st_ino,
+        ):
+            os.close(root_fd)
+            raise OSError("canonical data home changed during open")
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot open the crew data home for nested mask creation: {exc}"
+        ) from exc
+
+    created: list[str] = []
+    open_fds: list[int] = [root_fd]
+    identities: list[tuple[str, tuple[int, int]]] = []
+
+    def record(path: str, fd: int) -> None:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise SandboxCeilingUnsealable(
+                f"cannot mask {path}: a non-directory is sitting at the path"
+            )
+        identities.append((path, (info.st_dev, info.st_ino)))
+
+    def revalidate_chain() -> None:
+        for path, expected in identities:
+            try:
+                current = os.lstat(path)
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot create the nested masked directory {path}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != expected:
+                raise SandboxCeilingUnsealable(
+                    f"cannot create the nested masked directory {path}: an ancestor changed"
+                )
+
+    try:
+        record(root, root_fd)
+        for leaf in _CREW_PRECREATE_NESTED_HIDDEN_DIR_LEAVES:
+            current_path = root
+            current_fd = root_fd
+            for component in leaf.split("/"):
+                current_path = os.path.join(current_path, component)
+                try:
+                    before = os.stat(component, dir_fd=current_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    before = None
+                except OSError as exc:
+                    raise SandboxCeilingUnsealable(
+                        f"cannot create the nested masked directory {current_path}: {exc}"
+                    ) from exc
+                if before is not None and not stat.S_ISDIR(before.st_mode):
+                    raise SandboxCeilingUnsealable(
+                        f"cannot mask {current_path}: a non-directory is sitting at the path"
+                    )
+                if before is None:
+                    try:
+                        os.mkdir(component, 0o700, dir_fd=current_fd)
+                    except FileExistsError:
+                        pass
+                    except OSError as exc:
+                        raise SandboxCeilingUnsealable(
+                            f"cannot create the nested masked directory {current_path}: {exc}"
+                        ) from exc
+                try:
+                    child_fd = os.open(component, flags, dir_fd=current_fd)
+                except OSError as exc:
+                    raise SandboxCeilingUnsealable(
+                        f"cannot create the nested masked directory {current_path}: {exc}"
+                    ) from exc
+                open_fds.append(child_fd)
+                opened = os.fstat(child_fd)
+                if before is not None and (opened.st_dev, opened.st_ino) != (
+                    before.st_dev,
+                    before.st_ino,
+                ):
+                    raise SandboxCeilingUnsealable(
+                        f"cannot create the nested masked directory {current_path}: an entry changed"
+                    )
+                record(current_path, child_fd)
+                revalidate_chain()
+                current_fd = child_fd
+            created.append(current_path)
+        revalidate_chain()
+        return created
+    finally:
+        for fd in reversed(open_fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _md_notebook_degraded_mask_dirs() -> list[str]:
@@ -6275,8 +6419,11 @@ def namespace_argv(
     # with a keystone the seal could not cover.
     _materialize_sealable_ceilings()
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
-    # directories get the same treatment for the same reason.
+    # directories get the same treatment for the same reason. Nested roots need
+    # component-by-component no-follow creation because their intermediate
+    # directories are agent-writable.
     _materialize_maskable_dirs()
+    nested_hidden_dirs = tuple(_materialize_nested_maskable_dirs())
     # And the ``SENSITIVE_FILES`` loop is guarded on ``isfile``, so md-notebook's state
     # leaves — creatable on a sandboxed host now that the backend carve-out exists —
     # need a mount target too.
@@ -6305,7 +6452,7 @@ def namespace_argv(
         **private_options,
         strip_python_env=strip_python_env,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
-        extra_hidden_dirs=extra_hidden_dirs,
+        extra_hidden_dirs=(*extra_hidden_dirs, *nested_hidden_dirs),
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
