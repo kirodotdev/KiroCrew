@@ -98,6 +98,57 @@ def test_posix_dead_holder_contention_is_retried(tmp_path, monkeypatch):
         lock.release()
 
 
+@pytest.mark.parametrize(
+    "liveness",
+    [platform_compat.PID_ALIVE, platform_compat.PID_UNSIGNALABLE],
+)
+def test_posix_contention_without_confirmed_dead_holder_is_not_retried(
+    tmp_path, monkeypatch, liveness
+):
+    lock_file = tmp_path / LOCK_FILENAME
+    lock_file.write_text("4242\n", encoding="utf-8")
+    attempts = 0
+
+    def always_busy(_fd, *, exclusive):
+        nonlocal attempts
+        assert exclusive is True
+        attempts += 1
+        return False
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(platform_compat, "try_acquire_lock", always_busy)
+    monkeypatch.setattr(platform_compat, "pid_liveness", lambda _pid: liveness)
+
+    with pytest.raises(GatewayLockError):
+        GatewayLock(tmp_path).acquire()
+
+    assert attempts == 1
+
+
+def test_posix_out_of_range_holder_is_refused_without_retry(tmp_path, monkeypatch):
+    """A corrupt numeric stamp must fail closed without crashing or retrying."""
+    lock_file = tmp_path / LOCK_FILENAME
+    out_of_range_pid = 10**40
+    lock_file.write_text(f"{out_of_range_pid}\n", encoding="utf-8")
+    attempts = 0
+
+    def always_busy(_fd, *, exclusive):
+        nonlocal attempts
+        assert exclusive is True
+        attempts += 1
+        return False
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+    monkeypatch.setattr(platform_compat, "try_acquire_lock", always_busy)
+
+    with pytest.raises(GatewayLockError) as excinfo:
+        GatewayLock(tmp_path).acquire()
+
+    assert attempts == 1
+    assert excinfo.value.holder_pid == out_of_range_pid
+
+
 def test_distinct_homes_both_acquire(tmp_path):
     home_a = tmp_path / "a"
     home_b = tmp_path / "b"
