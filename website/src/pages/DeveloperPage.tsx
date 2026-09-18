@@ -17,6 +17,7 @@ import { McpManagement } from './settings/McpManagement'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
 import { AgentBackendTab } from './developer/AgentBackendTab'
 import { DebugToolsTab } from './developer/DebugToolsTab'
+import RestartButton from '../components/RestartButton'
 
 /**
  * Lazy: MemoryGraphTab is the only eager owner of the sigma/graphology stack
@@ -144,6 +145,12 @@ export default function DeveloperPage() {
         )}
         {tab === 'config' && (
           <>
+            {/* Config tab header: the Apply & Restart control lives here so it
+                renders regardless of the warmPool capability gate, matching the
+                "Apply & Restart Sessions at the top" hint (#9191). */}
+            <div className="flex justify-end mb-2">
+              <RestartButton />
+            </div>
             <KiroCrewCfgTab />
             <AgentCfgTab />
           </>
