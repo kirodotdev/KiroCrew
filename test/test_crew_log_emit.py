@@ -2744,6 +2744,35 @@ def test_shutdown_writes_spent_retry_loss_without_a_later_append():
 
 
 def test_shutdown_reports_owed_loss_when_its_marker_cannot_land(monkeypatch, caplog):
+    """A shutdown whose retry budget is spent folds the debt forward and names it.
+
+    The split asserted below -- nothing buffered, one marker owed -- is the state a
+    SPENT budget leaves. Reaching it on the real budget of six takes six PACED
+    attempts inside *timeout*: `_drain_inline_until` sleeps a slice of what is left
+    between passes, so how many attempts a window buys is a property of the host
+    rather than of the emitter. A Linux runner fits six. The macOS runner fits fewer,
+    and there the same assertion reads a DIFFERENT lifecycle point -- the marker job
+    still retained, its debt riding inside that job -- which is how one assertion
+    reddens a shard for changes that never touch this code. Pinning the budget to one
+    attempt settles which point is reached: the first failed append spends it on any
+    host.
+
+    Two other repairs are weaker. A longer timeout buys margin on a fast host and
+    loses it again on a slow one, leaving the assertion resting on the same
+    stopwatch. Asserting that the append is reported as EITHER buffered or owed holds
+    in both states, and one of those states prints `0 loss marker(s) owed` while a
+    marker is genuinely owed, so the weaker form agrees with a wrong number instead
+    of describing a state.
+
+    That count belongs to the code that reads it rather than to this test: the debt
+    travels inside the retained job, so a count taken from `_pending_loss` alone
+    reads zero while a marker waits. What is pinned here is the spent budget, which
+    is the state this test names.
+
+    Mutation guard: removing the pin makes the assertion host-dependent again. It
+    still passes on a host that fits six paced attempts, which is why the failure
+    surfaces only on the slower runner.
+    """
     _open_session()
     assert emit.flush()
     _leave_spent_retry_loss_owed()
@@ -2752,11 +2781,16 @@ def test_shutdown_reports_owed_loss_when_its_marker_cannot_land(monkeypatch, cap
         raise OSError("filesystem still unavailable")
 
     monkeypatch.setattr(lg.Ledger, "append", _fail_marker)
+    # Patched AFTER the helper above, which spends a whole budget of its own.
+    monkeypatch.setattr(emit, "_MAX_WRITE_ATTEMPTS", 1)
     with caplog.at_level(logging.WARNING, logger=emit.logger.name):
         drained = emit.drain_for_shutdown(timeout=0.5)
 
     assert drained is False, "shutdown reported success with 1 loss marker still owed"
-    assert "0 append(s) buffered, 1 loss marker(s) owed" in caplog.text
+    assert "0 append(s) buffered, 1 loss marker(s) owed" in caplog.text, (
+        "the warning did not describe a spent budget, so the drain stopped at a "
+        f"different lifecycle point: {caplog.text}"
+    )
     with emit._lock:
         loss = emit._pending_loss.get(SESSION)
         assert loss is not None, "the failed marker's debt disappeared"
