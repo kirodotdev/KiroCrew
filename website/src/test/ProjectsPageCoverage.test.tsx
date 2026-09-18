@@ -57,7 +57,7 @@ vi.mock('../api/client', () => ({
 
 const mkRun = (overrides: Partial<ProjectRun> = {}): ProjectRun => ({
   task_id: 'run-1', name: 'Existing', running: false, status: 'completed' as RunStatus,
-  steps: 2, completed: 1, failed: 0, skipped: 0, current_step: 1,
+  tasks: 2, completed: 1, failed: 0, skipped: 0, current_task: 1,
   spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
   task_details: [], started_at: 0, finished_at: 0,
   work_dir: '', branch_name: '', spec_content: 'spec body', lessons_learned: [],

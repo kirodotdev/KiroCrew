@@ -422,7 +422,7 @@ export default function ProjectsPage() {
       {runs.map(r => {
         const name = r.name || r.spec_name || r.task_id
         const icon: ReactNode = r.running ? <RefreshCw className="lucide-inline" /> : r.status === 'completed' ? <CheckCircle className="lucide-inline" /> : r.status === 'failed' ? <XCircle className="lucide-inline" /> : r.status === 'cancelled' ? <Square className="lucide-inline" /> : r.status === 'planned' ? <ClipboardList className="lucide-inline" /> : <Square className="lucide-inline" />
-        const pct = r.steps > 0 ? Math.round((r.completed / r.steps) * 100) : 0
+        const pct = r.tasks > 0 ? Math.round((r.completed / r.tasks) * 100) : 0
         const isActive = selectedRun?.task_id === r.task_id
         return (
           <div
@@ -437,7 +437,7 @@ export default function ProjectsPage() {
             <span className="text-[14px]">{icon}</span>
             <div className="flex-1 min-w-0">
               <div className="text-[13px] font-semibold text-text-strong truncate">{name}</div>
-              <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.steps} · {r.running ? 'running' : r.status}</div>
+              <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.tasks} · {r.running ? 'running' : r.status}</div>
             </div>
             {/* Auto-approve indicator. Gated on the LIVE grant (matches the
                 run-detail toggle sync effect at line 225: "Reflect only a

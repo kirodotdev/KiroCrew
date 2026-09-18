@@ -58,7 +58,7 @@ describe('ProjectsPage', () => {
   it('renders the New Task button (renamed from New Project) when runs exist', async () => {
     const run: ProjectRun = {
       task_id: 'run-x', name: 'Existing', running: false, status: 'completed',
-      steps: 1, completed: 1, failed: 0, skipped: 0, current_step: 1,
+      tasks: 1, completed: 1, failed: 0, skipped: 0, current_task: 1,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
@@ -69,6 +69,33 @@ describe('ProjectsPage', () => {
     renderWithProviders(<ProjectsPage />)
     await screen.findByText('Existing')
     expect(screen.getByRole('button', { name: /New Task/ })).toBeInTheDocument()
+  })
+
+  // Built from the WIRE shape, not the TypeScript shape. `/api/taskrunner` run
+  // rows carry `tasks` (the step count) and `current_task` — the names
+  // `task_reporter.build_status` actually emits. A typed `ProjectRun` fixture
+  // cannot catch a name that does not exist on the wire: declaring `steps` on
+  // the literal is precisely what made every other test in this file pass while
+  // the rail rendered "1/" in production — React drops the `undefined`
+  // denominator entirely, so the row showed a total that was simply blank.
+  it('renders the step count and progress from the field the server actually sends', async () => {
+    const wireRun = {
+      task_id: 'run-w', name: 'Wire', running: true, status: 'running',
+      tasks: 3, completed: 1, failed: 0, skipped: 0, current_task: 2,
+      spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
+      task_details: [], started_at: 0, finished_at: 0,
+      work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
+      commits: 0, original_input: '', source: 'text', groups: [],
+    }
+    const { api: mockApi } = await import('../api/client')
+    vi.mocked(mockApi.taskRunnerStatus).mockResolvedValue({ running: true, available: true, runs: [wireRun] })
+    const { container } = renderWithProviders(<ProjectsPage />)
+    await screen.findByText('Wire')
+    expect(container.textContent).toContain('run-w · 1/3 · running')
+    // 1 of 3 complete. A denominator the row never received collapses `pct` to
+    // the `: 0` arm, so the bar sits at 0% for the entire life of every run.
+    const widths = [...container.querySelectorAll<HTMLElement>('div[style*="width"]')].map(el => el.style.width)
+    expect(widths).toContain('33%')
   })
 
   it('renders compose textarea by default', () => {
@@ -133,7 +160,7 @@ describe('ProjectsPage', () => {
   it('shows compose panel after deleting selected project', async () => {
     const completedRun: ProjectRun = {
       task_id: 'run-1', name: 'Test', running: false, status: 'completed',
-      steps: 2, completed: 2, failed: 0, skipped: 0, current_step: 2,
+      tasks: 2, completed: 2, failed: 0, skipped: 0, current_task: 2,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: 'test spec', lessons_learned: [],
@@ -158,7 +185,7 @@ describe('ProjectsPage', () => {
   it('shows restart button for completed projects', async () => {
     const completedRun: ProjectRun = {
       task_id: 'run-2', name: 'Done Project', running: false, status: 'completed',
-      steps: 1, completed: 1, failed: 0, skipped: 0, current_step: 1,
+      tasks: 1, completed: 1, failed: 0, skipped: 0, current_task: 1,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
@@ -176,7 +203,7 @@ describe('ProjectsPage', () => {
   it('restart calls retryTaskRun with from_step 1', async () => {
     const completedRun: ProjectRun = {
       task_id: 'run-4', name: 'Retry Me', running: false, status: 'failed',
-      steps: 2, completed: 1, failed: 1, skipped: 0, current_step: 2,
+      tasks: 2, completed: 1, failed: 1, skipped: 0, current_task: 2,
       spec: '', spec_name: '', error: 'oops', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -194,7 +221,7 @@ describe('ProjectsPage', () => {
   it('toggling auto-approve then Execute calls executePlan with autoApprove=true', async () => {
     const plannedRun: ProjectRun = {
       task_id: 'run-plan', name: 'Plan Me', running: false, status: 'planned',
-      steps: 1, completed: 0, failed: 0, skipped: 0, current_step: 0,
+      tasks: 1, completed: 0, failed: 0, skipped: 0, current_task: 0,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: 'spec', lessons_learned: [],
@@ -217,7 +244,7 @@ describe('ProjectsPage', () => {
   it('schedule calls createCron with project spec', async () => {
     const completedRun: ProjectRun = {
       task_id: 'run-5', name: 'Cron Me', running: false, status: 'completed',
-      steps: 1, completed: 1, failed: 0, skipped: 0, current_step: 1,
+      tasks: 1, completed: 1, failed: 0, skipped: 0, current_task: 1,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: 'my spec content', lessons_learned: [],
@@ -257,7 +284,7 @@ describe('ProjectsPage', () => {
   it('sends auto_approve true to executePlan when compose checkbox checked and Run clicked', async () => {
     const plannedRun: ProjectRun = {
       task_id: 'plan-slice2', name: 'Slice 2', running: false, status: 'planned',
-      steps: 0, completed: 0, failed: 0, skipped: 0, current_step: 0,
+      tasks: 0, completed: 0, failed: 0, skipped: 0, current_task: 0,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -295,7 +322,7 @@ describe('ProjectsPage', () => {
     // but the user does NOT tick the checkbox before Run.
     const plannedRun: ProjectRun = {
       task_id: 'plan-slice3', name: 'Slice 3', running: false, status: 'planned',
-      steps: 0, completed: 0, failed: 0, skipped: 0, current_step: 0,
+      tasks: 0, completed: 0, failed: 0, skipped: 0, current_task: 0,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -334,7 +361,7 @@ describe('ProjectsPage', () => {
     // success; a failed plan leaves the ref at its default `false`.
     const urlTriggeredPlannedRun: ProjectRun = {
       task_id: 'plan-url', name: 'URL triggered', running: false, status: 'planned',
-      steps: 0, completed: 0, failed: 0, skipped: 0, current_step: 0,
+      tasks: 0, completed: 0, failed: 0, skipped: 0, current_task: 0,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -409,7 +436,7 @@ describe('ProjectsPage', () => {
     // false.
     const urlTriggeredPlannedRun: ProjectRun = {
       task_id: 'plan-url', name: 'URL triggered', running: false, status: 'planned',
-      steps: 0, completed: 0, failed: 0, skipped: 0, current_step: 0,
+      tasks: 0, completed: 0, failed: 0, skipped: 0, current_task: 0,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -561,7 +588,7 @@ describe('ProjectsPage', () => {
     // ProjectsPageCoverage.test.tsx:554.
     const trustedRun: ProjectRun = {
       task_id: 'run-trusted', name: 'Trusted Run', running: true, status: 'running',
-      steps: 3, completed: 1, failed: 0, skipped: 0, current_step: 2,
+      tasks: 3, completed: 1, failed: 0, skipped: 0, current_task: 2,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -589,7 +616,7 @@ describe('ProjectsPage', () => {
   it('does not show the auto-approve badge on a project card when the run has no live grant', async () => {
     const untrustedRun: ProjectRun = {
       task_id: 'run-untrusted', name: 'Untrusted Run', running: true, status: 'running',
-      steps: 3, completed: 1, failed: 0, skipped: 0, current_step: 2,
+      tasks: 3, completed: 1, failed: 0, skipped: 0, current_task: 2,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],
@@ -612,7 +639,7 @@ describe('ProjectsPage', () => {
     // state — same live-grant rule the run-detail toggle sync effect uses.
     const expiredRun: ProjectRun = {
       task_id: 'run-expired', name: 'Expired Run', running: false, status: 'paused',
-      steps: 3, completed: 1, failed: 0, skipped: 0, current_step: 2,
+      tasks: 3, completed: 1, failed: 0, skipped: 0, current_task: 2,
       spec: '', spec_name: '', error: '', tokens_used: 0, replan_count: 0,
       task_details: [], started_at: 0, finished_at: 0,
       work_dir: '', branch_name: '', spec_content: '', lessons_learned: [],

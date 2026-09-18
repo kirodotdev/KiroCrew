@@ -1423,8 +1423,11 @@ export interface TaskDetail {
 export type RunStatus = 'planning' | 'planned' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused' | 'pausing';
 export interface ProjectRun {
   task_id: string; name?: string; running: boolean; status: RunStatus
-  steps: number; completed: number; failed: number; skipped: number
-  current_step: number; spec: string; spec_name: string; error: string
+  /** Total step count. Named for the wire: `build_status` emits `tasks`, and
+   *  `steps`/`current_step` — the names this interface used to declare — are
+   *  sent by no producer, so both read `undefined` on every row. */
+  tasks: number; completed: number; failed: number; skipped: number
+  current_task: number; spec: string; spec_name: string; error: string
   tokens_used: number; replan_count: number; task_details: TaskDetail[]
   started_at: number; finished_at: number
   work_dir: string; branch_name: string

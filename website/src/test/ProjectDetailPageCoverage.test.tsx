@@ -219,7 +219,7 @@ const step = (over: Partial<TaskDetail> = {}): TaskDetail => ({
 
 const mockRun = (overrides: Partial<ProjectRun> = {}): ProjectRun => ({
   task_id: 'run-1', name: 'Test Run', running: false, status: 'planned',
-  steps: 3, completed: 0, failed: 0, skipped: 0, current_step: 0,
+  tasks: 3, completed: 0, failed: 0, skipped: 0, current_task: 0,
   spec: 'test.md', spec_name: 'Test', error: '',
   tokens_used: 0, replan_count: 0,
   started_at: 1_700_000_000, finished_at: 0,
