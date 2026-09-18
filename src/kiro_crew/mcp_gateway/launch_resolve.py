@@ -52,7 +52,7 @@ def rewrite_kwargs(cfg: KiroCrewConfig, stub_servers: frozenset[str]) -> dict[st
     from exactly what the rewrite will read.
     """
     # Deferred: ``config.loader`` imports the rewriter's path helpers.
-    from kiro_crew.config.loader import _session_work_dir
+    from kiro_crew.config.loader import session_default_cwd
     from kiro_crew.config.paths import kiro_agents_dir
     from kiro_crew.mcp_gateway.rewriter import default_socket_path, resolve_overlay_dir
 
@@ -61,7 +61,7 @@ def rewrite_kwargs(cfg: KiroCrewConfig, stub_servers: frozenset[str]) -> dict[st
         "source_dir": kiro_agents_dir(),
         "overlay_dir": resolve_overlay_dir(cfg_gw.overlay_dir),
         "socket_path": Path(cfg_gw.socket_path) if cfg_gw.socket_path else default_socket_path(),
-        "work_dir": _session_work_dir(None),
+        "work_dir": session_default_cwd(None),
         "sandbox_mode": cfg.agent.sandbox,
         "approval_mode": cfg.agent.approval_mode,
         "stub_servers": stub_servers,

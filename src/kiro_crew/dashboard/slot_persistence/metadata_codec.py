@@ -683,8 +683,18 @@ def _read_agent_kind(r: _Read) -> None:
 
 
 def _read_project(r: _Read) -> None:
-    if r.meta.get("project"):
+    # Read by identity, because a stored ``"false"`` string is truthy. The upsert
+    # cannot delete a key, so a cleared slot's line carries BOTH -- and the stale
+    # ``project`` is DROPPED rather than paired with the marker: only ``claim_cwd``
+    # consults the marker, so a reader taking the raw field would spawn its turn in
+    # the directory the user removed. Restoring the pair would also stand the
+    # ``project`` setter's invariant on its head.
+    cleared = r.meta.get("project_cleared") is True
+    if cleared:
+        r.slot.project = ""
+    elif r.meta.get("project"):
         r.slot.project = r.meta["project"]
+    r.slot.project_cleared = cleared
 
 
 def _read_executor(r: _Read) -> None:
@@ -1046,6 +1056,18 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.project),
         merge=_always(lambda s: s.project),
         read=_read_project,
+    ),
+    # Slot-owned, so ABSENCE retracts it -- and it must reach disk because the upsert
+    # cannot delete the stale ``project`` sitting beside it. Clearable like
+    # memory_store: the merge cannot delete a key, so writing only the true half
+    # leaves a stale clear beside a reselected project.
+    Field(
+        "project_cleared",
+        _ALL,
+        attr="project_cleared",
+        line=lambda s, f: True if s.project_cleared else OMIT,
+        merge=_always(lambda s: bool(s.project_cleared)),
+        why="read with the project",
     ),
     # Written while a local turn is between admission and teardown and omitted
     # otherwise -- slot ownership makes the omission the durable clear; the merge,
@@ -1411,6 +1433,7 @@ LINE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "project",
+    "project_cleared",
     "executor",
     "instance_id",
     "remote_slot",
@@ -1466,6 +1489,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "project",
+    "project_cleared",
     "app",
     "origin",
     "created_by",
