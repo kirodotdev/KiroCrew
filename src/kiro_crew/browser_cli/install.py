@@ -52,6 +52,13 @@ logger = logging.getLogger(__name__)
 MIN_NODE_MAJOR = 20
 
 CLI_BIN = "playwright-cli"
+# Verified on September 19, 2026, with ``@playwright/cli@0.1.21``. These launches:
+# ``npx --yes @playwright/cli@0.1.21 show --port 45613 --host 127.0.0.1``
+# ``npx --yes @playwright/cli@0.1.21 show --port 0 --host 127.0.0.1``
+# printed ``Listening on http://127.0.0.1:45613`` and
+# ``Listening on http://127.0.0.1:42963``, respectively. Each line was read only
+# after its listener had bound. ``@latest`` may change that wording; the parser
+# then fails closed and reports the installed version for diagnosis.
 NPM_SPEC = "@playwright/cli@latest"
 
 # ``install --skills`` writes the command reference where an agent can read it.
@@ -71,6 +78,7 @@ _PROBE_TIMEOUT_S = 20.0
 _NPM_INSTALL_TIMEOUT_S = 900.0
 _BROWSER_INSTALL_TIMEOUT_S = 1800.0
 _SKILLS_INSTALL_TIMEOUT_S = 180.0
+_CLI_PACKAGE_JSON_MAX_BYTES = 1024 * 1024
 
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
@@ -1121,6 +1129,50 @@ def _standalone_install_command() -> str:
     )
 
 
+def _cli_package_json_for_command(command: list[str] | None) -> Path | None:
+    """Package metadata served by *command*, or the vetted launcher fallback."""
+    if command is not None and len(command) >= 2:
+        try:
+            entry = Path(command[1]).resolve(strict=True)
+        except OSError:
+            entry = None
+        if (
+            entry is not None
+            and entry.name == "playwright-cli.js"
+            and entry.parent.name == _CLI_PKG_NAME
+            and entry.parent.parent.name == _CLI_PKG_SCOPE
+        ):
+            return entry.parent / "package.json"
+    path = cli_path()
+    if path is None:
+        return None
+    package = _cli_package_for_launcher(Path(path))
+    return package / "package.json" if package is not None else None
+
+
+def installed_cli_version(command: list[str] | None = None) -> str | None:
+    """Return the attributed package version without spawning the CLI."""
+    manifest = _cli_package_json_for_command(command)
+    if manifest is None:
+        return None
+    try:
+        info = manifest.stat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_size <= 0
+        or info.st_size > _CLI_PACKAGE_JSON_MAX_BYTES
+    ):
+        return None
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return _first_version(version) if isinstance(version, str) else None
+
+
 def detect() -> dict[str, Any]:
     """Report what is installed, without changing anything.
 
@@ -1132,14 +1184,8 @@ def detect() -> dict[str, Any]:
     path = cli_path()
     node_version = _node_version()
     major = _node_major(node_version)
-    cli_version: str | None = None
     command = cli_command(path) if path is not None else None
-    if command is not None:
-        rc, out, err = _run([*command, "--version"], _PROBE_TIMEOUT_S)
-        if rc == 0:
-            cli_version = _first_version(out)
-        else:
-            logger.debug("%s --version failed (rc=%d): %s", CLI_BIN, rc, err.strip())
+    cli_version = installed_cli_version(command)
     return {
         "installed": command is not None,
         "cli_path": path if command is not None else None,

@@ -613,6 +613,74 @@ class TestFindListeningPids:
         finally:
             s.close()
 
+    def test_linux_per_process_probe_runs_on_every_runner(self, tmp_path, monkeypatch):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
+        )
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
+
+    def test_windows_listener_probe_marks_browser_capable(self, monkeypatch):
+        """Use real Windows/Darwin attribution there; both synthetic shapes elsewhere."""
+        from kiro_crew.browser_cli import view as browser_view
+
+        def _assert_capable(port: int) -> None:
+            assert pc.process_owns_loopback_listener(os.getpid(), port) is True
+            browser_view._invalidate_listener_lookup_self_test_cache()
+            try:
+                assert browser_view._listener_lookup_functional() is True
+                assert browser_view._structurally_blind_listener_attribution() is False
+            finally:
+                browser_view._invalidate_listener_lookup_self_test_cache()
+
+        if sys.platform in {"win32", "darwin"}:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                _assert_capable(int(listener.getsockname()[1]))
+            return
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(
+            pc,
+            "_windows_loopback_listener_owner_pids",
+            lambda port: {os.getpid()},
+        )
+        _assert_capable(45613)
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(
+            pc,
+            "trusted_system_bin",
+            lambda name: "/usr/bin/lsof" if name == "lsof" else None,
+        )
+        monkeypatch.setattr(
+            pc,
+            "probe_port_listeners",
+            lambda port, process_pid=None: (
+                [pc.PortListener(os.getpid(), "127.0.0.1", "4")],
+                True,
+            ),
+        )
+        _assert_capable(45613)
+
 
 class TestProcessCommandLine:
     def test_self_cmdline_mentions_python(self):
@@ -2049,17 +2117,366 @@ class TestAttributedDescendants:
 
 
 class TestProcessDescendants:
-    def test_descendants_from_parent_map_walks_full_tree(self):
+    def test_descendants_from_parent_map_sorts_siblings_and_walks_full_tree(self):
         parent_map = {
-            11: 10,
-            12: 11,
             13: 10,
+            12: 11,
+            11: 10,
             14: 12,
             99: 1,
             10: 14,
         }
 
         assert pc._descendants_from_parent_map(10, parent_map) == [11, 13, 12, 14]
+
+    def test_linux_descendant_identities_walk_only_the_root_subtree(self, tmp_path, monkeypatch):
+        proc_root = tmp_path / "proc"
+        process_rows = (
+            (10, 1, "100"),
+            (11, 10, "110"),
+            (12, 11, "120"),
+            (13, 10, "130"),
+            (99, 1, "990"),
+        )
+        children = {10: "11 13", 11: "12", 12: "", 13: "", 99: ""}
+        for process, parent, start_time in process_rows:
+            process_root = proc_root / str(process)
+            task_root = process_root / "task" / str(process)
+            task_root.mkdir(parents=True)
+            fields = ["S", str(parent), *(["0"] * 17), start_time]
+            (process_root / "stat").write_text(
+                f"{process} (test process) {' '.join(fields)}\n",
+                encoding="utf-8",
+            )
+            (task_root / "children").write_text(children[process], encoding="ascii")
+        real_read_text = Path.read_text
+        stat_reads: list[int] = []
+
+        def _track_reads(path: Path, *args, **kwargs):
+            if path.name == "stat":
+                stat_reads.append(int(path.parent.name))
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _track_reads)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc.subprocess,
+            "check_output",
+            lambda *args, **kwargs: pytest.fail("procfs discovery must not spawn ps"),
+        )
+
+        identities = pc.process_descendant_identities(10, proc_root=proc_root)
+
+        assert identities == [
+            pc.ProcessDescendantIdentity(11, 10, "110"),
+            pc.ProcessDescendantIdentity(13, 10, "130"),
+            pc.ProcessDescendantIdentity(12, 11, "120"),
+        ]
+        assert 99 not in stat_reads
+
+    def test_atomic_identity_walk_excludes_orphan_older_than_recycled_parent(self, monkeypatch):
+        identities = {
+            10: pc.ProcessStartIdentity("100", 1),
+            11: pc.ProcessStartIdentity("300", 10),
+            12: pc.ProcessStartIdentity("200", 11),
+        }
+        children = {10: [11], 11: [12], 12: []}
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc,
+            "_direct_child_pids_for_identity_walk",
+            lambda pid, proc_root: children[pid],
+        )
+        monkeypatch.setattr(
+            pc,
+            "get_process_start_identity",
+            lambda pid, proc_root=None: identities[pid],
+        )
+
+        assert pc.process_descendant_identities(10) == [pc.ProcessDescendantIdentity(11, 10, "300")]
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            pytest.param(None, id="unreadable-parent"),
+            pytest.param(
+                pc.ProcessStartIdentity("recycled", 10),
+                id="recycled-parent",
+            ),
+        ],
+    )
+    def test_atomic_identity_walk_parent_instability_is_inconclusive(
+        self,
+        monkeypatch,
+        replacement,
+    ):
+        root = pc.ProcessStartIdentity("100", 1)
+        child = pc.ProcessStartIdentity("200", 10)
+        child_reads = iter((child, replacement))
+        children = {10: [11], 11: [12]}
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc,
+            "_direct_child_pids_for_identity_walk",
+            lambda pid, proc_root: children[pid],
+        )
+
+        def _identity(pid, proc_root=None):
+            if pid == 10:
+                return root
+            if pid == 11:
+                return next(child_reads)
+            return pc.ProcessStartIdentity("300", 11)
+
+        monkeypatch.setattr(pc, "get_process_start_identity", _identity)
+        monkeypatch.setattr(pc, "_posix_process_identity_map", lambda root_pid=None: None)
+
+        assert pc.process_descendant_identities(10) is None
+
+    @pytest.mark.parametrize(
+        "late_identity",
+        [
+            pytest.param(None, id="vanished"),
+            pytest.param(
+                pc.ProcessStartIdentity("200", 99),
+                id="reparented",
+            ),
+        ],
+    )
+    def test_atomic_identity_walk_child_instability_is_inconclusive(
+        self,
+        monkeypatch,
+        late_identity,
+    ):
+        root = pc.ProcessStartIdentity("100", 1)
+        stable_child = pc.ProcessStartIdentity("200", 10)
+        children = {10: [11, 12], 11: [], 12: []}
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        monkeypatch.setattr(
+            pc,
+            "_direct_child_pids_for_identity_walk",
+            lambda pid, proc_root: children[pid],
+        )
+        monkeypatch.setattr(
+            pc,
+            "get_process_start_identity",
+            lambda pid, proc_root=None: {
+                10: root,
+                11: stable_child,
+                12: late_identity,
+            }[pid],
+        )
+        monkeypatch.setattr(pc, "_posix_process_identity_map", lambda root_pid=None: None)
+
+        assert pc.process_descendant_identities(10) is None
+
+    def test_posix_fallback_excludes_orphan_older_than_recycled_parent(self, monkeypatch):
+        snapshot = {
+            10: pc._PosixProcessSnapshotRow(1, "Mon Jan  1 00:00:00 2024"),
+            11: pc._PosixProcessSnapshotRow(10, "Mon Jan  1 00:00:02 2024"),
+            12: pc._PosixProcessSnapshotRow(11, "Mon Jan  1 00:00:01 2024"),
+        }
+        snapshots = iter((snapshot, snapshot))
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: next(snapshots))
+
+        assert pc.process_descendant_identities(10) == [
+            pc.ProcessDescendantIdentity(
+                11,
+                10,
+                "Mon Jan  1 00:00:02 2024",
+                pc.ProcessIdentitySource.LSTART,
+            )
+        ]
+
+    def test_process_start_order_is_three_way(self):
+        order = pc._ProcessStartOrder
+
+        assert pc._process_start_order("200", "100") is order.LATER
+        assert pc._process_start_order("100", "200") is order.EARLIER
+        assert pc._process_start_order("100", "100") is order.INCONCLUSIVE
+        assert (
+            pc._process_start_order(
+                "Mon Jan  1 00:00:01 2024",
+                "Mon Jan  1 00:00:00 2024",
+            )
+            is order.LATER
+        )
+        assert (
+            pc._process_start_order(
+                "Mon Jan  1 00:00:00 2024",
+                "Mon Jan  1 00:00:00 2024",
+            )
+            is order.INCONCLUSIVE
+        )
+        assert pc._process_start_order("unknown", "tokens") is order.INCONCLUSIVE
+
+    def test_created_after_wraps_the_shared_process_start_order(self, monkeypatch):
+        calls = []
+
+        def _order(child_token, parent_token):
+            calls.append((child_token, parent_token))
+            return pc._ProcessStartOrder.LATER
+
+        monkeypatch.setattr(pc, "_process_start_order", _order)
+
+        assert pc.created_after("200", "100") is True
+        assert calls == [("200", "100")]
+
+    def test_posix_fallback_same_second_edge_is_inconclusive(self, monkeypatch):
+        snapshot = {
+            10: pc._PosixProcessSnapshotRow(1, "Mon Jan  1 00:00:00 2024"),
+            11: pc._PosixProcessSnapshotRow(10, "Mon Jan  1 00:00:00 2024"),
+        }
+        snapshots = iter((snapshot, snapshot))
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: next(snapshots))
+
+        assert pc.process_descendant_identities(10) is None
+
+    def test_windows_identity_walk_excludes_orphan_older_than_recycled_parent(self, monkeypatch):
+        parent_map = {10: 1, 11: 10, 12: 11}
+        maps = iter((parent_map, parent_map))
+        start_ids = {10: "100", 11: "300", 12: "200"}
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(maps))
+        monkeypatch.setattr(pc, "get_process_start_id", start_ids.__getitem__)
+
+        assert pc.process_descendant_identities(10) == [pc.ProcessDescendantIdentity(11, 10, "300")]
+
+    def test_posix_parent_map_derives_from_the_shared_process_snapshot(self, monkeypatch):
+        processes = {
+            10: pc._PosixProcessSnapshotRow(1, "root"),
+            11: pc._PosixProcessSnapshotRow(10, "child"),
+        }
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/ps")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: processes)
+        monkeypatch.setattr(
+            pc.subprocess,
+            "check_output",
+            lambda *args, **kwargs: pytest.fail("the parent map must not run a second ps parser"),
+        )
+
+        assert pc._posix_process_parent_map() == {10: 1, 11: 10}
+
+    def test_posix_fallback_requires_identity_stable_across_snapshots(self, monkeypatch):
+        runs: list[list[str]] = []
+        output = (
+            b"10 1 Mon Jan  1 00:00:00 2024\n"
+            b"11 10 Mon Jan  1 00:00:01 2024\n"
+            b"12 11 Mon Jan  1 00:00:02 2024\n"
+        )
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/ps")
+        monkeypatch.setattr(
+            pc,
+            "get_process_start_id",
+            lambda pid: pytest.fail("the fallback must not resolve every host pid"),
+        )
+
+        def _capture(argv, **kwargs):
+            runs.append(list(argv))
+            return output
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _capture)
+
+        assert pc.process_descendant_identities(10) == [
+            pc.ProcessDescendantIdentity(
+                11,
+                10,
+                "Mon Jan  1 00:00:01 2024",
+                pc.ProcessIdentitySource.LSTART,
+            ),
+            pc.ProcessDescendantIdentity(
+                12,
+                11,
+                "Mon Jan  1 00:00:02 2024",
+                pc.ProcessIdentitySource.LSTART,
+            ),
+        ]
+        assert runs == [
+            ["/usr/bin/ps", "-Ao", "pid=,ppid=,lstart="],
+            ["/usr/bin/ps", "-Ao", "pid=,ppid=,lstart="],
+        ]
+
+    @pytest.mark.parametrize(
+        "scenario",
+        ["root-recycled", "child-reparented"],
+    )
+    def test_posix_fallback_rejects_root_subtree_drift(self, monkeypatch, scenario):
+        before = {
+            10: pc._PosixProcessSnapshotRow(1, "root-old"),
+            11: pc._PosixProcessSnapshotRow(10, "child-old"),
+        }
+        after = {
+            10: pc._PosixProcessSnapshotRow(
+                1,
+                "root-new" if scenario == "root-recycled" else "root-old",
+            ),
+            11: pc._PosixProcessSnapshotRow(
+                99 if scenario == "child-reparented" else 10,
+                "child-old",
+            ),
+        }
+        snapshots = iter((before, after))
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc.sys, "platform", "freebsd14")
+        monkeypatch.setattr(pc, "_posix_process_snapshot", lambda: next(snapshots))
+
+        assert pc.process_descendant_identities(10) is None
+
+    @pytest.mark.parametrize("recycled", [False, True], ids=["stable", "recycled"])
+    def test_windows_descendant_identities_are_creation_time_bound(self, monkeypatch, recycled):
+        parent_map = {10: 1, 11: 10}
+        maps = iter((parent_map, parent_map))
+        reads = {10: 0, 11: 0}
+
+        def _start_id(pid: int) -> str:
+            reads[pid] += 1
+            if pid == 10:
+                return "100"
+            if recycled and reads[pid] > 1:
+                return "300"
+            return "200"
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(maps))
+        monkeypatch.setattr(pc, "get_process_start_id", _start_id)
+
+        identities = pc.process_descendant_identities(10)
+
+        if recycled:
+            assert identities is None
+        else:
+            assert identities == [pc.ProcessDescendantIdentity(11, 10, "200")]
 
     @pytest.mark.asyncio
     async def test_descendant_termination_handles_async_is_empty_on_posix(self):
@@ -3426,10 +3843,45 @@ class TestFindListeningPidsErrors:
             pc.PortListener(222, "192.168.1.5", "4"),
         ]
 
-    def test_posix_lookup_is_bounded_by_a_timeout(self, monkeypatch):
-        # A wedged lsof (stale mount, jammed process table) must degrade to
-        # "no listener found" instead of hanging every port->PID caller: the
-        # spawn carries a timeout, and its expiry folds into [].
+    def test_posix_no_match_is_a_completed_empty_probe(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+
+        def _no_match(argv, **kwargs):
+            raise subprocess.CalledProcessError(1, argv, output="")
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _no_match)
+        listeners, completed = pc.probe_port_listeners(7777)
+        assert listeners == []
+        assert completed is True
+
+    def test_posix_stderr_only_exit_is_not_completed_nonownership(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+        captured: dict = {}
+
+        def _failure(argv, **kwargs):
+            captured["stderr"] = kwargs.get("stderr")
+            raise subprocess.CalledProcessError(
+                1,
+                argv,
+                output="",
+                stderr="permission denied",
+            )
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _failure)
+
+        listeners, completed = pc.probe_port_listeners(7777, process_pid=4242)
+
+        assert listeners == []
+        assert completed is False
+        assert captured["stderr"] is subprocess.PIPE
+
+    def test_posix_lookup_timeout_is_not_a_completed_probe(self, monkeypatch):
         if not pc.IS_POSIX:
             pytest.skip("POSIX lsof branch")
         captured: dict = {}
@@ -3440,8 +3892,152 @@ class TestFindListeningPidsErrors:
             raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
 
         monkeypatch.setattr(pc.subprocess, "check_output", _capture)
-        assert pc.find_port_listeners(7777) == []
+        listeners, completed = pc.probe_port_listeners(7777)
+        assert listeners == []
+        assert completed is False
         assert captured["kwargs"].get("timeout") == pc._LSOF_TIMEOUT_SECS
+
+    def test_linux_process_listener_probe_matches_the_child_socket_inode(
+        self, tmp_path, monkeypatch
+    ):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
+        )
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
+
+    def test_linux_process_listener_probe_rejects_an_inode_the_child_does_not_hold(
+        self, tmp_path, monkeypatch
+    ):
+        proc_root = tmp_path / "proc"
+        (proc_root / "net").mkdir(parents=True)
+        (proc_root / "4242" / "fd").mkdir(parents=True)
+        (proc_root / "4242" / "fd" / "7").touch()
+        (proc_root / "net" / "tcp").write_text(
+            "header\n"
+            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
+            "00:00000000 00000000 1000 0 12345\n",
+            encoding="ascii",
+        )
+        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[99999]")
+
+        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is False
+
+    def test_posix_process_listener_probe_scopes_lsof_to_the_child_pid(self, monkeypatch):
+        captured: dict = {}
+        blob = "p4242\ntIPv4\nn127.0.0.1:7777\n"
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/bin/lsof")
+
+        def _capture(argv, **kwargs):
+            captured["argv"] = list(argv)
+            return blob
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _capture)
+
+        assert pc.process_owns_loopback_listener(4242, 7777) is True
+        assert captured["argv"] == [
+            "/usr/bin/lsof",
+            "-nP",
+            "-a",
+            "-p",
+            "4242",
+            "-iTCP:7777",
+            "-sTCP:LISTEN",
+            "-Fptn",
+        ]
+
+    def test_windows_listener_owner_pids_use_in_process_tcp_tables(self, monkeypatch):
+        rows = {
+            False: [
+                types.SimpleNamespace(
+                    state=2,
+                    local_address=bytes([127, 0, 0, 1]),
+                    local_scope_id=0,
+                    local_port=7777,
+                    pid=4242,
+                ),
+                types.SimpleNamespace(
+                    state=2,
+                    local_address=bytes([0, 0, 0, 0]),
+                    local_scope_id=0,
+                    local_port=7777,
+                    pid=7777,
+                ),
+            ],
+            True: [
+                types.SimpleNamespace(
+                    state=2,
+                    local_address=bytes(16),
+                    local_scope_id=0,
+                    local_port=7777,
+                    pid=8888,
+                )
+            ],
+        }
+        calls = []
+
+        def _rows(ipv6, table_class):
+            calls.append((ipv6, table_class))
+            return rows[ipv6]
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_tcp_owner_rows", _rows, raising=False)
+
+        assert pc._windows_loopback_listener_owner_pids(7777) == {4242}
+        assert calls == [(False, 3), (True, 3)]
+
+        rows[True] = None
+        assert pc._windows_loopback_listener_owner_pids(7777) is None
+
+    @pytest.mark.parametrize(
+        ("owners", "expected"),
+        [
+            pytest.param({4242}, True, id="owned"),
+            pytest.param({7777}, False, id="foreign"),
+            pytest.param(None, None, id="table-failure"),
+        ],
+    )
+    def test_windows_process_listener_probe_uses_owner_pid_table(
+        self,
+        monkeypatch,
+        owners,
+        expected,
+    ):
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc,
+            "_windows_loopback_listener_owner_pids",
+            lambda port: owners,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            pc,
+            "probe_port_listeners",
+            lambda *args, **kwargs: pytest.fail("netstat must not be used"),
+        )
+
+        assert pc.process_owns_loopback_listener(4242, 7777) is expected
 
     def _fake_netstat(self, blob: str):
         """Return a fake subprocess.check_output that returns *blob*."""
@@ -3450,6 +4046,19 @@ class TestFindListeningPidsErrors:
             return blob
 
         return _run
+
+    def test_windows_lookup_error_is_not_a_completed_probe(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        _fake_windows_bins(monkeypatch)
+
+        def _boom(*args, **kwargs):
+            raise OSError("netstat unavailable")
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _boom)
+        listeners, completed = pc.probe_port_listeners(7777)
+        assert listeners == []
+        assert completed is False
 
     def test_windows_finds_ipv6_listener_via_netstat(self, monkeypatch):
         # Regression:. Windows netstat -ano prints IPv6 LISTEN rows

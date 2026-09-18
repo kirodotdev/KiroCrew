@@ -413,14 +413,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``capabilities.tailnet_origin`` ceiling at the enforcement call, and
         # never reached from a tool dispatch path.
         "dashboard/tailnet_serve.py::_run",
-        # PID-reuse guard for the app-backend reap, moved out of
-        # ``apps/backend.py::_proc_start_time`` so Windows gets a real answer
-        # instead of a blanket None. Only the macOS/other-POSIX arm spawns, and
-        # it is the same fixed ``ps -o lstart= -p <pid>`` argv the backend used
-        # before: no shell, the binary comes from ``trusted_system_bin`` rather
-        # than PATH, and the sole interpolated value is a pid the gateway itself
-        # recorded, rendered through ``str()``. Nothing here is agent-influenced.
-        "platform_compat.py::process_start_time",
+        # PID-reuse guard for app-backend reap and source-stable Browser
+        # descendant checks. Only the macOS/other-POSIX arm spawns, and it uses
+        # the fixed ``ps -o lstart= -p <pid>`` argv: no shell, the binary comes
+        # from ``trusted_system_bin`` rather than PATH, and the sole interpolated
+        # value is a pid the gateway itself recorded, rendered through ``str()``.
+        # Nothing here is agent-influenced.
+        "platform_compat.py::_process_lstart",
         "apps/backend.py::_resolve_nvm_path",
         # py-spy attach for `kirocrew perf sample --pid`: fixed list-argv (no
         # shell=True), binary resolved via shutil.which rather than from input,
@@ -1412,8 +1411,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # only caller-supplied element is the path being revealed — which is
         # passed as a later argv element, never as the command.
         "platform_compat.py::open_with_default_app",
-        "platform_compat.py::_posix_process_parent_map",
-        "platform_compat.py::find_port_listeners",
+        # Read-only process-table snapshot through the trusted absolute ``ps``
+        # binary. It uses fixed argv, no shell or cwd, and accepts no agent input.
+        # It cannot route through sandbox because sandbox imports this module.
+        "platform_compat.py::_posix_process_snapshot",
+        "platform_compat.py::probe_port_listeners",
         # Read-only kernel socket attribution: trusted absolute lsof binary,
         # fixed flags and a validated numeric port, no shell/user command.
         "platform_compat.py::_macos_tcp_peer_pid",

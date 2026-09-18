@@ -459,7 +459,9 @@ def _bsdinfo(ppid: int = 0, sec: int = 0, usec: int = 0) -> bytes:
     """A synthetic ``struct proc_bsdinfo`` with the three fields we read."""
 
     buf = bytearray(pc._DARWIN_BSDINFO_SIZE)
-    buf[16:20] = ppid.to_bytes(4, "little")
+    buf[
+        pc._DARWIN_PBI_PPID_OFFSET : pc._DARWIN_PBI_PPID_OFFSET + 4
+    ] = ppid.to_bytes(4, "little")
     buf[pc._DARWIN_OFF_START_TVSEC : pc._DARWIN_OFF_START_TVSEC + 8] = sec.to_bytes(8, "little")
     buf[pc._DARWIN_OFF_START_TVUSEC : pc._DARWIN_OFF_START_TVUSEC + 8] = usec.to_bytes(
         8, "little"
@@ -485,6 +487,8 @@ def _fake_libproc(
         return ret
 
     lib = types.SimpleNamespace(proc_pidinfo=_Fn(_proc_pidinfo))
+    monkeypatch.setattr(pc, "_darwin_libproc", None)
+    monkeypatch.setattr(pc, "_darwin_libproc_loaded", False)
     monkeypatch.setattr(pc.ctypes, "CDLL", lambda _p: lib)
 
 
@@ -565,6 +569,17 @@ class TestGetPpid:
 
 
 class TestGetProcessStartId:
+    def test_macos_reads_start_id_and_ppid_atomically(self, monkeypatch):
+        _fake_libproc(
+            monkeypatch,
+            payload=_bsdinfo(ppid=4321, sec=1700000000, usec=42),
+            ret=136,
+        )
+
+        assert pc.get_process_start_identity(5) == pc.ProcessStartIdentity(
+            "1700000000.000042", 4321
+        )
+
     def test_macos_formats_seconds_and_microseconds(self, monkeypatch):
         _fake_libproc(monkeypatch, payload=_bsdinfo(sec=1700000000, usec=42), ret=136)
         # Microsecond resolution is the point: two processes started in the same
