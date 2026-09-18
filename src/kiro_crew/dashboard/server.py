@@ -9,6 +9,7 @@ import faulthandler
 import functools
 import logging
 import os
+import socket
 import stat
 import sys
 import time
@@ -23,6 +24,7 @@ from kiro_crew import platform_compat, port_resolution
 from kiro_crew.apps.backend import start_deferred_app_backends, start_enabled_app_backends
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler
 from kiro_crew.apps.hooks_integration import (
+    _stop_spawned_backends,
     init_hooks_system,
     on_gateway_shutdown,
     on_gateway_startup,
@@ -1914,7 +1916,7 @@ async def _start_site(
                     outcome = ""
                 if outcome == RECLAIMED:
                     logger.warning(
-                        "Reclaimed port %d from a stale KiroCrew gateway — rebinding.",
+                        "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
                         port,
                     )
                 elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
@@ -1931,7 +1933,116 @@ async def _start_site(
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
     logger.error(
-        "Port %d still in use after %.0fs — is another KiroCrew gateway running?\n"
+        "Port %d still in use after %.0fs — is another Kiro Crew gateway running?\n"
+        "Stop it with: kirocrew stop  or  sudo systemctl stop kirocrew",
+        port,
+        retries * delay,
+    )
+    raise SystemExit(1) from last_exc
+
+
+def _bind_once(host: str, port: int) -> socket.socket:
+    """Bind and listen once, synchronously, for dashboard port reservation.
+
+    Family-resolved from *host* (KIROCREW_BIND may name an IPv6 address such
+    as ``::`` or an interface-specific literal — an AF_INET socket cannot bind
+    those). Callers run this off the event loop (``asyncio.to_thread``):
+    getaddrinfo on a non-literal host and the bind syscall are blocking work
+    that must not run on the sole loop (no-blocking-call-on-event-loop).
+    """
+    family = socket.AF_INET
+    with contextlib.suppress(OSError):
+        family = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)[
+            0
+        ][0]
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        # Match asyncio.create_server's socket posture. SO_REUSEADDR on POSIX
+        # lets our next generation rebind through TIME_WAIT. Windows requires
+        # exclusive ownership because SO_REUSEADDR allows a co-resident process
+        # to overlap a live listener.
+        if os.name == "posix":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        # An IPv6 wildcard must not silently expose the listener on IPv4 too.
+        if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        sock.bind((host, port))
+        # listen() IMMEDIATELY — this is load-bearing, not cosmetic. A
+        # SO_REUSEADDR socket that is bound but NOT listening permits a
+        # co-resident process to overlap-bind the same port (both the
+        # exact and the specific-over-wildcard forms) and steal the
+        # loopback callbacks carrying app secrets; entering TCP_LISTEN
+        # makes that bind a hard EADDRINUSE conflict. Listening does NOT
+        # serve anything: connections queue in the backlog until
+        # SockSite.start() attaches the HTTP protocol, so the boot pass stays
+        # race-free and an early child callback waits instead of being refused.
+        sock.listen(128)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+async def _reserve_dashboard_port(
+    host: str,
+    port: int,
+    *,
+    retries: int = 30,
+    delay: float = 0.5,
+    reclaim: Callable[[int], Awaitable[str]] | None = None,
+) -> socket.socket:
+    """Bind AND listen on the dashboard port; return the owned socket.
+
+    This is _start_site's reclaim/retry contract moved to the moment of BIND,
+    so the gateway OWNS its port before anything downstream (the app-backend
+    boot pass) acts on the port's value. Bound-and-LISTENING is the reserved
+    state: entering TCP_LISTEN is what makes any overlap bind a hard
+    EADDRINUSE for other processes (see the listen() note in _bind_once), yet
+    nothing is served — connections queue in the kernel backlog until the
+    runner wraps the socket in a SockSite and starts accepting. The bound
+    socket's real name is also what makes ``--port auto`` (port 0) knowable
+    BEFORE the app backends spawn.
+
+    Same recovery ladder as _start_site: first EADDRINUSE probes/reclaims a
+    stale Kiro Crew holder, otherwise wait up to retries*delay for a graceful
+    handover, then SystemExit(1). Non-EADDRINUSE OSErrors re-raise.
+    """
+    _reclaim = reclaim if reclaim is not None else reclaim_stale_gateway_port
+    last_exc: OSError | None = None
+    for attempt in range(retries):
+        try:
+            return await asyncio.to_thread(_bind_once, host, port)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            last_exc = exc
+            if attempt == 0:
+                try:
+                    outcome = await _reclaim(port)
+                except Exception:  # never let a reclaim bug block startup
+                    logger.exception(
+                        "Port %d reclaim probe failed — falling back to wait/retry.",
+                        port,
+                    )
+                    outcome = ""
+                if outcome == RECLAIMED:
+                    logger.warning(
+                        "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
+                        port,
+                    )
+                elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
+                    logger.warning(
+                        "Port %d in use — waiting up to %.0fs for the previous"
+                        " gateway to release it…",
+                        port,
+                        retries * delay,
+                    )
+            if attempt < retries - 1:
+                await asyncio.sleep(delay)
+    logger.error(
+        "Port %d still in use after %.0fs — is another Kiro Crew gateway running?\n"
         "Stop it with: kirocrew stop  or  sudo systemctl stop kirocrew",
         port,
         retries * delay,
@@ -4108,448 +4219,498 @@ async def start_dashboard(
     # gateway restart.
     setup_link_meta_routes(app)
 
-    # Start backends for enabled apps on the subprocess_executor bulkhead: the
-    # startup stale-reap shells out to `ps` per orphan and may SIGTERM→sleep→
-    # SIGKILL for seconds, and start_app_backend blocks on a survival poll — all
-    # wedge-prone blocking work that would freeze this event loop if run inline.
-    # subprocess_executor (not the default to_thread pool) isolates it so a hung
-    # `ps` cannot starve asyncio's default executor (the RFC's bulkhead intent).
-    # This wave runs BEFORE ``runner.setup()`` so an app's startup hooks find its
-    # backend running. The one exception is deferred: a backend that is handed the
-    # gateway's actually-bound port at spawn (``KIROCREW_BOUND_PORT``) is started
-    # after ``_export_bound_port`` below, because that value does not exist yet.
-    await cautious_boot.pause_before("app backends")
-    started_apps = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), start_enabled_app_backends
-    )
-    if started_apps:
-        logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
+    # Reserve the dashboard port BEFORE the app-backend boot pass below, and
+    # publish the reserved socket's REAL name as bound-port evidence (the
+    # origin/proof injection in apps.backend is fail-closed on
+    # KIROCREW_BOUND_PORT). Bound-and-LISTENING is the point: this gateway
+    # OWNS the port kernel-hard — a squatter cannot overlap-bind it while
+    # backends spawn trusting its value, which is what made exporting the mere
+    # CONFIGURED port a credential-exposure window (a backend would present
+    # its X-App-Secret to whatever answered there). Nothing is served yet —
+    # connections queue in the backlog until the runner wraps this socket and
+    # starts accepting — so no HTTP lifecycle handler can race the boot pass,
+    # and an early child callback waits instead of being refused. Binding here
+    # also makes --port auto (port == 0) real before the spawn: every
+    # boot-spawned backend gets the true origin, fixed and auto alike.
+    _dashboard_sock = await _reserve_dashboard_port(bind_address_for(local_only), port)
+    runner: web.AppRunner | None = None
+    try:
+        os.environ["KIROCREW_BOUND_PORT"] = str(_dashboard_sock.getsockname()[1])
+        # Callback-host evidence, classified by FAMILY. IPv4 loopback and
+        # wildcard binds are reachable at 127.0.0.1 (absent var = that
+        # default, the shape every existing bound-port consumer assumes). An
+        # IPv6 loopback or wildcard bind is NOT: KIROCREW_BIND=::1 listens
+        # only on the v6 loopback and leaves IPv4 127.0.0.1:<port> unbound —
+        # seizable by a co-resident, which would then receive the backends'
+        # secrets — so those export ::1 (reaches a v6-loopback, v6-wildcard,
+        # and dual-stack listener alike; the injection brackets it). A
+        # SPECIFIC-interface bind of either family exports its own address.
+        _bind_ip = str(_dashboard_sock.getsockname()[0])
+        if _bind_ip in ("::", "::1"):
+            os.environ["KIROCREW_BOUND_HOST"] = "::1"
+        elif _bind_ip in ("0.0.0.0", "127.0.0.1", ""):
+            os.environ.pop("KIROCREW_BOUND_HOST", None)
+        else:
+            os.environ["KIROCREW_BOUND_HOST"] = _bind_ip
 
-    # Both adapters are shared with the enable path (apps/routes.py) so the two
-    # entry points cannot drift into giving an app different capabilities.
-    from kiro_crew.apps.event_bus import build_broadcast_fn
-    from kiro_crew.apps.spawn_sdk import build_spawn_impl
+        # Start backends for enabled apps on the subprocess_executor bulkhead:
+        # the startup stale-reap shells out to `ps` per orphan and may SIGTERM→
+        # sleep→SIGKILL for seconds, and start_app_backend blocks on a survival
+        # poll — all wedge-prone blocking work that would freeze this event loop
+        # if run inline. subprocess_executor (not the default to_thread pool)
+        # isolates it so a hung `ps` cannot starve asyncio's default executor
+        # (the RFC's bulkhead intent).
+        await cautious_boot.pause_before("app backends")
+        started_apps = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), start_enabled_app_backends
+        )
+        if started_apps:
+            logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
 
-    _app_event_broadcast = build_broadcast_fn(state.broadcast_ws)
-    _app_spawn = build_spawn_impl(state.subagents)
+        # Both adapters are shared with the enable path (apps/routes.py) so the two
+        # entry points cannot drift into giving an app different capabilities.
+        from kiro_crew.apps.event_bus import build_broadcast_fn
+        from kiro_crew.apps.spawn_sdk import build_spawn_impl
 
-    # Initialize App SDK Gateway Hooks system
-    init_hooks_system(
-        app,
-        cron_service=state.crons,
-        broadcast_fn=_app_event_broadcast,
-        spawn_impl=_app_spawn,
-    )
+        _app_event_broadcast = build_broadcast_fn(state.broadcast_ws)
+        _app_spawn = build_spawn_impl(state.subagents)
 
-    async def _hooks_startup(app_: web.Application) -> None:
-        await on_gateway_startup(
+        # Initialize App SDK Gateway Hooks system
+        init_hooks_system(
+            app,
             cron_service=state.crons,
             broadcast_fn=_app_event_broadcast,
             spawn_impl=_app_spawn,
         )
-        # App dev-mode live reload: watch dev-flagged apps' ui/ dirs and
-        # broadcast app_reload WS events on change (see apps/dev_mode.py).
-        from kiro_crew.apps.dev_mode import init_dev_mode_watcher
 
-        await init_dev_mode_watcher(state.broadcast_ws)
-
-        # App hook reconciler: the CLI (`kirocrew app enable/disable/install/
-        # uninstall`) mutates apps on disk in a DIFFERENT process and never
-        # notifies this gateway, so without reconciliation a CLI reinstall leaves
-        # the old backend.hooks module live, its on_startup task running, and its
-        # .app_secret stale. This poll reloads changed hooks in-process — the same
-        # "CLI writes disk, gateway reconciles" contract already used for crons
-        # and UI files. Started AFTER on_gateway_startup so the boot pass has
-        # already recorded its loaded-hook signatures in the shared registry and
-        # the reconciler's first tick sees no drift. Synchronous + IO-free, so it
-        # adds nothing before the dashboard socket binds.
-        init_hook_reconciler(
-            cron_service=state.crons,
-            broadcast_fn=_app_event_broadcast,
-            spawn_impl=_app_spawn,
-        )
-
-    app.on_startup.append(_hooks_startup)
-
-    async def _hooks_shutdown(app_: web.Application) -> None:
-        # Stop the background pollers BEFORE the gateway hook shutdown sweep.
-        # The reconciler and the dev-mode watcher can each LOAD/START app hooks
-        # on a tick; if either is still live while on_gateway_shutdown() tears
-        # hooks down, a poll landing mid-sweep could re-import a module or spawn
-        # an on_startup task AFTER it was torn down, so that app's code would
-        # survive an in-process gateway restart. Cancelling them first also stops
-        # their module-global tasks from leaking stale gateway service handles /
-        # a stale broadcast_ws across the restart. Await cancellation so neither
-        # can fire one more tick during the sweep.
-        from kiro_crew.apps.dev_mode import stop_dev_mode_watcher
-
-        # on_gateway_shutdown() is the sweep that actually tears down app
-        # backends; it MUST run even if stopping a poller hangs (its bounded
-        # drain can burn its budget) or raises, otherwise a spawned app backend
-        # survives gateway exit. Stop the pollers first (preserving the
-        # no-tick-during-sweep ordering) but never let a stop failure abort the
-        # sweep: catch and log it, then always run on_gateway_shutdown.
-        try:
-            await stop_dev_mode_watcher()
-            await stop_hook_reconciler()
-        except Exception:
-            logger.exception(
-                "Error stopping background pollers on shutdown; proceeding to the "
-                "gateway hook shutdown sweep so app backends are torn down"
+        async def _hooks_startup(app_: web.Application) -> None:
+            await on_gateway_startup(
+                cron_service=state.crons,
+                broadcast_fn=_app_event_broadcast,
+                spawn_impl=_app_spawn,
             )
-        await on_gateway_shutdown()
+            # App dev-mode live reload: watch dev-flagged apps' ui/ dirs and
+            # broadcast app_reload WS events on change (see apps/dev_mode.py).
+            from kiro_crew.apps.dev_mode import init_dev_mode_watcher
 
-    app.on_cleanup.append(_hooks_shutdown)
+            await init_dev_mode_watcher(state.broadcast_ws)
 
-    # Edition-contributed dashboard routes + background services (CPP
-    # DashboardContributor seam). The Default contributes nothing, so the public
-    # dashboard is unchanged. Routes are mounted HERE — before the SPA static
-    # catch-all below and well before ``runner.setup()`` freezes the route table
-    # and the on_startup/on_cleanup signal lists (see _register_instances_hooks).
-    # Fail-closed: a non-standalone host that cannot compose its companion raises.
-    safe_context_call(
-        lambda: current_context().dashboard.contribute_routes(app),
-        fallback=None,
-        log_message="dashboard.contribute_routes failed; no edition routes mounted",
-    )
+            # App hook reconciler: the CLI (`kirocrew app enable/disable/install/
+            # uninstall`) mutates apps on disk in a DIFFERENT process and never
+            # notifies this gateway, so without reconciliation a CLI reinstall leaves
+            # the old backend.hooks module live, its on_startup task running, and its
+            # .app_secret stale. This poll reloads changed hooks in-process — the same
+            # "CLI writes disk, gateway reconciles" contract already used for crons
+            # and UI files. Started AFTER on_gateway_startup so the boot pass has
+            # already recorded its loaded-hook signatures in the shared registry and
+            # the reconciler's first tick sees no drift. Synchronous + IO-free, so it
+            # adds nothing before the dashboard socket binds.
+            init_hook_reconciler(
+                cron_service=state.crons,
+                broadcast_fn=_app_event_broadcast,
+                spawn_impl=_app_spawn,
+            )
 
-    # The service lifecycle hooks are async; they route through
-    # ``async_safe_context_call`` so they share the SAME fail-closed discipline as
-    # every sync seam call (re-raise ``PlatformCompositionError`` from a host that
-    # could not compose its companion; degrade any other transient service error,
-    # logged, rather than bricking the gateway start/stop) — kept in one place so
-    # a future fail-closed policy change cannot diverge per hand-written copy.
-    async def _contrib_startup(app_: web.Application) -> None:
-        await async_safe_context_call(
-            lambda: current_context().dashboard.start_services(app_),
-            fallback=None,
-            log_message="dashboard.start_services failed; no edition services",
-        )
+        app.on_startup.append(_hooks_startup)
 
-    async def _contrib_shutdown(app_: web.Application) -> None:
-        await async_safe_context_call(
-            lambda: current_context().dashboard.stop_services(app_),
-            fallback=None,
-            log_message="dashboard.stop_services failed",
-        )
+        async def _hooks_shutdown(app_: web.Application) -> None:
+            # Stop the background pollers BEFORE the gateway hook shutdown sweep.
+            # The reconciler and the dev-mode watcher can each LOAD/START app hooks
+            # on a tick; if either is still live while on_gateway_shutdown() tears
+            # hooks down, a poll landing mid-sweep could re-import a module or spawn
+            # an on_startup task AFTER it was torn down, so that app's code would
+            # survive an in-process gateway restart. Cancelling them first also stops
+            # their module-global tasks from leaking stale gateway service handles /
+            # a stale broadcast_ws across the restart. Await cancellation so neither
+            # can fire one more tick during the sweep.
+            from kiro_crew.apps.dev_mode import stop_dev_mode_watcher
 
-    app.on_startup.append(_contrib_startup)
-    app.on_cleanup.append(_contrib_shutdown)
-
-    # Static files — prefer React dist/ build, fall back to legacy static/
-    if _DIST_DIR.is_dir():
-        _register_dist_static_routes(app, _DIST_DIR)
-    if _STATIC_DIR.is_dir():
-        app.router.add_static(
-            "/static",
-            _STATIC_DIR,
-            show_index=False,
-            append_version=True,
-        )
-    else:
-        logger.warning("Static dir not found: %s", _STATIC_DIR)
-
-    # ── Middleware ────────────────────────────────────────────────────────────
-
-    # No-cache: prevents Chrome from caching stale assets
-    @web.middleware  # type: ignore[misc]
-    async def no_cache_middleware(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        resp = await handler(request)  # type: ignore[operator]
-        if hasattr(resp, "headers"):
-            _apply_security_headers(resp, request.app, request.path, request)
-        return resp  # type: ignore[return-value]
-
-    # The static handler's FileResponse decides 200-vs-404 only in prepare(),
-    # after the middleware above has already stamped immutable. This hook sees
-    # the final status and strips immutable from any /assets/ error.
-    _install_asset_cache_control_finalizer(app)
-
-    # SPA fallback: serve index.html for client-side React Router paths.
-    # Uses the same _is_spa_shell_request predicate as the auth middleware so
-    # the two layers never drift. Bare /apps/{name} paths (no sub-path) are
-    # treated as SPA navigations and served index.html — this fixes browser
-    # refresh on e.g. /apps/code-review-sage which has no server-side route.
-    @web.middleware  # type: ignore[misc]
-    async def spa_fallback(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        try:
-            return await handler(request)  # type: ignore[operator]
-        except web.HTTPNotFound:
-            if _is_spa_shell_request(request):
-                return await handlers.index(request)
-            raise
-
-    # SEL: log mutating API operations
-    _sel_log_methods = {"POST", "PUT", "DELETE", "PATCH"}
-
-    @web.middleware  # type: ignore[misc]
-    async def sel_audit_middleware(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        if request.method in _sel_log_methods and request.path.startswith("/api/"):
-            # Claim only what this middleware actually records. Its except arm
-            # logs a refusal raised below this point, so the boundary must not
-            # add a second entry for it — but a request OUTSIDE this branch is
-            # logged nowhere here, and claiming it would hand the boundary a
-            # promise no one keeps (a cross-origin WebSocket GET refused in its
-            # handler would be silently unaudited).
-            mark_audit_claimed(request)
-            from kiro_crew.sel import sel
-
+            # on_gateway_shutdown() is the sweep that actually tears down app
+            # backends; it MUST run even if stopping a poller hangs (its bounded
+            # drain can burn its budget) or raises, otherwise a spawned app backend
+            # survives gateway exit. Stop the pollers first (preserving the
+            # no-tick-during-sweep ordering) but never let a stop failure abort the
+            # sweep: catch and log it, then always run on_gateway_shutdown.
             try:
-                resp = await handler(request)  # type: ignore[operator]
-                sel().log_api_access(
-                    caller="dashboard_user",
-                    operation=f"{request.method} {request.path}",
-                    outcome="ok" if resp.status < 400 else "error",
-                    resources=request.path,
+                await stop_dev_mode_watcher()
+                await stop_hook_reconciler()
+            except Exception:
+                logger.exception(
+                    "Error stopping background pollers on shutdown; proceeding to the "
+                    "gateway hook shutdown sweep so app backends are torn down"
                 )
-                return resp  # type: ignore[return-value]
-            except Exception as exc:
-                sel().log_api_access(
-                    caller="dashboard_user",
-                    operation=f"{request.method} {request.path}",
-                    outcome="error",
-                    resources=request.path,
-                    error=str(exc)[:200],
-                )
-                raise
-        return await handler(request)  # type: ignore[operator]
+            await on_gateway_shutdown()
 
-    # Tailnet origin (RFC §4): this machine's own MagicDNS name, so
-    # `tailscale serve` works without the operator hand-writing dashboard.url.
-    # Off by default; resolved in a thread so the daemon call cannot stall the
-    # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
-    # validated.
-    _cfg = KiroCrewConfig.load()
-    _ts_cfg = _cfg.dashboard.tailscale
-    _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
-    # Identity trust (RFC §2–§3.1): validated at config load, governance
-    # ceiling applied inside the shared helper — ONE code path for both
-    # startup surfaces, so they cannot drift.
-    _tailnet_trust = await tailnet.governed_tailnet_trust(
-        _ts_cfg.trust_identity,
-        tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
-        _ts_cfg.pin_scope,
-        bind_refresh_chains=_ts_cfg.bind_refresh_chains,
-        # An unreadable tailnet policy resolves allowed_logins to [] and so
-        # trust_identity to False, which is "no login restriction". The values
-        # alone cannot tell that from "never configured"; degraded_sections can.
-        identity_unknown=tailnet_identity_unknown(_cfg.degraded_sections),
-        unreadable_files=tuple(degraded_config_files(_cfg.degraded_sections)),
-    )
-    if _tailnet_host:
-        logger.info(
-            "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
-            _tailnet_host,
+        app.on_cleanup.append(_hooks_shutdown)
+
+        # Edition-contributed dashboard routes + background services (CPP
+        # DashboardContributor seam). The Default contributes nothing, so the public
+        # dashboard is unchanged. Routes are mounted HERE — before the SPA static
+        # catch-all below and well before ``runner.setup()`` freezes the route table
+        # and the on_startup/on_cleanup signal lists (see _register_instances_hooks).
+        # Fail-closed: a non-standalone host that cannot compose its companion raises.
+        safe_context_call(
+            lambda: current_context().dashboard.contribute_routes(app),
+            fallback=None,
+            log_message="dashboard.contribute_routes failed; no edition routes mounted",
         )
-    # Keep the initial snapshot on both startup surfaces for compatibility.
-    # Runtime-aware handlers read the mutable state installed below, which can
-    # acquire one validated origin after a Tailscale/Gateway boot race.
-    app["tailnet_host"] = _tailnet_host
-    app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
-    # The governance-filtered identity-trust value the middleware was built
-    # with, for handlers the middleware bypasses (POST /api/auth/refresh must
-    # re-bind a rotated access token to the same verified peer identity).
-    app["tailnet_trust"] = _tailnet_trust
-    app["allowed_origins"] = build_allowed_origins(
-        port, local_only, configured_host, tailnet_host=_tailnet_host
-    )
-    # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
-    # the browser and gateway are co-located on localhost.
-    app["local_only"] = local_only
 
-    # DNS-rebinding defense-in-depth — shared factory (single source of truth
-    # for the barrier AND the PROBE_PATHS exemption; see
-    # _make_host_validation_middleware).
-    host_validation_middleware = _make_host_validation_middleware("dashboard_user")
-    # Same factory as the headless server's barrier, so the CSRF exemption set is
-    # one decision rather than two (see _make_csrf_middleware).
-    csrf_middleware = _make_csrf_middleware("dashboard_user")
-    # Audit boundary for refusals raised before sel_audit_middleware runs. Same
-    # factory as the headless server's, so the guarantee cannot hold on one
-    # entrypoint and not the other (see _make_deny_audit_middleware).
-    deny_audit_middleware = _make_deny_audit_middleware("dashboard_user")
-
-    # Generate per-session secret for local app / IPC authentication.
-    # NOTE: file write (and parent mkdir) deferred until after port bind
-    # succeeds — both live in _write_secret_file, offloaded below — to avoid
-    # poisoning the secret file when a second instance fails to start and to
-    # keep blocking fs I/O off the event loop.
-    _secret_path = data_home() / ".local_secret"
-    _internal_secret = os.urandom(16).hex()
-    app["local_secret"] = _internal_secret
-
-    # Host canonicalization: converge loopback aliases (127.0.0.1 / localhost /
-    # kirocrew.localhost) onto a single origin so the SPA's per-origin
-    # localStorage (theme, zoom, layout, notifications, ...) is never split
-    # across hostnames. localStorage keys on scheme://host:port, so reaching the
-    # dashboard on "localhost" one time and "kirocrew.localhost" the next (e.g.
-    # `kirocrew token` printing localhost while the gateway
-    # auto-opens kirocrew.localhost) lands the browser in a different, empty
-    # bucket and all settings appear reset. The canonical host is resolved once
-    # at startup (it is stable for the gateway's lifetime). Only top-level
-    # document GET/HEAD navigations on a non-canonical loopback alias are
-    # redirected (see should_canonicalize_host); APIs, WebSockets, and
-    # sub-resource fetches are untouched — once the document settles on the
-    # canonical host every later request is already canonical. Disabled unless
-    # local_only, so reverse-proxy / remote-host deployments are never affected.
-    _canonical_host = resolve_dashboard_host(local_only) if local_only else ""
-
-    host_canonical_redirect = build_host_canonical_redirect(_canonical_host)
-
-    # Warm the auth singletons (signing secret + revoked-nonce store) off the
-    # event loop BEFORE building the middleware chain, so no blocking key-file
-    # I/O lands on the loop on the first auth op.
-    await warm_auth_singletons()
-
-    # Warm the SecurityEventLog singleton off the loop before any handler or
-    # middleware can be its first touch, so a first ``log_api_access`` is a
-    # non-blocking enqueue on every path — call sites need no per-site
-    # ``asyncio.to_thread`` hop. Best-effort inside the helper: a
-    # failed warm never blocks readiness.
-    await warm_sel_singleton()
-
-    # Explicit middleware ordering — self-documenting and immune to future insertions
-    app.middlewares[:] = [
-        # Outermost: privacy-safe per-route latency. Times the FULL
-        # in-gateway handling (all middleware + handler). Labels are limited to
-        # method / bounded route_template / status_class — never a real path,
-        # query, id, or body — so it cannot leak content or explode cardinality.
-        make_route_latency_middleware(),
-        # Outer to every barrier that can refuse, so a pre-audit 403 is recorded
-        # by POSITION rather than by each deny site remembering to. Inner to the
-        # latency middleware only, which keeps that one's "times the FULL
-        # in-gateway handling" contract intact.
-        deny_audit_middleware,
-        host_canonical_redirect,
-        host_validation_middleware,
-        no_cache_middleware,
-        csrf_middleware,
-        token_auth_middleware(
-            internal_paths=_STRICT_INTERNAL_API_PATHS,
-            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
-            internal_secret=_internal_secret,
-            port=port,
-            local_only=local_only,
-            spa_shell_handler=handlers.index,
-            tailnet_trust=_tailnet_trust,
-        ),
-        sel_audit_middleware,
-        spa_fallback,
-    ]
-
-    # Verify security invariant: if dashboard_url expands the CSRF origin
-    # set for a remote URL, token auth middleware MUST be active.
-    if dashboard_url:
-        _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
-        if _has_token_auth:
-            app["allowed_origins"] = build_allowed_origins(
-                port, local_only, configured_host, dashboard_url, tailnet_host=_tailnet_host
+        # The service lifecycle hooks are async; they route through
+        # ``async_safe_context_call`` so they share the SAME fail-closed discipline as
+        # every sync seam call (re-raise ``PlatformCompositionError`` from a host that
+        # could not compose its companion; degrade any other transient service error,
+        # logged, rather than bricking the gateway start/stop) — kept in one place so
+        # a future fail-closed policy change cannot diverge per hand-written copy.
+        async def _contrib_startup(app_: web.Application) -> None:
+            await async_safe_context_call(
+                lambda: current_context().dashboard.start_services(app_),
+                fallback=None,
+                log_message="dashboard.start_services failed; no edition services",
             )
-            logger.info(
-                "dashboard_url=%s: added to CSRF allowed origins (token auth verified)",
-                dashboard_url,
+
+        async def _contrib_shutdown(app_: web.Application) -> None:
+            await async_safe_context_call(
+                lambda: current_context().dashboard.stop_services(app_),
+                fallback=None,
+                log_message="dashboard.stop_services failed",
+            )
+
+        app.on_startup.append(_contrib_startup)
+        app.on_cleanup.append(_contrib_shutdown)
+
+        # Static files — prefer React dist/ build, fall back to legacy static/
+        if _DIST_DIR.is_dir():
+            _register_dist_static_routes(app, _DIST_DIR)
+        if _STATIC_DIR.is_dir():
+            app.router.add_static(
+                "/static",
+                _STATIC_DIR,
+                show_index=False,
+                append_version=True,
             )
         else:
-            logger.error(
-                "dashboard_url=%s requires token auth — refusing to start without it. "
-                "Enable Slack or remove dashboard.url from config.",
-                dashboard_url,
+            logger.warning("Static dir not found: %s", _STATIC_DIR)
+
+        # ── Middleware ────────────────────────────────────────────────────────────
+
+        # No-cache: prevents Chrome from caching stale assets
+        @web.middleware  # type: ignore[misc]
+        async def no_cache_middleware(
+            request: web.Request,
+            handler: object,
+        ) -> web.StreamResponse:
+            resp = await handler(request)  # type: ignore[operator]
+            if hasattr(resp, "headers"):
+                _apply_security_headers(resp, request.app, request.path, request)
+            return resp  # type: ignore[return-value]
+
+        # The static handler's FileResponse decides 200-vs-404 only in prepare(),
+        # after the middleware above has already stamped immutable. This hook sees
+        # the final status and strips immutable from any /assets/ error.
+        _install_asset_cache_control_finalizer(app)
+
+        # SPA fallback: serve index.html for client-side React Router paths.
+        # Uses the same _is_spa_shell_request predicate as the auth middleware so
+        # the two layers never drift. Bare /apps/{name} paths (no sub-path) are
+        # treated as SPA navigations and served index.html — this fixes browser
+        # refresh on e.g. /apps/code-review-sage which has no server-side route.
+        @web.middleware  # type: ignore[misc]
+        async def spa_fallback(
+            request: web.Request,
+            handler: object,
+        ) -> web.StreamResponse:
+            try:
+                return await handler(request)  # type: ignore[operator]
+            except web.HTTPNotFound:
+                if _is_spa_shell_request(request):
+                    return await handlers.index(request)
+                raise
+
+        # SEL: log mutating API operations
+        _sel_log_methods = {"POST", "PUT", "DELETE", "PATCH"}
+
+        @web.middleware  # type: ignore[misc]
+        async def sel_audit_middleware(
+            request: web.Request,
+            handler: object,
+        ) -> web.StreamResponse:
+            if request.method in _sel_log_methods and request.path.startswith("/api/"):
+                # Claim only what this middleware actually records. Its except arm
+                # logs a refusal raised below this point, so the boundary must not
+                # add a second entry for it — but a request OUTSIDE this branch is
+                # logged nowhere here, and claiming it would hand the boundary a
+                # promise no one keeps (a cross-origin WebSocket GET refused in its
+                # handler would be silently unaudited).
+                mark_audit_claimed(request)
+                from kiro_crew.sel import sel
+
+                try:
+                    resp = await handler(request)  # type: ignore[operator]
+                    sel().log_api_access(
+                        caller="dashboard_user",
+                        operation=f"{request.method} {request.path}",
+                        outcome="ok" if resp.status < 400 else "error",
+                        resources=request.path,
+                    )
+                    return resp  # type: ignore[return-value]
+                except Exception as exc:
+                    sel().log_api_access(
+                        caller="dashboard_user",
+                        operation=f"{request.method} {request.path}",
+                        outcome="error",
+                        resources=request.path,
+                        error=str(exc)[:200],
+                    )
+                    raise
+            return await handler(request)  # type: ignore[operator]
+
+        # Tailnet origin (RFC §4): this machine's own MagicDNS name, so
+        # `tailscale serve` works without the operator hand-writing dashboard.url.
+        # Off by default; resolved in a thread so the daemon call cannot stall the
+        # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
+        # validated.
+        _cfg = KiroCrewConfig.load()
+        _ts_cfg = _cfg.dashboard.tailscale
+        _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
+        # Identity trust (RFC §2–§3.1): validated at config load, governance
+        # ceiling applied inside the shared helper — ONE code path for both
+        # startup surfaces, so they cannot drift.
+        _tailnet_trust = await tailnet.governed_tailnet_trust(
+            _ts_cfg.trust_identity,
+            tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
+            _ts_cfg.pin_scope,
+            bind_refresh_chains=_ts_cfg.bind_refresh_chains,
+            # An unreadable tailnet policy resolves allowed_logins to [] and so
+            # trust_identity to False, which is "no login restriction". The values
+            # alone cannot tell that from "never configured"; degraded_sections can.
+            identity_unknown=tailnet_identity_unknown(_cfg.degraded_sections),
+            unreadable_files=tuple(degraded_config_files(_cfg.degraded_sections)),
+        )
+        if _tailnet_host:
+            logger.info(
+                "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
+                _tailnet_host,
             )
-            raise RuntimeError("dashboard_url requires token auth middleware")
+        # Keep the initial snapshot on both startup surfaces for compatibility.
+        # Runtime-aware handlers read the mutable state installed below, which can
+        # acquire one validated origin after a Tailscale/Gateway boot race.
+        app["tailnet_host"] = _tailnet_host
+        app["tailnet_resolved_at"] = int(time.time()) if _tailnet_host else 0
+        # The governance-filtered identity-trust value the middleware was built
+        # with, for handlers the middleware bypasses (POST /api/auth/refresh must
+        # re-bind a rotated access token to the same verified peer identity).
+        app["tailnet_trust"] = _tailnet_trust
+        app["allowed_origins"] = build_allowed_origins(
+            port, local_only, configured_host, tailnet_host=_tailnet_host
+        )
+        # Exposed to handlers (e.g. knowledge.pick_folder) that only make sense when
+        # the browser and gateway are co-located on localhost.
+        app["local_only"] = local_only
 
-    # Register only after the final allowed-origin set is selected.  The startup
-    # hook schedules a sleeping background task and returns immediately, so this
-    # cannot extend listener startup; cleanup owns cancellation before aiohttp
-    # freezes the signal lists in runner.setup().
-    tailnet.install_tailnet_origin_recovery(
-        app,
-        enabled=_ts_cfg.enabled,
-        initial_host=_tailnet_host,
-        load_enabled=_tailnet_origin_enabled,
-    )
+        # DNS-rebinding defense-in-depth — shared factory (single source of truth
+        # for the barrier AND the PROBE_PATHS exemption; see
+        # _make_host_validation_middleware).
+        host_validation_middleware = _make_host_validation_middleware("dashboard_user")
+        # Same factory as the headless server's barrier, so the CSRF exemption set is
+        # one decision rather than two (see _make_csrf_middleware).
+        csrf_middleware = _make_csrf_middleware("dashboard_user")
+        # Audit boundary for refusals raised before sel_audit_middleware runs. Same
+        # factory as the headless server's, so the guarantee cannot hold on one
+        # entrypoint and not the other (see _make_deny_audit_middleware).
+        deny_audit_middleware = _make_deny_audit_middleware("dashboard_user")
 
-    # ── Loop stall watchdog shutdown ─────────────────────────────────────────
-    # Register the cleanup hook HERE, before ``runner.setup()`` freezes the
-    # app's signal lists (appending after setup raises "Cannot modify frozen
-    # list"). The watchdog itself is created after ``runner.setup()`` and stored
-    # on ``state._loop_watchdog``; this hook only fires at shutdown — long after
-    # that assignment — so the lazy ``getattr`` always resolves it.
-    async def _watchdog_shutdown(app_: web.Application) -> None:
-        wd = getattr(state, "_loop_watchdog", None)
-        if wd is not None:
-            wd.stop()
+        # Generate per-session secret for local app / IPC authentication.
+        # NOTE: file write (and parent mkdir) deferred until after port bind
+        # succeeds — both live in _write_secret_file, offloaded below — to avoid
+        # poisoning the secret file when a second instance fails to start and to
+        # keep blocking fs I/O off the event loop.
+        _secret_path = data_home() / ".local_secret"
+        _internal_secret = os.urandom(16).hex()
+        app["local_secret"] = _internal_secret
 
-    app.on_cleanup.append(_watchdog_shutdown)
+        # Host canonicalization: converge loopback aliases (127.0.0.1 / localhost /
+        # kirocrew.localhost) onto a single origin so the SPA's per-origin
+        # localStorage (theme, zoom, layout, notifications, ...) is never split
+        # across hostnames. localStorage keys on scheme://host:port, so reaching the
+        # dashboard on "localhost" one time and "kirocrew.localhost" the next (e.g.
+        # `kirocrew token` printing localhost while the gateway
+        # auto-opens kirocrew.localhost) lands the browser in a different, empty
+        # bucket and all settings appear reset. The canonical host is resolved once
+        # at startup (it is stable for the gateway's lifetime). Only top-level
+        # document GET/HEAD navigations on a non-canonical loopback alias are
+        # redirected (see should_canonicalize_host); APIs, WebSockets, and
+        # sub-resource fetches are untouched — once the document settles on the
+        # canonical host every later request is already canonical. Disabled unless
+        # local_only, so reverse-proxy / remote-host deployments are never affected.
+        _canonical_host = resolve_dashboard_host(local_only) if local_only else ""
 
-    # ── Prevent-sleep inhibitor shutdown ─────────────────────────────────────
-    # Registered HERE (before runner.setup freezes the signal lists) for the
-    # same reason as the watchdog hook above. The inhibitor + poll task are
-    # created after runner.setup by _arm_prevent_sleep_poll and released here.
-    _register_prevent_sleep_shutdown(app, state)
+        host_canonical_redirect = build_host_canonical_redirect(_canonical_host)
 
-    async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
-        await app_["kiro_prerequisite_service"].close()
+        # Warm the auth singletons (signing secret + revoked-nonce store) off the
+        # event loop BEFORE building the middleware chain, so no blocking key-file
+        # I/O lands on the loop on the first auth op.
+        await warm_auth_singletons()
 
-    app.on_cleanup.append(_kiro_prerequisite_shutdown)
+        # Warm the SecurityEventLog singleton off the loop before any handler or
+        # middleware can be its first touch, so a first ``log_api_access`` is a
+        # non-blocking enqueue on every path — call sites need no per-site
+        # ``asyncio.to_thread`` hop. Best-effort inside the helper: a
+        # failed warm never blocks readiness.
+        await warm_sel_singleton()
 
-    async def _kas_login_shutdown(app_: web.Application) -> None:
-        # Releases the service's aiohttp session IF a KAS request created it. It is
-        # lazily built on first use (never at boot), so an app that never served a
-        # KAS request has nothing to close.
-        service = app_.get("kas_login_service")
-        if service is not None:
-            await service.close()
+        # Explicit middleware ordering — self-documenting and immune to future insertions
+        app.middlewares[:] = [
+            # Outermost: privacy-safe per-route latency. Times the FULL
+            # in-gateway handling (all middleware + handler). Labels are limited to
+            # method / bounded route_template / status_class — never a real path,
+            # query, id, or body — so it cannot leak content or explode cardinality.
+            make_route_latency_middleware(),
+            # Outer to every barrier that can refuse, so a pre-audit 403 is recorded
+            # by POSITION rather than by each deny site remembering to. Inner to the
+            # latency middleware only, which keeps that one's "times the FULL
+            # in-gateway handling" contract intact.
+            deny_audit_middleware,
+            host_canonical_redirect,
+            host_validation_middleware,
+            no_cache_middleware,
+            csrf_middleware,
+            token_auth_middleware(
+                internal_paths=_STRICT_INTERNAL_API_PATHS,
+                mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+                internal_secret=_internal_secret,
+                port=port,
+                local_only=local_only,
+                spa_shell_handler=handlers.index,
+                tailnet_trust=_tailnet_trust,
+            ),
+            sel_audit_middleware,
+            spa_fallback,
+        ]
 
-    app.on_cleanup.append(_kas_login_shutdown)
+        # Verify security invariant: if dashboard_url expands the CSRF origin
+        # set for a remote URL, token auth middleware MUST be active.
+        if dashboard_url:
+            _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
+            if _has_token_auth:
+                app["allowed_origins"] = build_allowed_origins(
+                    port, local_only, configured_host, dashboard_url, tailnet_host=_tailnet_host
+                )
+                logger.info(
+                    "dashboard_url=%s: added to CSRF allowed origins (token auth verified)",
+                    dashboard_url,
+                )
+            else:
+                logger.error(
+                    "dashboard_url=%s requires token auth — refusing to start without it. "
+                    "Enable Slack or remove dashboard.url from config.",
+                    dashboard_url,
+                )
+                raise RuntimeError("dashboard_url requires token auth middleware")
 
-    # Releases the resident speech model (148MB default, 1.6GB largest) when idle
-    # and at shutdown. Registered here, before runner.setup freezes the signal lists.
-    _register_stt_hooks(app)
-    # Live config: one poller for every writer (dashboard, CLI, $EDITOR), started
-    # on_startup because it needs the running loop; primed with this boot's config.
-    _register_config_watch(app, state, _cfg)
+        # Register only after the final allowed-origin set is selected.  The startup
+        # hook schedules a sleeping background task and returns immediately, so this
+        # cannot extend listener startup; cleanup owns cancellation before aiohttp
+        # freezes the signal lists in runner.setup().
+        tailnet.install_tailnet_origin_recovery(
+            app,
+            enabled=_ts_cfg.enabled,
+            initial_host=_tailnet_host,
+            load_enabled=_tailnet_origin_enabled,
+        )
 
-    # ── Instances (multi-instance management) ────────────────────────────────
-    # Register the opt-in instances startup/cleanup hooks HERE, before
-    # ``runner.setup()`` freezes the app's signal lists. See
-    # ``_register_instances_hooks`` for why ordering matters.
-    _register_instances_hooks(app, state, port)
-    _register_browser_view_cleanup(app, state)
-    _register_connections_warm_lifecycle(app, state)
-    _register_workflow_lifecycle(app, state)
+        # ── Loop stall watchdog shutdown ─────────────────────────────────────────
+        # Register the cleanup hook HERE, before ``runner.setup()`` freezes the
+        # app's signal lists (appending after setup raises "Cannot modify frozen
+        # list"). The watchdog itself is created after ``runner.setup()`` and stored
+        # on ``state._loop_watchdog``; this hook only fires at shutdown — long after
+        # that assignment — so the lazy ``getattr`` always resolves it.
+        async def _watchdog_shutdown(app_: web.Application) -> None:
+            wd = getattr(state, "_loop_watchdog", None)
+            if wd is not None:
+                wd.stop()
 
-    # Unix-socket cleanup hook — registered before runner.setup freezes the
-    # signal lists; the path itself only becomes known after the site starts
-    # (below), hence the holder indirection.
-    _unix_socket_holder: dict[str, Path | None] = {"path": None}
-    _register_unix_socket_cleanup(app, _unix_socket_holder)
+        app.on_cleanup.append(_watchdog_shutdown)
 
-    # Hardened runner: bounds the request-line/header read time (slowloris /
-    # CWE-400) and reaps idle keep-alive connections. See dashboard.slowloris.
-    # max_field_size is raised from aiohttp's 8190 default so the accumulated
-    # shared per-port cookie jar can't 400 at the parser before a handler
-    # prunes it (see refresh_tokens.foreign_port_cookies).
-    runner = build_hardened_runner(app, max_field_size=_MAX_HEADER_FIELD_SIZE)
-    await runner.setup()
-    site = web.TCPSite(runner, bind_address_for(local_only), port)
-    await _start_site(site, port)
-    # Export the port this gateway ACTUALLY bound so child processes resolve
-    # loopback callbacks against the truth, not a re-derived config guess.
-    _export_bound_port(runner, port)
+        # ── Prevent-sleep inhibitor shutdown ─────────────────────────────────────
+        # Registered HERE (before runner.setup freezes the signal lists) for the
+        # same reason as the watchdog hook above. The inhibitor + poll task are
+        # created after runner.setup by _arm_prevent_sleep_poll and released here.
+        _register_prevent_sleep_shutdown(app, state)
+
+        async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
+            await app_["kiro_prerequisite_service"].close()
+
+        app.on_cleanup.append(_kiro_prerequisite_shutdown)
+
+        async def _kas_login_shutdown(app_: web.Application) -> None:
+            # Releases the service's aiohttp session IF a KAS request created it. It is
+            # lazily built on first use (never at boot), so an app that never served a
+            # KAS request has nothing to close.
+            service = app_.get("kas_login_service")
+            if service is not None:
+                await service.close()
+
+        app.on_cleanup.append(_kas_login_shutdown)
+
+        # Releases the resident speech model (148MB default, 1.6GB largest) when idle
+        # and at shutdown. Registered here, before runner.setup freezes the signal lists.
+        _register_stt_hooks(app)
+        # Live config: one poller for every writer (dashboard, CLI, $EDITOR), started
+        # on_startup because it needs the running loop; primed with this boot's config.
+        _register_config_watch(app, state, _cfg)
+
+        # ── Instances (multi-instance management) ────────────────────────────────
+        # Register the opt-in instances startup/cleanup hooks HERE, before
+        # ``runner.setup()`` freezes the app's signal lists. See
+        # ``_register_instances_hooks`` for why ordering matters.
+        _register_instances_hooks(app, state, port)
+        _register_browser_view_cleanup(app, state)
+        _register_connections_warm_lifecycle(app, state)
+        _register_workflow_lifecycle(app, state)
+
+        # Unix-socket cleanup hook — registered before runner.setup freezes the
+        # signal lists; the path itself only becomes known after the site starts
+        # (below), hence the holder indirection.
+        _unix_socket_holder: dict[str, Path | None] = {"path": None}
+        _register_unix_socket_cleanup(app, _unix_socket_holder)
+
+        # Hardened runner: bounds the request-line/header read time (slowloris /
+        # CWE-400) and reaps idle keep-alive connections. See dashboard.slowloris.
+        # max_field_size is raised from aiohttp's 8190 default so the accumulated
+        # shared per-port cookie jar can't 400 at the parser before a handler
+        # prunes it (see refresh_tokens.foreign_port_cookies).
+        runner = build_hardened_runner(app, max_field_size=_MAX_HEADER_FIELD_SIZE)
+        await runner.setup()
+        # Serve on the socket reserved BEFORE the app-backend boot pass (see
+        # _reserve_dashboard_port above): the socket is already listening, so
+        # SockSite.start()'s create_server re-listen is a harmless backlog update
+        # and starting to ACCEPT here drains any callbacks that queued during the
+        # pass. The origin evidence the backends were spawned with is this
+        # socket's own kernel-assigned name.
+        site = web.SockSite(runner, _dashboard_sock)
+        await site.start()
+    except BaseException:
+        # Every post-reservation failure must release both the app processes and
+        # the socket before another process can claim this trusted origin.
+        if runner is not None:
+            with contextlib.suppress(Exception):
+                await runner.cleanup()
+        with contextlib.suppress(Exception):
+            await _stop_spawned_backends()
+        _dashboard_sock.close()
+        raise
+    # (No _export_bound_port republish here: the reservation above already
+    # exported this same socket's name before the spawn pass — the one
+    # authoritative write on this path. The headless entrypoint, which binds
+    # via _start_site with no reservation step, still exports post-listen.)
 
     # The backend the main wave deferred (``apps.backend.DEV_FLEET_APP_NAME``):
     # ``apps/backend.py`` hands the Dev Fleet backend ``KIROCREW_BOUND_PORT`` at
-    # spawn, and that value exists only once the site is bound — a backend spawned
-    # before the export reads pointer state through no port at all until something
-    # restarts it. Same bulkhead as the main wave; admission already ran there.
+    # spawn. Under the reservation above that value existed before the main wave
+    # too, but the admission split lives in ``apps/backend.py`` and is shared
+    # with the headless entrypoint, where the value only exists post-listen —
+    # so the second wave stays. Same bulkhead as the main wave; admission
+    # already ran there.
     deferred_apps = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(), start_deferred_app_backends
     )

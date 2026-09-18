@@ -3115,6 +3115,9 @@ def build_pod_env(
     # KIROCREW_PORT above is the target — so drop it unconditionally rather
     # than rely on resolution precedence alone.
     env.pop("KIROCREW_BOUND_PORT", None)
+    # Same cross-plane guard for the companion host evidence (exported only
+    # for specific-interface binds — see dashboard.server).
+    env.pop("KIROCREW_BOUND_HOST", None)
     if skip_model_download:
         # Set AFTER the scrub loop so no present-or-future scrub pattern can strip
         # the guarantee back out.

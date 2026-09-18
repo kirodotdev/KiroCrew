@@ -8,6 +8,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import hashlib
+import hmac
 import http.client
 import json
 import logging
@@ -2205,13 +2206,71 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         KIROCREW_HOME=str(config_dir()),
         **_platform_extra,
     )
+    # Trusted gateway origin for the backend's own callbacks to this gateway
+    # (e.g. POST /api/notifications/push on a declared channel). It is injected
+    # ONLY from hard evidence of the port THIS gateway actually owns:
+    # KIROCREW_BOUND_PORT, which the gateway exports into its own environment
+    # the moment it reserves its port (bound and listening, not yet accepting;
+    # before this spawn pass can run — dashboard.server._reserve_dashboard_port).
+    # We require it to be present and to parse as an integer in 1..65535. We never fall back to KIROCREW_PORT (an
+    # inherited/--port guess), the app's own PORT, a config value, a run-marker,
+    # or a built-in default: any of those could point the child at a sibling
+    # gateway or at a port nothing is listening on. Absent or invalid evidence
+    # => omit the origin entirely, so a backend that needs a callback base fails
+    # closed (dormant) rather than trusting a guessed address. Generic name
+    # only; no app-specific env is set here.
+    bound_port = os.environ.get("KIROCREW_BOUND_PORT", "").strip()
+    gateway_origin = ""
+    if bound_port.isdigit() and 1 <= int(bound_port) <= 65535:
+        # Host evidence: absent means loopback (the default bind shapes —
+        # loopback itself, or a wildcard bind loopback reaches). A gateway
+        # bound to a SPECIFIC interface exports that address, since loopback
+        # would not reach it. IPv6 literals are bracketed per RFC 3986.
+        bound_host = os.environ.get("KIROCREW_BOUND_HOST", "").strip() or "127.0.0.1"
+        if ":" in bound_host and not bound_host.startswith("["):
+            bound_host = f"[{bound_host}]"
+        gateway_origin = f"http://{bound_host}:{int(bound_port)}"
+        env["KIROCREW_GATEWAY_ORIGIN"] = gateway_origin
+    else:
+        # Dormancy is the DESIGNED outcome here, so the operator must be able
+        # to see it: an app that declares notification channels but gets no
+        # origin will silently never push. Warn for those; stay at debug for
+        # apps with no push surface. getattr defense: tests hand this function
+        # reduced manifest stand-ins without a notifications field.
+        _declares_channels = bool(
+            getattr(getattr(manifest, "notifications", None), "channels", None)
+        )
+        (logger.warning if _declares_channels else logger.debug)(
+            "no valid KIROCREW_BOUND_PORT; omitting KIROCREW_GATEWAY_ORIGIN for"
+            " %s backend%s",
+            app_name,
+            (
+                " -- it declares notification channels and cannot push until"
+                " restarted with a valid origin"
+                if _declares_channels
+                else ""
+            ),
+        )
     # Inject the per-app proxy secret so the backend can verify the
     # X-KiroCrew-Proxy HMAC the gateway signs on every forwarded request
     # (CWE-306). Without it the loopback backend would trust any local caller.
+    # The same secret keys KIROCREW_GATEWAY_ORIGIN_PROOF, an
+    # HMAC-SHA256(secret, origin) the backend recomputes to confirm the origin
+    # value was minted by the gateway that alone holds this secret, rather than
+    # an inherited or spoofed env value. The proof is injected ONLY when the
+    # secret is readable AND the origin was injected above; a missing
+    # .app_secret is tolerated as before and yields neither the secret nor the
+    # proof (a secret-less legacy backend gets the origin only).
     try:
         _proxy_secret = (root / ".app_secret").read_text().strip()
         if _proxy_secret:
             env["KIROCREW_PROXY_SECRET"] = _proxy_secret
+            if gateway_origin:
+                env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
+                    _proxy_secret.encode("utf-8"),
+                    gateway_origin.encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest()
     except OSError:
         pass
     # Expose the provisioned deps dir (pip --target, above) to the child.

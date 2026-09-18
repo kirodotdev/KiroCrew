@@ -1149,8 +1149,10 @@ choose the gateway's next image. Instead:
   `GET /api/apps/dev-fleet/live-target` (30 s display cache; `fresh=1` for the
   removal guards). The broker aims at `KIROCREW_BOUND_PORT`, which
   `apps/backend.py` hands to this one backend at spawn from the gateway's own
-  environment — so `dashboard.server.start_dashboard` spawns it in a second wave,
-  AFTER `_export_bound_port` has recorded the port the site actually bound
+  environment — the port is exported the moment it is reserved
+  (`dashboard.server._reserve_dashboard_port`, before any backend spawns;
+  `_export_bound_port` republishes it once the site serves), and
+  `dashboard.server.start_dashboard` spawns this backend in a second wave
   (`apps.backend.DEV_FLEET_APP_NAME`; the main wave still runs before
   `runner.setup()` so every other app's startup hooks find their backend up). A
   backend spawned before the bind would have no port for its whole lifetime;

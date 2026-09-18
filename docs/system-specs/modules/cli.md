@@ -1059,8 +1059,9 @@ are talking to:
    would walk pod `token`/`status`/`logout` into the live plane.
    (`build_pod_env` additionally scrubs `KIROCREW_BOUND_PORT` outright.)
 3. `KIROCREW_BOUND_PORT`, when it parses as an int — the port the parent
-   gateway actually bound, exported once its TCP site is listening
-   (`dashboard.server._export_bound_port`). Never persisted —
+   gateway actually bound, exported the moment the port is reserved
+   (`dashboard.server._reserve_dashboard_port`; `_export_bound_port`
+   republishes it once the site serves). Never persisted —
    `service_environment()` deliberately does not capture it.
 4. A port **explicitly written** in `dashboard.url`. A portless URL
    (`http://my.host`) is *not* a port choice: `parse_dashboard_url()`

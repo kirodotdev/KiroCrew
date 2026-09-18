@@ -210,9 +210,15 @@ async def test_shutdown_cancels_recovery_and_prevents_late_publication(
 def test_both_entrypoints_kick_after_credentials_not_during_setup():
     for entry in (server.start_dashboard, server.start_api_server):
         source = inspect.getsource(entry)
-        assert source.index("_start_site(site, port)") < source.index(
-            "_write_instance_credentials,"
+        # The serve anchor differs per entrypoint: the dashboard serves via
+        # SockSite.start() on the pre-bound reserved socket, the headless
+        # entrypoint still binds through _start_site.
+        serve_anchor = (
+            "_start_site(site, port)"
+            if "_start_site(site, port)" in source
+            else "await site.start()"
         )
+        assert source.index(serve_anchor) < source.index("_write_instance_credentials,")
         assert source.index("_write_instance_credentials,") < source.index(
             "_kick_workflow_initialization(state)"
         )

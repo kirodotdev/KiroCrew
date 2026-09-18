@@ -2626,7 +2626,8 @@ The `dashboard.url` field controls where the dashboard is reachable. From it, th
 
 A **malformed** `dashboard.url` (e.g. an unterminated IPv6 literal `http://[::1` or a non-numeric port `http://host:notaport`) does **not** abort startup: `parse_dashboard_url` degrades to the defaults (`""` host, port `5476`) and logs a warning, so a single typo in the config can never take the gateway down on boot. `KIROCREW_PORT` still overrides the port regardless.
 
-Once the dashboard's TCP site is listening, the gateway **exports the
+The moment the dashboard's port is **reserved** (bound and listening, not yet
+accepting — before any app backend spawns), the gateway **exports the
 actually-bound port as `KIROCREW_BOUND_PORT`** into its own environment, so
 every child it spawns (kiro-cli sessions and their MCP stdio servers) inherits
 the truth instead of re-deriving a guess from `dashboard.url` — a portless URL

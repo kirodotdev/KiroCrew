@@ -156,7 +156,6 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
         _start_dashboard,
     )
 
-    from kiro_crew.dashboard import server
     from kiro_crew.dashboard.handlers.workflows import api_workflow_runs
     from kiro_crew.workflows import service
 
@@ -181,9 +180,20 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
 
     monkeypatch.setattr(store, "save", save)
     monkeypatch.setattr(service, "WorkflowRunStore", lambda: store)
-    # The shared startup harness stubs the socket bind and all external work;
-    # this marker is called by actual startup wiring immediately AFTER the bind.
-    monkeypatch.setattr(server, "_export_bound_port", lambda *args: bound.set())
+    # The shared startup harness stubs the reservation bind and all external
+    # work; serving readiness is the harness's SockSite double starting on the
+    # reserved socket — the wiring step immediately after which the old code
+    # exported the bound port. Wrapping its start() marks that moment.
+    from test_dashboard_server_startup_coverage import _FakeSockSite
+
+    _real_fake_start = _FakeSockSite.start
+
+    async def _marked_start(self):
+        result = await _real_fake_start(self)
+        bound.set()
+        return result
+
+    monkeypatch.setattr(_FakeSockSite, "start", _marked_start)
     from kiro_crew.taskrunner import TaskRunner
 
     driver = TaskRunner(sessions=MagicMock(), context_builder=MagicMock(), work_dir=tmp_path)

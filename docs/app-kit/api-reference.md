@@ -921,6 +921,52 @@ the value in the `X-KiroCrew-Proxy` header (constant-time), rejecting stale time
 > HMACs fails verification against any verifier that omits the body hash, so a
 > backend that implements the HMAC itself has to be updated in lockstep with the gateway.
 
+### Backend Environment Variables
+
+The gateway spawns each `backend.entryPoint` app as a sandboxed child and injects a fixed,
+generic set of environment variables. No app-specific variables are ever injected.
+
+| Variable | Always set | Meaning |
+|---|---|---|
+| `PORT` | yes | The loopback port your backend must bind (`127.0.0.1:$PORT`). |
+| `KIROCREW_APP_NAME` | yes | This app's installed name. |
+| `KIROCREW_HOME` | yes | The gateway's resolved data home, so the backend reads the same app tree. |
+| `KIROCREW_GATEWAY_ORIGIN` | only with bound-port evidence | The gateway's own origin, `http://<bound host>:<bound port>`, for calling back to the gateway (for example `POST /api/notifications/push`). It is set ONLY from the address the gateway ACTUALLY bound: its exported `KIROCREW_BOUND_PORT` (required to be numeric and in `1..65535`), with the host `127.0.0.1` for loopback and wildcard binds and the gateway's exported bound address when it is bound to one specific interface (IPv6 literals bracketed). It is never your app's `PORT`, an inherited `KIROCREW_PORT`, a config value, a default, or a request-derived value, so a child can never be pointed at a sibling gateway. Without bound-port evidence the variable is omitted entirely (see below). |
+| `KIROCREW_PROXY_SECRET` | only if a secret exists | The per-app secret used to verify the `X-KiroCrew-Proxy` header (see above). |
+| `KIROCREW_GATEWAY_ORIGIN_PROOF` | only if a secret exists and the origin is set | `HMAC-SHA256(app_secret, KIROCREW_GATEWAY_ORIGIN)`, hex. Recompute it with your secret to confirm the injected origin was minted by this gateway, rather than an inherited or spoofed env value. Omitted whenever the origin is omitted (nothing to prove) or no secret exists (nothing to key it with). |
+
+Security and lifecycle:
+
+- The per-app secret lives on disk at `<KIROCREW_HOME>/apps/<name>/.app_secret`, written
+  owner-only `0600` (owner-only DACL on Windows) by the gateway.
+- If no `.app_secret` exists, the gateway injects neither the secret nor anything derived from
+  it (including the proof); a secret-less backend is otherwise unchanged.
+- `KIROCREW_GATEWAY_ORIGIN` is fail-closed: it is present only when the gateway has real
+  evidence of the port it bound. A gateway that has not exported a valid `KIROCREW_BOUND_PORT`
+  hands the backend no origin, so a backend that needs a callback base stays dormant rather
+  than trusting a guessed address.
+- The origin and its proof are recomputed on every spawn, so a gateway restarted on a
+  different bound port hands the backend the current origin. That freshness guarantee is
+  scoped to SPAWNED instances: an externally managed backend the gateway ADOPTS (already
+  healthy on its port) keeps the environment of the generation that started it, so its
+  origin can be stale. A backend that keeps a long-lived callback base should treat
+  persistent push failures as a stale origin and restart to pick up the current one.
+- The proof is a SPAWN-TIME attestation, not a liveness or freshness signal: it says the
+  origin value in your environment was planted by a gateway holding your `.app_secret`
+  when your process started. Because the secret persists across gateway generations, a
+  stale origin (the adopted case above) still carries a valid proof — verifying the proof
+  tells you the origin was not planted by a secret-less spawner, and nothing about whether
+  that gateway is still the one serving. Do not use it as origin-trust for a long-lived
+  process; use the push-failure/restart guidance above for that.
+
+Using the origin for notifications:
+
+An entryPoint backend that declares `notifications.channels` in `app.json` pushes with
+`POST {KIROCREW_GATEWAY_ORIGIN}/api/notifications/push`, authenticating with its app secret
+(see App Notifications). Verify `KIROCREW_GATEWAY_ORIGIN_PROOF` before you trust the origin as
+your callback base. If `KIROCREW_GATEWAY_ORIGIN` is unset the gateway did not publish a
+bound-port origin, so the backend has no callback base and should not push.
+
 ## App Dev Mode (live reload)
 
 Dev mode speeds up app-UI iteration: no manual copy-and-hard-refresh loop. When

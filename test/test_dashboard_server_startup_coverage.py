@@ -194,6 +194,31 @@ class TestRegisterUnixSocketCleanup:
 # ── start_dashboard ─────────────────────────────────────────────────────
 
 
+def _fake_reserved_socket(port: int = 18321, host: str = "127.0.0.1") -> MagicMock:
+    """An inert stand-in for the boot path's reserved (bound, unlistening) socket.
+
+    No real bind happens (no-test-side-effects): the double answers the two
+    reads the boot path makes — getsockname for the evidence export, close on
+    the failure guards.
+    """
+    sock = MagicMock()
+    sock.getsockname.return_value = (host, port)
+    return sock
+
+
+class _FakeSockSite:
+    """Inert web.SockSite double: accepts the runner+socket, serves nothing."""
+
+    def __init__(self, runner: Any, sock: Any) -> None:  # noqa: ARG002
+        self._runner = runner
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
 def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
     """Replace every startup step that reaches outside this process.
 
@@ -258,10 +283,16 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
     monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(srv, "_start_site", AsyncMock())
     # POSIX-only extra transport; irrelevant to the wiring under test and it
     # would bind a real socket in the data home.
     monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+    # Inert TCP doubles (no-test-side-effects): a real reservation + SockSite
+    # would open a host listener from a unit test. The fake socket answers the
+    # boot path's getsockname reads; the SockSite double accepts start/stop.
+    monkeypatch.setattr(
+        srv, "_reserve_dashboard_port", AsyncMock(return_value=_fake_reserved_socket())
+    )
+    monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
     spies = _neutralise_outside_process_work(monkeypatch)
     # start_dashboard mutates os.environ directly (browser_cli_snapshots /
     # browser_cli_token / browser_cli_launch cli_env_overrides()) so descendant
@@ -276,6 +307,11 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
         browser_cli_snapshots.OUTPUT_DIR_ENV,
         browser_cli_token.TOKEN_ENV,
         browser_cli_launch.CONFIG_ENV,
+        # The port-reservation boot path exports the reserved socket's name as
+        # bound-port evidence before the app-backend pass -- same raw
+        # os.environ write, same snapshot+restore need.
+        "KIROCREW_BOUND_PORT",
+        "KIROCREW_BOUND_HOST",
     ):
         _prior = os.environ.get(_leak_key)
         monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
@@ -391,7 +427,412 @@ async def _cancel_stray_tasks() -> None:
         await asyncio.gather(*stray, return_exceptions=True)
 
 
+class TestReserveDashboardPort:
+    def test_bind_once_matches_kernel_listener_posture(self) -> None:
+        """The reserved socket keeps the hardening required by SockSite."""
+        import inspect
+
+        ipv4_sock = srv._bind_once("127.0.0.1", 0)
+        ipv6_sock: socket.socket | None = None
+        try:
+            if hasattr(socket, "SO_ACCEPTCONN"):
+                assert ipv4_sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1
+            else:
+                client = socket.socket(ipv4_sock.family, socket.SOCK_STREAM)
+                accepted: socket.socket | None = None
+                try:
+                    client.settimeout(1)
+                    client.connect(ipv4_sock.getsockname())
+                    accepted, _ = ipv4_sock.accept()
+                finally:
+                    if accepted is not None:
+                        accepted.close()
+                    client.close()
+
+            if os.name == "posix":
+                assert ipv4_sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 1
+
+            if socket.has_ipv6 and hasattr(socket, "IPPROTO_IPV6"):
+                ipv6_sock = srv._bind_once("::1", 0)
+                assert ipv6_sock.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 1
+
+            assert "SO_EXCLUSIVEADDRUSE" in inspect.getsource(srv._bind_once)
+        finally:
+            if ipv6_sock is not None:
+                ipv6_sock.close()
+            ipv4_sock.close()
+
+
 class TestStartDashboardWiring:
+    @pytest.mark.asyncio
+    async def test_backends_spawn_with_the_reserved_ports_evidence_exported(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The reserved socket's REAL name is exported before the spawn pass.
+
+        The origin/proof injection in ``apps.backend`` is fail-closed on
+        ``KIROCREW_BOUND_PORT``. The boot path reserves (bound and listening,
+        not yet accepting) the dashboard port BEFORE the app-backend pass and
+        exports the socket's kernel-assigned name — so the spawn pass must observe
+        exactly that port, for a fixed port and ``--port auto`` alike, and a
+        squatter can never hold the port the backends were told to trust.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        seen: list[str | None] = []
+        real_port = 43121
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=_fake_reserved_socket(port=real_port)),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        spies["start_enabled_app_backends"].side_effect = lambda: (
+            seen.append(os.environ.get("KIROCREW_BOUND_PORT")),
+            [],
+        )[1]
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+        # Stale inherited evidence (an in-process restart / exporting parent):
+        # the reservation export must SUPERSEDE it, never leak it to the pass.
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "55555")
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        runner, _state = await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+        try:
+            assert seen == [str(real_port)], (
+                "the spawn pass must observe the reserved socket's own port "
+                f"({real_port}), not inherited or configured evidence; it saw "
+                f"{seen!r}"
+            )
+        finally:
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_ipv6_loopback_bind_exports_v6_host_evidence(self, tmp_path, monkeypatch) -> None:
+        """A ::1 bind exports ::1 as the callback host, never IPv4 loopback.
+
+        KIROCREW_BIND=::1 listens ONLY on the IPv6 loopback — IPv4
+        127.0.0.1:<port> stays unbound and seizable by a co-resident process.
+        Defaulting the origin host to 127.0.0.1 would therefore route the
+        backends' secrets to whatever grabs the v4 port: the host evidence
+        must say ::1 (which the injection brackets into http://[::1]:<port>).
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        seen: list[str | None] = []
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=_fake_reserved_socket(port=43122, host="::1")),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        spies["start_enabled_app_backends"].side_effect = lambda: (
+            seen.append(os.environ.get("KIROCREW_BOUND_HOST")),
+            [],
+        )[1]
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        runner, _state = await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+        try:
+            assert seen == ["::1"], (
+                "an IPv6-loopback bind must export ::1 as host evidence; the "
+                f"spawn pass saw {seen!r}"
+            )
+        finally:
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_port_reservation_spawns_no_backends(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """No backend exists before the gateway owns its port.
+
+        The reservation is what makes the exported origin trustworthy: if the
+        port cannot be bound (a foreign holder kept it), the boot must die
+        WITHOUT having spawned children — a backend spawned first would present
+        its X-App-Secret to whatever answers at the origin it was handed.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv, "_reserve_dashboard_port", AsyncMock(side_effect=SystemExit(1)))
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        try:
+            with pytest.raises(SystemExit):
+                await srv.start_dashboard(
+                    sessions=sessions,
+                    crons=MagicMock(
+                        list_jobs=MagicMock(return_value=[]),
+                        list_jobs_async=AsyncMock(return_value=[]),
+                        status=MagicMock(return_value={}),
+                    ),
+                    lessons=MagicMock(load_all=MagicMock(return_value=[])),
+                    port=18321,
+                )
+            spies["start_enabled_app_backends"].assert_not_called()
+        finally:
+            await _cancel_stray_tasks()
+
+    @staticmethod
+    async def _start_dashboard_for_failure(
+        tmp_path: Path,
+        monkeypatch,
+        *,
+        reserved_socket: MagicMock,
+        backend_start_side_effect: Any | None = None,
+    ) -> None:
+        """Reach a selected post-reservation failure without host side effects."""
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=reserved_socket),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
+        spies = _neutralise_outside_process_work(monkeypatch)
+        if backend_start_side_effect is not None:
+            spies["start_enabled_app_backends"].side_effect = backend_start_side_effect
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        await srv.start_dashboard(
+            sessions=sessions,
+            crons=MagicMock(
+                list_jobs=MagicMock(return_value=[]),
+                list_jobs_async=AsyncMock(return_value=[]),
+                status=MagicMock(return_value={}),
+            ),
+            lessons=MagicMock(load_all=MagicMock(return_value=[])),
+            port=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_runner_setup_closes_the_socket_and_sweeps_backends(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure in the middle startup span releases every claimed resource."""
+        reserved_socket = _fake_reserved_socket()
+        runner = SimpleNamespace(
+            setup=AsyncMock(side_effect=asyncio.CancelledError("setup cancelled")),
+            cleanup=AsyncMock(),
+        )
+        sweep = AsyncMock()
+        monkeypatch.setattr(srv, "build_hardened_runner", MagicMock(return_value=runner))
+        monkeypatch.setattr(srv, "_stop_spawned_backends", sweep)
+
+        try:
+            with pytest.raises(asyncio.CancelledError, match="setup cancelled"):
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                )
+            runner.cleanup.assert_awaited_once_with()
+            sweep.assert_awaited_once_with()
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_partial_spawn_failure_sweeps_recorded_backends(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A spawn pass that raises after one child is recorded still sweeps it."""
+        import kiro_crew.apps.backend as backend_mod
+
+        reserved_socket = _fake_reserved_socket()
+        swept_names: list[list[str]] = []
+
+        async def _sweep() -> None:
+            swept_names.append(backend_mod.spawned_backend_names())
+
+        sweep = AsyncMock(side_effect=_sweep)
+        monkeypatch.setattr(srv, "_stop_spawned_backends", sweep)
+
+        def _partial_spawn() -> list[str]:
+            monkeypatch.setitem(
+                backend_mod._processes,
+                "partial-app",
+                backend_mod.AppProcess(
+                    app_name="partial-app",
+                    pid=123,
+                    proc=MagicMock(),
+                ),
+            )
+            assert "partial-app" in backend_mod.spawned_backend_names()
+            raise RuntimeError("spawn boom")
+
+        try:
+            with pytest.raises(RuntimeError, match="spawn boom"):
+                await self._start_dashboard_for_failure(
+                    tmp_path,
+                    monkeypatch,
+                    reserved_socket=reserved_socket,
+                    backend_start_side_effect=_partial_spawn,
+                )
+            sweep.assert_awaited_once_with()
+            assert swept_names and "partial-app" in swept_names[0]
+            reserved_socket.close.assert_called_once_with()
+        finally:
+            await _cancel_stray_tasks()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listen_stops_the_spawned_backends(self, tmp_path, monkeypatch) -> None:
+        """A boot that cannot start serving sweeps its spawned backends.
+
+        Backends spawn after the reservation, so their origin is real — but a
+        gateway whose SockSite fails to start will never answer at it. The
+        boot must run runner.cleanup() (whose _hooks_shutdown sweep stops this
+        process's backends) before propagating.
+        """
+        import kiro_crew.config.loader as _loader
+        import kiro_crew.dashboard.state as _st
+
+        monkeypatch.setattr(srv, "data_home", lambda: tmp_path)
+        monkeypatch.setattr(_st, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(_loader, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            srv,
+            "_reserve_dashboard_port",
+            AsyncMock(return_value=_fake_reserved_socket()),
+        )
+        monkeypatch.setattr(srv.web, "SockSite", MagicMock(side_effect=RuntimeError("listen boom")))
+        spies = _neutralise_outside_process_work(monkeypatch)
+        for _leak_key in (
+            browser_cli_snapshots.OUTPUT_DIR_ENV,
+            browser_cli_token.TOKEN_ENV,
+            browser_cli_launch.CONFIG_ENV,
+            "KIROCREW_BOUND_PORT",
+            "KIROCREW_BOUND_HOST",
+        ):
+            _prior = os.environ.get(_leak_key)
+            monkeypatch.setenv(_leak_key, "" if _prior is None else _prior)
+            if _prior is None:
+                monkeypatch.delenv(_leak_key, raising=False)
+
+        sessions = MagicMock(count=0)
+        sessions.remove = AsyncMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.any_active_turn = MagicMock(return_value=False)
+        try:
+            with pytest.raises(RuntimeError, match="listen boom"):
+                await srv.start_dashboard(
+                    sessions=sessions,
+                    crons=MagicMock(
+                        list_jobs=MagicMock(return_value=[]),
+                        list_jobs_async=AsyncMock(return_value=[]),
+                        status=MagicMock(return_value={}),
+                    ),
+                    lessons=MagicMock(load_all=MagicMock(return_value=[])),
+                    port=0,
+                )
+            # runner.cleanup() dispatches on_cleanup, whose _hooks_shutdown
+            # awaits on_gateway_shutdown -- the observable proof the sweep ran.
+            spies["on_gateway_shutdown"].assert_awaited()
+        finally:
+            await _cancel_stray_tasks()
+
     @pytest.mark.asyncio
     async def test_the_app_is_wired_and_reports_ready(self, tmp_path, monkeypatch) -> None:
         """Readiness is published at the boot-to-ready boundary, last.
@@ -410,32 +851,27 @@ class TestStartDashboardWiring:
         self, tmp_path, monkeypatch
     ) -> None:
         """Two waves, one contract each. The main wave runs before ``runner.setup()``
-        so an app's startup hooks find its backend running, and it DEFERS the apps
-        that need the gateway's actually-bound port at spawn. Those start only after
-        ``_export_bound_port`` created ``KIROCREW_BOUND_PORT`` — a Dev Fleet backend
-        spawned earlier would have no port for its whole lifetime (pointer broker
-        unconfigured: "live state unknown", removals refusing) until a restart."""
+        so an app's startup hooks find its backend running — and under the
+        reservation (``_reserve_dashboard_port`` above it) it already observes
+        ``KIROCREW_BOUND_PORT``, which
+        ``test_backends_spawn_with_the_reserved_ports_evidence_exported`` pins.
+        The second wave (``start_deferred_app_backends``) still runs only after
+        the site serves: the admission split lives in ``apps/backend.py`` and is
+        shared with the headless entrypoint, where the bound port only exists
+        post-listen."""
         seen: dict[str, bool] = {}
-        real_export = srv._export_bound_port
-
-        def _export(runner, port):
-            seen["main_wave_before_export"] = srv.start_enabled_app_backends.called
-            seen["deferred_wave_before_export"] = srv.start_deferred_app_backends.called
-            return real_export(runner, port)
-
-        monkeypatch.setattr(srv, "_export_bound_port", _export)
         real_setup = web.AppRunner.setup
 
         async def _setup(self_runner):
             seen["main_wave_before_setup"] = srv.start_enabled_app_backends.called
+            seen["deferred_wave_before_setup"] = srv.start_deferred_app_backends.called
             return await real_setup(self_runner)
 
         monkeypatch.setattr(web.AppRunner, "setup", _setup)
         async with _dashboard(tmp_path, monkeypatch) as (_runner, _state, spies):
             assert seen == {
                 "main_wave_before_setup": True,
-                "main_wave_before_export": True,
-                "deferred_wave_before_export": False,
+                "deferred_wave_before_setup": False,
             }
             import kiro_crew.apps.backend as backend_mod
 

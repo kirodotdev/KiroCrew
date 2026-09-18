@@ -280,7 +280,9 @@ class TestRefreshConfigMetaStamp:
         assert "asyncio.to_thread(refresh_config_meta_stamp)" in src
         assert "await refresh_config_meta_stamp" not in src
         assert "_stamp_task = asyncio.create_task(" in src
-        assert src.index("await _start_site(") < src.index(
+        # "await site.start()" is start_dashboard's serving step (the
+        # pre-reserved socket handed to SockSite); the refresh must follow it.
+        assert src.index("await site.start()") < src.index(
             "asyncio.to_thread(refresh_config_meta_stamp)"
         )
 

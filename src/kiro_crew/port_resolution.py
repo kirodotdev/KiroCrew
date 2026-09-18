@@ -251,8 +251,11 @@ def resolve_client_port(cli_port: int | None) -> int:
        walk pod ``token``/``status``/``logout`` (and the local secret they
        carry) into the live gateway — a cross-plane isolation break.
     3. ``KIROCREW_BOUND_PORT`` env var if set to a valid integer — the port the
-       parent gateway ACTUALLY bound, exported once its TCP site is listening
-       (``dashboard.server._export_bound_port``). Below the operator override
+       parent gateway ACTUALLY owns: on the dashboard path it is exported the
+       moment the port is reserved (bound and listening, not yet accepting — see
+       ``dashboard.server._reserve_dashboard_port``), and
+       ``dashboard.server._export_bound_port`` republishes it once serving
+       starts. Below the operator override
        (see above); above config because a bound fact from the live parent
        beats a guess re-derived from a portless ``dashboard.url``.
     4. Port explicitly named by ``dashboard.url`` in the config file

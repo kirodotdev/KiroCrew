@@ -510,8 +510,15 @@ class TestConnectionsWarmLifecycle:
             assert kick in source
             # The kick must run strictly AFTER the listener binds: an on_startup hook (or
             # any pre-bind call) puts the scavenge's deferred import in front of the bind,
-            # which no-new-work-on-gateway-boot-path forbids.
-            assert source.index("_start_site(site, port)") < source.index(kick)
+            # which no-new-work-on-gateway-boot-path forbids. The serving step differs per
+            # entrypoint: start_dashboard listens on its pre-reserved socket via SockSite
+            # ("await site.start()"); start_api_server binds via _start_site.
+            serving = (
+                "_start_site(site, port)"
+                if "_start_site(site, port)" in source
+                else "await site.start()"
+            )
+            assert source.index(serving) < source.index(kick)
 
 
 # ── _register_browser_view_cleanup ──────────────────────────────────────
