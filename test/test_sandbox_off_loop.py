@@ -155,6 +155,22 @@ class TestSandboxOffLoopCancellation:
         assert worker_threads and worker_threads[0] != loop_thread
 
     @pytest.mark.asyncio
+    async def test_wrap_argv_async_threads_docker_config_grant(self):
+        captured: dict[str, object] = {}
+
+        def _fake(argv, mode="auto", **kwargs):
+            captured.update(kwargs)
+            return argv, None
+
+        await wrap_argv_async(
+            ["/bin/true"],
+            expose_docker_config=True,
+            _prepare=_fake,
+        )
+
+        assert captured["expose_docker_config"] is True
+
+    @pytest.mark.asyncio
     async def test_sandboxed_spawn_async_runs_on_worker(self):
         loop_thread = threading.get_ident()
         worker_threads: list[int] = []

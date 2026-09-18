@@ -9653,6 +9653,7 @@ class TestResolveKiroBinEnvOverride:
         assert isinstance(extra_private, (list, tuple))
         assert wrap_kwargs == {
             "strip_python_env": True,
+            "expose_docker_config": True,
             "is_kiro_cli": True,
         }
         voice_guard.assert_called_once_with(client._work_dir)

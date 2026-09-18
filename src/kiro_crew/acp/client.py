@@ -7458,6 +7458,7 @@ class AcpClient:
             extra_hidden_dirs=adapter_hidden_dirs,
             extra_private_dirs=scratch_window,
             extra_expose_files=adapter_expose,
+            expose_docker_config=True,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
             **private_kwargs,
