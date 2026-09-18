@@ -198,6 +198,7 @@ class SessionLifecycleOwner(Protocol):
         expect_session: _SessionEntry | None = None,
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
+        refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
     ) -> bool: ...
@@ -322,6 +323,35 @@ class _ReplayGap:
 
     owner: asyncio.Task[Any] | None
     closed: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def _turn_in_flight(session: Any, *, refuse_only_on_active_turn: bool = False) -> bool:
+    """Whether *session* is busy, as this caller's ``skip_if_busy`` means it.
+
+    A held lease is the default answer, and the stricter one: it also covers a turn that has
+    acquired but put no prompt in flight yet, which ``has_active_turn`` cannot see, and it is
+    what a background sweep needs. A channel member holds its lease for the whole listening
+    lifetime and CACHES the provider it was handed, so a sweep that tore that provider down
+    would leave every later message driving a dead one with nothing to re-fetch it.
+
+    A caller acting on an explicit user request passes ``refuse_only_on_active_turn`` and gets
+    the narrower question instead: refusing a lifecycle holder on the lease alone would refuse
+    it for as long as it exists, so the retry-when-idle such a caller offers could never
+    succeed.
+    """
+    if session is None or not session.semaphore.locked():
+        return False
+    if not refuse_only_on_active_turn or not getattr(session, "lifecycle_lease", False):
+        return True
+    # The holder's own answer comes first: its turn begins when it dequeues a message, and the
+    # setup before the prompt goes out is a window ``has_active_turn`` reports as idle.
+    if getattr(session, "lifecycle_turn_active", False):
+        return True
+    provider = getattr(session, "provider", None)
+    has_active_turn = getattr(provider, "has_active_turn", None)
+    # An unknown provider shape keeps the strict answer: refusing a teardown is recoverable,
+    # tearing down a streaming reply is not.
+    return bool(has_active_turn()) if callable(has_active_turn) else True
 
 
 class SessionLifecycleService:
@@ -697,6 +727,7 @@ class SessionLifecycleService:
         expect_session: _SessionEntry | None = None,
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
+        refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
     ) -> bool:
@@ -730,6 +761,11 @@ class SessionLifecycleService:
         is why the default stays the recycle. Nothing structural catches an omission,
         because a keyword is invisible to the AST ratchet, which is exactly why
         ``test_the_conversation_ending_reset_callers_say_so`` pins the callers BY PATH.
+
+        ``refuse_only_on_active_turn`` narrows ``skip_if_busy`` to a DECLARED turn, which a
+        caller acting on an explicit user request needs: a channel member holds its lease for
+        its whole listening life, so refusing on the lease alone refuses that caller forever
+        and the retry-when-idle it offers can never succeed.
         """
         owner = self._owner
         logger = self._deps.logger
@@ -738,7 +774,9 @@ class SessionLifecycleService:
             current = owner._sessions.get(key)
             if expect_session is not None and current is not expect_session:
                 return False
-            if skip_if_busy and current is not None and current.semaphore.locked():
+            if skip_if_busy and _turn_in_flight(
+                current, refuse_only_on_active_turn=refuse_only_on_active_turn
+            ):
                 return False
             # A completion injection commits a turn to this session BEFORE it
             # acquires the semaphore, so the check above cannot see one. A caller
@@ -1573,7 +1611,12 @@ class SessionLifecycleService:
         )
 
     async def discard_conversation(
-        self, key: str, *, replay: bool = True, skip_if_busy: bool = False
+        self,
+        key: str,
+        *,
+        replay: bool = True,
+        skip_if_busy: bool = False,
+        refuse_only_on_active_turn: bool = False,
     ) -> bool:
         """Drop only the native conversation while preserving channel linkage.
 
@@ -1604,7 +1647,9 @@ class SessionLifecycleService:
         key = owner._fold_key(key)
         async with owner._lock:
             current = owner._sessions.get(key)
-            if skip_if_busy and current is not None and current.semaphore.locked():
+            if skip_if_busy and _turn_in_flight(
+                current, refuse_only_on_active_turn=refuse_only_on_active_turn
+            ):
                 return False
             session = owner._sessions.pop(key, None)
             # Snapshot the runs this key owns in the SAME lock hold as the pop: every
