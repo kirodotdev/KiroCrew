@@ -3210,13 +3210,13 @@ def _aws_profile_names() -> list[str] | None:
     ask" and "asked, and there are none" are different things to tell an
     operator.
 
-    Resolved through ``trusted_system_bin`` rather than ``PATH``: a gateway's
+    Resolved through :func:`platform_compat.trusted_aws_bin` rather than ``PATH``: a gateway's
     ``PATH`` can lead with a directory the agent itself can write (a worktree
     venv's ``bin``), and this runs when an OPERATOR types ``kirocrew doctor`` —
     outside the agent's sandbox. A miss degrades to the same "cannot ask" answer
     as an absent CLI, which is the honest reading either way.
     """
-    aws_bin = platform_compat.trusted_system_bin("aws")
+    aws_bin = platform_compat.trusted_aws_bin()
     if not aws_bin:
         return None
     try:
@@ -3240,7 +3240,7 @@ def _aws_profile_names() -> list[str] | None:
     return names
 
 
-def _aws_auto_refreshes() -> bool:
+def _aws_auto_refreshes() -> bool | None:
     """Whether the profile the agent will ACTUALLY use auto-refreshes.
 
     Asked of the CLI rather than by looking for the string ``credential_process``
@@ -3249,13 +3249,19 @@ def _aws_auto_refreshes() -> bool:
     more accurate and reachable without a fenced read. One invocation, resolving
     the same default profile the agent's own AWS calls will resolve.
 
-    Resolved through ``trusted_system_bin`` for the same reason as the profile
+    ``None`` rather than ``False`` when there is no CLI to ask, for the same
+    reason :func:`_aws_profile_names` returns it: "asked, and there is no
+    ``credential_process``" is a finding, while "could not ask" is not, and
+    collapsing them made the report tell an operator their credentials may expire
+    mid-task on the strength of a question nobody put.
+
+    Resolved through :func:`platform_compat.trusted_aws_bin` for the same reason as the profile
     probe: this runs under an operator's ``kirocrew doctor``, and a ``PATH`` that
     leads with an agent-writable directory would let a planted shim answer.
     """
-    aws_bin = platform_compat.trusted_system_bin("aws")
+    aws_bin = platform_compat.trusted_aws_bin()
     if not aws_bin:
-        return False
+        return None
     try:
         proc = subprocess.run(
             [aws_bin, "configure", "get", "credential_process"],
@@ -3266,7 +3272,9 @@ def _aws_auto_refreshes() -> bool:
             env=_aws_probe_env(),
         )
     except Exception:
-        return False
+        # The CLI resolved but could not be run (timeout, OS error) — still
+        # "could not ask", not an answered "no".
+        return None
     return proc.returncode == 0 and bool((proc.stdout or "").strip())
 
 
@@ -3335,6 +3343,18 @@ def _doctor_credentials(issues: list[str]) -> None:
             "`aws configure` in your own terminal."
         )
     else:
+        # Resolved once and shared by the "could not ask" branches below: the
+        # verdicts cannot change between them, and a second probe would only risk
+        # the two lines disagreeing with each other.
+        #
+        # "Could not ask" has exactly three causes, and each needs its own
+        # sentence, because every one of them makes a DIFFERENT statement true:
+        # no CLI on the host, a CLI the path checks refuse, and a CLI that
+        # resolved and then would not run. Collapsing any of them onto "install
+        # the AWS CLI" tells an operator who has one to install it -- the same
+        # confident wrong answer this section was opened to remove.
+        declined_cli = platform_compat.aws_bin_declined_on_ownership()
+        resolved_cli = platform_compat.trusted_aws_bin()
         profiles = _aws_profile_names()
         if profiles:
             shown = ", ".join(_safe_display(name) for name in profiles[:6])
@@ -3343,7 +3363,18 @@ def _doctor_credentials(issues: list[str]) -> None:
         elif profiles is None:
             # No aws CLI to ask, and the config file is not ours to read — so the
             # honest report is that the files exist and the profile set is unknown.
-            print("  profiles:    ℹ️  ~/.aws present; install the AWS CLI to list profiles")
+            # Which of the three causes it was decides the sentence; see the note
+            # where `declined_cli` and `resolved_cli` are resolved.
+            if declined_cli:
+                print(
+                    f"  profiles:    ℹ️  ~/.aws present; {_safe_display(declined_cli)} is not a trusted local copy, so it is not asked"
+                )
+            elif resolved_cli:
+                print(
+                    f"  profiles:    ℹ️  ~/.aws present; {_safe_display(resolved_cli)} did not answer, so the profile set is unknown"
+                )
+            else:
+                print("  profiles:    ℹ️  ~/.aws present; install the AWS CLI to list profiles")
         elif has_creds:
             print("  profiles:    ✅ default (from ~/.aws/credentials)")
         else:
@@ -3351,8 +3382,23 @@ def _doctor_credentials(issues: list[str]) -> None:
         # credential_process is the setup worth calling out: it vends short-lived
         # credentials on demand, so the agent's AWS calls keep working across a
         # token expiry without anyone re-running a login.
-        if _aws_auto_refreshes():
+        refreshes = _aws_auto_refreshes()
+        if refreshes:
             print("  refresh:     ✅ credential_process configured (auto-refreshing)")
+        elif refreshes is None:
+            # Nothing here establishes whether credentials expire. Printing the ⏹
+            # line anyway told operators with a working credential_process that
+            # theirs was absent; naming the wrong cause is the same defect.
+            if declined_cli:
+                print(
+                    f"  refresh:     ℹ️  {_safe_display(declined_cli)} is not a trusted local copy — not asked about credential_process"
+                )
+            elif resolved_cli:
+                print(
+                    f"  refresh:     ℹ️  {_safe_display(resolved_cli)} did not answer — credential_process not established"
+                )
+            else:
+                print("  refresh:     ℹ️  install the AWS CLI to check for credential_process")
         else:
             print("  refresh:     ⏹ no credential_process — credentials may expire mid-task")
     vendor = _credential_vendor_line()

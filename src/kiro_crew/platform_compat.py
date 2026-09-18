@@ -2470,6 +2470,268 @@ def trusted_system_bin(name: str) -> str | None:
     return None
 
 
+#: The install prefix :data:`_TRUSTED_SYSTEM_BIN_DIRS` deliberately omits. It is
+#: the default ``--bin-dir`` of AWS's own CLI installers, so a tool resolved ONLY
+#: from here is common — but on an Intel macOS with Homebrew this same directory
+#: is owned by the console user, which is exactly the "a same-uid process can
+#: supply the binary" hole the trusted lookup exists to close. Membership alone
+#: therefore proves nothing; :func:`trusted_aws_bin` gates it on ownership.
+_LOCAL_SYSTEM_BIN_DIR = "/usr/local/bin"
+
+#: Set once the ``/usr/local/bin/aws`` copy has been declined and logged.
+_UNTRUSTED_AWS_BIN_LOGGED = False
+
+
+#: Hard stop on symlink expansion while resolving one path. Linux's own limit is
+#: 40; a path needing more than that is a loop or an attack rather than an install
+#: layout, and an unbounded walk would hang instead of answering.
+_MAX_SYMLINK_HOPS = 40
+
+
+def _root_owned_entry(path: str) -> bool:
+    """*path* is root-owned, and no non-root principal can write it.
+
+    Two instruments, because the mode bits alone are an incomplete answer.
+    ``st_uid`` plus the group and world write bits cover the POSIX permission
+    model; ``os.access(..., effective_ids=True)`` covers what that model cannot
+    express — a POSIX ACL's named-user entry (``user:me:w``) does not appear in
+    ``st_mode`` at all, since the group bits show the ACL *mask* rather than the
+    entry, so a mode-only check calls a root-owned ``0755`` path safe while the
+    account this gate defends against can rewrite it. ``faccessat(AT_EACCESS)``
+    evaluates the full ACL, which is why :data:`_ACCESS_HONOURS_EFFECTIVE_IDS`
+    gates that arm rather than a bare ``os.access``: without ``faccessat`` the
+    call would answer about the real ids only and the ACL arm would be silently
+    absent.
+
+    The ACL arm cannot run as root, and that is why running as root DECLINES rather
+    than accepts. As root ``os.access`` answers True for essentially everything, so
+    the arm has no signal — and the entry it would have caught is one granting a
+    NON-root user write, which is precisely the case root must not execute. Treating
+    "cannot establish" as "safe" on a path about to be exec'd as root would turn the
+    strongest caller into the least protected one. The cost is bounded and visible: a
+    root-run diagnostic loses only this ``/usr/local/bin`` fallback, since
+    :func:`trusted_system_bin` does not route through here, and its caller reports the
+    decline rather than silently resolving nothing.
+
+    Not to be confused with :func:`path_writable_by_current_user`, which answers
+    the opposite question ("could this account write it") over two LEXICAL chains
+    and rounds unknown to writable. That shape cannot see a mid-chain symlink hop,
+    which is why :func:`_is_root_owned_path` resolves component by component and
+    calls this per entry instead of delegating wholesale.
+
+    ``os.stat`` rather than ``os.lstat`` on purpose: every caller has already
+    established that *path* is not a symlink, so the two agree, and ``os.stat`` is
+    the call the rest of this module's ownership checks use.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    if st.st_uid != 0 or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return False
+    if not IS_POSIX:
+        return True
+    if 0 in (os.getuid(), os.geteuid()):
+        return False
+    if _ACCESS_HONOURS_EFFECTIVE_IDS and os.access(path, os.W_OK, effective_ids=True):
+        return False
+    return True
+
+
+def _is_root_owned_path(path: str) -> bool:
+    """True when nothing on the way to *path*'s target is another uid's to change.
+
+    Resolves *path* one COMPONENT at a time and validates every directory the walk
+    actually passes through, expanding each symlink it meets — a component's as
+    much as the final name's — and then validating the directories on the target's
+    side too.
+
+    Two weaker shapes were tried here first and both were bypassable, which is why
+    it is written this way rather than more briefly:
+
+    * ``realpath`` and then walk the result collapses the chain, so
+      ``/usr/local/bin/aws -> /tmp/link -> /usr/bin/aws`` is accepted with ``/tmp``
+      — the one directory where the retarget happens — never looked at;
+    * walking ``os.path.dirname`` lexically misses a symlinked COMPONENT, because
+      ``os.stat`` follows symlinks while ``dirname`` does not: for
+      ``/usr/local/bin -> /opt/x/bin`` the target's own parent ``/opt/x``, which
+      can replace it wholesale, is never visited.
+
+    A directory has to be root-owned with no group or world write bit, because
+    replacing an entry needs write on its DIRECTORY rather than on the entry, and a
+    group-writable directory is writable by more than root whoever owns it. The
+    final target has to satisfy the same rule as a file, since a writable regular
+    file can be edited in place without touching any directory. Symlinks met on the
+    way are deliberately not checked themselves: their mode is meaningless (0777 on
+    Linux) and they cannot be edited in place, only replaced, which the directory
+    holding them already governs.
+
+    POSIX semantics. Windows callers do not reach it (:func:`trusted_aws_bin`
+    answers ``None`` there before the gate).
+
+    Any ``OSError``, and any path needing more than :data:`_MAX_SYMLINK_HOPS`
+    expansions, answers ``False``. The fail direction is "decline", never "assume".
+    """
+    if not os.path.isabs(path):
+        path = os.path.abspath(path)
+    # Reversed, so `pop()` yields the next component and a symlink's own components
+    # can be pushed on to be consumed before the rest of the original path.
+    pending = path.split(os.sep)
+    pending.reverse()
+    resolved = os.sep
+    hops = 0
+    while pending:
+        name = pending.pop()
+        if name in ("", os.curdir):
+            continue
+        if name == os.pardir:
+            resolved = os.path.dirname(resolved)
+            continue
+        # About to read `resolved` as a directory, so it must be one nobody but
+        # root can change. Checked here rather than after descending, so the
+        # target side of an expanded symlink is covered by the same line.
+        if not _root_owned_entry(resolved):
+            return False
+        candidate = os.path.join(resolved, name)
+        try:
+            is_link = os.path.islink(candidate)
+        except OSError:
+            return False
+        if not is_link:
+            resolved = candidate
+            continue
+        hops += 1
+        if hops > _MAX_SYMLINK_HOPS:
+            return False
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            return False
+        if os.path.isabs(target):
+            resolved = os.sep
+        pending.extend(reversed(target.split(os.sep)))
+    return _root_owned_entry(resolved)
+
+
+def _local_aws_bin_candidate() -> str | None:
+    """The ``/usr/local/bin/aws`` file, if there is an executable one. No gate."""
+    if IS_WINDOWS:
+        return None
+    candidate = os.path.join(_LOCAL_SYSTEM_BIN_DIR, "aws")
+    if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+        return None
+    return candidate
+
+
+def _is_native_program(path: str) -> bool:
+    """*path*'s own bytes ARE the program: not a script naming an interpreter.
+
+    A ``#!`` line hands execution to a DIFFERENT file, and which file that is lives
+    in the script's CONTENT — so the ownership walk, which validates the path, says
+    nothing about it. A root-owned wrapper whose shebang points into a user-writable
+    tree is not exotic: ``sudo pip install awscli`` against a pyenv or
+    home-directory Python produces exactly that.
+
+    Rather than validate the interpreter — and then its libraries, and then its own
+    module search path, a set with no end — the fallback simply does not trust a
+    script. The case it exists for is unaffected: AWS CLI v2's installer ships a
+    native executable, reached through the symlink this resolver already follows.
+
+    A read failure answers ``False``: unreadable is not shown-to-be-safe.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) != b"#!"
+    except OSError:
+        return False
+
+
+def _local_aws_bin_is_trusted(candidate: str) -> bool:
+    """Every condition the ``/usr/local/bin`` fallback requires, in ONE place.
+
+    One predicate because two callers ask it — the resolver and the
+    decline-reporter — and a resolver that accepted what the reporter called
+    refused (or the reverse) would state two contradictory facts about one file.
+    That has already gone wrong once on this path, so the conditions live together
+    rather than being spelled out twice.
+    """
+    return _is_root_owned_path(candidate) and _is_native_program(candidate)
+
+
+def trusted_aws_bin() -> str | None:
+    """The ``aws`` executable to spawn, or ``None`` if there is none to trust.
+
+    :func:`trusted_system_bin` plus a ``/usr/local/bin`` fallback, the same shape
+    as :func:`trusted_git_bin` — one tool-specific resolver owning that tool's
+    install-location knowledge, so its callers state a tool and not a search
+    policy. The fallback exists because ``/usr/local/bin`` is the default
+    ``--bin-dir`` of AWS's own installers, and a lookup that missed it made the
+    doctor report "no AWS CLI" on a perfectly ordinary host.
+
+    It is NOT a loosening. The directory is not in
+    :data:`_TRUSTED_SYSTEM_BIN_DIRS` and must not be: on an Intel macOS the
+    Homebrew prefix IS ``/usr/local``, owned by the console user, so membership
+    alone would let a same-uid process supply every pinned tool. The copy is
+    accepted only when :func:`_is_root_owned_path` finds it, its realpath and
+    every directory above both owned by root and not group/world-writable.
+
+    ``None`` on Windows for the fallback half (the directory is a POSIX
+    convention), and ``None`` when the gate declines — the same "unavailable"
+    answer as an absent CLI, which callers already handle. A caller that must
+    tell the two apart asks :func:`aws_bin_declined_on_ownership`.
+    """
+    global _UNTRUSTED_AWS_BIN_LOGGED
+
+    system_copy = trusted_system_bin("aws")
+    if system_copy:
+        return system_copy
+    candidate = _local_aws_bin_candidate()
+    if candidate is None:
+        return None
+    if not _local_aws_bin_is_trusted(candidate):
+        if not _UNTRUSTED_AWS_BIN_LOGGED:
+            # Once per process, matching `_log_tool_outside_trusted_dirs`: a
+            # caller may probe several times in one run, and the verdict
+            # cannot change between them.
+            _UNTRUSTED_AWS_BIN_LOGGED = True
+            logger.warning(
+                "%s is not root-owned or sits under a writable directory — declining to run it",
+                candidate,
+            )
+        return None
+    return candidate
+
+
+def aws_bin_declined_on_ownership() -> str | None:
+    """The ``/usr/local/bin/aws`` that :func:`trusted_aws_bin` REFUSED, if any.
+
+    ``None`` when there is no such copy, and ``None`` when the gate accepts the
+    one there is. For a caller that must tell an operator "you have this tool,
+    and I will not run it" apart from "you do not have this tool" — two different
+    facts, where reporting the second while the first holds is a confident wrong
+    answer, not a cost of the gate.
+
+    Worth knowing how ordinary the decline is: Debian policy has directories
+    under ``/usr/local`` owned ``root:staff`` mode ``2775``, so on a stock Debian
+    or Ubuntu host the gate declines by DEFAULT and the fallback never fires.
+    That degradation is intended — a member of ``staff`` can replace the binary,
+    which is the hole the gate exists to close, and loosening it to accept a
+    group-writable directory would forfeit the property outright. What is not
+    acceptable is a diagnostic that reads the decline as absence.
+
+    ``None`` as well when :func:`trusted_system_bin` found a copy, because then no
+    decline explains anything: the resolver succeeded, and a caller reporting "the
+    local copy was refused" would be offering that as the reason for some later,
+    unrelated failure.
+    """
+    if trusted_system_bin("aws"):
+        return None
+    candidate = _local_aws_bin_candidate()
+    if candidate is None or _local_aws_bin_is_trusted(candidate):
+        return None
+    return candidate
+
+
 def trusted_system_path() -> str | None:
     """A ``PATH`` value containing only the trusted system directories.
 
