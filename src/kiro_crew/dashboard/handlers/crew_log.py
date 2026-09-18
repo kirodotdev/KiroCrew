@@ -61,7 +61,7 @@ from kiro_crew.dashboard.handlers._shared import (
 CREW_LOG_ENV: Final[str] = "KIROCREW_CREW_LOG"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
-    from kiro_crew.crew_log.errors import LedgerError
+    from kiro_crew.crew_log.errors import CrewLogError
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ async def api_session_crew_log(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "session_crew_log.read")
     if denied is not None:
         return denied
-    from kiro_crew.crew_log.errors import LedgerError
+    from kiro_crew.crew_log.errors import CrewLogError
 
     session_id = request.match_info.get("id", "")
     try:
@@ -217,7 +217,7 @@ async def api_session_crew_log(request: web.Request) -> web.Response:
         return _bad_request(str(exc), "bad_range")
     try:
         payload = await asyncio.to_thread(_read_page, session_id, start, end)
-    except LedgerError as exc:
+    except CrewLogError as exc:
         return _crew_log_refusal(exc)
     return web.json_response(payload)
 
@@ -227,23 +227,23 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "session_crew_log.projection")
     if denied is not None:
         return denied
-    from kiro_crew.crew_log.errors import LedgerError
+    from kiro_crew.crew_log.errors import CrewLogError
 
     projections = _crew_log()
     session_id = request.match_info.get("id", "")
     name = request.match_info.get("name", "")
     try:
         projections.require_name(name)
-    except LedgerError as exc:
+    except CrewLogError as exc:
         return _bad_request(exc.message, "unknown_projection")
     try:
         result = await asyncio.to_thread(projections.read_projection, session_id, name)
-    except LedgerError as exc:
+    except CrewLogError as exc:
         return _crew_log_refusal(exc)
     return web.json_response({"session_id": session_id, **result.to_dict()})
 
 
-def _crew_log_refusal(exc: "LedgerError") -> web.Response:
+def _crew_log_refusal(exc: "CrewLogError") -> web.Response:
     """A storage refusal as a response, keeping the code the caller can act on."""
     from kiro_crew.crew_log.errors import CODE_INVALID_ID, CODE_UNKNOWN_ENTRY_TYPE
 
@@ -365,12 +365,12 @@ class CrewLogPublisher:
         # growth folds from where it is, so skipping loses no accuracy.
         if not self._watchers():
             return
-        from kiro_crew.crew_log.errors import LedgerError
+        from kiro_crew.crew_log.errors import CrewLogError
 
         for session_id in sessions:
             try:
                 await self._publish(session_id)
-            except LedgerError as exc:
+            except CrewLogError as exc:
                 logger.debug("crew log fold refused for %s: %s", session_id, exc)
             except Exception:  # pragma: no cover - a push must not kill the loop
                 logger.debug("crew log publish failed for %s", session_id, exc_info=True)

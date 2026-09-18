@@ -27,7 +27,7 @@ session: an agent switch, a model switch, or a project change calls
 `SessionLifecycle.reset`, which pops the live session and lets the next turn cold-start a
 fresh one. When that reset cleared the conversation the successor has a new id and a new
 crew log; when it did not, the next cold start resumes the same id via `session/load`, so
-`Ledger.exists` decides between create and open and a resumed session never truncates it.
+`CrewLog.exists` decides between create and open and a resumed session never truncates it.
 
 `owner` and `agent` are header fields, written once at create time. There is no turn id in
 the repo, so a turn is identified by its message boundary, `len(slot.messages)` at turn
@@ -413,7 +413,7 @@ secrets and a body is the one field that could.
 `message/chunk` has ONE producer: the overflow split, which cuts a body too large
 for a single line into slices whose seqs the following entry cites in `chunks`.
 
-A chunk group is written as ONE batch -- `Ledger.append_many`, one lock, one write,
+A chunk group is written as ONE batch -- `CrewLog.append_many`, one lock, one write,
 one fsync -- with the citing entry last. Entry by entry, a hard kill between the
 chunks and the entry naming them leaves the body on disk with nothing pointing at it:
 stored, unreachable, and with no record that the message existed. What a torn write
@@ -523,7 +523,7 @@ resolver needs.
 
 An earlier draft had a second, slot-keyed level that read the slot's live `_acp_client` first and
 fell back to the registry. It is not shipped, and the reason is worth recording: the registry's
-provider IS the object the runner reads its own `_ledger_sid` from, so it answers the same id during
+provider IS the object the runner reads its own `_crew_log_sid` from, so it answers the same id during
 a turn as between turns. The extra level asked no question the one level cannot, and no caller ever
 reached for it.
 
@@ -540,7 +540,7 @@ namespace is never rewritten -- that is how `slack:<ts>` would become the nonexi
 `dashboard:slack:<ts>`.
 
 Unknown is an answer. Every function returns the empty string when the key has no live ACP session,
-and the emitter's own no-op guard turns that into "do not write". A ledger that omits a fact is
+and the emitter's own no-op guard turns that into "do not write". A crew log that omits a fact is
 behind; one that files a fact under the wrong session is wrong, and nothing downstream can tell.
 
 ### Approvals were never a resolver problem
@@ -548,7 +548,7 @@ behind; one that files a fact under the wrong session is wrong, and nothing down
 The previous revision of this document said approvals had no emitter because "the approval
 coordinator carries a slot key, not a session id". That is true of `ApprovalCoordinator` and false
 of the site that actually raises the prompt: the permission-request arm lives inside `_run_chat`,
-where `_ledger_sid` and `_ledger_turn_no` have been in scope since the turn began. No resolver is
+where `_crew_log_sid` and `_crew_log_turn_no` have been in scope since the turn began. No resolver is
 involved.
 
 The request is recorded ONE STATEMENT before the `try` whose `finally` records the decision, and
@@ -642,16 +642,16 @@ A cap on the NUMBER of pins bounds memory only when each pin's own fields are bo
 session id a pin carries is authored by the provider. So a pin whose session id is longer than the
 declared maximum is refused at the point of retention and counted the same way, rather than stored
 or shortened: an identity that has been cut down names a different unit or none at all, so a
-truncated copy would file that child's entries against the wrong ledger. The maximum sits far above
+truncated copy would file that child's entries against the wrong crew log. The maximum sits far above
 any id this codebase produces, so it rejects nothing legitimate and exists only so a broken or
 hostile provider cannot make the count cap meaningless.
 ### `subagent/spawned` carries no `ref`, and that is not a deferral
 
-The schema describes a `ref` into the child's log, and a child that had a ledger would deserve one.
-No subagent code path opens one: the only site that creates a session ledger is the dashboard turn
+The schema describes a `ref` into the child's log, and a child that had a crew log would deserve one.
+No subagent code path opens one: the only site that creates a session's crew log is the dashboard turn
 path, and a subagent run does not go through it. A `ref` written now would cite a file that does not
 exist, which a reader cannot distinguish from one that was deleted. It becomes writable, unchanged,
-the day subagent sessions get ledgers of their own.
+the day subagent sessions get crew logs of their own.
 
 `subagent/completed` likewise carries no `tokens` and no `credits`, and the absence is the record.
 The schema has both fields; nothing in the subagent runtime measures either. A run's record carries
@@ -671,7 +671,7 @@ field. That keeps the two distinguishable without renaming a frozen type and wit
 
 Both background entry points -- the one-liner and the shared-session context manager -- already
 snapshot the turn's `TurnUsage` and its wall clock in their teardown, behind the same
-`usage_has_billing` gate the usage store uses. The ledger entry is written from that exact point, so
+`usage_has_billing` gate the usage store uses. The crew log entry is written from that exact point, so
 a background call appears in a session's log precisely when it appears in the account's bill and the
 two cannot disagree about whether it happened.
 
@@ -698,7 +698,7 @@ rather than ask again.
 **What this misses, and why the alternative is worse.** A background call charged to a session whose
 ACP session is already GONE -- idle-expired, reset, or a consolidation scheduled long after the tab
 closed -- resolves to no unit, so its spend reaches the usage store and never reaches the log. The
-ledger FILE still exists on disk; what is missing is any live thing that names its id, and finding
+crew log FILE still exists on disk; what is missing is any live thing that names its id, and finding
 one would take a persisted key-to-id index this change deliberately does not add.
 
 Resolving later does not fix it and makes something worse. Later is strictly no more likely to find a
@@ -905,7 +905,7 @@ again. A wedged disk therefore becomes a reported loss, never a hang. Attempts a
 CONSECUTIVELY and any append that lands resets them, which is also what makes the retry
 terminate: a reset costs a real append, so the buffer strictly shrinks between resets.
 
-A REFUSAL is not retried at all. A `LedgerError` is the storage layer declining the entry
+A REFUSAL is not retried at all. A `CrewLogError` is the storage layer declining the entry
 against the format -- an over-cap line, an unowned type -- decided before a byte is written, so
 the file is byte-identical and the same entry is declined identically every time. Retaining
 one would spend the whole attempt budget on a verdict that cannot change and hold that
@@ -939,7 +939,7 @@ one loop that also drives the liveness heartbeat: `no-blocking-call-on-event-loo
 latency preference.
 
 So an entry point does only what must be measured where it is called, and hands the
-storage call to `executors.ledger_executor()` -- a pool of exactly ONE worker, because the
+storage call to `executors.crew_log_executor()` -- a pool of exactly ONE worker, because the
 order entries reach a unit's file is part of the format. The call sites stay synchronous
 and gain no suspension point; in particular `_compaction_gate_decision` and
 `_settle_compact_cooldown` are synchronous methods called from async code, which an

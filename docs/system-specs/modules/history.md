@@ -698,7 +698,7 @@ archived instead of being permanently deleted:
   `_cleanup_old_archives()` reads the value from config when called with no
   explicit `retention_days`, and is rate-limited to once per hour.
 - **The same pass expires closed SESSION LEDGERS**, on that same setting and
-  inside that same throttle: `_cleanup_expired_ledgers()` hands the resolved
+  inside that same throttle: `_cleanup_expired_crew_logs()` hands the resolved
   window to `ledger.store.sweep_expired()`. One switch governs both halves
   because a session's message bodies live in its ledger — expiring the transcript
   archive while the ledger it points into grew forever would keep the larger half

@@ -45,9 +45,9 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from kiro_crew.crew_log.entry_types import SESSION_ENTRY_TYPES
-from kiro_crew.crew_log.errors import CODE_BAD_DATA, LedgerError
+from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, Entry
-from kiro_crew.crew_log.store import Ledger
+from kiro_crew.crew_log.store import CrewLog
 
 #: The session side panel's projections, in the RFC section 5 order.
 PROJECTION_NAMES: Final[tuple[str, ...]] = (
@@ -195,15 +195,15 @@ class Checkpoint:
         last_seq = raw.get("last_seq")
         state = raw.get("state")
         if not isinstance(name, str) or name not in _FOLDS:
-            raise LedgerError(f"unknown projection: {name!r}", code=CODE_BAD_DATA, field="name")
+            raise CrewLogError(f"unknown projection: {name!r}", code=CODE_BAD_DATA, field="name")
         if not isinstance(last_seq, int) or isinstance(last_seq, bool) or last_seq < 0:
-            raise LedgerError(
+            raise CrewLogError(
                 f"checkpoint last_seq must be a non-negative int: {last_seq!r}",
                 code=CODE_BAD_DATA,
                 field="last_seq",
             )
         if not isinstance(state, dict):
-            raise LedgerError(
+            raise CrewLogError(
                 "checkpoint state must be an object", code=CODE_BAD_DATA, field="state"
             )
         return cls(name=name, last_seq=last_seq, state=state)
@@ -222,7 +222,7 @@ class _Fold:
 def require_name(name: str) -> str:
     """*name* if it is a projection this module folds, else raise ``bad_data``."""
     if name not in _FOLDS:
-        raise LedgerError(
+        raise CrewLogError(
             f"unknown projection {name!r}; expected one of {list(PROJECTION_NAMES)}",
             code=CODE_BAD_DATA,
             field="name",
@@ -260,7 +260,7 @@ def advance(checkpoint: Checkpoint, entries: Iterable[Entry]) -> Checkpoint:
     last = checkpoint.last_seq
     for entry in entries:
         if entry.seq <= last:
-            raise LedgerError(
+            raise CrewLogError(
                 f"entry {entry.seq} is at or below the {checkpoint.name} checkpoint's "
                 f"seq {last}; fold from the start instead of re-folding entries",
                 code=CODE_BAD_DATA,
@@ -363,7 +363,7 @@ def empty_session(session_id: str, names: Iterable[str] = PROJECTION_NAMES) -> S
     )
 
 
-def open_session_log(session_id: str) -> Ledger | None:
+def open_session_log(session_id: str) -> CrewLog | None:
     """This session's crew log opened for READING, or ``None`` when it has none.
 
     Never repairs. Repair appends closers and takes write ownership, which
@@ -371,12 +371,12 @@ def open_session_log(session_id: str) -> Ledger | None:
     would refuse whenever the live writer holds it -- turning "show me this
     session" into an error for exactly the sessions that are running.
     """
-    if not Ledger.exists(KIND_SESSION, session_id):
+    if not CrewLog.exists(KIND_SESSION, session_id):
         return None
-    return Ledger.open(KIND_SESSION, session_id)
+    return CrewLog.open(KIND_SESSION, session_id)
 
 
-def _log_origin(handle: Ledger) -> str | None:
+def _log_origin(handle: CrewLog) -> str | None:
     """The crew log file's creation identity for *handle*, or ``None``.
 
     A reuse (:func:`fold_session` ``since=``) folds new bytes onto a cached
@@ -406,7 +406,7 @@ def fold_session(
     names: Iterable[str] = PROJECTION_NAMES,
     *,
     since: SessionProjections | None = None,
-    log: Ledger | None = None,
+    log: CrewLog | None = None,
 ) -> SessionProjections:
     """Every named projection for *session_id*, folded in one pass.
 

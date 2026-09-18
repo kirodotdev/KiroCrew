@@ -8,7 +8,7 @@ import, so pod isolation and test isolation both keep working)::
 
 ``<store name>`` is the readable-plus-digest fold of the unit id that
 ``session_ledger`` and ``work_ledger`` already use, and the raw id lives in the
-header (see :func:`ledger_dir` for why the id is not the directory name). Both
+header (see :func:`crew_log_dir` for why the id is not the directory name). Both
 files carry a ``.lock`` sibling in the same directory.
 
 One dedicated ``crew-log`` root, holding every kind, is what carries the
@@ -77,8 +77,8 @@ from kiro_crew.crew_log.errors import (
     CODE_NO_LEDGER,
     CODE_SEGMENT_GAP,
     CODE_UNKNOWN_ENTRY_TYPE,
+    CrewLogError,
     IndeterminateAppend,
-    LedgerError,
 )
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.crew_log.lease import acquire as acquire_lease
@@ -145,7 +145,7 @@ MAX_PAGE_LIMIT = 500
 DEFAULT_PAGE_LIMIT = 50
 
 #: ``resolve`` outcomes. There is no ``forbidden``: this layer claims no
-#: authorization, so it has none to deny (see :meth:`Ledger.resolve`).
+#: authorization, so it has none to deny (see :meth:`CrewLog.resolve`).
 STATUS_OK = "ok"
 STATUS_GONE = "gone"
 #: The cited span reaches BELOW the oldest surviving segment: retention removed
@@ -168,13 +168,13 @@ def now_ms() -> int:
 # --------------------------------------------------------------------------- #
 
 
-def ledger_root(kind: str) -> Path:
+def crew_log_root(kind: str) -> Path:
     """Root directory holding every crew log of *kind*."""
     return data_home() / _ROOT_LEAF / _ROOT_DIR[require_kind(kind)]
 
 
-def _checked_ledger_root(kind: str) -> Path:
-    """:func:`ledger_root` for *kind*, refused when the directory is not the real one.
+def _checked_crew_log_root(kind: str) -> Path:
+    """:func:`crew_log_root` for *kind*, refused when the directory is not the real one.
 
     Containment (:func:`resolved_within`) resolves its BASE first and then checks
     only that the child stays under the resolved base. That is the right rule for
@@ -198,16 +198,16 @@ def _checked_ledger_root(kind: str) -> Path:
     create it, and the ones that read report their own absence. Only a directory
     that EXISTS and is wrong is refused.
     """
-    root = ledger_root(kind)
+    root = crew_log_root(kind)
     try:
         is_link = root.is_symlink()
     except OSError as exc:  # pragma: no cover -- a stat fault on the parent
-        raise LedgerError(
+        raise CrewLogError(
             f"cannot establish the crew log root {root}: {exc}",
             code=CODE_BAD_ROOT,
         ) from exc
     if is_link:
-        raise LedgerError(
+        raise CrewLogError(
             f"refusing a linked crew log root: {root} is a symbolic link",
             code=CODE_BAD_ROOT,
         )
@@ -220,19 +220,19 @@ def _checked_ledger_root(kind: str) -> Path:
         # spell the link's target and agree, which is the same escape one level up.
         canonical = data_home().resolve() / _ROOT_LEAF / _ROOT_DIR[require_kind(kind)]
     except (OSError, RuntimeError) as exc:
-        raise LedgerError(
+        raise CrewLogError(
             f"cannot resolve the crew log root {root}: {exc}",
             code=CODE_BAD_ROOT,
         ) from exc
     if resolved != canonical:
-        raise LedgerError(
+        raise CrewLogError(
             f"refusing a crew log root outside the data home: {root} resolves to {resolved}",
             code=CODE_BAD_ROOT,
         )
     return root
 
 
-def ledger_dir(kind: str, unit_id: str) -> Path:
+def crew_log_dir(kind: str, unit_id: str) -> Path:
     """The validated directory for one unit's crew log. Does not create it.
 
     The directory is named with the readable-plus-digest fold
@@ -257,9 +257,9 @@ def ledger_dir(kind: str, unit_id: str) -> Path:
     symlink-safely that the resolved path stays under the root.
     """
     require_unit_id(unit_id)
-    resolved = resolved_within(_checked_ledger_root(kind), _store_name(unit_id))
+    resolved = resolved_within(_checked_crew_log_root(kind), _store_name(unit_id))
     if resolved is None:
-        raise LedgerError(
+        raise CrewLogError(
             f"path traversal blocked for crew log id: {unit_id!r}",
             code=CODE_INVALID_ID,
             field="id",
@@ -267,9 +267,9 @@ def ledger_dir(kind: str, unit_id: str) -> Path:
     return resolved
 
 
-def ledger_path(kind: str, unit_id: str) -> Path:
+def crew_log_path(kind: str, unit_id: str) -> Path:
     """The crew log file for one unit."""
-    return ledger_dir(kind, unit_id) / LOG_FILE
+    return crew_log_dir(kind, unit_id) / LOG_FILE
 
 
 def _segment_first_seq(path: Path) -> int | None:
@@ -300,7 +300,7 @@ def segment_paths(kind: str, unit_id: str) -> list[Path]:
     first-seq is IN the name so ordering needs no file read, and so a reader can
     tell a gap at the front (retention) from a gap in the middle (damage).
     """
-    directory = ledger_dir(kind, unit_id)
+    directory = crew_log_dir(kind, unit_id)
     found: list[tuple[int, Path]] = []
     head = directory / LOG_FILE
     if head.is_file():
@@ -333,7 +333,7 @@ def segment_first_seqs(kind: str, unit_id: str) -> list[int]:
 
 
 def _lock_path(kind: str, unit_id: str) -> Path:
-    return ledger_dir(kind, unit_id) / _LOCK_FILE
+    return crew_log_dir(kind, unit_id) / _LOCK_FILE
 
 
 # --------------------------------------------------------------------------- #
@@ -413,16 +413,16 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     """
     require_kind(kind)
     # The name as WRITTEN, checked before the resolution below follows it.
-    # ``ledger_dir`` returns the RESOLVED path, so a unit directory that is a link
+    # ``crew_log_dir`` returns the RESOLVED path, so a unit directory that is a link
     # to another unit resolves inside the root, passes containment, and hands this
     # function the TARGET -- which is not a link, so checking the resolved path
     # would prove nothing and the removal would delete the other unit's history
     # while reporting this one's id. Refused rather than followed, the same stance
     # ``session_ledger.purge_matching`` takes on a linked store. The CHECKED root,
-    # so this and the ``ledger_dir`` below read the same directory: a linked kind
+    # so this and the ``crew_log_dir`` below read the same directory: a linked kind
     # root would otherwise be refused only on the second read, after this one had
     # already followed it.
-    named = _checked_ledger_root(kind) / _store_name(unit_id)
+    named = _checked_crew_log_root(kind) / _store_name(unit_id)
     if is_link(named):
         logger.warning(
             "crew log retention: %s log %r is a link; refusing to remove what it names",
@@ -430,13 +430,13 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
             unit_id,
         )
         return REMOVE_ABSENT
-    directory = ledger_dir(kind, unit_id)
+    directory = crew_log_dir(kind, unit_id)
     if not directory.is_dir():
         return REMOVE_ABSENT
     lease_path = directory / LEASE_FILE
     try:
         lease_key = acquire_lease(lease_path, kind=kind, unit_id=unit_id, sole=True)
-    except LedgerError as exc:
+    except CrewLogError as exc:
         if exc.code == CODE_ALREADY_OWNED:
             return REMOVE_OWNED
         raise
@@ -515,16 +515,16 @@ def unit_header_slot(kind: str, unit_id: str) -> "str | None":
     """
     require_kind(kind)
     try:
-        named = _checked_ledger_root(kind) / _store_name(unit_id)
+        named = _checked_crew_log_root(kind) / _store_name(unit_id)
         if is_link(named):
             return None
-        directory = ledger_dir(kind, unit_id)
+        directory = crew_log_dir(kind, unit_id)
         segments = [
             (first, child)
             for child in directory.iterdir()
             if (first := _segment_first_seq(child)) is not None
         ]
-    except (LedgerError, OSError):
+    except (CrewLogError, OSError):
         return None
     if not segments:
         return None
@@ -699,13 +699,13 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
     if retention_days < 0:
         return (0, 0)
     try:
-        # The CHECKED root, the same one ``ledger_dir`` resolves under. A linked or
+        # The CHECKED root, the same one ``crew_log_dir`` resolves under. A linked or
         # out-of-home kind directory is refused here rather than one unit at a
         # time: the removal itself is already refused downstream, but only after
         # this walk had read a header and a tail from every file under whatever the
         # link named. One refusal reads nothing.
-        children = list(_checked_ledger_root(KIND_SESSION).iterdir())
-    except LedgerError:
+        children = list(_checked_crew_log_root(KIND_SESSION).iterdir())
+    except CrewLogError:
         # A root that EXISTS and is wrong. Not a unit failure -- there is no
         # legitimate unit here to have failed -- so it is reported and the pass
         # ends rather than being counted as work.
@@ -733,7 +733,7 @@ def sweep_expired(retention_days: int, *, now: float | None = None) -> "tuple[in
             status = remove_unit(
                 KIND_SESSION, unit_id, guard=partial(_still_expired, cutoff_ms, unit_id)
             )
-        except (LedgerError, OSError):
+        except (CrewLogError, OSError):
             # One unreadable unit must not stop the pass over the others, and it
             # is not a removal: the unit keeps its history and the next pass sees
             # it again.
@@ -771,7 +771,7 @@ def _expired_unit_id(directory: Path, cutoff_ms: int) -> "str | None":
     ``None`` means leave it alone, and every path to ``None`` is deliberate:
 
     * **No segment, or a header this directory does not answer to.** The id is
-      read from the OLDEST surviving segment, which is where ``Ledger.open``
+      read from the OLDEST surviving segment, which is where ``CrewLog.open``
       resolves it, and it is accepted only if it folds BACK to this directory's
       own name. A directory no id addresses is not removed, because the removal
       would be aimed by id and would resolve somewhere else.
@@ -1221,7 +1221,7 @@ def _covers_span(found: tuple[Entry, ...], from_seq: int, last_seq: int) -> bool
 # --------------------------------------------------------------------------- #
 
 
-class Ledger:
+class CrewLog:
     """One unit's append-only crew log.
 
     Construct through :meth:`create` or :meth:`open`, never directly: both do
@@ -1291,7 +1291,7 @@ class Ledger:
         return self._last_seq
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
-        return f"Ledger(kind={self._kind!r}, id={self._id!r}, last_seq={self._last_seq})"
+        return f"CrewLog(kind={self._kind!r}, id={self._id!r}, last_seq={self._last_seq})"
 
     # -- lifecycle ---------------------------------------------------------- #
 
@@ -1305,7 +1305,7 @@ class Ledger:
         return any(_has_content(p) for p in segment_paths(kind, unit_id))
 
     @classmethod
-    def create(cls, kind: str, unit_id: str, **header_fields: Any) -> Ledger:
+    def create(cls, kind: str, unit_id: str, **header_fields: Any) -> CrewLog:
         """Write a new crew log's header. Refuses if the file already exists.
 
         The header is PUBLISHED atomically -- temp file, fsync, rename -- while
@@ -1327,16 +1327,16 @@ class Ledger:
         makes "create refuses an existing crew log" true when two processes race.
         """
         kind = require_kind(kind)
-        path = ledger_path(kind, unit_id)
+        path = crew_log_path(kind, unit_id)
         if _has_content(path):
-            raise LedgerError(
+            raise CrewLogError(
                 f"{kind} crew log {unit_id!r} already exists", code=CODE_ALREADY_EXISTS, field="id"
             )
         header = build_header(kind, unit_id, now_ms(), header_fields)
         line = require_entry_line(serialize(header.to_dict()))
         with _open_lock(_lock_path(kind, unit_id)):
             if _has_content(path):
-                raise LedgerError(
+                raise CrewLogError(
                     f"{kind} crew log {unit_id!r} already exists",
                     code=CODE_ALREADY_EXISTS,
                     field="id",
@@ -1360,7 +1360,7 @@ class Ledger:
         *,
         repair: bool = False,
         child_gone: "Callable[[str], bool] | None" = None,
-    ) -> Ledger:
+    ) -> CrewLog:
         """Open an existing crew log, repairing a torn tail if there is one.
 
         ``child_gone`` narrows what ``repair`` is allowed to conclude, and is the
@@ -1405,7 +1405,7 @@ class Ledger:
             candidate for candidate in segment_paths(kind, unit_id) if _has_content(candidate)
         ]
         if not segments:
-            raise LedgerError(
+            raise CrewLogError(
                 f"no {kind} crew log for {unit_id!r}", code=CODE_NO_LEDGER, field="id"
             )
         path = segments[-1]
@@ -1424,7 +1424,7 @@ class Ledger:
             raw = _read_header_line(header_path)
         parsed = None if not raw else _parses_to_object(raw)
         if parsed is None:
-            raise LedgerError(
+            raise CrewLogError(
                 f"{kind} crew log {unit_id!r} has no readable header line",
                 code=CODE_BAD_HEADER,
                 field="type",
@@ -1557,7 +1557,7 @@ class Ledger:
         if thread is not None and (
             not isinstance(thread, int) or isinstance(thread, bool) or thread < 1
         ):
-            raise LedgerError(
+            raise CrewLogError(
                 f"thread must be a positive seq in this crew log: {thread!r}",
                 code=CODE_BAD_THREAD,
                 field="thread",
@@ -1569,7 +1569,7 @@ class Ledger:
         with _open_lock(_lock_path(self._kind, self._id)):
             tail = _scan_tail(self._path)
             if tail.empty:
-                raise LedgerError(
+                raise CrewLogError(
                     f"no {self._kind} crew log for {self._id!r}",
                     code=CODE_NO_LEDGER,
                     field="id",
@@ -1579,7 +1579,7 @@ class Ledger:
             if thread is not None and (
                 thread > tail.last_seq or not _anchor_exists(self._path, thread, tail)
             ):
-                raise LedgerError(
+                raise CrewLogError(
                     f"thread {thread} names no parseable entry in this crew log "
                     f"(newest seq is {tail.last_seq})",
                     code=CODE_BAD_THREAD,
@@ -1652,7 +1652,7 @@ class Ledger:
         with _open_lock(_lock_path(self._kind, self._id)):
             tail = _scan_tail(self._path)
             if tail.empty:
-                raise LedgerError(
+                raise CrewLogError(
                     f"no {self._kind} crew log for {self._id!r}",
                     code=CODE_NO_LEDGER,
                     field="id",
@@ -1675,7 +1675,7 @@ class Ledger:
                 # that cannot change. A refusal is a loss now, which is the honest
                 # outcome and the one the retention policy already handles.
                 if not isinstance(citing, dict):
-                    raise LedgerError(
+                    raise CrewLogError(
                         f"cite must return an entry mapping, got {type(citing).__name__}",
                         code=CODE_BAD_DATA,
                         field="cite",
@@ -1739,7 +1739,7 @@ class Ledger:
                 continue
             if known is not None and entry.type not in known:
                 if not entry.ignorable:
-                    raise LedgerError(
+                    raise CrewLogError(
                         f"entry {entry.seq} has type {entry.type!r}, which this reader "
                         "does not know and which is not marked ignorable; "
                         "reconstruction stops here",
@@ -1774,14 +1774,14 @@ class Ledger:
                     kind=self._kind,
                     unit_id=self._id,
                 )
-            except LedgerError as exc:
-                raise LedgerError(
+            except CrewLogError as exc:
+                raise CrewLogError(
                     f"segment {path.name} has an invalid header: {exc}",
                     code=CODE_BAD_SEGMENT,
                     field=exc.field,
                 ) from exc
             if segment_header.version != self._header.version:
-                raise LedgerError(
+                raise CrewLogError(
                     f"segment {path.name} has schema version {segment_header.version}, "
                     f"but this crew log uses {self._header.version}",
                     code=CODE_BAD_SEGMENT,
@@ -1791,7 +1791,7 @@ class Ledger:
             declared_first = _segment_first_seq(path)
             actual_first = _read_first_entry_seq(path)
             if actual_first is not None and actual_first != declared_first:
-                raise LedgerError(
+                raise CrewLogError(
                     f"segment {path.name} declares first seq {declared_first} in its filename, "
                     f"but its first entry is seq {actual_first}",
                     code=CODE_BAD_SEGMENT,
@@ -1801,7 +1801,7 @@ class Ledger:
             at_boundary = bool(index) and expected > 0
             for entry in _iter_entries(path):
                 if at_boundary and entry.seq != expected:
-                    raise LedgerError(
+                    raise CrewLogError(
                         f"segment {path.name} starts at seq {entry.seq}, but the "
                         f"previous segment ended at {expected - 1}: the log is not "
                         "contiguous across the boundary",
@@ -1907,11 +1907,11 @@ class Ledger:
         """
         pointer = _as_ref(ref)
         if pointer.unit == self._kind and pointer.id == self._id:
-            target: Ledger | None = self
+            target: CrewLog | None = self
         else:
             try:
-                target = Ledger.open(pointer.unit, pointer.id)
-            except LedgerError as exc:
+                target = CrewLog.open(pointer.unit, pointer.id)
+            except CrewLogError as exc:
                 # Only "there is no such crew log" is `gone`. A crew log that EXISTS
                 # but will not open -- a damaged header, an unreadable segment --
                 # is damage, and answering `gone` for it tells the reader to stop
@@ -1926,7 +1926,7 @@ class Ledger:
             found = tuple(
                 entry for entry in target.iter_from(pointer.from_seq) if entry.seq <= last
             )
-        except LedgerError:
+        except CrewLogError:
             # A missing middle segment or a torn line RAISES out of the read. That
             # is the very condition this method promises to report, so it is
             # answered rather than propagated -- a caller resolving a citation
@@ -2247,7 +2247,7 @@ STOP_REASON_INTERRUPTED = "interrupted"
 TOOL_STATUS_UNKNOWN = "unknown"
 
 #: The same "not knowable from the record" word, for the two other openers a
-#: session ledger can be left holding. Only the repair ever writes them: a live
+#: session's crew log can be left holding. Only the repair ever writes them: a live
 #: writer always knows what a human decided and how a child ended, so a reader
 #: seeing either value knows it is reading a reconstruction rather than an
 #: observation. Spelled as separate constants because they name different fields

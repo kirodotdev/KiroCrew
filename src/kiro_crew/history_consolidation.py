@@ -2371,7 +2371,7 @@ class HistoryConsolidator:
                         # never asked for it. Callers that pass no key -- skill
                         # detection, the dedupe and merge judges -- are not charged
                         # to a single session and record nothing.
-                        ledger_kind="memory_consolidation",
+                        crew_log_kind="memory_consolidation",
                         crew_log_session_key=session_key,
                         **({"memory_store": memory_store} if memory_store else {}),
                     )

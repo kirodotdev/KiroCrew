@@ -1909,9 +1909,9 @@ def _measure_tool_output(redacted: str) -> tuple[str, int]:
     drift apart: a crew log reader comparing two entries has no way to tell which
     parser produced either one.
     """
-    from kiro_crew.crew_log.emit import enabled as _ledger_enabled
+    from kiro_crew.crew_log.emit import enabled as _crew_log_enabled
 
-    if not _ledger_enabled():
+    if not _crew_log_enabled():
         return "", -1
     raw = redacted.encode("utf-8", "replace")
     return hashlib.sha256(raw).hexdigest(), len(raw)

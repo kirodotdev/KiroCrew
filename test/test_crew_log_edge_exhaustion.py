@@ -40,12 +40,12 @@ def _isolated_home(tmp_path, monkeypatch):
     emit.reset_caches()
 
 
-def _ledger_path(session_id: str = SESSION) -> Path:
-    return lg.ledger_path("session", session_id)
+def _log_path(session_id: str = SESSION) -> Path:
+    return lg.crew_log_path("session", session_id)
 
 
 def _entries(session_id: str = SESSION) -> list[dict]:
-    path = _ledger_path(session_id)
+    path = _log_path(session_id)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as fh:
@@ -90,7 +90,7 @@ def test_write_error_retains_then_drops_after_attempt_cap(err, monkeypatch, capl
     def _raise(self, *a, **kw):
         raise err
 
-    monkeypatch.setattr(lg.Ledger, "append", _raise)
+    monkeypatch.setattr(lg.CrewLog, "append", _raise)
 
     async def _emit():
         emit.on_turn_started(SESSION, 1, "user")
@@ -127,7 +127,7 @@ def test_cleared_error_lands_entries_in_order_with_contiguous_seq(err, monkeypat
     _open_session()
     assert emit.flush()
 
-    real_append = lg.Ledger.append
+    real_append = lg.CrewLog.append
     failures = {"left": 1}
 
     def _fail_first(self, *a, **kw):
@@ -136,7 +136,7 @@ def test_cleared_error_lands_entries_in_order_with_contiguous_seq(err, monkeypat
             raise err
         return real_append(self, *a, **kw)
 
-    monkeypatch.setattr(lg.Ledger, "append", _fail_first)
+    monkeypatch.setattr(lg.CrewLog, "append", _fail_first)
 
     async def _emit():
         emit.on_turn_started(SESSION, 1, "user")
@@ -186,7 +186,7 @@ def test_hung_write_starves_another_session_until_cleared():
             emit._buffer(
                 SESSION_B,
                 _pending(
-                    lambda idx=n: lg.Ledger.open(lg.KIND_SESSION, SESSION_B).append(
+                    lambda idx=n: lg.CrewLog.open(lg.KIND_SESSION, SESSION_B).append(
                         "turn/started", {"turn": idx + 1, "actor": "user", "depth": 0}, src="acp"
                     ),
                     f"B turn {n + 1}",
@@ -299,13 +299,13 @@ def test_no_drops_under_sustained_pressure_and_peak_reflects_truth(monkeypatch, 
 
     monkeypatch.setattr(emit, "_PENDING_HIGH_WATER", 4)
     release = threading.Event()
-    real_append = lg.Ledger.append
+    real_append = lg.CrewLog.append
 
     def _slow(self, *a, **kw):
         release.wait(20.0)
         return real_append(self, *a, **kw)
 
-    monkeypatch.setattr(lg.Ledger, "append", _slow)
+    monkeypatch.setattr(lg.CrewLog, "append", _slow)
     count = 30
 
     async def _flood():
@@ -349,13 +349,13 @@ def test_buffer_overflow_is_rejected_at_the_tail_and_counted(monkeypatch, caplog
     monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 4)
 
     release = threading.Event()
-    real_append = lg.Ledger.append
+    real_append = lg.CrewLog.append
 
     def _slow(self, *a, **kw):
         release.wait(20.0)
         return real_append(self, *a, **kw)
 
-    monkeypatch.setattr(lg.Ledger, "append", _slow)
+    monkeypatch.setattr(lg.CrewLog, "append", _slow)
     count = 10  # 4 fit under the ceiling, 6 overflow
 
     async def _flood():
@@ -472,13 +472,13 @@ def test_a_ceiling_above_the_load_sheds_nothing(monkeypatch):
     monkeypatch.setattr(emit, "_MAX_PENDING_COUNT", 100_000)
 
     release = threading.Event()
-    real_append = lg.Ledger.append
+    real_append = lg.CrewLog.append
 
     def _slow(self, *a, **kw):
         release.wait(20.0)
         return real_append(self, *a, **kw)
 
-    monkeypatch.setattr(lg.Ledger, "append", _slow)
+    monkeypatch.setattr(lg.CrewLog, "append", _slow)
     count = 10
 
     async def _flood():
@@ -611,7 +611,7 @@ def test_a_retained_batch_is_written_at_shutdown_not_abandoned(monkeypatch):
     assert emit.flush()
 
     allow = threading.Event()
-    real_append = lg.Ledger.append
+    real_append = lg.CrewLog.append
 
     def _gated(self, *a, **kw):
         if not allow.is_set():
@@ -619,7 +619,7 @@ def test_a_retained_batch_is_written_at_shutdown_not_abandoned(monkeypatch):
         return real_append(self, *a, **kw)
 
     monkeypatch.setattr(emit, "_retry_delay", lambda _: 5.0)
-    monkeypatch.setattr(lg.Ledger, "append", _gated)
+    monkeypatch.setattr(lg.CrewLog, "append", _gated)
     emit.on_turn_started(SESSION, 1, "user")
     assert not emit.flush(timeout=0.5), "the gated store did not retain"
     assert emit.buffered_writes() >= 1

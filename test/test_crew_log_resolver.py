@@ -1,4 +1,4 @@
-"""The slot-key -> ledger-unit resolver, and the emitters it unlocks.
+"""The slot-key -> crew-log-unit resolver, and the emitters it unlocks.
 
 Kept separate from ``test_crew_log_emit.py`` because these tests are about
 a different question. That file asks whether an entry the runner hands over lands
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew.crew_log import emit, ledger_path, resolve
+from kiro_crew.crew_log import crew_log_path, emit, resolve
 
 SESSION = "acp-sid-1"
 
@@ -41,7 +41,7 @@ def _isolated_home(tmp_path, monkeypatch):
 
 
 def _entries(session_id: str = SESSION) -> list[dict]:
-    path: Path = ledger_path("session", session_id)
+    path: Path = crew_log_path("session", session_id)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as handle:
@@ -106,7 +106,7 @@ def test_a_namespaced_key_resolves_through_the_live_registry():
 def test_a_session_that_never_had_an_acp_session_resolves_to_unknown():
     """Unknown is an answer, and the emitter's no-op turns it into "do not write".
 
-    A ledger that omits a fact is behind. One that files a fact under the wrong
+    A crew log that omits a fact is behind. One that files a fact under the wrong
     session is wrong, and no reader can tell.
 
     Asserted against the literal empty string rather than ``resolve.UNKNOWN``: the
@@ -472,7 +472,7 @@ def test_both_background_helpers_pin_the_owner_before_their_first_await():
         assert awaits, f"{node.name} pins an owner but never awaits"
         assert min(pins) < min(awaits), (
             f"{node.name} resolves _crew_log_owner at line {min(pins)}, after its first "
-            f"await at line {min(awaits)} -- the spend can land in the successor's ledger"
+            f"await at line {min(awaits)} -- the spend can land in the successor's crew log"
         )
         checked.append(node.name)
     assert len(checked) == 2, f"expected both background helpers, found {checked}"
@@ -523,7 +523,7 @@ def test_a_child_is_spawned_then_closed_and_the_spawn_carries_its_scope():
 
 
 def test_a_spawn_carries_no_ref_because_the_child_has_no_log_to_cite():
-    """The schema describes one; no subagent path opens a ledger to point at.
+    """The schema describes one; no subagent path opens a crew log to point at.
 
     A ``ref`` written now would cite a file that does not exist, which a reader
     cannot distinguish from one that was deleted. Checked in BOTH places a citation

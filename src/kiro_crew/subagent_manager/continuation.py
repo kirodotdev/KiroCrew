@@ -39,7 +39,7 @@ class ContinuationCoordinator(ManagerComponent):
     __slots__ = ()
 
     def _record_crew_log_steer(self, info: SubagentInfo, mode: str) -> None:
-        """Record a correction sent into *info*'s run, in the PARENT's ledger.
+        """Record a correction sent into *info*'s run, in the PARENT's crew log.
 
         Called only where the steer SUCCEEDED -- after the provider accepted an
         interrupt, or after a follow-up was queued and its watcher armed. A refused
@@ -70,7 +70,7 @@ class ContinuationCoordinator(ManagerComponent):
                 return
             crew_log_emit.on_subagent_steered(sid, agent_id=info.id, mode=mode)
         except Exception:
-            _logger.debug("session ledger: recording a subagent steer failed", exc_info=True)
+            _logger.debug("crew log: recording a subagent steer failed", exc_info=True)
 
     def _pin_followup_crew_log_origin(self, info: SubagentInfo) -> None:
         """Remember which parent turn asked for *info*'s queued follow-up.
@@ -102,7 +102,7 @@ class ContinuationCoordinator(ManagerComponent):
                 return
             setattr(info, "_crew_log_followup_asked", (sid, crew_log_emit.live_turn(sid)))
         except Exception:
-            _logger.debug("session ledger: pinning a follow-up origin failed", exc_info=True)
+            _logger.debug("crew log: pinning a follow-up origin failed", exc_info=True)
 
     def _conversation_busy_impl(self, conv_key: str) -> SubagentInfo | None:
         """Return the live or QUEUED run on *conv_key*, or None.

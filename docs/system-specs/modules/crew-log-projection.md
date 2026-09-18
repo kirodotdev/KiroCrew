@@ -68,7 +68,7 @@ to it (`turns.credits_reported`, `turns.tokens_reported`), and a caller comparin
 the two learns what the total covers.
 
 **Nothing is synthesized.** An interrupted turn and an unmatched tool call are
-reported OPEN. Closing them is `Ledger.open(repair=True)`, which appends real
+reported OPEN. Closing them is `CrewLog.open(repair=True)`, which appends real
 deterministic closers under write ownership; a reader inventing the same fact in
 memory would make two readers of one file disagree about one turn.
 

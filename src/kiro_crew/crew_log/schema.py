@@ -19,7 +19,7 @@ format has to be readable by a consumer newer *or* older than the writer:
   ``domain/action``, ``time`` in epoch milliseconds, a writer-assigned ``seq``
   contiguous within the file, a ``thread`` grouping key, and a ``ref`` pointer
   into another file. A fact with no unit to belong to -- a script cron, gateway
-  lifecycle -- is written to a ``gateway``-kind ledger when one is needed.
+  lifecycle -- is written to a ``gateway``-kind crew log when one is needed.
 
 Two rules decide whether an entry may be written at all, and they are separate
 because they answer different questions.
@@ -69,7 +69,7 @@ from kiro_crew.crew_log.errors import (
     CODE_INVALID_ID,
     CODE_NAMESPACE_VIOLATION,
     CODE_UNSUPPORTED_VERSION,
-    LedgerError,
+    CrewLogError,
 )
 
 #: Header schema version. Additive changes never bump it.
@@ -180,17 +180,17 @@ def require_unit_id(unit_id: str, *, field: str = "id") -> str:
     is the cheap shape gate in front of it.
     """
     if not isinstance(unit_id, str) or not unit_id:
-        raise LedgerError(
+        raise CrewLogError(
             "crew log id must be a non-empty string", code=CODE_INVALID_ID, field=field
         )
     if "\0" in unit_id or "/" in unit_id or "\\" in unit_id:
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log id must not contain a path separator or NUL: {unit_id!r}",
             code=CODE_INVALID_ID,
             field=field,
         )
     if unit_id in {".", ".."}:
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log id must not be a relative path element: {unit_id!r}",
             code=CODE_INVALID_ID,
             field=field,
@@ -201,7 +201,7 @@ def require_unit_id(unit_id: str, *, field: str = "id") -> str:
 def require_kind(kind: str, *, field: str = "kind") -> str:
     """*kind* unchanged, or raise ``bad_kind``."""
     if kind not in KINDS:
-        raise LedgerError(
+        raise CrewLogError(
             f"unknown crew log kind {kind!r}; expected one of {sorted(KINDS)}",
             code=CODE_BAD_KIND,
             field=field,
@@ -223,23 +223,25 @@ def split_type(entry_type: str) -> tuple[str, str]:
     and no action can smuggle a second domain behind it.
     """
     if not isinstance(entry_type, str) or not entry_type:
-        raise LedgerError("entry type must be a non-empty string", code=CODE_BAD_TYPE, field="type")
+        raise CrewLogError(
+            "entry type must be a non-empty string", code=CODE_BAD_TYPE, field="type"
+        )
     domain, sep, action = entry_type.partition("/")
     if sep != "/" or not domain or not action:
-        raise LedgerError(
+        raise CrewLogError(
             f"entry type must be spelled domain/action: {entry_type!r}",
             code=CODE_BAD_TYPE,
             field="type",
         )
     if not _SEGMENT_RE.match(action):
-        raise LedgerError(
+        raise CrewLogError(
             f"entry type action is not a plain name: {entry_type!r}",
             code=CODE_BAD_TYPE,
             field="type",
         )
     tail = domain[len(GUEST_TYPE_PREFIX) :] if is_guest_type_domain(domain) else domain
     if not _SEGMENT_RE.match(tail):
-        raise LedgerError(
+        raise CrewLogError(
             f"entry type domain must be a plain name or {GUEST_TYPE_PREFIX}<name>: "
             f"{entry_type!r}",
             code=CODE_BAD_TYPE,
@@ -276,7 +278,7 @@ def require_src(src: str, *, kind: str) -> str:
     """
     require_kind(kind)
     if not isinstance(src, str) or not src:
-        raise LedgerError("src must be a non-empty string", code=CODE_BAD_SRC, field="src")
+        raise CrewLogError("src must be a non-empty string", code=CODE_BAD_SRC, field="src")
     if src in KIND_FIXED_SOURCES[kind]:
         return src
     guest = guest_source_prefix_of(src, kind)
@@ -285,7 +287,7 @@ def require_src(src: str, *, kind: str) -> str:
     accepted = sorted(KIND_FIXED_SOURCES[kind]) + [
         f"{prefix}<name>" for prefix in KIND_SOURCE_PREFIXES[kind]
     ]
-    raise LedgerError(
+    raise CrewLogError(
         f"a {kind} crew log accepts src {accepted}: {src!r}",
         code=CODE_BAD_SRC,
         field="src",
@@ -307,14 +309,14 @@ def check_ownership(kind: str, entry_type: str, src: str) -> None:
 
     if is_guest_type_domain(domain):
         if kind != KIND_CREW:
-            raise LedgerError(
+            raise CrewLogError(
                 f"a {kind} crew log does not accept the guest type {entry_type!r}; "
                 f"the {GUEST_TYPE_PREFIX} namespace is crew-log only",
                 code=CODE_NAMESPACE_VIOLATION,
                 field="type",
             )
         if domain != src:
-            raise LedgerError(
+            raise CrewLogError(
                 f"guest type {entry_type!r} must be written by src {domain!r}, not {src!r}",
                 code=CODE_NAMESPACE_VIOLATION,
                 field="type",
@@ -322,13 +324,13 @@ def check_ownership(kind: str, entry_type: str, src: str) -> None:
         return
 
     if src.startswith(APP_SOURCE_PREFIX):
-        raise LedgerError(
+        raise CrewLogError(
             f"app emitter {src!r} may only write types under {src}/, not {entry_type!r}",
             code=CODE_NAMESPACE_VIOLATION,
             field="src",
         )
     if domain not in TYPE_OWNERSHIP[kind]:
-        raise LedgerError(
+        raise CrewLogError(
             f"a {kind} crew log does not own the type {entry_type!r}; "
             f"owned domains are {sorted(TYPE_OWNERSHIP[kind])}",
             code=CODE_EVENT_TYPE_NOT_OWNED,
@@ -358,17 +360,17 @@ class Ref:
 
     def __post_init__(self) -> None:
         if self.unit not in KINDS:
-            raise LedgerError(
+            raise CrewLogError(
                 f"ref unit must be one of {sorted(KINDS)}: {self.unit!r}",
                 code=CODE_BAD_REF,
                 field="unit",
             )
         try:
             require_unit_id(self.id, field="ref.id")
-        except LedgerError as exc:
-            raise LedgerError(exc.message, code=CODE_BAD_REF, field="ref.id") from exc
+        except CrewLogError as exc:
+            raise CrewLogError(exc.message, code=CODE_BAD_REF, field="ref.id") from exc
         if not _is_seq(self.from_seq):
-            raise LedgerError(
+            raise CrewLogError(
                 f"ref from must be a positive int: {self.from_seq!r}",
                 code=CODE_BAD_REF,
                 field="ref.from",
@@ -376,13 +378,13 @@ class Ref:
         if self.to_seq is None:
             return
         if not _is_seq(self.to_seq) or self.to_seq < self.from_seq:
-            raise LedgerError(
+            raise CrewLogError(
                 f"ref to must be a positive int at or after from: {self.to_seq!r}",
                 code=CODE_BAD_REF,
                 field="ref.to",
             )
         if self.to_seq - self.from_seq + 1 > MAX_REF_SPAN:
-            raise LedgerError(
+            raise CrewLogError(
                 f"ref spans more than {MAX_REF_SPAN} lines; cite a narrower segment",
                 code=CODE_BAD_REF,
                 field="ref.to",
@@ -403,7 +405,7 @@ class Ref:
     def from_dict(cls, raw: Any) -> Ref:
         """A :class:`Ref` from its wire form, or raise ``bad_ref``."""
         if not isinstance(raw, dict):
-            raise LedgerError(f"ref must be an object: {raw!r}", code=CODE_BAD_REF, field="ref")
+            raise CrewLogError(f"ref must be an object: {raw!r}", code=CODE_BAD_REF, field="ref")
         # Deliberately ``Any``: these come off the wire untyped, and
         # ``__post_init__`` is the thing that rejects a wrong one -- the same
         # check a direct constructor call goes through, so the two paths cannot
@@ -434,7 +436,7 @@ class Entry:
     this entry having been interpreted -- a sampled stream body, a hint -- and it
     is the only thing that lets an older reader keep folding a file a newer
     writer extended. Without it an unknown type stops reconstruction
-    (:meth:`~kiro_crew.crew_log.store.Ledger.iter_from` with ``known=``), because a
+    (:meth:`~kiro_crew.crew_log.store.CrewLog.iter_from` with ``known=``), because a
     required entry a reader cannot interpret may change the meaning of every
     entry after it.
     """
@@ -499,7 +501,7 @@ class Entry:
         if raw_ref is not None:
             try:
                 ref = Ref.from_dict(raw_ref)
-            except LedgerError:
+            except CrewLogError:
                 return None
         # Only a literal ``true`` sets it. This marker RELAXES the reader's
         # unknown-type guard, so a truthy coercion would let a damaged line -- or
@@ -528,7 +530,7 @@ def serialize(payload: dict[str, Any]) -> str:
     try:
         return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=False)
     except (TypeError, ValueError) as exc:
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log payload is not JSON-serializable: {exc}", code=CODE_BAD_DATA, field="data"
         ) from exc
 
@@ -537,7 +539,7 @@ def require_entry_line(line: str) -> str:
     """*line* unchanged, or raise ``entry_too_large``."""
     size = len(line.encode("utf-8"))
     if size > MAX_ENTRY_BYTES:
-        raise LedgerError(
+        raise CrewLogError(
             f"entry is {size} bytes, over the {MAX_ENTRY_BYTES}-byte ceiling",
             code=CODE_ENTRY_TOO_LARGE,
             field="data",
@@ -548,7 +550,7 @@ def require_entry_line(line: str) -> str:
 def require_data(data: Any) -> dict[str, Any]:
     """*data* unchanged, or raise ``bad_data``."""
     if not isinstance(data, dict):
-        raise LedgerError(
+        raise CrewLogError(
             f"entry data must be a JSON object, got {type(data).__name__}",
             code=CODE_BAD_DATA,
             field="data",
@@ -578,7 +580,7 @@ class SessionThread:
             return raw
         if isinstance(raw, dict) and isinstance(raw.get("crew"), str) and _is_seq(raw.get("seq")):
             return cls(crew=raw["crew"], seq=raw["seq"])
-        raise LedgerError(
+        raise CrewLogError(
             f"session thread must be null or {{crew, seq}}: {raw!r}",
             code=CODE_BAD_HEADER_FIELD,
             field="thread",
@@ -673,14 +675,14 @@ def build_header(kind: str, unit_id: str, created_at: int, fields: dict[str, Any
     allowed = set(_REQUIRED_HEADER_FIELDS[kind]) | set(_OPTIONAL_HEADER_FIELDS[kind])
     unknown = sorted(set(fields) - allowed)
     if unknown:
-        raise LedgerError(
+        raise CrewLogError(
             f"unknown header field(s) for a {kind} crew log: {unknown}; allowed: {sorted(allowed)}",
             code=CODE_BAD_HEADER_FIELD,
             field=unknown[0],
         )
     missing = [name for name in _REQUIRED_HEADER_FIELDS[kind] if fields.get(name) is None]
     if missing:
-        raise LedgerError(
+        raise CrewLogError(
             f"missing required header field(s) for a {kind} crew log: {missing}",
             code=CODE_BAD_HEADER_FIELD,
             field=missing[0],
@@ -688,7 +690,7 @@ def build_header(kind: str, unit_id: str, created_at: int, fields: dict[str, Any
     for name in sorted(set(fields) & _STR_HEADER_FIELDS):
         value = fields[name]
         if value is not None and not isinstance(value, str):
-            raise LedgerError(
+            raise CrewLogError(
                 f"header field {name!r} must be a string or null, got {type(value).__name__}",
                 code=CODE_BAD_HEADER_FIELD,
                 field=name,
@@ -697,7 +699,7 @@ def build_header(kind: str, unit_id: str, created_at: int, fields: dict[str, Any
         return CrewHeader(id=unit_id, created_at=created_at)
     remote = fields.get("remote")
     if remote is not None and not isinstance(remote, dict):
-        raise LedgerError(
+        raise CrewLogError(
             f"header field 'remote' must be an object or null, got {type(remote).__name__}",
             code=CODE_BAD_HEADER_FIELD,
             field="remote",
@@ -724,30 +726,30 @@ def parse_header(raw: Any, *, kind: str, unit_id: str) -> Header:
     reading it as if it were would attribute one unit's history to another.
     """
     if not isinstance(raw, dict):
-        raise LedgerError("crew log header is not an object", code=CODE_BAD_HEADER, field="type")
+        raise CrewLogError("crew log header is not an object", code=CODE_BAD_HEADER, field="type")
     stored_kind = raw.get("type")
     if stored_kind != kind:
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log header says type {stored_kind!r}, opened as {kind!r}",
             code=CODE_BAD_HEADER,
             field="type",
         )
     if raw.get("id") != unit_id:
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log header says id {raw.get('id')!r}, opened as {unit_id!r}",
             code=CODE_BAD_HEADER,
             field="id",
         )
     created_at = raw.get("createdAt")
     if not isinstance(created_at, int) or isinstance(created_at, bool):
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log header createdAt must be epoch ms: {created_at!r}",
             code=CODE_BAD_HEADER,
             field="createdAt",
         )
     version = raw.get("version")
     if not isinstance(version, int) or isinstance(version, bool):
-        raise LedgerError(
+        raise CrewLogError(
             f"crew log header version must be an int: {version!r}",
             code=CODE_BAD_HEADER,
             field="version",
@@ -760,7 +762,7 @@ def parse_header(raw: Any, *, kind: str, unit_id: str) -> Header:
         # `bad_header`, both of which tell the reader the log is damaged when the
         # truth is that this process is old. The distinction is the whole point of
         # carrying a version, and nothing else in this module reads it.
-        raise LedgerError(
+        raise CrewLogError(
             f"{kind} crew log {unit_id!r} was written by a newer build "
             f"(format version {version}, this build reads {SCHEMA_VERSION}); "
             "upgrade to read it. The file is not damaged.",
@@ -772,7 +774,7 @@ def parse_header(raw: Any, *, kind: str, unit_id: str) -> Header:
     agent = raw.get("agent")
     owner = raw.get("owner")
     if not isinstance(agent, str) or not isinstance(owner, str):
-        raise LedgerError(
+        raise CrewLogError(
             f"session log header needs string owner and agent: {owner!r}, {agent!r}",
             code=CODE_BAD_HEADER,
             field="agent",
@@ -780,7 +782,7 @@ def parse_header(raw: Any, *, kind: str, unit_id: str) -> Header:
     thread_raw = raw.get("thread")
     try:
         thread = SessionThread.coerce(thread_raw)
-    except LedgerError:
+    except CrewLogError:
         thread = None
     remote = raw.get("remote")
     return SessionHeader(

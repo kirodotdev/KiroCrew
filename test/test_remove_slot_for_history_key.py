@@ -3203,7 +3203,7 @@ class TestSessionLedgerOnPermanentDelete:
         """
         from kiro_crew import crew_log as lg
 
-        return lg.Ledger.create(
+        return lg.CrewLog.create(
             lg.KIND_SESSION, session_id, owner="default", agent="kirocrew", slot=slot
         )
 
@@ -3211,7 +3211,7 @@ class TestSessionLedgerOnPermanentDelete:
     def _exists(session_id: str) -> bool:
         from kiro_crew import crew_log as lg
 
-        return lg.Ledger.exists(lg.KIND_SESSION, session_id)
+        return lg.CrewLog.exists(lg.KIND_SESSION, session_id)
 
     @pytest.mark.asyncio
     async def test_the_deleted_sessions_ledger_is_removed(self, monkeypatch):
@@ -3250,7 +3250,7 @@ class TestSessionLedgerOnPermanentDelete:
     async def test_a_ledger_the_emitter_itself_opened_is_still_removed(self, monkeypatch):
         """The PRODUCTION shape: the gateway that deletes is also the writer.
 
-        ``Ledger.create`` in the other tests leaves nothing holding the unit, but
+        ``CrewLog.create`` in the other tests leaves nothing holding the unit, but
         the real gateway does -- the emitter keeps a per-session handle, and that
         handle carries the unit's write lease. The removal claims the lease
         ``sole``, which refuses a handle held anywhere in this process, so the
@@ -3322,12 +3322,12 @@ class TestSessionLedgerOnPermanentDelete:
         where the two diverge.
         """
         from kiro_crew.crew_log import emit
-        from kiro_crew.crew_log import store as ledger_store
+        from kiro_crew.crew_log import store as crew_log_store
 
         _guard_work_ledger_cleanup(monkeypatch)
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
         monkeypatch.setattr(
-            ledger_store, "remove_unit", lambda *_a, **_k: ledger_store.REMOVE_OWNED
+            crew_log_store, "remove_unit", lambda *_a, **_k: crew_log_store.REMOVE_OWNED
         )
         emit.reset_caches()
         try:
@@ -3379,7 +3379,7 @@ class TestSessionLedgerOnPermanentDelete:
         _guard_work_ledger_cleanup(monkeypatch)
         from kiro_crew import crew_log as lg
 
-        lg.Ledger.create(lg.KIND_SESSION, "acp-slotless", owner="default", agent="kirocrew")
+        lg.CrewLog.create(lg.KIND_SESSION, "acp-slotless", owner="default", agent="kirocrew")
         slot = _make_slot("dashboard_chat-1-100")
         state = _make_state({"dashboard_chat-1-100": slot})
         state.sessions.resumable_sid = MagicMock(return_value="acp-slotless")
@@ -3563,12 +3563,12 @@ class TestSessionLedgerOnPermanentDelete:
         state = _make_state({"dashboard_chat-1-100": slot})
         state.sessions.resumable_sid = MagicMock(return_value="acp-explodes")
 
-        from kiro_crew.crew_log import store as ledger_store
+        from kiro_crew.crew_log import store as crew_log_store
 
         def _boom(*_args, **_kwargs):
             raise RuntimeError("ledger tree unreadable")
 
-        monkeypatch.setattr(ledger_store, "remove_unit", _boom)
+        monkeypatch.setattr(crew_log_store, "remove_unit", _boom)
 
         await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
 

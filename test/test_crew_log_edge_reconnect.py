@@ -37,12 +37,12 @@ def _isolated_home(tmp_path, monkeypatch):
     emit.reset_caches()
 
 
-def _ledger_path(session_id: str = SESSION) -> Path:
-    return lg.ledger_path("session", session_id)
+def _log_path(session_id: str = SESSION) -> Path:
+    return lg.crew_log_path("session", session_id)
 
 
 def _entries(session_id: str = SESSION) -> list[dict]:
-    path = _ledger_path(session_id)
+    path = _log_path(session_id)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as fh:
@@ -269,7 +269,7 @@ def test_eviction_mid_turn_entries_land_and_call_index_continues():
 def test_repeated_reconnects_in_one_turn_no_duplicate_closers():
     """Evict and reopen SEVERAL times inside one turn.
 
-    Each reconnect goes through _handle -> Ledger.open(repair=False). None of
+    Each reconnect goes through _handle -> CrewLog.open(repair=False). None of
     them must produce a closer, and the final seq must be contiguous.
     """
     _open_session()

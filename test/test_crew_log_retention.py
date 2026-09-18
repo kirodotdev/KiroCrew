@@ -23,7 +23,7 @@ import pytest
 from crew_log_type_helpers import minimal_data
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger, store
+from kiro_crew.crew_log import CrewLog, store
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.session_ledger import _store_name
 
@@ -53,7 +53,7 @@ def _isolated_home(tmp_path, monkeypatch):
 
 def _closed_session(
     unit_id: str = SESSION, *, closed_days_ago: float = 90.0, reason: str = "destroyed"
-) -> Ledger:
+) -> CrewLog:
     """A session log holding one ``session/closed`` written *closed_days_ago*.
 
     The default *reason* is a real terminal one. It is not decoration: a unit is
@@ -61,14 +61,14 @@ def _closed_session(
     mapping, so a fixture with an invented reason would be a unit the sweep must
     refuse -- which the non-terminal tests below use it for deliberately.
     """
-    ledger = Ledger.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
+    log = CrewLog.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
     closed_at = store.now_ms() - int(closed_days_ago * DAY_MS)
-    ledger.append("session/opened", _opened(resumed=False), src="gateway")
-    _append_at(ledger, "session/closed", {"reason": reason}, closed_at)
-    return ledger
+    log.append("session/opened", _opened(resumed=False), src="gateway")
+    _append_at(log, "session/closed", {"reason": reason}, closed_at)
+    return log
 
 
-def _open_session(unit_id: str = SESSION, *, age_days: float = 90.0) -> Ledger:
+def _open_session(unit_id: str = SESSION, *, age_days: float = 90.0) -> CrewLog:
     """A session log with a header and entries but NO ``session/closed``.
 
     Its ``session/opened`` is aged too, not just the file: "an open session is
@@ -76,16 +76,16 @@ def _open_session(unit_id: str = SESSION, *, age_days: float = 90.0) -> Ledger:
     a fixture whose lifecycle entry is fresh would let an entry-time rule keep it
     for the wrong reason.
     """
-    ledger = Ledger.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
+    log = CrewLog.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
     _append_at(
-        ledger, "session/opened", _opened(resumed=False), store.now_ms() - int(age_days * DAY_MS)
+        log, "session/opened", _opened(resumed=False), store.now_ms() - int(age_days * DAY_MS)
     )
-    _age_file(ledger.path, age_days)
-    return ledger
+    _age_file(log.path, age_days)
+    return log
 
 
 def _append_at(
-    ledger: Ledger, entry_type: str, data: dict, time_ms: int, *, plant: dict | None = None
+    log: CrewLog, entry_type: str, data: dict, time_ms: int, *, plant: dict | None = None
 ) -> None:
     """Append *entry_type*, then rewrite its ``time`` to *time_ms*.
 
@@ -101,14 +101,14 @@ def _append_at(
     envelope (seq, thread, header); only the payload the sweep reads is the
     deliberately-malformed one.
     """
-    ledger.append(entry_type, data, src="gateway")
-    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    log.append(entry_type, data, src="gateway")
+    lines = log.path.read_text(encoding="utf-8").splitlines()
     last = json.loads(lines[-1])
     last["time"] = time_ms
     if plant is not None:
         last["data"] = plant
     lines[-1] = json.dumps(last, separators=(",", ":"), sort_keys=True)
-    ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _age_file(path, days: float) -> None:
@@ -147,21 +147,21 @@ def _remove(unit_id: str = SESSION, *, kind: str = lg.KIND_SESSION) -> str:
 
 
 def _unit_dir(kind: str, unit_id: str):
-    return lg.ledger_root(kind) / _store_name(unit_id)
+    return lg.crew_log_root(kind) / _store_name(unit_id)
 
 
 # --- remove_unit: ownership -------------------------------------------------
 
 
 def test_remove_unit_removes_every_file_and_the_directory():
-    ledger = _closed_session()
-    directory = ledger.path.parent
-    ledger.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
-    del ledger
+    log = _closed_session()
+    directory = log.path.parent
+    log.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
+    del log
 
     assert _remove() == store.REMOVE_REMOVED
     assert not directory.exists()
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_remove_unit_refuses_while_this_process_holds_a_handle_that_wrote():
@@ -172,20 +172,20 @@ def test_remove_unit_refuses_while_this_process_holds_a_handle_that_wrote():
     permitted to unlink the segments the live handle is still appending to, so it
     asks for sole ownership and is refused instead.
     """
-    ledger = _closed_session()
+    log = _closed_session()
     # The append is what claims the lease -- ownership is taken lazily, on a
     # handle's first write, never by ``open``.
-    ledger.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
+    log.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
 
     assert _remove() == store.REMOVE_OWNED
-    assert ledger.path.exists()
+    assert log.path.exists()
     # Still writable: the refused removal took nothing and released nothing.
-    ledger.append("turn/completed", {"turn": 1, "depth": 0, "stop_reason": "end"}, src="gateway")
+    log.append("turn/completed", {"turn": 1, "depth": 0, "stop_reason": "end"}, src="gateway")
 
 
 def test_remove_unit_refuses_while_another_process_owns_the_unit():
-    ledger = _closed_session()
-    del ledger
+    log = _closed_session()
+    del log
     lease_path = _unit_dir(lg.KIND_SESSION, SESSION) / LEASE_FILE
     ready = multiprocessing.Event()
     done = multiprocessing.Event()
@@ -194,7 +194,7 @@ def test_remove_unit_refuses_while_another_process_owns_the_unit():
     try:
         assert ready.wait(timeout=10)
         assert _remove() == store.REMOVE_OWNED
-        assert lg.ledger_path(lg.KIND_SESSION, SESSION).exists()
+        assert lg.crew_log_path(lg.KIND_SESSION, SESSION).exists()
     finally:
         done.set()
         holder.join(timeout=10)
@@ -220,15 +220,15 @@ def test_a_writer_is_refused_while_a_removal_of_that_unit_is_in_flight():
     would join the deleter's own lock through the reference count and append into
     a unit whose files are being unlinked.
     """
-    ledger = _closed_session()
-    del ledger
+    log = _closed_session()
+    del log
     lease_path = _unit_dir(lg.KIND_SESSION, SESSION) / LEASE_FILE
     key = lg.lease.acquire(lease_path, kind=lg.KIND_SESSION, unit_id=SESSION, sole=True)
     try:
-        with pytest.raises(lg.LedgerError) as excinfo:
+        with pytest.raises(lg.CrewLogError) as excinfo:
             lg.lease.acquire(lease_path, kind=lg.KIND_SESSION, unit_id=SESSION)
         assert excinfo.value.code == "already_owned"
-        with pytest.raises(lg.LedgerError):
+        with pytest.raises(lg.CrewLogError):
             lg.lease.acquire(lease_path, kind=lg.KIND_SESSION, unit_id=SESSION, sole=True)
     finally:
         lg.lease.release(key)
@@ -246,9 +246,9 @@ def test_remove_unit_removes_the_lease_file_last():
     A lease unlinked before the segments would let a second remover take a lock
     on a fresh inode at the same path and unlink the same files concurrently.
     """
-    ledger = _closed_session()
-    directory = ledger.path.parent
-    del ledger
+    log = _closed_session()
+    directory = log.path.parent
+    del log
     order: list[str] = []
 
     # ``Path.unlink`` is the only spelling the removal uses -- for the segments,
@@ -283,9 +283,9 @@ def test_remove_unit_counts_a_failure_and_keeps_the_history():
     standing. The unit keeps its segments, so it still reads as a crew log and the
     next pass can aim at it again.
     """
-    ledger = _closed_session()
-    directory = ledger.path.parent
-    del ledger
+    log = _closed_session()
+    directory = log.path.parent
+    del log
     from pathlib import Path
 
     real_unlink = Path.unlink
@@ -301,10 +301,10 @@ def test_remove_unit_counts_a_failure_and_keeps_the_history():
     finally:
         Path.unlink = real_unlink
 
-    assert lg.ledger_path(lg.KIND_SESSION, SESSION).exists()
+    assert lg.crew_log_path(lg.KIND_SESSION, SESSION).exists()
     assert (directory / LEASE_FILE).exists()
     # Still addressable by id, which is what lets a later pass retry it.
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_remove_unit_survives_the_windows_unlink_rule_for_the_held_lease():
@@ -313,9 +313,9 @@ def test_remove_unit_survives_the_windows_unlink_rule_for_the_held_lease():
     Reuses ``session_ledger.unlink_lock_in_hold``'s contract rather than a second
     copy of it, so simulating the platform is simulating that one function.
     """
-    ledger = _closed_session()
-    directory = ledger.path.parent
-    del ledger
+    log = _closed_session()
+    directory = log.path.parent
+    del log
     store.unlink_lock_in_hold  # the reused helper, patched at the store's binding
 
     def _refuse_in_hold(_path) -> bool:
@@ -337,7 +337,7 @@ def test_remove_unit_answers_absent_for_a_unit_that_has_no_directory():
 def test_remove_unit_never_follows_a_unit_directory_linked_to_another_unit():
     """The hazard is a link that stays INSIDE the root, and it needs the guard.
 
-    ``ledger_dir`` returns the RESOLVED path, so such a link passes containment
+    ``crew_log_dir`` returns the RESOLVED path, so such a link passes containment
     and hands the removal its target: without checking the name as written, one
     unit's id would delete another unit's history. Checking the resolved path
     cannot catch it -- the target is not a link.
@@ -345,7 +345,7 @@ def test_remove_unit_never_follows_a_unit_directory_linked_to_another_unit():
     victim = _closed_session("s-victim", closed_days_ago=90)
     victim_dir = victim.path.parent
     del victim
-    link = lg.ledger_root(lg.KIND_SESSION) / _store_name("s-attacker")
+    link = lg.crew_log_root(lg.KIND_SESSION) / _store_name("s-attacker")
     try:
         link.symlink_to(victim_dir, target_is_directory=True)
     except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
@@ -353,7 +353,7 @@ def test_remove_unit_never_follows_a_unit_directory_linked_to_another_unit():
 
     assert _remove("s-attacker") == store.REMOVE_ABSENT
     assert (victim_dir / "log.jsonl").exists()
-    assert Ledger.exists(lg.KIND_SESSION, "s-victim")
+    assert CrewLog.exists(lg.KIND_SESSION, "s-victim")
 
 
 def test_a_unit_directory_linked_outside_the_root_is_refused_by_containment(tmp_path):
@@ -361,7 +361,7 @@ def test_a_unit_directory_linked_outside_the_root_is_refused_by_containment(tmp_
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (elsewhere / "keep.txt").write_text("intact", encoding="utf-8")
-    root = lg.ledger_root(lg.KIND_SESSION)
+    root = lg.crew_log_root(lg.KIND_SESSION)
     root.mkdir(parents=True, exist_ok=True)
     link = root / _store_name("s-outside")
     try:
@@ -382,7 +382,7 @@ def test_a_linked_unit_directory_never_causes_the_target_to_be_removed():
     that is left to stop the removal.
 
     Two guards hold it: the sweep skips a linked child in the listing, and
-    ``remove_unit`` refuses a unit whose directory NAME is a link (``ledger_dir``
+    ``remove_unit`` refuses a unit whose directory NAME is a link (``crew_log_dir``
     returns the RESOLVED path, so by then the caller holds the target). Removing
     either alone leaves the property standing, so it is asserted as the property
     and the mutation harness removes both together.
@@ -390,9 +390,9 @@ def test_a_linked_unit_directory_never_causes_the_target_to_be_removed():
     hidden = _closed_session("s-hidden", closed_days_ago=400)
     hidden_dir = hidden.path.parent
     del hidden
-    stash = lg.ledger_root(lg.KIND_SESSION).parent / "stashed-target"
+    stash = lg.crew_log_root(lg.KIND_SESSION).parent / "stashed-target"
     hidden_dir.rename(stash)
-    link = lg.ledger_root(lg.KIND_SESSION) / _store_name("s-hidden")
+    link = lg.crew_log_root(lg.KIND_SESSION) / _store_name("s-hidden")
     try:
         link.symlink_to(stash, target_is_directory=True)
     except (OSError, NotImplementedError):  # pragma: no cover - platform without symlinks
@@ -408,19 +408,19 @@ def test_a_linked_unit_directory_never_causes_the_target_to_be_removed():
 
 
 def test_sweep_removes_a_session_closed_before_the_cutoff():
-    ledger = _closed_session(closed_days_ago=90)
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    del log
 
     assert store.sweep_expired(30) == (1, 0)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_sweep_keeps_a_session_closed_inside_the_window():
-    ledger = _closed_session(closed_days_ago=5)
-    del ledger
+    log = _closed_session(closed_days_ago=5)
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_sweep_never_touches_an_open_session_however_old_it_is():
@@ -429,11 +429,11 @@ def test_sweep_never_touches_an_open_session_however_old_it_is():
     This is the check that decides it, so it is pinned on a unit whose file mtime
     is far past the cutoff: an mtime-only rule would delete a live session's log.
     """
-    ledger = _open_session(age_days=400)
-    del ledger
+    log = _open_session(age_days=400)
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_sweep_ages_from_the_close_entry_not_the_file_mtime():
@@ -443,12 +443,12 @@ def test_sweep_ages_from_the_close_entry_not_the_file_mtime():
     from mtime would make such a unit read as just-closed and survive retention
     forever, so the writer's own record of when the session ended is authoritative.
     """
-    ledger = _closed_session(closed_days_ago=90)
-    _age_file(ledger.path, 0)  # as a copy or restore would leave it
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    _age_file(log.path, 0)  # as a copy or restore would leave it
+    del log
 
     assert store.sweep_expired(30) == (1, 0)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_sweep_falls_back_to_mtime_when_the_close_entry_has_no_usable_time():
@@ -457,9 +457,9 @@ def test_sweep_falls_back_to_mtime_when_the_close_entry_has_no_usable_time():
     mtime is then the best available bound on when writing stopped, and it can
     only be at or after the real close, so it errs toward keeping the file.
     """
-    ledger = _closed_session(closed_days_ago=1)
-    path = ledger.path
-    del ledger
+    log = _closed_session(closed_days_ago=1)
+    path = log.path
+    del log
     lines = path.read_text(encoding="utf-8").splitlines()
     last = json.loads(lines[-1])
     last["time"] = 0
@@ -468,7 +468,7 @@ def test_sweep_falls_back_to_mtime_when_the_close_entry_has_no_usable_time():
     _age_file(path, 90)
 
     assert store.sweep_expired(30) == (1, 0)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_sweep_reads_the_newest_close_when_a_resumed_session_closed_twice():
@@ -477,14 +477,14 @@ def test_sweep_reads_the_newest_close_when_a_resumed_session_closed_twice():
     So a file can hold more than one close, and only the newest describes the
     life that ended. Reading the first would expire a session that came back.
     """
-    ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    _append_at(ledger, "session/closed", {"reason": "destroyed"}, store.now_ms() - 90 * DAY_MS)
-    ledger.append("session/opened", _opened(resumed=True), src="gateway")
-    _append_at(ledger, "session/closed", {"reason": "destroyed"}, store.now_ms() - 1 * DAY_MS)
-    del ledger
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    _append_at(log, "session/closed", {"reason": "destroyed"}, store.now_ms() - 90 * DAY_MS)
+    log.append("session/opened", _opened(resumed=True), src="gateway")
+    _append_at(log, "session/closed", {"reason": "destroyed"}, store.now_ms() - 1 * DAY_MS)
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_sweep_never_expires_a_session_that_was_REOPENED_after_its_close():
@@ -502,21 +502,21 @@ def test_sweep_never_expires_a_session_that_was_REOPENED_after_its_close():
     old by every clock in the file, and only the ORDER of the pair says it is
     live.
     """
-    ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    _append_at(ledger, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 400 * DAY_MS)
-    _append_at(ledger, "session/opened", _opened(resumed=True), store.now_ms() - 399 * DAY_MS)
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    _append_at(log, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 400 * DAY_MS)
+    _append_at(log, "session/opened", _opened(resumed=True), store.now_ms() - 399 * DAY_MS)
     _append_at(
-        ledger,
+        log,
         "turn/started",
         {"turn": 1, "actor": "user", "depth": 0},
         store.now_ms() - 398 * DAY_MS,
     )
-    path = ledger.path
-    del ledger
+    path = log.path
+    del log
     _age_file(path, 398)
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_an_in_flight_closer_after_the_teardown_still_reads_as_closed():
@@ -526,22 +526,22 @@ def test_an_in_flight_closer_after_the_teardown_still_reads_as_closed():
     so a scan that treated any later entry as a revival would never collect a
     normally-closed unit.
     """
-    ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    _append_at(ledger, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 90 * DAY_MS)
-    ledger.append(
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    _append_at(log, _CLOSED, {"reason": "destroyed"}, store.now_ms() - 90 * DAY_MS)
+    log.append(
         "tool/completed",
         {"turn": 1, "step": 1, "call_id": "c", "name": "", "server": "", "status": "unknown"},
         src="gateway",
     )
-    ledger.append(
+    log.append(
         "turn/completed",
         {"turn": 1, "depth": 0, "stop_reason": "interrupted"},
         src="gateway",
     )
-    del ledger
+    del log
 
     assert store.sweep_expired(30) == (1, 0)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_the_sweep_re_decides_inside_the_lease_and_stands_down_on_a_revival():
@@ -553,9 +553,9 @@ def test_the_sweep_re_decides_inside_the_lease_and_stands_down_on_a_revival():
     re-decision runs inside the removal's own hold, which is the only place the
     answer is current.
     """
-    ledger = _closed_session(closed_days_ago=90)
-    path = ledger.path
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    path = log.path
+    del log
     real_guard_input = store._expired_unit_id
 
     def _revive_then_answer(directory, cutoff_ms):
@@ -564,7 +564,7 @@ def test_the_sweep_re_decides_inside_the_lease_and_stands_down_on_a_revival():
             return real_guard_input(directory, cutoff_ms)
         _revive_then_answer.done = True
         answer = real_guard_input(directory, cutoff_ms)
-        revived = Ledger.open(lg.KIND_SESSION, SESSION)
+        revived = CrewLog.open(lg.KIND_SESSION, SESSION)
         revived.append("session/opened", _opened(resumed=True), src="gateway")
         del revived
         return answer
@@ -576,7 +576,7 @@ def test_the_sweep_re_decides_inside_the_lease_and_stands_down_on_a_revival():
         store._expired_unit_id = real_guard_input
 
     assert path.exists()
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_the_guard_is_required_so_no_caller_can_skip_the_re_decision():
@@ -620,7 +620,7 @@ def test_a_unit_another_remover_took_first_is_not_counted_as_a_failure():
 
     assert failed == 0, "a unit another remover took is not a failure"
     assert removed == 1
-    assert not Ledger.exists(lg.KIND_SESSION, "s-normal")
+    assert not CrewLog.exists(lg.KIND_SESSION, "s-normal")
 
 
 def test_sweep_leaves_a_torn_tail_to_the_resume_repair():
@@ -630,9 +630,9 @@ def test_sweep_leaves_a_torn_tail_to_the_resume_repair():
     not reached its fsync -- the bytes are identical -- so deleting the unit would
     destroy the history the repair exists to recover.
     """
-    ledger = _closed_session(closed_days_ago=90)
-    path = ledger.path
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    path = log.path
+    del log
     with open(path, "ab") as handle:
         handle.write(b'{"type":"turn/started","seq":9')
 
@@ -658,16 +658,16 @@ def test_sweep_still_collects_a_unit_whose_segments_the_READER_refuses():
     tail must be untorn, and the newest lifecycle entry must still be the close --
     so what it drops is a closed, aged, unowned unit either way.
     """
-    ledger = _closed_session(closed_days_ago=90)
-    directory = ledger.path.parent
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    directory = log.path.parent
+    del log
     # A second segment whose header is genuinely this unit's -- so the header half
     # of the check passes -- but whose filename claims a first seq its own first
     # entry does not carry.
     (directory / "log.9.jsonl").write_bytes((directory / "log.jsonl").read_bytes())
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, SESSION)
-    with pytest.raises(lg.LedgerError) as refused:
+    reader = lg.CrewLog.open(lg.KIND_SESSION, SESSION)
+    with pytest.raises(lg.CrewLogError) as refused:
         list(reader.iter_from())
     assert refused.value.code == lg.CODE_BAD_SEGMENT
     del reader
@@ -676,7 +676,7 @@ def test_sweep_still_collects_a_unit_whose_segments_the_READER_refuses():
     assert not directory.exists()
 
 
-def test_sweep_never_scans_crew_ledgers():
+def test_sweep_never_scans_crew_logs():
     """Crew logs are out of scope: no writer, and no close to age from.
 
     Pinned with a crew log carrying a ``session/closed`` line WRITTEN DIRECTLY
@@ -687,7 +687,7 @@ def test_sweep_never_scans_crew_ledgers():
     property of the writer, not of the bytes. Without the scoping such a unit
     reads as an expired session and is removed.
     """
-    crew = Ledger.create(lg.KIND_CREW, CREW)
+    crew = CrewLog.create(lg.KIND_CREW, CREW)
     crew_path = crew.path
     del crew
     planted = {
@@ -705,7 +705,7 @@ def test_sweep_never_scans_crew_ledgers():
 
     assert store.sweep_expired(30) == (1, 0)
     assert crew_path.exists()
-    assert Ledger.exists(lg.KIND_CREW, CREW)
+    assert CrewLog.exists(lg.KIND_CREW, CREW)
 
 
 def test_sweep_skips_a_unit_whose_header_id_does_not_address_its_directory():
@@ -719,7 +719,7 @@ def test_sweep_skips_a_unit_whose_header_id_does_not_address_its_directory():
     live = _closed_session("s-live", closed_days_ago=1)  # inside the window
     live_path = live.path
     del live
-    plant = lg.ledger_root(lg.KIND_SESSION) / "planted-not-a-fold"
+    plant = lg.crew_log_root(lg.KIND_SESSION) / "planted-not-a-fold"
     plant.mkdir(parents=True)
     header = json.loads(live_path.read_text(encoding="utf-8").splitlines()[0])
     aged = {
@@ -739,7 +739,7 @@ def test_sweep_skips_a_unit_whose_header_id_does_not_address_its_directory():
 
     assert store.sweep_expired(30) == (0, 0)
     assert live_path.exists()
-    assert Ledger.exists(lg.KIND_SESSION, "s-live")
+    assert CrewLog.exists(lg.KIND_SESSION, "s-live")
     assert (plant / "log.jsonl").exists()
 
 
@@ -751,46 +751,46 @@ def test_sweep_skips_a_unit_a_writer_still_owns_and_removes_its_neighbour():
     del free
 
     assert store.sweep_expired(30) == (1, 0)
-    assert Ledger.exists(lg.KIND_SESSION, "s-owned")
-    assert not Ledger.exists(lg.KIND_SESSION, "s-free")
+    assert CrewLog.exists(lg.KIND_SESSION, "s-owned")
+    assert not CrewLog.exists(lg.KIND_SESSION, "s-free")
     assert owned.path.exists()
 
 
-def test_a_negative_retention_disables_the_ledger_sweep_like_the_archive_one():
+def test_a_negative_retention_disables_the_log_sweep_like_the_archive_one():
     """One switch, both halves. A user who turned expiry off turned this off too."""
-    ledger = _closed_session(closed_days_ago=4000)
-    del ledger
+    log = _closed_session(closed_days_ago=4000)
+    del log
 
     assert store.sweep_expired(-1) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
-def test_sweep_is_a_no_op_when_the_ledger_root_was_never_created():
+def test_sweep_is_a_no_op_when_the_log_root_was_never_created():
     """What makes this de facto gated by the emitter's flag without reading it."""
-    assert not lg.ledger_root(lg.KIND_SESSION).exists()
+    assert not lg.crew_log_root(lg.KIND_SESSION).exists()
     assert store.sweep_expired(30) == (0, 0)
 
 
 def test_sweep_refuses_a_linked_session_root_and_reads_nothing_under_it(tmp_path):
     """The walk resolves the CHECKED root, so a linked kind directory is refused once.
 
-    ``ledger_dir`` refuses this root, so the removal was never in danger -- but the
+    ``crew_log_dir`` refuses this root, so the removal was never in danger -- but the
     refusal arrived one unit at a time, AFTER this walk had opened a header and a
     tail from every file the link named. Reading a file outside the data home is
     the thing the root guard exists to prevent, so the walk has to be refused too.
 
     The unit planted under the link is a REAL expired one, which is what makes the
     return value decide this rather than a mount option: had the walk run, that
-    unit would have been selected and then refused by ``ledger_dir``, counting one
+    unit would have been selected and then refused by ``crew_log_dir``, counting one
     failure. ``(0, 0)`` is reachable only if the root was refused before the walk.
     An atime probe would not do -- ``relatime`` and ``noatime`` are common enough
     that "the file was not read" would assert itself.
     """
     elsewhere = tmp_path / "attacker-writable"
-    ledger = _closed_session(unit_id="s-outside", closed_days_ago=90)
-    del ledger
+    log = _closed_session(unit_id="s-outside", closed_days_ago=90)
+    del log
 
-    kind_root = lg.ledger_root(lg.KIND_SESSION)
+    kind_root = lg.crew_log_root(lg.KIND_SESSION)
     kind_root.rename(elsewhere)
     kind_root.symlink_to(elsewhere, target_is_directory=True)
     planted = elsewhere / _store_name("s-outside") / "log.jsonl"
@@ -800,15 +800,15 @@ def test_sweep_refuses_a_linked_session_root_and_reads_nothing_under_it(tmp_path
     assert planted.exists(), "the sweep removed a file outside the data home"
 
 
-def test_sweep_writes_nothing_into_a_ledger_it_keeps():
+def test_sweep_writes_nothing_into_a_log_it_keeps():
     """Removal is not rotation: no tombstone, no ``pruned`` entry, ever.
 
     A citation into a removed unit is already answered by ``Ref.resolve``, which
     reports ``gone`` for a pointer into a unit that has no crew log at all.
     """
-    ledger = _open_session(age_days=400)
-    path = ledger.path
-    del ledger
+    log = _open_session(age_days=400)
+    path = log.path
+    del log
     before = path.read_bytes()
 
     store.sweep_expired(30)
@@ -818,30 +818,30 @@ def test_sweep_writes_nothing_into_a_ledger_it_keeps():
 # --- the history sweep calls it on the same switch -------------------------
 
 
-def test_history_archive_cleanup_expires_ledgers_on_the_same_setting(monkeypatch):
+def test_history_archive_cleanup_expires_logs_on_the_same_setting(monkeypatch):
     """``session.archive_retention_days`` governs both halves, in one pass."""
     from kiro_crew import history
 
-    ledger = _closed_session(closed_days_ago=90)
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    del log
     monkeypatch.setattr(history, "_last_cleanup", 0.0)
 
     history._cleanup_old_archives(retention_days=30)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
-def test_history_archive_cleanup_honours_the_disable_for_ledgers_too(monkeypatch):
+def test_history_archive_cleanup_honours_the_disable_for_logs_too(monkeypatch):
     from kiro_crew import history
 
-    ledger = _closed_session(closed_days_ago=4000)
-    del ledger
+    log = _closed_session(closed_days_ago=4000)
+    del log
     monkeypatch.setattr(history, "_last_cleanup", 0.0)
 
     history._cleanup_old_archives(retention_days=-1)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
-def test_history_archive_cleanup_sweeps_ledgers_with_no_archive_directory(monkeypatch):
+def test_history_archive_cleanup_sweeps_logs_with_no_archive_directory(monkeypatch):
     """An absent archive dir is not a reason to skip the crew log half.
 
     A session holds a crew log long before anything of its transcript is archived,
@@ -850,16 +850,16 @@ def test_history_archive_cleanup_sweeps_ledgers_with_no_archive_directory(monkey
     """
     from kiro_crew import history
 
-    ledger = _closed_session(closed_days_ago=90)
-    del ledger
+    log = _closed_session(closed_days_ago=90)
+    del log
     monkeypatch.setattr(history, "_last_cleanup", 0.0)
     assert not history._archive_dir(None).exists()
 
     history._cleanup_old_archives(retention_days=30)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
-def test_a_failing_ledger_sweep_never_breaks_the_transcript_archive(monkeypatch):
+def test_a_failing_log_sweep_never_breaks_the_transcript_archive(monkeypatch):
     """The caller is on the archive path: raising here would lose history.
 
     Retaining too much is a disk-space problem; failing to archive the transcript
@@ -886,8 +886,8 @@ def test_a_partial_removal_reports_that_the_history_is_already_gone(caplog, monk
     Reporting it as kept would send a reader looking for a record this pass
     destroyed, which is the one thing an append-only store must never say.
     """
-    ledger = _closed_session()
-    del ledger
+    log = _closed_session()
+    del log
     real_unlink = store.Path.unlink
 
     def _refuse_lock(self, *args, **kwargs):
@@ -907,8 +907,8 @@ def test_a_partial_removal_reports_that_the_history_is_already_gone(caplog, monk
 
 def test_a_removal_that_got_nowhere_reports_the_history_intact(caplog, monkeypatch):
     """The other half of the same line: nothing went, so nothing may be implied gone."""
-    ledger = _closed_session()
-    del ledger
+    log = _closed_session()
+    del log
     real_unlink = store.Path.unlink
 
     def _refuse_everything(self, *args, **kwargs):
@@ -921,7 +921,7 @@ def test_a_removal_that_got_nowhere_reports_the_history_intact(caplog, monkeypat
     assert "history is intact" in caplog.text
     assert "PARTLY removed" not in caplog.text
     monkeypatch.setattr(store.Path, "unlink", real_unlink)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 # --- every destroy records its teardown, which is what makes a unit collectable ---
@@ -967,7 +967,7 @@ def _newest_lifecycle_type(unit_id: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_destroying_a_session_records_the_teardown_in_its_ledger(monkeypatch):
+async def test_destroying_a_session_records_the_teardown_in_its_log(monkeypatch):
     """Without this entry NEITHER half of retention can ever collect the unit.
 
     The emitter holds a destroyed session's cached handle, and the write lease
@@ -979,7 +979,7 @@ async def test_destroying_a_session_records_the_teardown_in_its_ledger(monkeypat
 
     Driven through the REAL ``destroy`` rather than a stub. A mocked teardown that
     omits the emit is exactly how this defect stayed invisible: every removal test
-    built its crew log with ``Ledger.create``, which leaves nothing holding the
+    built its crew log with ``CrewLog.create``, which leaves nothing holding the
     unit, so they were green while the gateway could not collect a real one.
     """
     from kiro_crew.config import KiroCrewConfig
@@ -1009,7 +1009,7 @@ async def test_destroying_a_session_records_the_teardown_in_its_ledger(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_a_destroyed_sessions_ledger_is_then_collectable_by_the_sweep(monkeypatch):
+async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep(monkeypatch):
     """The end the teardown entry buys: an aged destroyed unit is collected.
 
     Pinned end to end rather than trusting the entry alone, because the two
@@ -1053,7 +1053,7 @@ async def test_a_destroyed_sessions_ledger_is_then_collectable_by_the_sweep(monk
         # claim it. That is the same release the delete funnel's flush waits for,
         # observed from the other caller.
         assert store.sweep_expired(30) == (1, 0)
-        assert not Ledger.exists(lg.KIND_SESSION, "acp-aged")
+        assert not CrewLog.exists(lg.KIND_SESSION, "acp-aged")
     finally:
         emit.reset_caches()
 
@@ -1065,10 +1065,10 @@ def test_the_header_slot_reader_refuses_a_unit_whose_id_does_not_fold_back():
     a header reachable at the wrong directory would hand back that other unit's
     slot and defeat the check it exists for.
     """
-    ledger = Ledger.create(
+    log = CrewLog.create(
         lg.KIND_SESSION, "s-real", owner=CREW, agent="kirocrew", slot="dashboard_chat-1"
     )
-    del ledger
+    del log
     assert store.unit_header_slot(lg.KIND_SESSION, "s-real") == "dashboard_chat-1"
 
     # Same bytes, a directory that answers to a different id.
@@ -1094,11 +1094,11 @@ def test_only_a_destroy_close_authorizes_collection():
     proof this rule needs, and it comes from inside the fenced tree rather than from
     any file an agent can write.
     """
-    ledger = _closed_session(closed_days_ago=90, reason="destroyed")
-    del ledger
+    log = _closed_session(closed_days_ago=90, reason="destroyed")
+    del log
 
     assert store.sweep_expired(30) == (1, 0)
-    assert not Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 @pytest.mark.parametrize(
@@ -1118,11 +1118,11 @@ def test_a_close_that_does_not_end_the_ids_life_is_never_collected(reason):
     mapped too. Retaining costs disk; deleting one of these destroys a live
     conversation's history.
     """
-    ledger = _closed_session(closed_days_ago=400, reason=reason)
-    del ledger
+    log = _closed_session(closed_days_ago=400, reason=reason)
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_a_valid_empty_session_map_cannot_authorize_collecting_a_reset_closed_unit():
@@ -1141,42 +1141,42 @@ def test_a_valid_empty_session_map_cannot_authorize_collecting_a_reset_closed_un
     path = config_dir() / SESSION_MAP_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{}", encoding="utf-8")
-    ledger = _closed_session(closed_days_ago=400, reason="reset")
-    del ledger
+    log = _closed_session(closed_days_ago=400, reason="reset")
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_a_close_with_no_reason_field_at_all_is_never_collected():
     """Absent proof is not proof. The unit stays and the next pass sees it again."""
-    ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    ledger.append("session/opened", _opened(resumed=False), src="gateway")
-    _append_at(ledger, _CLOSED, {"reason": "reset"}, store.now_ms() - 400 * DAY_MS, plant={})
-    del ledger
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    log.append("session/opened", _opened(resumed=False), src="gateway")
+    _append_at(log, _CLOSED, {"reason": "reset"}, store.now_ms() - 400 * DAY_MS, plant={})
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
 def test_a_non_string_reason_is_read_as_absent_rather_than_matched():
     """The reason decides an irreversible deletion, so it is type-checked."""
-    ledger = Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
-    ledger.append("session/opened", _opened(resumed=False), src="gateway")
+    log = CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW, agent="kirocrew")
+    log.append("session/opened", _opened(resumed=False), src="gateway")
     _append_at(
-        ledger,
+        log,
         _CLOSED,
         {"reason": "reset"},
         store.now_ms() - 400 * DAY_MS,
         plant={"reason": ["destroyed"]},
     )
-    del ledger
+    del log
 
     assert store.sweep_expired(30) == (0, 0)
-    assert Ledger.exists(lg.KIND_SESSION, SESSION)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
 
 
-def test_the_sweep_reads_no_file_outside_the_ledger_tree(monkeypatch):
+def test_the_sweep_reads_no_file_outside_the_log_tree(monkeypatch):
     """Nothing an agent can write takes part in authorizing a deletion.
 
     The session map was tried for this and removed: it is agent-writable while this
@@ -1185,9 +1185,9 @@ def test_the_sweep_reads_no_file_outside_the_ledger_tree(monkeypatch):
     authorizes deleting a fenced unit. This test fails if any read reaches outside
     the crew log root again, which is the only way that lever comes back.
     """
-    root = lg.ledger_root(lg.KIND_SESSION).resolve()
-    ledger = _closed_session(closed_days_ago=90)
-    del ledger
+    root = lg.crew_log_root(lg.KIND_SESSION).resolve()
+    log = _closed_session(closed_days_ago=90)
+    del log
     opened: list[str] = []
     real_open = io.open
 
@@ -1258,7 +1258,7 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
         assert _newest_close_reason("acp-shared") == "destroyed_sid_retained"
         _age_close_entry("acp-shared", days=400)
         assert store.sweep_expired(30) == (0, 0)
-        assert Ledger.exists(lg.KIND_SESSION, "acp-shared")
+        assert CrewLog.exists(lg.KIND_SESSION, "acp-shared")
     finally:
         emit.reset_caches()
 
@@ -1324,6 +1324,6 @@ async def test_a_session_opened_after_a_destroy_makes_the_unit_uncollectable_aga
         emit.reset_caches()
 
         assert store.sweep_expired(30) == (0, 0)
-        assert Ledger.exists(lg.KIND_SESSION, "acp-revived")
+        assert CrewLog.exists(lg.KIND_SESSION, "acp-revived")
     finally:
         emit.reset_caches()

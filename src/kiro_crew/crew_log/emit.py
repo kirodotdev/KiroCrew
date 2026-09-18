@@ -44,7 +44,7 @@ assign ``seq`` and ``fsync``s the appended line -- a waiting ``flock`` and a
 kernel ``fsync`` once per tool frame and once per turn, on the one loop that
 also drives the liveness heartbeat. So an entry point does only what must be
 measured where it is called and hands the storage call to
-:func:`kiro_crew.executors.ledger_executor`, whose single worker drains the work
+:func:`kiro_crew.executors.crew_log_executor`, whose single worker drains the work
 in the order the call sites produced it.
 
 **Which turn an entry belongs to is carried IN the entry, not looked up.** Every
@@ -76,7 +76,7 @@ writer retries with a short doubling backoff. Bounded, because entries live in
 memory until they are written: past :data:`_MAX_WRITE_ATTEMPTS` consecutive failed
 passes the batch is dropped and counted in :func:`dropped_writes`, so a wedged
 disk becomes a reported loss instead of a wait no bounded caller can finish. A
-REFUSAL -- a ``LedgerError``, decided before any byte is written -- is not retried
+REFUSAL -- a ``CrewLogError``, decided before any byte is written -- is not retried
 at all: it would be refused identically every time, and retrying it would hold
 that session's whole log behind one entry that can never land.
 
@@ -103,7 +103,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.constants import env_flag_enabled
-from kiro_crew.executors import ledger_executor
+from kiro_crew.executors import crew_log_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -162,7 +162,7 @@ _UNCLASSIFIED_LABELS = frozenset({"unclassified", ""})
 ACTORS = frozenset({"user", "app", "crew", "cron", "autonudge", "subagent", "gateway", "other"})
 
 #: Bounded so a long-lived gateway cannot grow any map without limit.
-_MAX_OPEN_LEDGERS = 128
+_MAX_OPEN_CREW_LOGS = 128
 _MAX_PENDING_TOOLS = 512
 
 #: Ceiling for a SHORT field -- an approval's shown reason, a plan item's text, a
@@ -551,7 +551,7 @@ _growth_listeners: "list[Callable[[str], None]]" = []
 _subsystem: Any = None
 
 
-def _ledger() -> Any:
+def _crew_log() -> Any:
     """The storage package, imported the first time a call actually needs it.
 
     This module is reachable from the gateway boot path, and AUTOSDE's
@@ -859,7 +859,7 @@ def _on_event_loop() -> bool:
 def _permanent(exc: BaseException) -> bool:
     """Whether retrying *exc* is pointless because it will be refused again.
 
-    A :class:`~kiro_crew.crew_log.LedgerError` is a REFUSAL, not a failure: the
+    A :class:`~kiro_crew.crew_log.CrewLogError` is a REFUSAL, not a failure: the
     storage layer declines the entry before any byte is written, so the file is
     byte-identical and nothing about this process's next attempt is different.
     Either the entry does not fit the format, in which case the same verdict comes
@@ -877,7 +877,7 @@ def _permanent(exc: BaseException) -> bool:
     intended trade: the entries this process cannot write are counted, while the
     log keeps ONE writer's account of the turn instead of two interleaved ones.
     """
-    return isinstance(exc, _ledger().LedgerError)
+    return isinstance(exc, _crew_log().CrewLogError)
 
 
 def _run_job(job: Callable[[], None], what: str) -> BaseException | None:
@@ -1343,10 +1343,10 @@ def _loss_marker_job(session_id: str, loss: _PendingLoss) -> _PendingJob:
             newer = _pending_loss.pop(session_id, None)
             if newer is not None:
                 loss.merge(newer)
-        ledger = _handle(session_id)
-        if ledger is None:
+        log = _handle(session_id)
+        if log is None:
             return
-        ledger.append("write/dropped", loss.data(), src=_SRC_GATEWAY)
+        log.append("write/dropped", loss.data(), src=_SRC_GATEWAY)
 
     return _PendingJob(
         job=_job,
@@ -1427,7 +1427,7 @@ def _start_drain() -> None:
     global _draining, _drain_future
     _ensure_shutdown_hook()
     try:
-        future = ledger_executor().submit(_drain_loop)
+        future = crew_log_executor().submit(_drain_loop)
     except Exception as exc:  # pool shut down, or thread creation refused
         with _lock:
             _draining = False
@@ -1678,7 +1678,7 @@ def _write_batch(session_id: str, jobs: "list[_PendingJob]") -> bool:
                     _drop(session_id, jobs[index:], mark=True)
                     return False
                 # A permanent refusal owes a marker like any other loss.
-                # `_permanent` cannot split a LedgerError into its two causes -- a
+                # `_permanent` cannot split a CrewLogError into its two causes -- a
                 # malformed entry the format rejected, or a well-formed entry
                 # refused because another process owns this log -- and the second
                 # is a genuine hole. Marking unconditionally is what makes the
@@ -2047,12 +2047,12 @@ def _release_live(session_id: str, turn: int) -> None:
 
 def _bound_open() -> None:
     """Trim the handle cache. See :func:`_bound_unpinned` for the rule."""
-    _bound_unpinned(_open, _MAX_OPEN_LEDGERS, lambda k: k, "open handles")
+    _bound_unpinned(_open, _MAX_OPEN_CREW_LOGS, lambda k: k, "open handles")
 
 
-def _remember(session_id: str, ledger: Any) -> None:
+def _remember(session_id: str, log: Any) -> None:
     with _lock:
-        _open[session_id] = ledger
+        _open[session_id] = log
         _open.move_to_end(session_id)
         _bound_open()
 
@@ -2090,27 +2090,27 @@ def _handle(session_id: str) -> Any:
             _open.move_to_end(session_id)
             return cached
         creation_failed = session_id in _creation_failed
-    if not _ledger().Ledger.exists(_KIND, session_id):
+    if not _crew_log().CrewLog.exists(_KIND, session_id):
         if creation_failed:
             # The file-creating record died permanently, so this session's crew log
             # will never exist -- but it was OPENED, so its later entries are a real
             # loss, not the silent no-op an unopened session gets. Raise a refusal
             # rather than return None: the exception reaches _run_job, _permanent is
-            # true (a LedgerError is never retried), and the entry is dropped AND
+            # true (a CrewLogError is never retried), and the entry is dropped AND
             # counted in dropped_writes, with a write/dropped marker owed, instead
             # of vanishing uncounted.
-            raise _ledger().LedgerError(
+            raise _crew_log().CrewLogError(
                 "session log creation failed permanently; entry cannot be recorded",
-                code=_ledger().CODE_NO_LEDGER,
+                code=_crew_log().CODE_NO_LEDGER,
             )
         return None
     # RECONNECT, never a resume: this path is reached when a handle is missing
     # from the cache, which says nothing about the writer's health -- an
     # eviction is enough. So it opens WITHOUT repair; closing a turn here
     # would close one that is still running.
-    ledger = _ledger().Ledger.open(_KIND, session_id)
-    _remember(session_id, ledger)
-    return ledger
+    log = _crew_log().CrewLog.open(_KIND, session_id)
+    _remember(session_id, log)
+    return log
 
 
 def _bound_unpinned(
@@ -2210,11 +2210,11 @@ def _next_attempt(session_id: str, turn: int) -> int:
         attempt = seen.get(int(turn), 0) + 1
         seen[int(turn)] = attempt
         _attempts.move_to_end(session_id)
-        _bound_unpinned(_attempts, _MAX_OPEN_LEDGERS, lambda k: k, "turn attempts")
+        _bound_unpinned(_attempts, _MAX_OPEN_CREW_LOGS, lambda k: k, "turn attempts")
         return attempt
 
 
-def _seed_attempts(session_id: str, ledger: Any) -> None:
+def _seed_attempts(session_id: str, log: Any) -> None:
     """Rebuild *session_id*'s attempt map from the entries already in its file.
 
     Runs on the writer thread, and only when memory cannot answer instead: a
@@ -2233,7 +2233,7 @@ def _seed_attempts(session_id: str, ledger: Any) -> None:
     """
     highest: dict[int, int] = {}
     try:
-        for entry in ledger.iter_from(1):
+        for entry in log.iter_from(1):
             if entry.type != "turn/started":
                 continue
             turn = entry.data.get("turn")
@@ -2255,7 +2255,7 @@ def _seed_attempts(session_id: str, ledger: Any) -> None:
             if attempt > seen.get(turn, 0):
                 seen[turn] = attempt
         _attempts.move_to_end(session_id)
-        _bound_unpinned(_attempts, _MAX_OPEN_LEDGERS, lambda k: k, "turn attempts")
+        _bound_unpinned(_attempts, _MAX_OPEN_CREW_LOGS, lambda k: k, "turn attempts")
 
 
 def close_open_tool_calls(
@@ -2441,7 +2441,7 @@ def _fits_one_line(text: str, extra: "dict[str, Any] | None" = None) -> bool:
     escaped = len(json.dumps(text, ensure_ascii=True).encode("utf-8"))
     if extra:
         escaped += len(json.dumps(extra, ensure_ascii=True, default=str).encode("utf-8"))
-    return escaped + _ENVELOPE_HEADROOM <= _ledger().MAX_ENTRY_BYTES
+    return escaped + _ENVELOPE_HEADROOM <= _crew_log().MAX_ENTRY_BYTES
 
 
 def _write(
@@ -2476,10 +2476,10 @@ def _write(
         return
 
     def _job() -> None:
-        ledger = _handle(session_id)
-        if ledger is None:
+        log = _handle(session_id)
+        if log is None:
             return
-        ledger.append(entry_type, data, src=src, ignorable=ignorable)
+        log.append(entry_type, data, src=src, ignorable=ignorable)
 
     _submit(_job, f"appending {entry_type}", session_id, after=after)
 
@@ -2543,7 +2543,7 @@ def on_session_opened(
 
     def _job() -> None:
         created = False
-        if _ledger().Ledger.exists(_KIND, session_id):
+        if _crew_log().CrewLog.exists(_KIND, session_id):
             # THE resume path, and the only caller that may repair. ``resumed``
             # means this claim re-attached to a conversation a DIFFERENT gateway
             # process was writing, so a turn left open in that file belongs to a
@@ -2583,7 +2583,7 @@ def on_session_opened(
             # process spawned have stopped. The registry of running children is the
             # only thing that knows, and a process with none registered closes no
             # child at all.
-            ledger = _ledger().Ledger.open(
+            log = _crew_log().CrewLog.open(
                 _KIND, session_id, repair=may_repair, child_gone=_child_gone_probe(session_id)
             )
             # Rebuild the attempt counts from what is already in the file, for
@@ -2596,9 +2596,9 @@ def on_session_opened(
             with _lock:
                 needs_seed = bool(resumed) or session_id not in _attempts
             if needs_seed:
-                _seed_attempts(session_id, ledger)
+                _seed_attempts(session_id, log)
         else:
-            ledger = _ledger().Ledger.create(
+            log = _crew_log().CrewLog.create(
                 _KIND,
                 session_id,
                 owner=owner or "default",
@@ -2607,7 +2607,7 @@ def on_session_opened(
                 cwd=cwd or None,
             )
             created = True
-        _remember(session_id, ledger)
+        _remember(session_id, log)
         if not announce.setdefault("owed", created or bool(resumed)):
             return
         data: dict[str, Any] = {
@@ -2626,7 +2626,7 @@ def on_session_opened(
             if parent_sid:
                 parent["sid"] = parent_sid
             data["parent"] = parent
-        ledger.append("session/opened", data, src=_SRC_GATEWAY)
+        log.append("session/opened", data, src=_SRC_GATEWAY)
 
     def _flag_creation_failed() -> None:
         # The creating record died with no crew log file behind it: no later append
@@ -2684,8 +2684,8 @@ def on_turn_started(
         return
 
     def _job() -> None:
-        ledger = _handle(session_id)
-        if ledger is None:
+        log = _handle(session_id)
+        if log is None:
             return
         # Derived HERE, on the writer thread, NOT on the caller's. Resume seeding
         # runs as an earlier job for this same session, and the writer executes a
@@ -2702,7 +2702,7 @@ def on_turn_started(
         # the rare one.
         if n > 1:
             payload["attempt"] = int(n)
-        ledger.append("turn/started", payload, src=_SRC_GATEWAY)
+        log.append("turn/started", payload, src=_SRC_GATEWAY)
 
     _submit(_job, "appending turn/started", session_id)
 
@@ -2882,13 +2882,13 @@ def _entry_line_fits(entry_type: str, data: dict[str, Any], *, src: str) -> bool
         "data": data,
     }
     try:
-        line = _ledger().schema.serialize(envelope)
-    except _ledger().LedgerError:
+        line = _crew_log().schema.serialize(envelope)
+    except _crew_log().CrewLogError:
         # Not serializable at all. The append will refuse it for the same reason,
         # with the code that names it, so this reports "does not fit" rather than
         # deciding the outcome here.
         return False
-    return len(line.encode("utf-8")) <= _ledger().MAX_ENTRY_BYTES
+    return len(line.encode("utf-8")) <= _crew_log().MAX_ENTRY_BYTES
 
 
 def _bounded_attachment_data(
@@ -2942,7 +2942,7 @@ def _bounded_attachment_data(
 
 
 def _append_body_entry(
-    ledger: Any,
+    log: Any,
     entry_type: str,
     turn: int,
     *,
@@ -2976,7 +2976,7 @@ def _append_body_entry(
         key: value for key, value in inline_data.items() if key not in {"turn", "step", "text"}
     }
     if _fits_one_line(text, inline_extra or None):
-        ledger.append(entry_type, inline_data, src=src)
+        log.append(entry_type, inline_data, src=src)
         return
     # A chunk group is written as ONE batch, not entry by entry. The chunks are
     # meaningless without the entry that cites their seqs: appending them
@@ -3011,7 +3011,7 @@ def _append_body_entry(
         )
         return {"type": entry_type, "data": citing_data}
 
-    ledger.append_many(group, src=src, cite=_cite)
+    log.append_many(group, src=src, cite=_cite)
 
 
 def on_message_received(
@@ -3057,11 +3057,11 @@ def on_message_received(
         extra["attachments"] = names
 
     def _job() -> None:
-        ledger = _handle(session_id)
-        if ledger is None:
+        log = _handle(session_id)
+        if log is None:
             return
         _append_body_entry(
-            ledger,
+            log,
             "message/received",
             turn,
             text=body,
@@ -3113,11 +3113,11 @@ def on_message_sent(
     ordinal = int(step) if step else _current_step(session_id, turn)
 
     def _job() -> None:
-        ledger = _handle(session_id)
-        if ledger is None:
+        log = _handle(session_id)
+        if log is None:
             return
         _append_body_entry(
-            ledger,
+            log,
             "message/sent",
             turn,
             step=ordinal,
@@ -3173,10 +3173,10 @@ def on_request_configured(
         data["system_bytes"] = system_bytes
 
     def _job() -> None:
-        ledger = _handle(session_id)
-        if ledger is None:
+        log = _handle(session_id)
+        if log is None:
             return
-        ledger.append("request/configured", data, src=_SRC_GATEWAY)
+        log.append("request/configured", data, src=_SRC_GATEWAY)
         # Remembered only AFTER the line is on disk. Committing the fingerprint
         # before the append would let one transient failure suppress every later
         # identical configuration, leaving the session permanently without the
@@ -3186,7 +3186,7 @@ def on_request_configured(
         with _lock:
             _last_config[session_id] = fingerprint
             _last_config.move_to_end(session_id)
-            _bound_unpinned(_last_config, _MAX_OPEN_LEDGERS, lambda k: k, "request configs")
+            _bound_unpinned(_last_config, _MAX_OPEN_CREW_LOGS, lambda k: k, "request configs")
 
     _submit(_job, "appending request/configured", session_id)
 
@@ -3556,7 +3556,7 @@ def set_child_liveness(probe: "Callable[[str], bool] | None") -> None:
     still report its own outcome.
 
     Only the resume repair reads it, and only to decide whether an unmatched
-    ``subagent/spawned`` may be closed. Nothing in the ledger file can answer
+    ``subagent/spawned`` may be closed. Nothing in the crew log file can answer
     that: an unbalanced opener is what a finished-but-unreported child and a
     still-running one both look like. Leaving it unset is safe and is what tests
     and any embedder without subagents get -- no child is ever closed, so a reader
@@ -3642,7 +3642,7 @@ def remember_child_origin(agent_id: str, session_id: str, turn: int) -> None:
     the session id is authored by the provider, not by this process. It is refused
     rather than shortened because it is an IDENTITY: a truncated id names a
     different unit or none at all, so storing a cut-down copy would file this
-    child's entries against the wrong ledger. The refusal is counted like any
+    child's entries against the wrong crew log. The refusal is counted like any
     other lost origin, since the consequence is the same -- that child's entries
     are absent.
     """
@@ -3657,7 +3657,7 @@ def remember_child_origin(agent_id: str, session_id: str, turn: int) -> None:
             _lost_origin_reported = True
         if report:
             logger.warning(
-                "session ledger: a child's session id exceeds %d characters, so its "
+                "crew log: a child's session id exceeds %d characters, so its "
                 "origin is refused and its entries will be absent; counted in "
                 "lost_child_origins()",
                 _MAX_SESSION_ID_CHARS,
@@ -3712,7 +3712,7 @@ def _reap_child_origin(oldest: "list[str]") -> None:
             except Exception:
                 # An unanswerable probe is not an answer. Treat the child as
                 # running, so a pin is never dropped on a failed read.
-                logger.debug("session ledger: child liveness probe failed", exc_info=True)
+                logger.debug("crew log: child liveness probe failed", exc_info=True)
                 continue
             if not running:
                 finished.append(candidate)
@@ -3729,7 +3729,7 @@ def _reap_child_origin(oldest: "list[str]") -> None:
         _lost_origin_reported = True
     if report:
         logger.warning(
-            "session ledger: the child-origin map is full of running children, so a "
+            "crew log: the child-origin map is full of running children, so a "
             "live child's origin was dropped and its remaining entries will be "
             "absent; counted in lost_child_origins()"
         )
@@ -3932,11 +3932,11 @@ def on_subagent_spawned(
     parent is on now.
 
     No ``ref`` into the child's log. The schema describes one, and a child that
-    had a ledger would deserve it, but no subagent code path opens one: the only
-    site that creates a session ledger is the dashboard turn path, and a subagent
+    had a crew log would deserve it, but no subagent code path opens one: the only
+    site that creates a session's crew log is the dashboard turn path, and a subagent
     run does not go through it. A ``ref`` written now would cite a file that does
     not exist, which a reader cannot distinguish from one that was deleted. It
-    becomes writable, unchanged, the day subagent sessions get ledgers of their
+    becomes writable, unchanged, the day subagent sessions get crew logs of their
     own.
 
     ``turn`` is ABSENT when no turn asked, the same way :func:`on_model_selected`
@@ -3967,7 +3967,7 @@ def on_subagent_steered(session_id: str, *, agent_id: str, mode: str = "") -> No
     """Record a correction sent into a running child.
 
     Written into the PARENT's log: the parent is what sent it, and the child has
-    no ledger to receive it.
+    no crew log to receive it.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     if mode:

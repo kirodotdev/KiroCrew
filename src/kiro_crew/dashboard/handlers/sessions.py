@@ -2403,7 +2403,9 @@ async def _remove_slot_for_history_key(
                 )
                 if isinstance(spelling, str) and spelling
             )
-            await asyncio.to_thread(_remove_session_ledger, claim.acp_session_id, key, proven_slots)
+            await asyncio.to_thread(
+                _remove_session_crew_log, claim.acp_session_id, key, proven_slots
+            )
 
     # Cron ownership is different from the independent sidecars above: every key
     # here came from the strict store scan or from linked_session_key while the
@@ -2444,10 +2446,10 @@ async def _remove_slot_for_history_key(
 #: session's cached handle, and with it the write lease this removal must claim.
 #: A timeout is not a failure -- the entry stays owed, so the unit becomes
 #: collectable by the retention sweep even when this pass is refused.
-_LEDGER_TEARDOWN_FLUSH_SECONDS = 2.0
+_CREW_LOG_TEARDOWN_FLUSH_SECONDS = 2.0
 
 
-def _remove_session_ledger(
+def _remove_session_crew_log(
     session_id: str, history_key: str, proven_slots: "frozenset[str]"
 ) -> None:
     """Remove the append-only crew log of *session_id*. Never raises.
@@ -2460,7 +2462,7 @@ def _remove_session_ledger(
     the unit's own HEADER has to name one of them. The id alone is not enough,
     because it arrives from ``session_map.json`` -- a file inside the agent-visible
     tree -- so a mapping that named another conversation's session would aim this
-    removal at that conversation's ledger. The header is the independent answer: it
+    removal at that conversation's crew log. The header is the independent answer: it
     is written once at creation inside the fenced crew log tree and never rewritten,
     so it does not move when a mapping does, and a unit belonging to another slot
     fails the check. Slot recycling does not weaken it, because the id is what
@@ -2498,7 +2500,7 @@ def _remove_session_ledger(
         # owed, so the unit becomes collectable by the retention sweep -- which
         # needs that same close, since a unit whose newest lifecycle entry is not
         # a close reads as OPEN whatever its age. This pass simply does nothing.
-        crew_log_emit.flush(timeout=_LEDGER_TEARDOWN_FLUSH_SECONDS)
+        crew_log_emit.flush(timeout=_CREW_LOG_TEARDOWN_FLUSH_SECONDS)
 
         header_slot = unit_header_slot(KIND_SESSION, session_id)
         if header_slot is None or header_slot not in proven_slots:

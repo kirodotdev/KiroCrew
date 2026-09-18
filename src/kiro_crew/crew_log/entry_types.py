@@ -49,7 +49,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.crew_log.errors import CODE_BAD_DATA_FIELD, LedgerError
+from kiro_crew.crew_log.errors import CODE_BAD_DATA_FIELD, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION
 
 #: JSON types a declared field may hold. ``int`` and ``float`` are separate
@@ -590,8 +590,8 @@ def declaration_for(kind: str, entry_type: str) -> EntryType | None:
 # --------------------------------------------------------------------------- #
 
 
-def _refuse(path: str, message: str) -> LedgerError:
-    return LedgerError(f"{path}: {message}", code=CODE_BAD_DATA_FIELD, field=path)
+def _refuse(path: str, message: str) -> CrewLogError:
+    return CrewLogError(f"{path}: {message}", code=CODE_BAD_DATA_FIELD, field=path)
 
 
 def _type_ok(value: Any, json_type: str) -> bool:
@@ -655,7 +655,7 @@ def validate_data(kind: str, entry_type: str, data: Any) -> None:
     falls outside a CLOSED enum. Returns silently for a type with no declaration,
     which is every crew type and every guest namespace.
 
-    A refusal is a :class:`~kiro_crew.crew_log.errors.LedgerError`, so the
+    A refusal is a :class:`~kiro_crew.crew_log.errors.CrewLogError`, so the
     write-behind emitter already treats it the way it treats an oversize entry: a
     permanent refusal, reported and counted in ``dropped_writes()``, never raised
     into the gateway and never retried against a verdict that cannot change.

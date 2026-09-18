@@ -14,7 +14,7 @@ import json
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger, LedgerError, Ref
+from kiro_crew.crew_log import CrewLog, CrewLogError, Ref
 from kiro_crew.crew_log import projection as crew_log
 
 SESSION = "s-fold"
@@ -28,13 +28,13 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
 
 
-def _log(unit_id: str = SESSION, **fields) -> Ledger:
+def _log(unit_id: str = SESSION, **fields) -> CrewLog:
     fields.setdefault("owner", "raymond")
     fields.setdefault("agent", "kirocrew")
-    return Ledger.create(lg.KIND_SESSION, unit_id, **fields)
+    return CrewLog.create(lg.KIND_SESSION, unit_id, **fields)
 
 
-def _opened(handle: Ledger, *, resumed: bool = False, model: str = "opus") -> None:
+def _opened(handle: CrewLog, *, resumed: bool = False, model: str = "opus") -> None:
     handle.append(
         "session/opened",
         {
@@ -50,7 +50,7 @@ def _opened(handle: Ledger, *, resumed: bool = False, model: str = "opus") -> No
 
 
 def _turn(
-    handle: Ledger,
+    handle: CrewLog,
     turn: int,
     *,
     credits: float | None = 0.5,
@@ -85,7 +85,9 @@ def _turn(
     handle.append("turn/completed", done, src=GATEWAY)
 
 
-def _tool(handle: Ledger, turn: int, call_id: str, name: str, *, status: str = "completed") -> None:
+def _tool(
+    handle: CrewLog, turn: int, call_id: str, name: str, *, status: str = "completed"
+) -> None:
     handle.append(
         "tool/called",
         {"turn": turn, "call_id": call_id, "name": name, "server": "core", "kind": "mcp"},
@@ -105,7 +107,7 @@ def _tool(handle: Ledger, turn: int, call_id: str, name: str, *, status: str = "
     )
 
 
-def _busy_log() -> Ledger:
+def _busy_log() -> CrewLog:
     """A session with something for every fold to see."""
     handle = _log()
     _opened(handle)
@@ -154,7 +156,7 @@ def _busy_log() -> Ledger:
     return handle
 
 
-def _entries(handle: Ledger) -> tuple:
+def _entries(handle: CrewLog) -> tuple:
     return tuple(handle.iter_from(1))
 
 
@@ -204,7 +206,7 @@ def test_refolding_an_entry_the_checkpoint_already_saw_is_refused(name):
     """A replayed entry raises rather than double-counting or being skipped."""
     entries = _entries(_busy_log())
     part = crew_log.advance(crew_log.initial(name), entries[:4])
-    with pytest.raises(LedgerError) as excinfo:
+    with pytest.raises(CrewLogError) as excinfo:
         crew_log.advance(part, entries[2:])
     assert excinfo.value.code == lg.CODE_BAD_DATA
 
@@ -222,7 +224,7 @@ def test_an_unknown_projection_name_is_refused():
         lambda: crew_log.fold("board", ()),
         lambda: crew_log.read_projection(SESSION, "board"),
     ):
-        with pytest.raises(LedgerError) as excinfo:
+        with pytest.raises(CrewLogError) as excinfo:
             call()
         assert excinfo.value.code == lg.CODE_BAD_DATA
 
@@ -702,7 +704,7 @@ def test_fold_session_refuses_an_entry_type_it_cannot_interpret():
     )
     with path.open("a", encoding="utf-8") as sink:
         sink.write(line + "\n")
-    with pytest.raises(LedgerError) as excinfo:
+    with pytest.raises(CrewLogError) as excinfo:
         crew_log.fold_session(SESSION)
     assert excinfo.value.code == lg.CODE_UNKNOWN_ENTRY_TYPE
 

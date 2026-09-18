@@ -377,7 +377,7 @@ async def _generate_locked(
         # session that ran the call. ``effective_session_key`` rather than the
         # transcript key above: this addresses the SESSION, and a channel-born
         # slot's session lives under the channel's own key.
-        ledger_kind="summary",
+        crew_log_kind="summary",
         crew_log_session_key=effective_session_key(slot),
     )
     payload = normalize_payload(

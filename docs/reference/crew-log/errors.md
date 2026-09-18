@@ -3,14 +3,14 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Every refused crew log operation raises `LedgerError` carrying a stable `code`, and
+Every refused crew log operation raises `CrewLogError` carrying a stable `code`, and
 `field` naming the offending input when one field is to blame. A caller branches on
 `code`; the human-readable message is free to change without breaking it.
 
 **Codes are additive-only.** A shipped code string is never renamed or repurposed —
 it is API surface, not a log string. A new refusal gets a new code.
 
-A `LedgerError` means the operation was **declined before any byte was written**. For
+A `CrewLogError` means the operation was **declined before any byte was written**. For
 the one case where a write may have left residue, see
 [`IndeterminateAppend`](#indeterminateappend).
 
@@ -239,7 +239,7 @@ ones that remain — so a gap here is damage or a partial copy, not a pruned log
 **Caller action** — Treat the chain as damaged. A missing *front* is not this error;
 it reads normally and resolves as `pruned`.
 
-## Not a `LedgerError`
+## Not a `CrewLogError`
 
 ### `IndeterminateAppend`
 
@@ -252,7 +252,7 @@ cleanup also failed — likely, since whatever broke the write is often still br
 so the file may hold bytes no entry claims.
 
 It carries `written` and `offset` rather than a `code`, and it is deliberately not a
-`LedgerError`: a `LedgerError` is a refusal, meaning nothing was written and retrying
+`CrewLogError`: a `CrewLogError` is a refusal, meaning nothing was written and retrying
 is pointless. Here the file has been touched and the outcome is unknown, which is the
 opposite.
 

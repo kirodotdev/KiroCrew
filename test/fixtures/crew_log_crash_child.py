@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger, emit
+from kiro_crew.crew_log import CrewLog, emit
 
 SESSION = "crash-child-session"
 
@@ -45,7 +45,7 @@ def _park(marker: Path, value: str) -> None:
 
 def main() -> int:
     failpoint, marker_path = sys.argv[1], Path(sys.argv[2])
-    Ledger.create(lg.KIND_SESSION, SESSION, owner="crash-crew", agent="kirocrew")
+    CrewLog.create(lg.KIND_SESSION, SESSION, owner="crash-crew", agent="kirocrew")
 
     if failpoint == "open-turn":
         emit.on_turn_started(SESSION, 1, "user")
@@ -64,7 +64,7 @@ def main() -> int:
         # group write leaves behind. Written through the store directly: the
         # emitter always writes the group as one batch, so the shape the repair
         # has to handle cannot be produced through it -- which is the point.
-        handle = Ledger.open(lg.KIND_SESSION, SESSION)
+        handle = CrewLog.open(lg.KIND_SESSION, SESSION)
         handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
         handle.append_many(
             [

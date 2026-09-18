@@ -1,6 +1,6 @@
 """Refusals the append-only crew log raises, each carrying a stable ``code``.
 
-Every refusal is a :class:`LedgerError` with a machine-readable ``code``, the
+Every refusal is a :class:`CrewLogError` with a machine-readable ``code``, the
 same contract :mod:`kiro_crew.work_ledger` uses: a caller (a route handler, a
 tool wrapper) branches on the code, and the human-readable message is free to
 change without breaking that caller.
@@ -88,7 +88,7 @@ CODE_SEGMENT_GAP = "segment_gap"
 CODE_BAD_ROOT = "bad_root"
 
 
-class LedgerError(Exception):
+class CrewLogError(Exception):
     """A refused crew log operation.
 
     ``code`` is the stable identifier; ``field`` names the offending input when
@@ -114,7 +114,7 @@ class IndeterminateAppend(Exception):
     This is the case where that cleanup ALSO failed -- likely, since whatever broke
     the write is often still broken -- so the file may hold bytes no entry claims.
 
-    Deliberately NOT a :class:`LedgerError`. A LedgerError is a refusal, meaning the
+    Deliberately NOT a :class:`CrewLogError`. A CrewLogError is a refusal, meaning the
     entry was declined before any byte was written and retrying is pointless. Here
     the file has been touched and the outcome is unknown, which is the opposite.
 

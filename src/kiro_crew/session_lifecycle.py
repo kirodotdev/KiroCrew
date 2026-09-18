@@ -940,11 +940,11 @@ class SessionLifecycleService:
                 # rule asks for a flag-gated subsystem's IMPORT to be gated too.
                 from kiro_crew.crew_log import emit as crew_log_emit
 
-                ledger_sid = crew_log_emit.session_id_of(session.provider)
+                crew_log_sid = crew_log_emit.session_id_of(session.provider)
                 retained_key: str | None = None
-                if ledger_sid:
+                if crew_log_sid:
                     try:
-                        retained_key = owner._session_map.find_key_by_sid(ledger_sid)
+                        retained_key = owner._session_map.find_key_by_sid(crew_log_sid)
                     except Exception:
                         # An unreadable map is not evidence that the id is revoked.
                         retained_key = _SID_RETENTION_UNKNOWN
@@ -956,7 +956,7 @@ class SessionLifecycleService:
                         key,
                     )
                 crew_log_emit.on_session_closed(
-                    ledger_sid,
+                    crew_log_sid,
                     END_REASON_DESTROYED if retained_key is None else _END_REASON_SID_RETAINED,
                 )
                 # Still under the same lock as the pop; a manager successor cannot

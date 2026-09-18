@@ -4,9 +4,9 @@ The format, the rules and how this stream relates to the lifecycle event track a
 specified in ``docs/system-specs/modules/crew-log-core.md``. Two units, one file
 each, the gateway the only writer::
 
-    from kiro_crew.crew_log import Ledger
+    from kiro_crew.crew_log import CrewLog
 
-    crew = Ledger.create("crew", "qa")
+    crew = CrewLog.create("crew", "qa")
     crew.append("member/joined", {"who": "s-7f3a"}, src="gateway")
 
 A crew header carries nothing but the unit's id and its creation time, which is
@@ -63,7 +63,7 @@ _EXPORTS: dict[str, str] = {
     "CODE_UNKNOWN_ENTRY_TYPE": "errors",
     "CODE_UNSUPPORTED_VERSION": "errors",
     "IndeterminateAppend": "errors",
-    "LedgerError": "errors",
+    "CrewLogError": "errors",
     # schema
     "FIXED_SOURCES": "schema",
     "KIND_CREW": "schema",
@@ -89,12 +89,12 @@ _EXPORTS: dict[str, str] = {
     "STATUS_GONE": "store",
     "STATUS_OK": "store",
     "STATUS_PRUNED": "store",
-    "Ledger": "store",
+    "CrewLog": "store",
     "Page": "store",
     "Resolution": "store",
-    "ledger_dir": "store",
-    "ledger_path": "store",
-    "ledger_root": "store",
+    "crew_log_dir": "store",
+    "crew_log_path": "store",
+    "crew_log_root": "store",
     "now_ms": "store",
     "segment_first_seqs": "store",
     "segment_paths": "store",
@@ -150,8 +150,8 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         CODE_SEGMENT_GAP,
         CODE_UNKNOWN_ENTRY_TYPE,
         CODE_UNSUPPORTED_VERSION,
+        CrewLogError,
         IndeterminateAppend,
-        LedgerError,
     )
     from kiro_crew.crew_log.schema import (  # noqa: F401
         FIXED_SOURCES,
@@ -179,12 +179,12 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         STATUS_GONE,
         STATUS_OK,
         STATUS_PRUNED,
-        Ledger,
+        CrewLog,
         Page,
         Resolution,
-        ledger_dir,
-        ledger_path,
-        ledger_root,
+        crew_log_dir,
+        crew_log_path,
+        crew_log_root,
         now_ms,
         segment_first_seqs,
         segment_paths,

@@ -26,7 +26,7 @@ and frame that serve them, read
 | [session-types.md](session-types.md) | Every session log entry type, one subsection each, with fields and an example. |
 | [crew-types.md](crew-types.md) | The crew's log's type families and the two dispatch contracts. |
 | [reading-and-writing.md](reading-and-writing.md) | Reader API, writer rules, ownership, and the fail-soft emitter. |
-| [errors.md](errors.md) | Every `LedgerError` code, its trigger, and what a caller does about it. |
+| [errors.md](errors.md) | Every `CrewLogError` code, its trigger, and what a caller does about it. |
 
 ## Glossary
 

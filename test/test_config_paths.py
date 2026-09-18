@@ -81,7 +81,7 @@ class TestLedgerRoot:
         restricted: list[Path] = []
 
         with caplog.at_level(logging.WARNING, logger=paths.__name__):
-            paths._ensure_ledger_root(home, restricted.append)
+            paths._ensure_crew_log_root(home, restricted.append)
 
         assert restricted == [], "the owner-only callback would chmod the link target"
         assert list(target.iterdir()) == [], "the linked target was modified"

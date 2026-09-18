@@ -2,7 +2,7 @@
 
 The STORE layer's two-handle seq race is pinned in test_crew_log_core.py. This
 file attacks the EMITTER layer above it: the _submit / _buffer / _drain_loop /
-flush machinery that sits between a producer calling on_* and the Ledger.append
+flush machinery that sits between a producer calling on_* and the CrewLog.append
 that lands a line on disk.
 
 Four areas, matching the task spec:
@@ -20,7 +20,7 @@ import time
 
 import pytest
 
-from kiro_crew.crew_log import Ledger, emit, ledger_path
+from kiro_crew.crew_log import CrewLog, crew_log_path, emit
 
 SESSION = "conc-edge-sess-0001"
 
@@ -86,7 +86,7 @@ def _bytes_on_disk(sids: tuple[str, ...]) -> int:
     total = 0
     for sid in sids:
         try:
-            total += ledger_path("session", sid).stat().st_size
+            total += crew_log_path("session", sid).stat().st_size
         except OSError:
             pass
     return total
@@ -98,7 +98,7 @@ def _open(sid: str = SESSION) -> None:
 
 
 def _entries(sid: str = SESSION) -> list[dict]:
-    path = ledger_path("session", sid)
+    path = crew_log_path("session", sid)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as f:
@@ -304,8 +304,8 @@ def test_many_sessions_no_cross_contamination():
             ), f"{sid}: cross-contamination in call_id: {e['data']['call_id']}"
 
         # Each file is independently readable by the production reader
-        ledger = Ledger.open("session", sid)
-        reader_entries = list(ledger.iter_from(1))
+        log = CrewLog.open("session", sid)
+        reader_entries = list(log.iter_from(1))
         assert len(reader_entries) > 0, f"{sid}: iter_from returned nothing"
         reader_seqs = [re.seq for re in reader_entries]
         assert reader_seqs == list(
@@ -346,8 +346,8 @@ def test_many_sessions_each_file_well_formed():
         assert entries[0]["type"] == "session", f"{sid}: first line is not a header"
         # Every line parses as valid JSON (already guaranteed by _entries, but
         # also check via the production reader)
-        ledger = Ledger.open("session", sid)
-        all_read = list(ledger.iter_from(1))
+        log = CrewLog.open("session", sid)
+        all_read = list(log.iter_from(1))
         types_seen = {e.type for e in all_read}
         assert "session/opened" in types_seen, f"{sid}: missing session/opened"
         assert "turn/started" in types_seen, f"{sid}: missing turn/started"

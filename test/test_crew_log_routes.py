@@ -20,7 +20,7 @@ import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger, Ref
+from kiro_crew.crew_log import CrewLog, Ref
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.dashboard.handlers import crew_log as routes
 
@@ -44,11 +44,11 @@ def _is_owner():
         yield
 
 
-def _log(unit_id: str = SESSION) -> Ledger:
-    return Ledger.create(lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew")
+def _log(unit_id: str = SESSION) -> CrewLog:
+    return CrewLog.create(lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew")
 
 
-def _opened(handle: Ledger) -> None:
+def _opened(handle: CrewLog) -> None:
     handle.append(
         "session/opened",
         {
@@ -63,7 +63,7 @@ def _opened(handle: Ledger) -> None:
     )
 
 
-def _turn(handle: Ledger, turn: int) -> None:
+def _turn(handle: CrewLog, turn: int) -> None:
     handle.append("turn/started", {"turn": turn, "actor": "user", "depth": 0}, src=GATEWAY)
     handle.append(
         "turn/completed",
@@ -247,7 +247,7 @@ async def test_identical_refs_on_one_page_are_resolved_once():
             src=GATEWAY,
             ref=pointer,
         )
-    with patch.object(Ledger, "resolve", autospec=True, side_effect=Ledger.resolve) as spy:
+    with patch.object(CrewLog, "resolve", autospec=True, side_effect=CrewLog.resolve) as spy:
         body = _body(await routes.api_session_crew_log(_page_request(query="from=1&to=9")))
     assert spy.call_count == 1
     cited = [row for row in body["entries"] if "ref_resolution" in row]
@@ -264,7 +264,7 @@ async def test_a_page_past_its_ref_budget_says_how_many_it_left():
     for index in range(routes.MAX_PAGE_REFS + extra):
         # A DISTINCT ref each time, so the budget rather than the dedupe is what
         # bounds the work.
-        Ledger.create(lg.KIND_SESSION, f"s-kid{index}", owner="raymond", agent="kirocrew")
+        CrewLog.create(lg.KIND_SESSION, f"s-kid{index}", owner="raymond", agent="kirocrew")
         parent.append(
             "subagent/spawned",
             {"turn": 1, "agent_id": f"sub-{index}", "agent": "worker", "model": "opus"},
@@ -311,7 +311,7 @@ async def test_a_projection_for_a_session_with_no_log_is_the_empty_one():
 # --- the posture difference ---------------------------------------------
 
 
-def _plant_unknown_required_type(handle: Ledger) -> None:
+def _plant_unknown_required_type(handle: CrewLog) -> None:
     line = json.dumps(
         {
             "type": "turn/teleported",
@@ -403,7 +403,7 @@ async def test_a_growth_only_reads_the_entries_that_arrived():
     await publisher._publish(SESSION)
     first_seq = handle.last_seq
     _turn(handle, 1)
-    with patch.object(Ledger, "iter_from", autospec=True, side_effect=Ledger.iter_from) as spy:
+    with patch.object(CrewLog, "iter_from", autospec=True, side_effect=CrewLog.iter_from) as spy:
         await publisher._publish(SESSION)
     assert spy.call_args.args[1] == first_seq + 1
 
@@ -552,7 +552,7 @@ def test_finished_reschedules_when_work_arrived_mid_flush():
 def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():
     """A page must not tell a client the history ends where its handle thinks.
 
-    ``Ledger.last_seq`` is the handle's own cached figure and its docstring says it
+    ``CrewLog.last_seq`` is the handle's own cached figure and its docstring says it
     is authoritative only for that handle's own appends. A reader never appends, so
     a writer growing the file after the handle opened is invisible to it. The pass
     over the file is live and walks the whole tail, so the real end is observable;
@@ -569,7 +569,7 @@ def test_a_page_reports_the_tail_it_observed_not_a_stale_cached_one():
     stale = crew_log.open_session_log(SESSION)
     assert stale is not None
     cached = stale.last_seq
-    writer = Ledger.open(lg.KIND_SESSION, SESSION)
+    writer = CrewLog.open(lg.KIND_SESSION, SESSION)
     for turn in (3, 4, 5):
         _turn(writer, turn)
     assert writer.last_seq > cached

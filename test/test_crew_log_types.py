@@ -20,14 +20,14 @@ import pytest
 from kiro_crew.crew_log import (
     CODE_BAD_DATA_FIELD,
     SESSION_ENTRY_TYPES,
-    Ledger,
-    LedgerError,
+    CrewLog,
+    CrewLogError,
+    crew_log_path,
     declaration_for,
     emit,
 )
 from kiro_crew.crew_log import entry_types as reg
 from kiro_crew.crew_log import (
-    ledger_path,
     render_markdown,
 )
 from kiro_crew.crew_log import store as store_mod
@@ -266,7 +266,7 @@ def test_dropping_any_required_field_is_refused_and_the_error_names_it(entry_typ
     spec = SESSION_ENTRY_TYPES[entry_type]
     for name in spec.required_names:
         payload = {k: v for k, v in CANONICAL[entry_type].items() if k != name}
-        with pytest.raises(LedgerError) as caught:
+        with pytest.raises(CrewLogError) as caught:
             validate_data("session", entry_type, payload)
         assert caught.value.code == CODE_BAD_DATA_FIELD
         assert caught.value.field == f"data.{name}"
@@ -277,7 +277,7 @@ def test_an_undeclared_field_is_refused_rather_than_written(entry_type):
     # The same posture as an unknown HEADER field, for the same reason: a caller
     # that misspells a field would otherwise be told the entry landed as asked
     # while the value it meant to record silently vanished.
-    with pytest.raises(LedgerError) as caught:
+    with pytest.raises(CrewLogError) as caught:
         validate_data("session", entry_type, {**CANONICAL[entry_type], "typoed": 1})
     assert caught.value.code == CODE_BAD_DATA_FIELD
     assert caught.value.field == "data.typoed"
@@ -302,7 +302,7 @@ def test_every_declared_field_refuses_a_wrong_json_type(entry_type):
     for field in spec.fields:
         if field.name not in example:
             continue
-        with pytest.raises(LedgerError) as caught:
+        with pytest.raises(CrewLogError) as caught:
             validate_data("session", entry_type, {**example, field.name: _WRONG[field.json_type]})
         assert caught.value.code == CODE_BAD_DATA_FIELD
         assert caught.value.field == f"data.{field.name}"
@@ -387,7 +387,7 @@ def test_every_declared_field_refuses_a_wrong_json_type(entry_type):
     ],
 )
 def test_a_bad_value_is_refused_at_the_path_that_holds_it(entry_type, payload, path):
-    with pytest.raises(LedgerError) as caught:
+    with pytest.raises(CrewLogError) as caught:
         validate_data("session", entry_type, payload)
     assert caught.value.code == CODE_BAD_DATA_FIELD
     assert caught.value.field == path
@@ -433,7 +433,7 @@ def test_an_undeclared_type_is_not_validated(kind, entry_type):
     validate_data(kind, entry_type, {"whatever": ["shape"], "missing": None})
 
 
-def test_a_session_type_is_not_declared_for_a_crew_ledger():
+def test_a_session_type_is_not_declared_for_a_crew_log():
     # The registry is per KIND. A crew log cannot hold `turn/started` at all --
     # ownership refuses it first -- so declaring it there would be a shape for a
     # write that never happens.
@@ -451,24 +451,24 @@ def test_a_non_mapping_payload_is_left_to_require_data():
 
 
 def _entries(session_id: str = SESSION) -> list[dict]:
-    path = ledger_path("session", session_id)
+    path = crew_log_path("session", session_id)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def _fresh() -> Ledger:
-    return Ledger.create("session", SESSION, owner="default", agent="kirocrew")
+def _fresh() -> CrewLog:
+    return CrewLog.create("session", SESSION, owner="default", agent="kirocrew")
 
 
 def test_append_refuses_a_bad_payload_and_leaves_the_file_identical():
     led = _fresh()
-    before = ledger_path("session", SESSION).read_bytes()
-    with pytest.raises(LedgerError) as caught:
+    before = crew_log_path("session", SESSION).read_bytes()
+    with pytest.raises(CrewLogError) as caught:
         led.append("turn/started", {"turn": 1, "actor": "user"}, src="gateway")
     assert caught.value.code == CODE_BAD_DATA_FIELD
-    assert ledger_path("session", SESSION).read_bytes() == before
+    assert crew_log_path("session", SESSION).read_bytes() == before
     # The handle is still usable: a refusal happens before any byte is written.
     led.append("turn/started", CANONICAL["turn/started"], src="gateway")
     assert [entry["type"] for entry in _entries()[1:]] == ["turn/started"]
@@ -476,8 +476,8 @@ def test_append_refuses_a_bad_payload_and_leaves_the_file_identical():
 
 def test_a_group_is_refused_whole_when_one_member_is_bad():
     led = _fresh()
-    before = ledger_path("session", SESSION).read_bytes()
-    with pytest.raises(LedgerError) as caught:
+    before = crew_log_path("session", SESSION).read_bytes()
+    with pytest.raises(CrewLogError) as caught:
         led.append_many(
             [
                 {"type": "message/chunk", "data": {"turn": 1, "delta": "a"}, "ignorable": True},
@@ -486,24 +486,24 @@ def test_a_group_is_refused_whole_when_one_member_is_bad():
             src="acp",
         )
     assert caught.value.field == "data.delta"
-    assert ledger_path("session", SESSION).read_bytes() == before
+    assert crew_log_path("session", SESSION).read_bytes() == before
 
 
 def test_a_group_refuses_a_citing_entry_the_registry_rejects():
     led = _fresh()
-    before = ledger_path("session", SESSION).read_bytes()
-    with pytest.raises(LedgerError) as caught:
+    before = crew_log_path("session", SESSION).read_bytes()
+    with pytest.raises(CrewLogError) as caught:
         led.append_many(
             [{"type": "message/chunk", "data": {"turn": 1, "delta": "a"}, "ignorable": True}],
             src="acp",
             cite=lambda seqs: {"type": "message/sent", "data": {"turn": 1, "typo": seqs}},
         )
     assert caught.value.field == "data.typo"
-    assert ledger_path("session", SESSION).read_bytes() == before
+    assert crew_log_path("session", SESSION).read_bytes() == before
 
 
 def test_a_crew_append_is_untouched_by_the_registry():
-    crew = Ledger.create("crew", "qa")
+    crew = CrewLog.create("crew", "qa")
     joined = crew.append("member/joined", {}, src="gateway")
     crew.append(
         "crew/report",
@@ -608,7 +608,7 @@ def test_the_crash_repair_closers_validate():
         validate_data("session", entry.type, entry.data)
 
 
-def test_a_repaired_ledger_reopens_with_its_closers_on_disk():
+def test_a_repaired_log_reopens_with_its_closers_on_disk():
     # End to end, through the store: the closers are appended by the repair path
     # and the file that comes back holds entries the registry accepts.
     #
@@ -618,8 +618,8 @@ def test_a_repaired_ledger_reopens_with_its_closers_on_disk():
     led = _fresh()
     led.append("turn/started", CANONICAL["turn/started"], src="gateway")
     led.append("tool/called", CANONICAL["tool/called"], src="acp")
-    reopened = Ledger.open("session", SESSION, repair=True)
-    assert reopened.path == ledger_path("session", SESSION)
+    reopened = CrewLog.open("session", SESSION, repair=True)
+    assert reopened.path == crew_log_path("session", SESSION)
     body = _entries()[1:]
     assert [entry["type"] for entry in body][-2:] == ["tool/completed", "turn/completed"]
     for entry in body:

@@ -52,7 +52,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, LedgerError
+from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, CrewLogError
 from kiro_crew.platform_compat import file_lock
 
 #: The lease file's name inside a unit's crew log directory. Distinct from the
@@ -134,7 +134,7 @@ def acquire(path: Path, *, kind: str, unit_id: str, sole: bool = False) -> str:
     counting sense: every call that returns has added a reference, and each one
     has to be released.
 
-    Raises a :class:`~kiro_crew.crew_log.LedgerError` with code ``already_owned``
+    Raises a :class:`~kiro_crew.crew_log.CrewLogError` with code ``already_owned``
     when another process holds the log. That is a REFUSAL, not a failure: this
     process has written nothing, and it will not own the log by asking again in a
     moment, so a caller reports the loss rather than retrying it.
@@ -207,14 +207,14 @@ def release(key: str) -> None:
         held.stack.close()
 
 
-def _refused(what: str) -> LedgerError:
+def _refused(what: str) -> CrewLogError:
     """The refusal raised when this process cannot own the log.
 
     One code for both causes -- contention, and a lease file that keeps moving --
     because the caller's answer is the same: it does not own the log, so it writes
     nothing. The message says which, since only one of them names another process.
     """
-    return LedgerError(
+    return CrewLogError(
         f"{what}; this process appended nothing and did not repair the file",
         code=CODE_ALREADY_OWNED,
     )

@@ -2397,7 +2397,7 @@ More shapes this class hides, all Windows-only and all green on every Linux run:
   `test_many_producers_one_session_all_entries_land` ran 5.9 s green on `main` and
   16.1 s red one head later on the SAME shard, where the 943 tests common to both runs
   came in 2.2x slower end to end — the runner, not the diff. Reproduced on Linux by
-  pricing `Ledger.append` at 100 ms and changing nothing else. The give-up condition has
+  pricing `CrewLog.append` at 100 ms and changing nothing else. The give-up condition has
   to be a writer that STOPPED rather than one that is slow: poll `flush` in windows and
   fail when a whole window lands nothing new, measuring the first window from BEFORE the
   first wait so a real wedge is still reported one window in, and cap the total at half

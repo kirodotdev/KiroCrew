@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.crew_log import Ledger, emit, ledger_path
+from kiro_crew.crew_log import CrewLog, crew_log_path, emit
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -46,7 +46,7 @@ def _sid(n: int) -> str:
 
 
 def _entries(session_id: str) -> list[dict]:
-    path = ledger_path("session", session_id)
+    path = crew_log_path("session", session_id)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as fh:
@@ -154,21 +154,21 @@ class TestSingleWriterHazard:
         _open(sid_b)
 
         a_fail_count = 0
-        original_append = Ledger.append
+        original_append = CrewLog.append
 
-        def _fail_a_once(self_ledger, entry_type, data, **kw):
+        def _fail_a_once(self_log, entry_type, data, **kw):
             nonlocal a_fail_count
             # Fail the first turn/started for session A by checking the file path
             if (
                 entry_type == "turn/started"
-                and "fanout-0100" in str(getattr(self_ledger, "_path", ""))
+                and "fanout-0100" in str(getattr(self_log, "_path", ""))
                 and a_fail_count == 0
             ):
                 a_fail_count += 1
                 raise OSError("simulated ENOSPC")
-            return original_append(self_ledger, entry_type, data, **kw)
+            return original_append(self_log, entry_type, data, **kw)
 
-        with patch.object(Ledger, "append", _fail_a_once):
+        with patch.object(CrewLog, "append", _fail_a_once):
             emit.on_turn_started(sid_a, 1)
             emit.on_turn_started(sid_b, 1)
             emit.on_turn_completed(sid_a, 1, input_tokens=1, output_tokens=1)
@@ -195,20 +195,20 @@ class TestSingleWriterHazard:
             _open(sid)
 
         fail_count = 0
-        original_append = Ledger.append
+        original_append = CrewLog.append
 
-        def _fail_first_only(self_ledger, entry_type, data, **kw):
+        def _fail_first_only(self_log, entry_type, data, **kw):
             nonlocal fail_count
             if (
                 entry_type == "turn/started"
-                and "fanout-0200" in str(getattr(self_ledger, "_path", ""))
+                and "fanout-0200" in str(getattr(self_log, "_path", ""))
                 and fail_count < 2
             ):
                 fail_count += 1
                 raise OSError("simulated EIO")
-            return original_append(self_ledger, entry_type, data, **kw)
+            return original_append(self_log, entry_type, data, **kw)
 
-        with patch.object(Ledger, "append", _fail_first_only):
+        with patch.object(CrewLog, "append", _fail_first_only):
             for sid in all_sids:
                 emit.on_turn_started(sid, 1)
                 emit.on_turn_completed(sid, 1, input_tokens=1, output_tokens=1)
@@ -338,17 +338,17 @@ class TestShutdownDrainsAll:
         _open(sid)
 
         call_count = 0
-        original_append = Ledger.append
+        original_append = CrewLog.append
 
-        def _fail_first_then_succeed(self_ledger, entry_type, data, **kw):
+        def _fail_first_then_succeed(self_log, entry_type, data, **kw):
             nonlocal call_count
             if entry_type == "turn/started":
                 call_count += 1
                 if call_count == 1:
                     raise OSError("simulated ENOSPC")
-            return original_append(self_ledger, entry_type, data, **kw)
+            return original_append(self_log, entry_type, data, **kw)
 
-        with patch.object(Ledger, "append", _fail_first_then_succeed):
+        with patch.object(CrewLog, "append", _fail_first_then_succeed):
             emit.on_turn_started(sid, 1)
             emit.on_turn_completed(sid, 1, input_tokens=1, output_tokens=1)
             assert emit.drain_for_shutdown(

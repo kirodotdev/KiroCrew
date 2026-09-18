@@ -1317,7 +1317,7 @@ async def run_bg_oneliner(
     sel_session_key: str = "_bg",
     timeout: float | None = None,
     strict_model: bool = False,
-    ledger_kind: str = "",
+    crew_log_kind: str = "",
     crew_log_session_key: str = "",
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
@@ -1342,9 +1342,9 @@ async def run_bg_oneliner(
     are audited under the generic ``"bg_oneliner"`` source rather than silently
     dropping the SEL event.
 
-    ``ledger_kind`` and ``crew_log_session_key`` name what this call is and which
+    ``crew_log_kind`` and ``crew_log_session_key`` name what this call is and which
     session it is charged to, and BOTH are required for it to reach that session's
-    ledger. Most callers are not charged to any one session -- a tip, a folder icon,
+    crew log. Most callers are not charged to any one session -- a tip, a folder icon,
     a cron label -- so the default is to write nothing rather than attribute shared
     work to whichever session happened to trigger it.
 
@@ -1361,7 +1361,7 @@ async def run_bg_oneliner(
     # incurred it. The acquisition is itself a suspension point -- it can take the
     # background runtime lock and start a runtime -- so resolving after it is
     # already late enough to name the successor.
-    _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, ledger_kind)
+    _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     session = await sessions.get_bg_session()
     # The stats object as it stands BEFORE this turn. The runner replaces it when
     # a turn actually begins, so comparing identity at teardown separates a turn
@@ -1516,7 +1516,7 @@ async def run_bg_oneliner(
                     # any one session (tips, a cron label) and writes nothing.
                     _record_background_crew_log(
                         _crew_log_owner,
-                        ledger_kind,
+                        crew_log_kind,
                         usage,
                         model=_served,
                         provider=_provider_label(session),
@@ -1542,8 +1542,8 @@ async def run_bg_oneliner(
             await session.destroy()
 
 
-def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, ledger_kind: str) -> str:
-    """The ledger unit a background call is charged to, resolved BEFORE the call.
+def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, crew_log_kind: str) -> str:
+    """The crew log unit a background call is charged to, resolved BEFORE the call.
 
     Resolution has to happen here rather than in the teardown that writes the
     entry, and the reason is the resolver's own contract: it answers which unit a
@@ -1558,7 +1558,7 @@ def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, ledger_
     session for a tip or a cron label would put someone else's cost in a user's
     log. Also ``""`` when the flag is off or the owner cannot be resolved.
     """
-    if not crew_log_session_key or not ledger_kind:
+    if not crew_log_session_key or not crew_log_kind:
         return ""
     try:
         from kiro_crew.crew_log import emit as crew_log_emit
@@ -1573,8 +1573,8 @@ def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, ledger_
         return unit_for_session_key(sessions, crew_log_session_key)
     except Exception:
         logger.debug(
-            "session ledger: resolving a background owner failed kind=%s",
-            ledger_kind,
+            "crew log: resolving a background owner failed kind=%s",
+            crew_log_kind,
             exc_info=True,
         )
         return ""
@@ -1582,14 +1582,14 @@ def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, ledger_
 
 def _record_background_crew_log(
     owner_sid: str,
-    ledger_kind: str,
+    crew_log_kind: str,
     usage: Any,
     *,
     model: str,
     provider: str,
     elapsed_ms: int,
 ) -> None:
-    """File one background model call in the ledger of the session it served.
+    """File one background model call in the crew log of the session it served.
 
     ``owner_sid`` is the unit :func:`_background_crew_log_owner` pinned before the
     call, never a key resolved here -- see that function for why the timing is the
@@ -1608,14 +1608,14 @@ def _record_background_crew_log(
     Best-effort, like the accounting beside it. This is describing spend, not
     controlling it, and it must never be why a background task raises.
     """
-    if not owner_sid or not ledger_kind:
+    if not owner_sid or not crew_log_kind:
         return
     try:
         from kiro_crew.crew_log import emit as crew_log_emit
 
         crew_log_emit.on_background_completed(
             owner_sid,
-            kind=ledger_kind,
+            kind=crew_log_kind,
             model=model,
             provider=provider,
             credits=float(getattr(usage, "credits", 0.0) or 0.0),
@@ -1627,7 +1627,9 @@ def _record_background_crew_log(
         )
     except Exception:
         logger.debug(
-            "session ledger: recording a background call failed kind=%s", ledger_kind, exc_info=True
+            "crew log: recording a background call failed kind=%s",
+            crew_log_kind,
+            exc_info=True,
         )
 
 
@@ -1892,7 +1894,7 @@ async def background_turn(
     task: str,
     agent: "str | None" = None,
     memory_store: str = "",
-    ledger_kind: str = "",
+    crew_log_kind: str = "",
     crew_log_session_key: str = "",
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
@@ -1931,7 +1933,7 @@ async def background_turn(
     # this turn runs, and its successor is a different ledger unit. Everything the
     # resolver reads is a parameter, so it does not need the session this function
     # is about to acquire.
-    _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, ledger_kind)
+    _crew_log_owner = _background_crew_log_owner(sessions, crew_log_session_key, crew_log_kind)
     if memory_store:
         from uuid import uuid4
 
@@ -2009,7 +2011,7 @@ async def background_turn(
                 if usage_has_billing(usage):
                     _record_background_crew_log(
                         _crew_log_owner,
-                        ledger_kind,
+                        crew_log_kind,
                         usage,
                         model=str(getattr(client, "served_model", "") or "").strip(),
                         provider=_provider_label(client),

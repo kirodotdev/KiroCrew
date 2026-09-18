@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger
+from kiro_crew.crew_log import CrewLog
 
 CHILD = Path(__file__).parent / "fixtures" / "crew_log_crash_child.py"
 SESSION = "crash-child-session"
@@ -103,7 +103,7 @@ def _entries(home: Path) -> "list[dict]":
     env_home = os.environ.get("KIROCREW_HOME")
     os.environ["KIROCREW_HOME"] = str(home)
     try:
-        path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+        path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
         raw = path.read_text(encoding="utf-8").splitlines()
         return [json.loads(line) for line in raw[1:] if line.strip()]
     finally:
@@ -123,7 +123,7 @@ def _repair(home: Path) -> int:
     env_home = os.environ.get("KIROCREW_HOME")
     os.environ["KIROCREW_HOME"] = str(home)
     try:
-        return Ledger.open(lg.KIND_SESSION, SESSION).repair_interrupted_turn()
+        return CrewLog.open(lg.KIND_SESSION, SESSION).repair_interrupted_turn()
     finally:
         if env_home is None:
             os.environ.pop("KIROCREW_HOME", None)

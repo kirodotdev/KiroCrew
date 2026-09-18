@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger, LedgerError, Ref
+from kiro_crew.crew_log import CrewLog, CrewLogError, Ref
 from kiro_crew.crew_log.schema import check_ownership, require_src
 
 CREW = "qa"
@@ -33,12 +33,12 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
 
 
-def _crew(unit_id: str = CREW) -> Ledger:
-    return Ledger.create(lg.KIND_CREW, unit_id)
+def _crew(unit_id: str = CREW) -> CrewLog:
+    return CrewLog.create(lg.KIND_CREW, unit_id)
 
 
-def _session(unit_id: str = SESSION) -> Ledger:
-    return Ledger.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
+def _session(unit_id: str = SESSION) -> CrewLog:
+    return CrewLog.create(lg.KIND_SESSION, unit_id, owner=CREW, agent="kirocrew")
 
 
 def _code(excinfo) -> str:
@@ -67,7 +67,7 @@ def test_each_kind_accepts_only_its_own_emitters(src, crew_ok, session_ok):
         if accepted:
             assert require_src(src, kind=kind) == src
         else:
-            with pytest.raises(LedgerError) as exc:
+            with pytest.raises(CrewLogError) as exc:
                 require_src(src, kind=kind)
             assert _code(exc) == lg.CODE_BAD_SRC
             assert exc.value.field == "src"
@@ -87,14 +87,14 @@ def test_a_patrol_cannot_write_into_a_session_log():
     # to say inside one session's own turn history, and src is what a reader
     # attributes an entry to.
     session = _session()
-    with pytest.raises(LedgerError) as exc:
+    with pytest.raises(CrewLogError) as exc:
         session.append("turn/started", {"turn": 1}, src="patrol")
     assert _code(exc) == lg.CODE_BAD_SRC
 
 
-def test_an_acp_runtime_cannot_write_into_a_crew_ledger():
+def test_an_acp_runtime_cannot_write_into_a_crew_log():
     crew = _crew()
-    with pytest.raises(LedgerError) as exc:
+    with pytest.raises(CrewLogError) as exc:
         crew.append("activity/tick", {}, src="acp")
     assert _code(exc) == lg.CODE_BAD_SRC
 
@@ -106,7 +106,7 @@ def test_require_src_demands_the_kind_that_selects_the_rule():
 
 
 def test_an_unknown_kind_is_refused_before_any_source_list_is_indexed():
-    with pytest.raises(LedgerError) as exc:
+    with pytest.raises(CrewLogError) as exc:
         require_src("gateway", kind="swarm")
     assert _code(exc) == lg.CODE_BAD_KIND
 
@@ -130,7 +130,7 @@ def test_a_crew_guest_writes_the_crew_kinds_built_in_domains():
 
 def test_a_crew_guest_is_refused_by_a_session_log():
     session = _session()
-    with pytest.raises(LedgerError) as exc:
+    with pytest.raises(CrewLogError) as exc:
         session.append("turn/started", {"turn": 1}, src="crew:qa")
     assert _code(exc) == lg.CODE_BAD_SRC
 
@@ -139,14 +139,14 @@ def test_an_app_guest_is_confined_to_its_own_type_namespace():
     crew = _crew()
     assert crew.append("app:radar/scan", {}, src="app:radar").type == "app:radar/scan"
     for borrowed in ("member/joined", "crew/report", "app:other/scan"):
-        with pytest.raises(LedgerError) as exc:
+        with pytest.raises(CrewLogError) as exc:
             crew.append(borrowed, {}, src="app:radar")
         assert _code(exc) == lg.CODE_NAMESPACE_VIOLATION
 
 
 def test_an_app_guest_is_refused_by_a_session_log():
     session = _session()
-    with pytest.raises(LedgerError) as exc:
+    with pytest.raises(CrewLogError) as exc:
         session.append("app:radar/scan", {}, src="app:radar")
     assert _code(exc) == lg.CODE_BAD_SRC
 
@@ -154,7 +154,7 @@ def test_an_app_guest_is_refused_by_a_session_log():
 def test_a_type_never_carries_the_writers_identity():
     """``crew:<name>/<action>`` is malformed: the writer is named by ``src``."""
     for spelled in ("crew:qa/report", "crew:qa/dispatch"):
-        with pytest.raises(LedgerError) as exc:
+        with pytest.raises(CrewLogError) as exc:
             check_ownership(lg.KIND_CREW, spelled, "crew:qa")
         assert _code(exc) == lg.CODE_BAD_TYPE
         assert exc.value.field == "type"
@@ -212,6 +212,6 @@ def test_a_session_log_may_cite_a_crew_segment_too():
 def test_both_dispatch_types_are_owned_by_the_crew_kind_and_by_no_other():
     for entry_type in ("crew/dispatch", "crew/report"):
         check_ownership(lg.KIND_CREW, entry_type, "gateway")
-        with pytest.raises(LedgerError) as exc:
+        with pytest.raises(CrewLogError) as exc:
             check_ownership(lg.KIND_SESSION, entry_type, "gateway")
         assert _code(exc) == lg.CODE_EVENT_TYPE_NOT_OWNED

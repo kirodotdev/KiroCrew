@@ -24,15 +24,15 @@ from kiro_crew.acp.types import (
     AcpEvent,
     TurnUsage,
 )
-from kiro_crew.crew_log import emit, ledger_path
-from kiro_crew.dashboard.chat_runner import _ledger_model, _run_chat
+from kiro_crew.crew_log import crew_log_path, emit
+from kiro_crew.dashboard.chat_runner import _crew_log_model, _run_chat
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES
 
 SESSION = "acp-throttle-0001"
 
 
 @pytest.fixture(autouse=True)
-def _ledger_home(tmp_path, monkeypatch):
+def _log_home(tmp_path, monkeypatch):
     """Own data home, emitter on, no state carried between tests."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
@@ -42,7 +42,7 @@ def _ledger_home(tmp_path, monkeypatch):
 
 
 def _entries() -> list[dict]:
-    path = ledger_path("session", SESSION)
+    path = crew_log_path("session", SESSION)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as fh:
@@ -282,12 +282,12 @@ async def test_empty_fallback_chain_fails_with_no_cost(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 4: Withheld model pin — _ledger_model returns the session fact.
+# Test 4: Withheld model pin — _crew_log_model returns the session fact.
 # ---------------------------------------------------------------------------
 
 
 def test_withheld_pin_names_served_model_not_configured_pin():
-    """_ledger_model returns the model the session RUNS on, not the pin."""
+    """_crew_log_model returns the model the session RUNS on, not the pin."""
 
     class _WithheldSlot:
         model = "expensive-pinned-model"
@@ -304,10 +304,10 @@ def test_withheld_pin_names_served_model_not_configured_pin():
     class _MinimalDouble:
         model = "stub-model"
 
-    assert _ledger_model(_WithheldSlot()) == ""
-    assert _ledger_model(_PinnedSlot()) == "some-model"
-    assert _ledger_model(_FallbackSlot()) == "fallback-model"
-    assert _ledger_model(_MinimalDouble(), "fb") == "fb"
+    assert _crew_log_model(_WithheldSlot()) == ""
+    assert _crew_log_model(_PinnedSlot()) == "some-model"
+    assert _crew_log_model(_FallbackSlot()) == "fallback-model"
+    assert _crew_log_model(_MinimalDouble(), "fb") == "fb"
 
 
 # ---------------------------------------------------------------------------

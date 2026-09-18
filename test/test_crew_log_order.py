@@ -25,14 +25,14 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     AcpEvent,
 )
-from kiro_crew.crew_log import emit, ledger_path
+from kiro_crew.crew_log import crew_log_path, emit
 from kiro_crew.dashboard.chat_runner import _run_chat
 
 SESSION = "acp-order-0001"
 
 
 @pytest.fixture(autouse=True)
-def _ledger_home(tmp_path, monkeypatch):
+def _log_home(tmp_path, monkeypatch):
     """Own data home, emitter on, and no state carried between tests."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
@@ -43,7 +43,7 @@ def _ledger_home(tmp_path, monkeypatch):
 
 def _entries() -> list[dict]:
     """Every crew log line after the header, in file order."""
-    path = ledger_path("session", SESSION)
+    path = crew_log_path("session", SESSION)
     if not path.is_file():
         return []
     with path.open("r", encoding="utf-8") as handle:
@@ -347,7 +347,7 @@ def test_the_model_recorded_is_the_one_the_session_runs_on():
 
     Mutation guard: reading `slot.model` at either site reddens this.
     """
-    from kiro_crew.dashboard.chat_runner import _ledger_model
+    from kiro_crew.dashboard.chat_runner import _crew_log_model
 
     class _Withheld:
         model = "some-pinned-model"
@@ -360,9 +360,9 @@ def test_the_model_recorded_is_the_one_the_session_runs_on():
     class _Double:  # a test double that cannot report the fact at all
         model = "some-pinned-model"
 
-    assert _ledger_model(_Withheld()) == "", "a withheld pin was recorded as served"
-    assert _ledger_model(_Pinned()) == "some-pinned-model"
-    assert _ledger_model(_Double(), "fallback") == "fallback"
+    assert _crew_log_model(_Withheld()) == "", "a withheld pin was recorded as served"
+    assert _crew_log_model(_Pinned()) == "some-pinned-model"
+    assert _crew_log_model(_Double(), "fallback") == "fallback"
 
 
 @pytest.mark.asyncio

@@ -8,9 +8,9 @@ Every name here is from `kiro_crew.crew_log`. Each refusal names a code from
 
 ## Opening and creating
 
-`Ledger` is the handle. Both entry points are classmethods.
+`CrewLog` is the handle. Both entry points are classmethods.
 
-The subagent-aware repair on this page -- the `child_gone` predicate on `Ledger.open`
+The subagent-aware repair on this page -- the `child_gone` predicate on `CrewLog.open`
 and `repair_interrupted_turn`, and the `approval/decided` and `subagent/failed`
 closers -- lands with #11185. On a build without it, `open` and
 `repair_interrupted_turn` take no `child_gone` argument and repair writes the
@@ -18,9 +18,9 @@ closers -- lands with #11185. On a build without it, `open` and
 
 | Call | Signature | Refuses with |
 |---|---|---|
-| `Ledger.exists` | `(kind, unit_id) -> bool` | `bad_kind`, `invalid_id`, `bad_root` |
-| `Ledger.create` | `(kind, unit_id, **header_fields) -> Ledger` | `bad_kind`, `invalid_id`, `bad_root`, `already_exists`, `bad_header_field`, `bad_data`, `entry_too_large` |
-| `Ledger.open` | `(kind, unit_id, *, repair=False, child_gone=None) -> Ledger` | `bad_kind`, `invalid_id`, `bad_root`, `no_ledger`, `bad_header`, `unsupported_version`, `already_owned` |
+| `CrewLog.exists` | `(kind, unit_id) -> bool` | `bad_kind`, `invalid_id`, `bad_root` |
+| `CrewLog.create` | `(kind, unit_id, **header_fields) -> CrewLog` | `bad_kind`, `invalid_id`, `bad_root`, `already_exists`, `bad_header_field`, `bad_data`, `entry_too_large` |
+| `CrewLog.open` | `(kind, unit_id, *, repair=False, child_gone=None) -> CrewLog` | `bad_kind`, `invalid_id`, `bad_root`, `no_ledger`, `bad_header`, `unsupported_version`, `already_owned` |
 
 All three resolve the unit's path before doing their own work, so all three can refuse
 `bad_kind`, `invalid_id` and `bad_root` first; the codes after those are what each call
@@ -44,8 +44,8 @@ consults — see [crash repair](#crash-repair).
 `repair_interrupted_turn(*, child_gone=None) -> int` runs the same repair on a
 handle already held and returns how many closers it wrote.
 
-Read-only helpers at module level: `ledger_root(kind)`, `ledger_dir(kind, unit_id)`,
-`ledger_path(kind, unit_id)`, `segment_paths(kind, unit_id)`,
+Read-only helpers at module level: `crew_log_root(kind)`, `crew_log_dir(kind, unit_id)`,
+`crew_log_path(kind, unit_id)`, `segment_paths(kind, unit_id)`,
 `segment_first_seqs(kind, unit_id)`, and `now_ms()`. Handle properties: `kind`,
 `id`, `path`, `header`, `last_seq`.
 
@@ -201,7 +201,7 @@ a retry to reason about.
 
 `IndeterminateAppend` is the case where that cleanup **also** failed, which is
 likely, since whatever broke the write is often still broken. The file may hold
-bytes no entry claims. It is deliberately not a `LedgerError`: a `LedgerError` means
+bytes no entry claims. It is deliberately not a `CrewLogError`: a `CrewLogError` means
 the entry was declined before any byte was written, and this is the opposite. The
 residue is an unterminated or unparseable tail, which is exactly the shape the next
 `open` truncates, so the recovery already exists — the distinct type is so a caller

@@ -34,7 +34,7 @@ class TerminalCoordinator(ManagerComponent):
     __slots__ = ()
 
     def _record_crew_log_terminal(self, info: SubagentInfo) -> None:
-        """Close *info*'s entry in the PARENT session's ledger, once.
+        """Close *info*'s entry in the PARENT session's crew log, once.
 
         Called from the exclusive one-shot terminal report, so a child cannot be
         closed twice however the race between the reaper and ``_run``'s ``finally``
@@ -94,14 +94,14 @@ class TerminalCoordinator(ManagerComponent):
                     duration_ms=elapsed_ms,
                 )
         except Exception:
-            _logger.debug("session ledger: closing a subagent entry failed", exc_info=True)
+            _logger.debug("crew log: closing a subagent entry failed", exc_info=True)
         finally:
             # Unconditional: a pin this method fails to release is a child the
             # repair would treat as live forever.
             try:
                 crew_log_emit.forget_child_origin(info.id)
             except Exception:
-                _logger.debug("session ledger: releasing a child origin failed", exc_info=True)
+                _logger.debug("crew log: releasing a child origin failed", exc_info=True)
 
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.

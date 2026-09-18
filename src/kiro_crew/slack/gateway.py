@@ -10075,7 +10075,7 @@ class GatewayOrchestrator:
         self.subagent_mgr.start_reaper()
 
     def _register_child_liveness(self) -> None:
-        """Give the session ledger's repair a way to ask whether a child still runs.
+        """Give the crew log's repair a way to ask whether a child still runs.
 
         The repair may close an unmatched ``subagent/spawned`` only for a child
         with no outcome still coming, and this manager is the only thing that
@@ -10085,15 +10085,15 @@ class GatewayOrchestrator:
         emitters.
 
         Called AFTER the ``KIROCREW_READY`` print and never from an ``_init_*`` on
-        the boot path. Importing the emitter pulls the ledger store in with it, and
+        the boot path. Importing the emitter pulls the crew log store in with it, and
         the ``no-new-work-on-gateway-boot-path`` rule counts an optional, flag-off
         subsystem's import as boot work whatever the handler checks later; gating
         the import behind the flag would satisfy the rule only while the flag is
         off. Nothing needs the probe before this point: the repair runs when a
-        session opens its ledger, which is after readiness.
+        session opens its crew log, which is after readiness.
 
         Registered UNCONDITIONALLY once here, because the flag is read at emit time
-        and a probe installed while the ledger is off costs nothing, while making
+        and a probe installed while the crew log is off costs nothing, while making
         the registration itself conditional would leave a later flag flip with no
         probe and a repair free to close a live child.
         """

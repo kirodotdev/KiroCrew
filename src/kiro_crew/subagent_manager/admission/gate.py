@@ -1053,10 +1053,10 @@ class _GateMixin(ManagerComponent):
                 return
             crew_log_emit.remember_child_origin(info.id, sid, turn)
         except Exception:
-            _logger.debug("session ledger: pinning a subagent dispatch failed", exc_info=True)
+            _logger.debug("crew log: pinning a subagent dispatch failed", exc_info=True)
 
     def _record_crew_log_spawn_started(self, info: SubagentInfo) -> None:
-        """Write *info*'s ``subagent/spawned`` into the PARENT session's ledger.
+        """Write *info*'s ``subagent/spawned`` into the PARENT session's crew log.
 
         Called from ``_log_spawned``, which every path that actually starts a run
         goes through and no rejection does -- including the approval gate, which
@@ -1069,7 +1069,7 @@ class _GateMixin(ManagerComponent):
         flag came on mid-flight, or the parent could not be resolved) writes nothing.
 
         No ``ref`` into the child's log. The schema describes one and a child that
-        had a ledger would deserve it, but no subagent path opens one, so the
+        had a crew log would deserve it, but no subagent path opens one, so the
         citation would name a file that does not exist -- indistinguishable, to a
         reader, from one that was deleted.
         """
@@ -1095,7 +1095,7 @@ class _GateMixin(ManagerComponent):
                 },
             )
         except Exception:
-            _logger.debug("session ledger: recording a subagent spawn failed", exc_info=True)
+            _logger.debug("crew log: recording a subagent spawn failed", exc_info=True)
 
     def _announce_rejection_impl(self, info: SubagentInfo) -> SubagentInfo:
         """Route a terminal spawn rejection through the done callback.

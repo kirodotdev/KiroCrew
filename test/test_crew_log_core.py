@@ -2,7 +2,7 @@
 
 Grouped the way the module is reasoned about: identity and lifecycle, the seq
 contract, the two namespace rules, the caps, the read shapes (fold, page,
-thread, ref) and finally damage tolerance. Every ``LedgerError`` code has a test
+thread, ref) and finally damage tolerance. Every ``CrewLogError`` code has a test
 that pins it, because the code strings are API surface a caller branches on, not
 log text.
 """
@@ -23,7 +23,7 @@ from kiro_crew import crew_log as lg
 from kiro_crew import sandbox
 from kiro_crew.config import paths
 from kiro_crew.config.paths import data_home, ensure_data_home
-from kiro_crew.crew_log import Ledger, LedgerError, Ref, store
+from kiro_crew.crew_log import CrewLog, CrewLogError, Ref, store
 from kiro_crew.security.paths import is_sensitive_path
 from kiro_crew.session_ledger import _store_name
 
@@ -38,27 +38,27 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
 
 
-def _crew(unit_id: str = CREW, **fields) -> Ledger:
-    return Ledger.create(lg.KIND_CREW, unit_id, **fields)
+def _crew(unit_id: str = CREW, **fields) -> CrewLog:
+    return CrewLog.create(lg.KIND_CREW, unit_id, **fields)
 
 
-def _session(unit_id: str = SESSION, **fields) -> Ledger:
+def _session(unit_id: str = SESSION, **fields) -> CrewLog:
     fields.setdefault("owner", CREW)
     fields.setdefault("agent", "kirocrew")
-    return Ledger.create(lg.KIND_SESSION, unit_id, **fields)
+    return CrewLog.create(lg.KIND_SESSION, unit_id, **fields)
 
 
 def _raises(code: str):
-    return pytest.raises(LedgerError)
+    return pytest.raises(CrewLogError)
 
 
 def _code(excinfo) -> str:
     return excinfo.value.code
 
 
-def _ledger_bytes(kind: str = lg.KIND_SESSION, unit_id: str = SESSION) -> bytes:
+def _log_bytes(kind: str = lg.KIND_SESSION, unit_id: str = SESSION) -> bytes:
     """The file exactly as it sits on disk, for asserting nothing was rewritten."""
-    return lg.ledger_path(kind, unit_id).read_bytes()
+    return lg.crew_log_path(kind, unit_id).read_bytes()
 
 
 # --- layout and lifecycle -------------------------------------------------
@@ -66,9 +66,9 @@ def _ledger_bytes(kind: str = lg.KIND_SESSION, unit_id: str = SESSION) -> bytes:
 
 def test_each_kind_lands_in_its_own_root_one_directory_deep():
     crew, session = _crew(), _session()
-    assert crew.path == lg.ledger_root("crew") / _store_name(CREW) / "log.jsonl"
-    assert session.path == lg.ledger_root("session") / _store_name(SESSION) / "log.jsonl"
-    assert crew.path.parent.parent == lg.ledger_root("crew")
+    assert crew.path == lg.crew_log_root("crew") / _store_name(CREW) / "log.jsonl"
+    assert session.path == lg.crew_log_root("session") / _store_name(SESSION) / "log.jsonl"
+    assert crew.path.parent.parent == lg.crew_log_root("crew")
 
 
 def test_a_colon_bearing_channel_session_id_is_storable():
@@ -77,12 +77,12 @@ def test_a_colon_bearing_channel_session_id_is_storable():
     sid = "slack:1712793600.123"
     led = _session(sid, task="watch the thread")
     assert ":" not in led.path.parent.name
-    reopened = Ledger.open(lg.KIND_SESSION, sid)
+    reopened = CrewLog.open(lg.KIND_SESSION, sid)
     assert reopened.header.id == sid
     assert reopened.header.task == "watch the thread"
 
 
-def test_ids_differing_only_in_case_never_share_a_ledger():
+def test_ids_differing_only_in_case_never_share_a_log():
     # Identity is the digest over the exact id, so a case-insensitive filesystem
     # cannot fold two crews into one file.
     lower, upper = _crew("qa"), _crew("QA")
@@ -94,7 +94,7 @@ def test_ids_differing_only_in_case_never_share_a_ledger():
 def test_the_raw_id_is_recoverable_from_the_header_not_the_directory_name():
     led = _crew("qa-team")
     assert led.path.parent.name != "qa-team"
-    assert Ledger.open(lg.KIND_CREW, "qa-team").header.id == "qa-team"
+    assert CrewLog.open(lg.KIND_CREW, "qa-team").header.id == "qa-team"
 
 
 def test_a_session_log_is_invisible_to_a_flat_transcript_glob():
@@ -103,31 +103,31 @@ def test_a_session_log_is_invisible_to_a_flat_transcript_glob():
     # directory down must not appear to them, or the two stores shadow.
     session = _session()
     assert session.path.is_file()
-    assert list(lg.ledger_root("session").glob("*.jsonl")) == []
+    assert list(lg.crew_log_root("session").glob("*.jsonl")) == []
 
 
 def test_exists_is_false_before_create_and_true_after():
-    assert Ledger.exists(lg.KIND_CREW, CREW) is False
+    assert CrewLog.exists(lg.KIND_CREW, CREW) is False
     _crew()
-    assert Ledger.exists(lg.KIND_CREW, CREW) is True
+    assert CrewLog.exists(lg.KIND_CREW, CREW) is True
 
 
-def test_create_refuses_an_existing_ledger():
+def test_create_refuses_an_existing_log():
     _crew()
     with _raises(lg.CODE_ALREADY_EXISTS) as exc:
         _crew()
     assert _code(exc) == lg.CODE_ALREADY_EXISTS
 
 
-def test_open_refuses_a_missing_ledger():
+def test_open_refuses_a_missing_log():
     with _raises(lg.CODE_NO_LEDGER) as exc:
-        Ledger.open(lg.KIND_CREW, CREW)
+        CrewLog.open(lg.KIND_CREW, CREW)
     assert _code(exc) == lg.CODE_NO_LEDGER
 
 
 def test_an_unknown_kind_is_refused_rather_than_rooted_somewhere():
     with _raises(lg.CODE_BAD_KIND) as exc:
-        Ledger.create("swarm", CREW, name="x")
+        CrewLog.create("swarm", CREW, name="x")
     assert _code(exc) == lg.CODE_BAD_KIND
 
 
@@ -145,7 +145,7 @@ def test_crew_header_carries_only_the_unit_and_its_creation_time():
     # A crew's display name and template belong to the members store, which can
     # change them. An append-only line cannot, so it must not claim to own them.
     created = _crew().header
-    reopened = Ledger.open(lg.KIND_CREW, CREW).header
+    reopened = CrewLog.open(lg.KIND_CREW, CREW).header
     assert reopened == created
     assert reopened.to_dict() == {
         "type": "crew",
@@ -171,7 +171,7 @@ def test_session_header_round_trips_including_its_crew_thread_anchor():
         cwd="/w/repo",
         remote={"host": "pod-3"},
     ).header
-    reopened = Ledger.open(lg.KIND_SESSION, SESSION, repair=True).header
+    reopened = CrewLog.open(lg.KIND_SESSION, SESSION, repair=True).header
     assert reopened == created
     assert reopened.to_dict() == {
         "type": "session",
@@ -191,13 +191,13 @@ def test_session_header_round_trips_including_its_crew_thread_anchor():
 
 def test_the_header_is_line_one_and_optional_fields_are_present_as_null():
     _session()
-    first = lg.ledger_path(lg.KIND_SESSION, SESSION).read_text(encoding="utf-8").splitlines()[0]
+    first = lg.crew_log_path(lg.KIND_SESSION, SESSION).read_text(encoding="utf-8").splitlines()[0]
     assert json.loads(first)["task"] is None
 
 
 def test_a_missing_required_header_field_is_refused():
     with _raises(lg.CODE_BAD_HEADER_FIELD) as exc:
-        Ledger.create(lg.KIND_SESSION, SESSION, owner=CREW)
+        CrewLog.create(lg.KIND_SESSION, SESSION, owner=CREW)
     assert _code(exc) == lg.CODE_BAD_HEADER_FIELD
     assert exc.value.field == "agent"
 
@@ -229,37 +229,37 @@ def test_a_session_remote_that_is_not_an_object_is_refused():
     assert _code(exc) == lg.CODE_BAD_HEADER_FIELD
 
 
-def test_opening_a_ledger_whose_header_names_another_unit_is_refused():
+def test_opening_a_log_whose_header_names_another_unit_is_refused():
     _crew()
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     lines = path.read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     header["id"] = "other"
     path.write_text(json.dumps(header) + "\n", encoding="utf-8")
     with _raises(lg.CODE_BAD_HEADER) as exc:
-        Ledger.open(lg.KIND_CREW, CREW)
+        CrewLog.open(lg.KIND_CREW, CREW)
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
-def test_opening_a_ledger_whose_header_is_not_json_is_refused():
+def test_opening_a_log_whose_header_is_not_json_is_refused():
     _crew()
-    lg.ledger_path(lg.KIND_CREW, CREW).write_text("not json\n", encoding="utf-8")
+    lg.crew_log_path(lg.KIND_CREW, CREW).write_text("not json\n", encoding="utf-8")
     with _raises(lg.CODE_BAD_HEADER) as exc:
-        Ledger.open(lg.KIND_CREW, CREW)
+        CrewLog.open(lg.KIND_CREW, CREW)
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
-def test_opening_an_empty_file_reads_as_a_missing_ledger():
+def test_opening_an_empty_file_reads_as_a_missing_log():
     _crew()
-    lg.ledger_path(lg.KIND_CREW, CREW).write_bytes(b"")
+    lg.crew_log_path(lg.KIND_CREW, CREW).write_bytes(b"")
     with _raises(lg.CODE_NO_LEDGER) as exc:
-        Ledger.open(lg.KIND_CREW, CREW)
+        CrewLog.open(lg.KIND_CREW, CREW)
     assert _code(exc) == lg.CODE_NO_LEDGER
 
 
-def test_appending_to_a_ledger_whose_file_was_emptied_reads_as_missing():
+def test_appending_to_a_log_whose_file_was_emptied_reads_as_missing():
     crew = _crew()
-    lg.ledger_path(lg.KIND_CREW, CREW).write_bytes(b"")
+    lg.crew_log_path(lg.KIND_CREW, CREW).write_bytes(b"")
     with _raises(lg.CODE_NO_LEDGER) as exc:
         crew.append("item/opened", {}, src="gateway")
     assert _code(exc) == lg.CODE_NO_LEDGER
@@ -271,19 +271,19 @@ def test_an_interrupted_create_does_not_wedge_the_unit():
     # while create refused the file it had just produced -- a unit stuck for
     # good. The header is published by rename, so the only two states are
     # complete and absent; an empty file, however it arose, counts as absent.
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"")
 
-    assert Ledger.exists(lg.KIND_CREW, CREW) is False
+    assert CrewLog.exists(lg.KIND_CREW, CREW) is False
     crew = _crew()
     assert crew.append("item/opened", {}, src="gateway").seq == 1
-    assert Ledger.open(lg.KIND_CREW, CREW).header.id == CREW
+    assert CrewLog.open(lg.KIND_CREW, CREW).header.id == CREW
 
 
 def test_the_header_is_published_whole_never_appended_to_an_existing_file():
     _crew()
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     assert path.read_bytes().count(b"\n") == 1
     # A file with real content is refused, so a second header can never land.
     with _raises(lg.CODE_ALREADY_EXISTS) as exc:
@@ -306,7 +306,7 @@ def test_seq_stays_contiguous_across_a_reopen():
     crew = _crew()
     for index in range(3):
         crew.append("item/opened", {"i": index}, src="gateway")
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     assert reopened.last_seq == 3
     assert reopened.append("item/opened", {"i": 3}, src="gateway").seq == 4
     assert [entry.seq for entry in reopened.iter_from()] == [1, 2, 3, 4]
@@ -316,10 +316,10 @@ def test_two_concurrent_writers_never_claim_the_same_seq():
     # The point of reading seq back from the file INSIDE the lock rather than
     # trusting the in-process cache.
     _crew()
-    writers = [Ledger.open(lg.KIND_CREW, CREW) for _ in range(4)]
+    writers = [CrewLog.open(lg.KIND_CREW, CREW) for _ in range(4)]
     barrier = threading.Barrier(len(writers))
 
-    def run(handle: Ledger) -> None:
+    def run(handle: CrewLog) -> None:
         barrier.wait()
         for index in range(5):
             handle.append("activity/tick", {"i": index}, src="gateway")
@@ -329,7 +329,7 @@ def test_two_concurrent_writers_never_claim_the_same_seq():
         thread.start()
     for thread in threads:
         thread.join()
-    seqs = [entry.seq for entry in Ledger.open(lg.KIND_CREW, CREW).iter_from()]
+    seqs = [entry.seq for entry in CrewLog.open(lg.KIND_CREW, CREW).iter_from()]
     assert seqs == list(range(1, 21))
 
 
@@ -356,7 +356,7 @@ def test_the_entry_envelope_is_exactly_the_documented_shape():
         "ref": {"unit": "session", "id": SESSION, "from": 40, "to": 96},
         "data": {"item": "pr-4127", "status": "done"},
     }
-    stored = lg.ledger_path(lg.KIND_CREW, CREW).read_text(encoding="utf-8").splitlines()[2]
+    stored = lg.crew_log_path(lg.KIND_CREW, CREW).read_text(encoding="utf-8").splitlines()[2]
     assert json.loads(stored) == entry.to_dict()
 
 
@@ -364,7 +364,7 @@ def test_the_optional_keys_are_absent_not_null_when_unused():
     crew = _crew()
     entry = crew.append("item/opened", {}, src="gateway")
     stored = json.loads(
-        lg.ledger_path(lg.KIND_CREW, CREW).read_text(encoding="utf-8").splitlines()[1]
+        lg.crew_log_path(lg.KIND_CREW, CREW).read_text(encoding="utf-8").splitlines()[1]
     )
     assert "thread" not in stored and "ref" not in stored
     assert entry.thread is None and entry.ref is None
@@ -487,7 +487,7 @@ def test_a_type_the_vocabulary_dropped_is_refused_with_its_domain(tmp_path):
     """
     led = _session("vocab-dropped")
     for dropped in ("skill/loaded", "skill/searched", "summary/written", "remote/placed"):
-        with pytest.raises(lg.LedgerError) as excinfo:
+        with pytest.raises(lg.CrewLogError) as excinfo:
             led.append(dropped, {}, src="gateway")
         assert excinfo.value.code == lg.CODE_EVENT_TYPE_NOT_OWNED
 
@@ -497,7 +497,7 @@ def test_a_type_outside_the_vocabulary_is_still_refused(tmp_path):
     # kind does not have must still fail closed rather than be written.
     led = _session("vocab-refuse")
     for foreign in ("member/joined", "patrol/ran", "item/phase", "nonsense/happened"):
-        with pytest.raises(lg.LedgerError) as excinfo:
+        with pytest.raises(lg.CrewLogError) as excinfo:
             led.append(foreign, {}, src="gateway")
         assert excinfo.value.code == lg.CODE_EVENT_TYPE_NOT_OWNED
 
@@ -513,7 +513,7 @@ def test_a_reader_with_the_vocabulary_reconstructs_every_type(tmp_path):
     for entry_type in SESSION_VOCABULARY:
         led.append(entry_type, minimal_data(lg.KIND_SESSION, entry_type), src="gateway")
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "vocab-read")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "vocab-read")
     seen = list(reader.iter_from(1, known=set(SESSION_VOCABULARY)))
     assert [e.type for e in seen] == list(SESSION_VOCABULARY)
     # Order is asserted on `seq`, which the writer assigns under the lock, so it
@@ -548,7 +548,7 @@ def test_a_type_that_is_not_domain_slash_action_is_refused(bad):
 
 
 @pytest.mark.parametrize("src", ["gateway", "dashboard", "patrol", "crew:qa", "app:radar"])
-def test_a_crew_ledger_accepts_its_own_emitters(src):
+def test_a_crew_log_accepts_its_own_emitters(src):
     entry_type = "app:radar/scan" if src == "app:radar" else "activity/tick"
     assert _crew().append(entry_type, {}, src=src).src == src
 
@@ -644,11 +644,11 @@ def test_a_thread_naming_a_seq_no_reader_can_parse_is_refused():
     crew = _crew()
     for index in range(3):
         crew.append("activity/tick", {"i": index}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[2] = '{"type":"activity/tick","seq":'  # seq 2, terminated, unparseable
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     with _raises(lg.CODE_BAD_THREAD) as exc:
         reopened.append("activity/tick", {}, src="gateway", thread=2)
@@ -664,7 +664,7 @@ def test_an_anchor_older_than_the_tail_window_is_still_accepted():
     anchor = crew.append("item/opened", {"n": "anchor"}, src="gateway")
     for _ in range(3):
         crew.append("item/updated", {"blob": "x" * 40_000}, src="gateway")
-    assert lg.ledger_path(lg.KIND_CREW, CREW).stat().st_size > 72 * 1024
+    assert lg.crew_log_path(lg.KIND_CREW, CREW).stat().st_size > 72 * 1024
 
     child = crew.append("item/updated", {}, src="gateway", thread=anchor.seq)
 
@@ -700,13 +700,13 @@ def test_a_ref_without_to_cites_one_line():
 def test_an_entry_over_the_size_ceiling_is_refused_whole():
     crew = _crew()
     crew.append("item/opened", {"note": "kept"}, src="gateway")
-    before = lg.ledger_path(lg.KIND_CREW, CREW).read_bytes()
+    before = lg.crew_log_path(lg.KIND_CREW, CREW).read_bytes()
     with _raises(lg.CODE_ENTRY_TOO_LARGE) as exc:
         crew.append("item/opened", {"blob": "x" * (lg.MAX_ENTRY_BYTES + 1)}, src="gateway")
     assert _code(exc) == lg.CODE_ENTRY_TOO_LARGE
     # Caps refuse; a refused append leaves the file byte-identical and does not
     # burn the seq it would have used.
-    assert lg.ledger_path(lg.KIND_CREW, CREW).read_bytes() == before
+    assert lg.crew_log_path(lg.KIND_CREW, CREW).read_bytes() == before
     assert crew.append("item/opened", {}, src="gateway").seq == 2
 
 
@@ -745,9 +745,9 @@ def test_iter_from_is_oldest_first_and_starts_where_asked():
 # --- the ignorable marker -------------------------------------------------
 
 
-def _raw_line(ledger: Ledger, payload: dict) -> None:
+def _raw_line(log: CrewLog, payload: dict) -> None:
     """Append a line the library would never write, to test the READ side."""
-    with ledger.path.open("a", encoding="utf-8") as handle:
+    with log.path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload) + "\n")
 
 
@@ -855,7 +855,7 @@ def test_paging_has_no_such_gate_because_showing_a_line_is_not_a_wrong_answer():
     crew.append("activity/tick", {}, src="gateway")
     crew.append("crew/topic-opened", {}, src="gateway")
     assert [entry.seq for entry in crew.page().entries] == [2, 1]
-    assert "known" not in inspect.signature(Ledger.page).parameters
+    assert "known" not in inspect.signature(CrewLog.page).parameters
 
 
 def test_resolving_a_ref_does_not_apply_a_caller_vocabulary():
@@ -883,7 +883,7 @@ def test_a_span_below_the_oldest_surviving_segment_is_pruned():
     lines = head.read_text(encoding="utf-8").splitlines(keepends=True)
     later.write_text(lines[0] + "".join(lines[3:]), encoding="utf-8")
     head.unlink()
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     assert lg.segment_first_seqs(lg.KIND_CREW, CREW) == [3]
     found = reopened.resolve(Ref(unit=lg.KIND_CREW, id=CREW, from_seq=1, to_seq=4))
     assert found.status == lg.STATUS_PRUNED
@@ -900,7 +900,7 @@ def test_damage_in_the_surviving_part_of_a_pruned_citation_is_corrupt():
     later.write_text(lines[0] + "{ damaged surviving entry\n" + lines[4], encoding="utf-8")
     head.unlink()
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     found = reopened.resolve(Ref(unit=lg.KIND_CREW, id=CREW, from_seq=1, to_seq=4))
 
     assert (
@@ -925,7 +925,7 @@ def test_a_duplicated_seq_cannot_stand_in_for_a_missing_cited_line():
     # Seq 3 is gone and seq 2 appears twice, so the line COUNT still reaches four.
     crew.path.write_text(lines[0] + lines[1] + lines[2] + lines[2] + lines[4], encoding="utf-8")
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     found = reopened.resolve(Ref(unit=lg.KIND_CREW, id=CREW, from_seq=1, to_seq=4))
 
     assert found.status == lg.STATUS_CORRUPT, (
@@ -948,7 +948,7 @@ def test_a_duplicated_seq_is_damage_even_when_nothing_is_missing():
     lines = crew.path.read_text(encoding="utf-8").splitlines(keepends=True)
     crew.path.write_text(lines[0] + lines[1] + lines[2] + lines[2] + lines[3], encoding="utf-8")
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     found = reopened.resolve(Ref(unit=lg.KIND_CREW, id=CREW, from_seq=1, to_seq=3))
 
     assert found.status == lg.STATUS_CORRUPT, (
@@ -966,7 +966,7 @@ def test_a_gap_inside_a_surviving_segment_is_corrupt_not_pruned():
     lines = crew.path.read_text(encoding="utf-8").splitlines(keepends=True)
     lines[2] = "{ this line is not json\n"  # seq 2, mid-file damage
     crew.path.write_text("".join(lines), encoding="utf-8")
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     found = reopened.resolve(Ref(unit=lg.KIND_CREW, id=CREW, from_seq=1, to_seq=4))
     assert found.status == lg.STATUS_CORRUPT
     assert found.status != lg.STATUS_PRUNED
@@ -1029,11 +1029,11 @@ def test_a_cleanly_truncated_tail_is_reported_rather_than_answered_ok():
     assert crew.resolve(citation).status == lg.STATUS_OK
 
     # A clean end-truncation: drop the last whole line, terminator included.
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     path.write_text("".join(lines[:-1]), encoding="utf-8")
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
     verdict = reopened.resolve(citation)
     assert verdict.status == lg.STATUS_CORRUPT, "a lost cited line was reported as ok"
     assert [entry.seq for entry in verdict.entries] == [2, 3]
@@ -1090,7 +1090,7 @@ def test_page_limit_is_clamped_to_the_read_ceiling():
     assert len(crew.page(limit=0).entries) == 1
 
 
-def test_page_of_an_empty_ledger_is_empty_with_no_cursor():
+def test_page_of_an_empty_log_is_empty_with_no_cursor():
     page = _crew().page()
     assert page.entries == () and page.next_before is None
 
@@ -1136,7 +1136,7 @@ def test_thread_page_of_an_unknown_anchor_is_empty_rather_than_a_refusal():
 # --- reads: resolve -------------------------------------------------------
 
 
-def test_resolve_returns_the_cited_segment_of_another_ledger():
+def test_resolve_returns_the_cited_segment_of_another_log():
     session = _session()
     for index in range(5):
         session.append("turn/start", {"i": index}, src="acp")
@@ -1154,14 +1154,14 @@ def test_resolve_without_to_returns_the_single_cited_line():
     assert [entry.type for entry in resolution.entries] == ["turn/end"]
 
 
-def test_resolve_follows_a_ref_into_the_citing_ledger_itself():
+def test_resolve_follows_a_ref_into_the_citing_log_itself():
     crew = _crew()
     crew.append("item/opened", {"i": 0}, src="gateway")
     resolution = crew.resolve(Ref(lg.KIND_CREW, CREW, 1))
     assert resolution.ok and [entry.seq for entry in resolution.entries] == [1]
 
 
-def test_resolve_is_gone_when_the_cited_ledger_does_not_exist():
+def test_resolve_is_gone_when_the_cited_log_does_not_exist():
     resolution = _crew().resolve(Ref(lg.KIND_SESSION, "s-missing", 1, 3))
     assert resolution.status == lg.STATUS_GONE
     assert resolution.entries == () and not resolution.ok
@@ -1173,7 +1173,7 @@ def test_resolve_has_exactly_two_outcomes_and_takes_no_access_callback():
     # a check with no permission model behind it only looks like a boundary, so
     # `forbidden` arrives with the first caller that HAS one.
     assert not hasattr(lg, "STATUS_FORBIDDEN")
-    assert "may_read" not in inspect.signature(Ledger.resolve).parameters
+    assert "may_read" not in inspect.signature(CrewLog.resolve).parameters
     assert {lg.STATUS_OK, lg.STATUS_GONE} == {"ok", "gone"}
 
 
@@ -1183,11 +1183,11 @@ def test_resolve_has_exactly_two_outcomes_and_takes_no_access_callback():
 def test_a_torn_last_line_is_truncated_on_open():
     crew = _crew()
     crew.append("item/opened", {"kept": True}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     intact = path.read_bytes()
     path.write_bytes(intact + b'{"type":"item/opened","seq":2,"tim')
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     assert path.read_bytes() == intact  # the crash artifact is gone, history is not
     assert reopened.last_seq == 1
@@ -1199,26 +1199,26 @@ def test_a_complete_last_line_missing_only_its_newline_is_kept():
     # re-supplies the newline instead of rewriting the line.
     crew = _crew()
     crew.append("item/opened", {"kept": True}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.write_bytes(path.read_bytes().rstrip(b"\n"))
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     assert reopened.last_seq == 1
     assert reopened.append("item/opened", {"next": True}, src="gateway").seq == 2
-    assert [entry.seq for entry in Ledger.open(lg.KIND_CREW, CREW).iter_from()] == [1, 2]
+    assert [entry.seq for entry in CrewLog.open(lg.KIND_CREW, CREW).iter_from()] == [1, 2]
 
 
 def test_a_malformed_interior_line_is_skipped_on_read_and_left_on_disk():
     crew = _crew()
     for index in range(3):
         crew.append("activity/tick", {"i": index}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[2] = '{"type":"activity/tick","seq":'  # terminated, so NOT torn
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     assert [entry.seq for entry in reopened.iter_from()] == [1, 3]
     assert reopened.last_seq == 3
@@ -1228,15 +1228,15 @@ def test_a_malformed_interior_line_is_skipped_on_read_and_left_on_disk():
 def test_a_blank_interior_line_is_skipped():
     crew = _crew()
     crew.append("activity/tick", {"i": 0}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.write_text(path.read_text(encoding="utf-8") + "\n\n", encoding="utf-8")
-    assert [entry.seq for entry in Ledger.open(lg.KIND_CREW, CREW).iter_from()] == [1]
+    assert [entry.seq for entry in CrewLog.open(lg.KIND_CREW, CREW).iter_from()] == [1]
 
 
 def test_an_interior_line_whose_envelope_is_wrong_is_skipped():
     crew = _crew()
     crew.append("activity/tick", {"i": 0}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.write_text(
         path.read_text(encoding="utf-8")
         + json.dumps({"type": "activity/tick", "seq": 2, "time": 1, "src": "gateway"})
@@ -1245,7 +1245,7 @@ def test_an_interior_line_whose_envelope_is_wrong_is_skipped():
         + "\n",
         encoding="utf-8",
     )
-    assert [entry.seq for entry in Ledger.open(lg.KIND_CREW, CREW).iter_from()] == [1]
+    assert [entry.seq for entry in CrewLog.open(lg.KIND_CREW, CREW).iter_from()] == [1]
 
 
 def test_an_interior_line_whose_bytes_are_not_utf8_is_skipped_not_altered():
@@ -1256,14 +1256,14 @@ def test_an_interior_line_whose_bytes_are_not_utf8_is_skipped_not_altered():
     # reader cannot detect.
     crew = _crew()
     crew.append("activity/tick", {"note": "intact"}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     damaged = (
         b'{"type":"activity/tick","seq":2,"time":1,"src":"gateway",'
         b'"data":{"note":"caf\xe9 latte"}}\n'
     )
     with open(path, "ab") as handle:
         handle.write(damaged)
-    crew_reopened = Ledger.open(lg.KIND_CREW, CREW)
+    crew_reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     entries = list(crew_reopened.iter_from())
 
@@ -1274,21 +1274,21 @@ def test_an_interior_line_whose_bytes_are_not_utf8_is_skipped_not_altered():
 
 def test_a_header_whose_bytes_are_not_utf8_refuses_the_open():
     _crew()
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.write_bytes(b'{"type":"crew","version":1,"id":"caf\xe9","createdAt":1}\n')
     with _raises(lg.CODE_BAD_HEADER) as exc:
-        Ledger.open(lg.KIND_CREW, CREW)
+        CrewLog.open(lg.KIND_CREW, CREW)
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
 def test_a_torn_tail_of_invalid_bytes_is_truncated_not_decoded():
     crew = _crew()
     crew.append("activity/tick", {"note": "intact"}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     intact = path.read_bytes()
     path.write_bytes(intact + b'{"type":"activity/tick","seq":2,"d\xff\xfe')
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     assert path.read_bytes() == intact
     assert reopened.last_seq == 1
@@ -1298,13 +1298,13 @@ def test_seq_recovers_from_the_newest_valid_line_when_the_tail_is_damaged():
     crew = _crew()
     for index in range(3):
         crew.append("activity/tick", {"i": index}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[-1] = "{damaged"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     # The newest PARSEABLE seq is 2, so the next entry is 3 -- the damaged
     # line's number is not reused, because a reader cannot know it was 3.
-    assert Ledger.open(lg.KIND_CREW, CREW).append("activity/tick", {}, src="gateway").seq == 3
+    assert CrewLog.open(lg.KIND_CREW, CREW).append("activity/tick", {}, src="gateway").seq == 3
 
 
 def test_a_torn_tail_is_repaired_by_an_append_too_not_only_by_a_reopen():
@@ -1312,7 +1312,7 @@ def test_a_torn_tail_is_repaired_by_an_append_too_not_only_by_a_reopen():
     # so the repair cannot live only in ``open``.
     crew = _crew()
     crew.append("item/opened", {"kept": True}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.write_bytes(path.read_bytes() + b'{"type":"item/opened","seq":2,"tim')
 
     assert crew.append("item/opened", {"next": True}, src="gateway").seq == 2
@@ -1322,7 +1322,7 @@ def test_a_torn_tail_is_repaired_by_an_append_too_not_only_by_a_reopen():
 def test_an_interior_line_carrying_a_malformed_ref_is_skipped():
     crew = _crew()
     crew.append("item/opened", {"i": 0}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     path.write_text(
         path.read_text(encoding="utf-8")
         + json.dumps(
@@ -1338,50 +1338,50 @@ def test_an_interior_line_carrying_a_malformed_ref_is_skipped():
         + "\n",
         encoding="utf-8",
     )
-    assert [entry.seq for entry in Ledger.open(lg.KIND_CREW, CREW).iter_from()] == [1]
+    assert [entry.seq for entry in CrewLog.open(lg.KIND_CREW, CREW).iter_from()] == [1]
 
 
 def test_a_stored_session_thread_anchor_that_is_damaged_reads_as_absent():
     _session()
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     header["thread"] = {"crew": CREW}
     path.write_text(json.dumps(header) + "\n", encoding="utf-8")
-    assert Ledger.open(lg.KIND_SESSION, SESSION).header.thread is None
+    assert CrewLog.open(lg.KIND_SESSION, SESSION).header.thread is None
 
 
 @pytest.mark.parametrize("key,bad", [("createdAt", "yesterday"), ("version", "1")])
 def test_a_header_field_of_the_wrong_stored_type_refuses_the_open(key, bad):
     _crew()
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     header[key] = bad
     path.write_text(json.dumps(header) + "\n", encoding="utf-8")
     with _raises(lg.CODE_BAD_HEADER) as exc:
-        Ledger.open(lg.KIND_CREW, CREW)
+        CrewLog.open(lg.KIND_CREW, CREW)
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
 def test_a_session_header_missing_its_owner_refuses_the_open():
     _session()
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     del header["owner"]
     path.write_text(json.dumps(header) + "\n", encoding="utf-8")
     with _raises(lg.CODE_BAD_HEADER) as exc:
-        Ledger.open(lg.KIND_SESSION, SESSION)
+        CrewLog.open(lg.KIND_SESSION, SESSION)
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
-def test_a_ledger_of_one_kind_cannot_be_opened_as_the_other():
+def test_a_log_of_one_kind_cannot_be_opened_as_the_other():
     # The two roots are separate, so this needs the file moved -- which is
     # exactly what a mistaken restore or a hand-edit does.
     _crew()
-    target = lg.ledger_dir(lg.KIND_SESSION, CREW)
+    target = lg.crew_log_dir(lg.KIND_SESSION, CREW)
     target.mkdir(parents=True, exist_ok=True)
-    (target / lg.LOG_FILE).write_bytes(lg.ledger_path(lg.KIND_CREW, CREW).read_bytes())
+    (target / lg.LOG_FILE).write_bytes(lg.crew_log_path(lg.KIND_CREW, CREW).read_bytes())
     with _raises(lg.CODE_BAD_HEADER) as exc:
-        Ledger.open(lg.KIND_SESSION, CREW)
+        CrewLog.open(lg.KIND_SESSION, CREW)
     assert _code(exc) == lg.CODE_BAD_HEADER
 
 
@@ -1395,19 +1395,19 @@ def test_seq_comes_off_a_bounded_window_on_a_file_past_that_window():
     for _ in range(3):  # three ~40 KiB lines clear the ~72 KiB window
         crew.append("item/opened", {"blob": "x" * 40_000}, src="gateway")
     assert crew.append("item/opened", {}, src="gateway").seq == 4
-    assert Ledger.open(lg.KIND_CREW, CREW).last_seq == 4
+    assert CrewLog.open(lg.KIND_CREW, CREW).last_seq == 4
 
 
 def test_seq_falls_back_to_a_full_scan_when_the_window_holds_nothing_valid():
     crew = _crew()
     crew.append("item/opened", {"i": 0}, src="gateway")
-    path = lg.ledger_path(lg.KIND_CREW, CREW)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
     # One terminated garbage line wider than the tail window, so the window
     # sees only garbage and the real seq is behind it.
     with open(path, "a", encoding="utf-8", newline="\n") as handle:
         handle.write("{" + "z" * 80_000 + "\n")
 
-    reopened = Ledger.open(lg.KIND_CREW, CREW)
+    reopened = CrewLog.open(lg.KIND_CREW, CREW)
 
     assert reopened.last_seq == 1
     assert reopened.append("item/opened", {"i": 1}, src="gateway").seq == 2
@@ -1417,7 +1417,7 @@ def test_seq_falls_back_to_a_full_scan_when_the_window_holds_nothing_valid():
 # --- interrupted-tail closers ---------------------------------------------
 
 
-def _interrupted_session() -> Ledger:
+def _interrupted_session() -> CrewLog:
     """A session log whose newest turn was cut off mid-tool-call."""
     led = _session()
     led.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
@@ -1447,9 +1447,9 @@ def test_a_plain_open_never_touches_an_interrupted_tail():
     # a bounded cache is enough -- so an open that repaired would close a turn that
     # is still running and then let it keep writing past its own completion.
     _interrupted_session()
-    before = _ledger_bytes()
-    reopened = Ledger.open(lg.KIND_SESSION, SESSION)
-    assert _ledger_bytes() == before
+    before = _log_bytes()
+    reopened = CrewLog.open(lg.KIND_SESSION, SESSION)
+    assert _log_bytes() == before
     assert [e.type for e in reopened.iter_from(1)][-1] == "tool/called"
 
 
@@ -1467,12 +1467,12 @@ def test_repair_is_reachable_from_a_handle_as_well_as_from_open():
     )
 
 
-def test_an_interrupted_turn_is_closed_when_the_ledger_is_opened():
+def test_an_interrupted_turn_is_closed_when_the_log_is_opened():
     # A crash leaves the newest turn open. Closing it in the record answers
     # "did this turn finish or did its writer die" once, instead of leaving every
     # reader to carry the same special case.
     _interrupted_session()
-    reopened = Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
+    reopened = CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
     body = list(reopened.iter_from(1))
     assert [e.type for e in body[-3:]] == [
         "tool/completed",
@@ -1486,14 +1486,14 @@ def test_repair_refuses_to_close_past_a_damaged_real_completion(caplog):
     led = _session()
     led.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
     led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     lines = path.read_bytes().splitlines(keepends=True)
     lines[2] = b"{ damaged real completion\n"
     path.write_bytes(b"".join(lines))
     before = path.read_bytes()
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.store"):
-        Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
+        CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
 
     assert (
         path.read_bytes() == before
@@ -1506,7 +1506,7 @@ def test_repair_refuses_to_close_past_a_damaged_real_completion(caplog):
 
 def test_a_closer_names_every_unmatched_call_in_first_seen_order():
     _interrupted_session()
-    body = list(Ledger.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
+    body = list(CrewLog.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
     closers = [e for e in body if e.type == "tool/completed"]
     assert [e.data["call_id"] for e in closers] == ["tc-2", "tc-3"]
     assert all(e.data["status"] == "unknown" for e in closers)
@@ -1528,7 +1528,7 @@ def test_an_unmatched_approval_is_closed_with_an_unknown_decision():
         {"turn": 1, "approval_id": "ap-1", "decision": "approved"},
         src="gateway",
     )
-    body = list(Ledger.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
+    body = list(CrewLog.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
     closers = [e for e in body if e.type == "approval/decided" and e.data["decision"] == "unknown"]
     # Only the one still open. The answered request keeps its real decision.
     assert [e.data["approval_id"] for e in closers] == ["ap-2"]
@@ -1564,7 +1564,7 @@ def test_a_child_that_outlived_its_completed_turn_is_still_closed():
     led.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src="gateway")
     led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
     body = list(
-        Ledger.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_gone_unless()).iter_from(1)
+        CrewLog.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_gone_unless()).iter_from(1)
     )
     closers = [e for e in body if e.type == "subagent/failed"]
     assert [e.data["agent_id"] for e in closers] == ["sub-1"]
@@ -1581,7 +1581,7 @@ def test_a_dangling_child_alone_closes_no_turn():
     led.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src="gateway")
     led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
     body = list(
-        Ledger.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_gone_unless()).iter_from(1)
+        CrewLog.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_gone_unless()).iter_from(1)
     )
     assert [e.type for e in body if e.type == "turn/completed"] == ["turn/completed"]
     assert body[-1].type == "subagent/failed"
@@ -1600,10 +1600,10 @@ def test_a_child_whose_terminal_landed_is_not_closed_again():
         led.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src="gateway")
         led.append(terminal, payload, src="gateway")
         led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
-        before = lg.ledger_path(lg.KIND_SESSION, unit).read_bytes()
-        Ledger.open(lg.KIND_SESSION, unit, repair=True, child_gone=_gone_unless())
+        before = lg.crew_log_path(lg.KIND_SESSION, unit).read_bytes()
+        CrewLog.open(lg.KIND_SESSION, unit, repair=True, child_gone=_gone_unless())
         assert (
-            lg.ledger_path(lg.KIND_SESSION, unit).read_bytes() == before
+            lg.crew_log_path(lg.KIND_SESSION, unit).read_bytes() == before
         ), f"repair appended a second outcome over a child already closed by {terminal}"
 
 
@@ -1617,9 +1617,9 @@ def test_a_child_the_registry_still_reports_running_is_left_alone():
     led.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
     led.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src="gateway")
     led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
-    before = lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes()
-    Ledger.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_gone_unless("sub-1"))
-    assert lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes() == before
+    before = lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes()
+    CrewLog.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_gone_unless("sub-1"))
+    assert lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes() == before
 
 
 def test_a_predicate_that_cannot_answer_closes_no_child():
@@ -1634,9 +1634,9 @@ def test_a_predicate_that_cannot_answer_closes_no_child():
     led.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
     led.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src="gateway")
     led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
-    before = lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes()
-    Ledger.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_raises)
-    assert lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes() == before
+    before = lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes()
+    CrewLog.open(lg.KIND_SESSION, SESSION, repair=True, child_gone=_raises)
+    assert lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes() == before
 
 
 def test_a_same_process_resume_leaves_a_child_opener_alone():
@@ -1651,7 +1651,7 @@ def test_a_same_process_resume_leaves_a_child_opener_alone():
     led.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
     led.append("subagent/spawned", {"turn": 1, "agent_id": "sub-1"}, src="gateway")
     led.append("approval/requested", {"turn": 1, "approval_id": "ap-1"}, src="gateway")
-    body = list(Ledger.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
+    body = list(CrewLog.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
     assert [e.type for e in body if e.type == "subagent/failed"] == []
     # The turn-scoped opener IS still closed on the same repair: this narrows what
     # a repair may conclude about a child, it does not switch the repair off.
@@ -1665,7 +1665,7 @@ def test_closers_reuse_the_last_real_entrys_time_and_continue_seq():
     # and make any duration computed off these entries a measure of downtime.
     led = _interrupted_session()
     last_real = list(led.iter_from(1))[-1]
-    body = list(Ledger.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
+    body = list(CrewLog.open(lg.KIND_SESSION, SESSION, repair=True).iter_from(1))
     closers = body[-3:]
     assert {e.time for e in closers} == {last_real.time}
     assert [e.seq for e in closers] == [last_real.seq + 1, last_real.seq + 2, last_real.seq + 3]
@@ -1673,12 +1673,12 @@ def test_closers_reuse_the_last_real_entrys_time_and_continue_seq():
 
 def test_closing_is_deterministic_and_a_balanced_tail_is_left_alone():
     _interrupted_session()
-    closed = Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
-    after_first = _ledger_bytes()
+    closed = CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
+    after_first = _log_bytes()
     # The tail is balanced now, so a second open must add nothing at all --
     # otherwise every open would grow the file.
-    again = Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
-    assert _ledger_bytes() == after_first
+    again = CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
+    assert _log_bytes() == after_first
     assert closed.last_seq == again.last_seq
     assert list(again.iter_from(1))[-1].data["stop_reason"] == "interrupted"
 
@@ -1690,10 +1690,10 @@ def test_only_a_session_log_is_closed_this_way():
     # Asserted on the gate directly, because the ownership rule refuses to let a
     # crew log hold a `turn/started` in the first place.
     _interrupted_session()
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
-    before = _ledger_bytes()
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
+    before = _log_bytes()
     assert store._close_interrupted_tail(lg.KIND_CREW, SESSION, path) == 0
-    assert _ledger_bytes() == before
+    assert _log_bytes() == before
     assert store._close_interrupted_tail(lg.KIND_SESSION, SESSION, path) == 3
 
 
@@ -1709,9 +1709,9 @@ def test_a_completed_turns_unmatched_call_is_left_open():
         src="acp",
     )
     led.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
-    before = _ledger_bytes()
-    Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
-    assert _ledger_bytes() == before
+    before = _log_bytes()
+    CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
+    assert _log_bytes() == before
 
 
 # --- containment ----------------------------------------------------------
@@ -1722,7 +1722,7 @@ def test_an_id_that_symlinks_out_of_its_root_is_refused():
     # The shape gate cannot see this one: the id has no separator, the ESCAPE is
     # in the filesystem. Containment is re-checked on the resolved path.
     _crew()
-    root = lg.ledger_root(lg.KIND_CREW)
+    root = lg.crew_log_root(lg.KIND_CREW)
     outside = root.parent / "outside"
     outside.mkdir(parents=True, exist_ok=True)
     (root / _store_name("escape")).symlink_to(outside, target_is_directory=True)
@@ -1731,7 +1731,7 @@ def test_an_id_that_symlinks_out_of_its_root_is_refused():
     assert _code(exc) == lg.CODE_INVALID_ID
 
 
-def test_the_root_is_established_owner_only_before_any_ledger_exists(monkeypatch, tmp_path):
+def test_the_root_is_established_owner_only_before_any_log_exists(monkeypatch, tmp_path):
     # The two other protections are stated per PATH and both are weaker while the
     # name is absent: the Linux bind-mask skips a leaf that does not exist, and an
     # absent directory has no mode to inherit. Establishing the root with the home
@@ -1769,7 +1769,7 @@ def test_an_existing_root_with_a_loose_mode_is_tightened(monkeypatch, tmp_path):
 # --- sandbox disposition --------------------------------------------------
 
 
-def test_every_ledger_is_refused_to_the_agents_own_file_tools():
+def test_every_log_is_refused_to_the_agents_own_file_tools():
     # The crew log is the AUTHORITY a conductor reads instead of re-deriving, so an
     # agent able to write here could forge an entry attributed to the gateway or
     # rewrite the history it is reporting into. The write-side rules bind callers
@@ -1778,13 +1778,13 @@ def test_every_ledger_is_refused_to_the_agents_own_file_tools():
     # spelled out, so renaming a root cannot leave this asserting a path nothing
     # writes.
     for kind in (lg.KIND_CREW, lg.KIND_SESSION):
-        rel = lg.ledger_path(kind, "anything").relative_to(data_home()).as_posix()
+        rel = lg.crew_log_path(kind, "anything").relative_to(data_home()).as_posix()
         for home in (".kiro/crew", ".kirocrew"):
             target = f"~/{home}/{rel}"
             assert is_sensitive_path(target), target
 
 
-def test_every_ledger_is_masked_from_every_sandboxed_process():
+def test_every_log_is_masked_from_every_sandboxed_process():
     # One entry at the shared root covers every kind: the file-tool floor above
     # answers the agent's own tools, and this answers a spawned subprocess that
     # calls open() directly -- which no tool gate sees.
@@ -1813,7 +1813,7 @@ def _split_into_segments(kind: str, unit_id: str, at_seq: int) -> None:
     is what this commit freezes, so the fixture produces the on-disk shape a
     future rotation would leave.
     """
-    head = lg.ledger_path(kind, unit_id)
+    head = lg.crew_log_path(kind, unit_id)
     lines = head.read_bytes().splitlines(keepends=True)
     header, entries = lines[0], lines[1:]
     kept, moved = [], []
@@ -1843,7 +1843,7 @@ def test_a_valid_multi_segment_layout_reads_end_to_end(tmp_path):
     _split_into_segments(lg.KIND_SESSION, "seg-read", 9)
     _split_into_segments(lg.KIND_SESSION, "seg-read", 5)
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-read")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-read")
     seen = list(reader.iter_from(1))
     assert [e.seq for e in seen] == list(range(1, 13))
     assert [e.data["turn"] for e in seen] == list(range(1, 13))
@@ -1859,7 +1859,7 @@ def test_a_linked_kind_root_is_refused_and_named(tmp_path):
     """
     elsewhere = tmp_path / "writable-elsewhere"
     elsewhere.mkdir()
-    kind_root = lg.ledger_root(lg.KIND_SESSION)
+    kind_root = lg.crew_log_root(lg.KIND_SESSION)
     kind_root.parent.mkdir(parents=True, exist_ok=True)
     if kind_root.exists():
         for child in sorted(kind_root.iterdir()):
@@ -1868,7 +1868,7 @@ def test_a_linked_kind_root_is_refused_and_named(tmp_path):
     kind_root.symlink_to(elsewhere, target_is_directory=True)
 
     with _raises(lg.CODE_BAD_ROOT) as exc:
-        lg.ledger_dir(lg.KIND_SESSION, "link-victim")
+        lg.crew_log_dir(lg.KIND_SESSION, "link-victim")
     assert _code(exc) == lg.CODE_BAD_ROOT
     assert kind_root.name in str(exc.value)
     # The containment comparison below it would refuse this too, since the link's
@@ -1887,15 +1887,15 @@ def test_a_kind_root_resolving_outside_the_data_home_is_refused(tmp_path):
     """
     outside = tmp_path / "outside-tree"
     (outside / "sessions").mkdir(parents=True)
-    ledgers = lg.ledger_root(lg.KIND_SESSION).parent
-    if ledgers.exists():
-        for child in sorted(ledgers.rglob("*"), reverse=True):
+    logs = lg.crew_log_root(lg.KIND_SESSION).parent
+    if logs.exists():
+        for child in sorted(logs.rglob("*"), reverse=True):
             child.unlink() if child.is_file() else child.rmdir()
-        ledgers.rmdir()
-    ledgers.symlink_to(outside, target_is_directory=True)
+        logs.rmdir()
+    logs.symlink_to(outside, target_is_directory=True)
 
     with _raises(lg.CODE_BAD_ROOT) as exc:
-        lg.ledger_dir(lg.KIND_SESSION, "ancestor-victim")
+        lg.crew_log_dir(lg.KIND_SESSION, "ancestor-victim")
     assert _code(exc) == lg.CODE_BAD_ROOT
 
 
@@ -1903,7 +1903,7 @@ def test_a_real_kind_root_still_reads_and_writes(tmp_path):
     """The guard is a refusal for a wrong directory, not a new failure mode."""
     led = _session("root-ok")
     led.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
-    reader = lg.Ledger.open(lg.KIND_SESSION, "root-ok")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "root-ok")
     assert [e.type for e in reader.iter_from()] == ["turn/started"]
 
 
@@ -1916,11 +1916,11 @@ def test_a_foreign_segment_is_refused_and_named(tmp_path):
     for n in range(1, 9):
         foreign.append("turn/started", {"turn": n, "actor": "user", "depth": 0}, src="gateway")
     _split_into_segments(lg.KIND_SESSION, "seg-foreign", 5)
-    foreign_segment = lg.ledger_dir(lg.KIND_SESSION, "seg-foreign") / "log.5.jsonl"
-    offending = lg.ledger_dir(lg.KIND_SESSION, "seg-target") / "log.5.jsonl"
+    foreign_segment = lg.crew_log_dir(lg.KIND_SESSION, "seg-foreign") / "log.5.jsonl"
+    offending = lg.crew_log_dir(lg.KIND_SESSION, "seg-target") / "log.5.jsonl"
     offending.write_bytes(foreign_segment.read_bytes())
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-target")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-target")
     with _raises(lg.CODE_BAD_SEGMENT) as exc:
         list(reader.iter_from())
     assert _code(exc) == lg.CODE_BAD_SEGMENT
@@ -1932,11 +1932,11 @@ def test_a_renamed_segment_is_refused_and_named(tmp_path):
     for n in range(1, 9):
         led.append("turn/started", {"turn": n, "actor": "user", "depth": 0}, src="gateway")
     _split_into_segments(lg.KIND_SESSION, "seg-renamed", 5)
-    directory = lg.ledger_dir(lg.KIND_SESSION, "seg-renamed")
+    directory = lg.crew_log_dir(lg.KIND_SESSION, "seg-renamed")
     offending = directory / "log.6.jsonl"
     (directory / "log.5.jsonl").rename(offending)
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-renamed")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-renamed")
     with _raises(lg.CODE_BAD_SEGMENT) as exc:
         list(reader.iter_from())
     assert _code(exc) == lg.CODE_BAD_SEGMENT
@@ -1954,9 +1954,9 @@ def test_dropping_the_oldest_segments_is_retention_not_damage(tmp_path):
     for n in range(1, 13):
         led.append("turn/started", {"turn": n, "actor": "user", "depth": 0}, src="gateway")
     _split_into_segments(lg.KIND_SESSION, "seg-prune", 9)
-    lg.ledger_path(lg.KIND_SESSION, "seg-prune").unlink()
+    lg.crew_log_path(lg.KIND_SESSION, "seg-prune").unlink()
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-prune")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-prune")
     seen = list(reader.iter_from(1))
     assert [e.seq for e in seen] == [9, 10, 11, 12]
 
@@ -1971,10 +1971,10 @@ def test_a_gap_between_segments_is_refused_rather_than_read_across(tmp_path):
     # high would leave the second segment empty.
     _split_into_segments(lg.KIND_SESSION, "seg-gap", 9)
     _split_into_segments(lg.KIND_SESSION, "seg-gap", 5)
-    (lg.ledger_dir(lg.KIND_SESSION, "seg-gap") / "log.5.jsonl").unlink()
+    (lg.crew_log_dir(lg.KIND_SESSION, "seg-gap") / "log.5.jsonl").unlink()
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-gap")
-    with pytest.raises(LedgerError) as excinfo:
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-gap")
+    with pytest.raises(CrewLogError) as excinfo:
         list(reader.iter_from(1))
     assert excinfo.value.code == lg.CODE_SEGMENT_GAP
 
@@ -1984,11 +1984,11 @@ def test_a_neighbour_file_sharing_the_prefix_is_ignored_not_refused(tmp_path):
     led = _session("seg-neighbour")
     for n in range(1, 5):
         led.append("turn/started", {"turn": n, "actor": "user", "depth": 0}, src="gateway")
-    directory = lg.ledger_dir(lg.KIND_SESSION, "seg-neighbour")
+    directory = lg.crew_log_dir(lg.KIND_SESSION, "seg-neighbour")
     (directory / "log.backup.jsonl").write_text("not a segment\n")
 
     assert [p.name for p in lg.segment_paths(lg.KIND_SESSION, "seg-neighbour")] == ["log.jsonl"]
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-neighbour")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-neighbour")
     assert [e.seq for e in reader.iter_from(1)] == [1, 2, 3, 4]
 
 
@@ -1997,12 +1997,12 @@ def test_a_chmod_refusing_filesystem_warns_once_not_once_per_append(monkeypatch,
     # refuses chmod would log a full traceback per entry. That buries the very
     # entries the warning is about, and one true fact about the host does not
     # become truer by being repeated.
-    ledger = _session("flood-check")
+    log = _session("flood-check")
     monkeypatch.setattr(store, "_restrict_failed", set())
     # Leave the directory loose so the restriction is actually attempted; when it
     # is already owner-only the helper skips the chmod entirely.
     if os.name == "posix":
-        ledger.path.parent.chmod(0o755)
+        log.path.parent.chmod(0o755)
 
     def _refuse(directory):
         raise OSError("chmod not supported on this filesystem")
@@ -2010,22 +2010,20 @@ def test_a_chmod_refusing_filesystem_warns_once_not_once_per_append(monkeypatch,
     monkeypatch.setattr(store, "restrict_dir_to_owner", _refuse)
     with caplog.at_level("WARNING", logger=store.__name__):
         for turn in range(1, 6):
-            ledger.append(
-                "turn/started", {"turn": turn, "actor": "user", "depth": 0}, src="gateway"
-            )
+            log.append("turn/started", {"turn": turn, "actor": "user", "depth": 0}, src="gateway")
 
     warnings = [r for r in caplog.records if "owner-only" in r.getMessage()]
     assert len(warnings) == 1, f"{len(warnings)} warnings for 5 appends, expected 1"
     # The appends themselves still succeed: the restriction is best-effort.
-    body = _ledger_bytes("session", "flood-check").decode("utf-8").splitlines()
+    body = _log_bytes("session", "flood-check").decode("utf-8").splitlines()
     assert len([line for line in body if '"turn/started"' in line]) == 5
 
 
 def test_an_already_restricted_directory_is_not_chmodded_again():
     # The mode is checked before it is set, so the steady state costs one stat
     # instead of a syscall that changes nothing on every entry.
-    ledger = _session("skip-check")
-    ledger.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
+    log = _session("skip-check")
+    log.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
     calls: list[object] = []
     real = store.restrict_dir_to_owner
 
@@ -2035,13 +2033,13 @@ def test_an_already_restricted_directory_is_not_chmodded_again():
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(store, "restrict_dir_to_owner", _count)
-        ledger.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="gateway")
+        log.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="gateway")
 
     if os.name == "posix":
         assert calls == [], f"re-chmodded an already owner-only directory: {calls}"
 
 
-def test_the_ledger_root_is_restricted_even_when_the_home_cannot_be(tmp_path, monkeypatch):
+def test_the_log_root_is_restricted_even_when_the_home_cannot_be(tmp_path, monkeypatch):
     # The two tightenings are independent claims. Skipping the crew log root when the
     # home's own chmod fails inverts the priority: that is the case where the root's
     # mode is the ONLY boundary left, because an unreadable parent is not there to
@@ -2075,19 +2073,19 @@ def test_the_ledger_root_is_restricted_even_when_the_home_cannot_be(tmp_path, mo
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
-def test_a_lazily_created_ledger_directory_is_not_world_readable():
+def test_a_lazily_created_log_directory_is_not_world_readable():
     # The eager root is best-effort, so the per-unit directories the store creates
     # on first write assert the same thing for themselves rather than trusting a
     # parent that may not have been tightened.
-    ledger = _session("hardening-check")
-    ledger.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
+    log = _session("hardening-check")
+    log.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
 
     if os.name == "posix":
-        mode = stat.S_IMODE(ledger.path.parent.stat().st_mode)
+        mode = stat.S_IMODE(log.path.parent.stat().st_mode)
         assert mode == 0o700, f"the crew log directory is {oct(mode)}, not owner-only"
 
 
-def test_a_ledger_that_exists_but_will_not_open_is_damage_not_absence():
+def test_a_log_that_exists_but_will_not_open_is_damage_not_absence():
     # `gone` means "there is no such crew log" and tells a reader to stop looking. A
     # crew log whose header is corrupt is right there and broken, so answering
     # `gone` for it converts a recoverable alarm into silence.
@@ -2111,7 +2109,7 @@ def test_a_citation_past_a_stale_cached_tail_is_not_called_ok():
     first.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="gateway")
     stale_tail = first.last_seq
 
-    second = Ledger.open("session", SESSION)
+    second = CrewLog.open("session", SESSION)
     newer = second.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="gateway")
     assert newer.seq > stale_tail
 
@@ -2158,7 +2156,7 @@ def test_a_group_is_refused_whole_and_leaves_the_file_identical():
     """Every check happens before a byte is written, as for a single append."""
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    before = lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes()
+    before = lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes()
 
     with _raises("bad_src"):
         session.append_many(
@@ -2169,7 +2167,7 @@ def test_a_group_is_refused_whole_and_leaves_the_file_identical():
             src="acp",
         )
 
-    assert lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes() == before
+    assert lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes() == before
 
 
 def test_repair_drops_a_chunk_group_whose_citing_entry_never_landed(caplog):
@@ -2191,11 +2189,11 @@ def test_repair_drops_a_chunk_group_whose_citing_entry_never_landed(caplog):
         ],
         src="acp",
     )
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     assert "message/chunk" in path.read_text(encoding="utf-8")
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.store"):
-        Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
+        CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
 
     body = path.read_text(encoding="utf-8")
     assert "message/chunk" not in body, "the unreachable chunks were left in the file"
@@ -2208,7 +2206,7 @@ def test_repair_drops_a_chunk_group_whose_citing_entry_never_landed(caplog):
     assert len(named) == 1, "the drop was silent or did not name the seq range"
     # Still append-only, and with no hole: the repair's own closers reuse the seqs the
     # dropped chunks had held, so a fold sees a contiguous run rather than a gap.
-    reopened = Ledger.open(lg.KIND_SESSION, SESSION)
+    reopened = CrewLog.open(lg.KIND_SESSION, SESSION)
     seqs = [e.seq for e in reopened.iter_from(1)]
     assert seqs == list(range(seqs[0], seqs[0] + len(seqs))), f"seq is not contiguous: {seqs}"
     assert seqs[0] == 1 and orphans[0].seq in seqs, "the truncated range was not reused"
@@ -2226,8 +2224,8 @@ def test_repair_keeps_a_chunk_group_that_was_completed():
         cite=lambda seqs: {"type": "message/sent", "data": {"turn": 1, "chunks": seqs, "chars": 2}},
     )
 
-    Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
-    body = lg.ledger_path(lg.KIND_SESSION, SESSION).read_text(encoding="utf-8")
+    CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
+    body = lg.crew_log_path(lg.KIND_SESSION, SESSION).read_text(encoding="utf-8")
     assert "message/chunk" in body, "a cited chunk was dropped"
 
 
@@ -2249,7 +2247,7 @@ def test_a_newer_format_version_says_upgrade_rather_than_corrupt():
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     header = json.loads(lines[0])
     header["version"] = lg.SCHEMA_VERSION + 1
@@ -2258,8 +2256,8 @@ def test_a_newer_format_version_says_upgrade_rather_than_corrupt():
     header["somethingNewer"] = {"whatever": 1}
     path.write_text(json.dumps(header) + "\n" + "".join(lines[1:]), encoding="utf-8")
 
-    with pytest.raises(LedgerError) as caught:
-        Ledger.open(lg.KIND_SESSION, SESSION)
+    with pytest.raises(CrewLogError) as caught:
+        CrewLog.open(lg.KIND_SESSION, SESSION)
     assert caught.value.code == lg.CODE_UNSUPPORTED_VERSION
     assert "upgrade" in str(caught.value)
     assert "not damaged" in str(caught.value)
@@ -2269,14 +2267,14 @@ def test_the_current_and_older_versions_still_open():
     """The refusal is for NEWER only -- an older file is what migration is for."""
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    assert Ledger.open(lg.KIND_SESSION, SESSION).last_seq == 1
+    assert CrewLog.open(lg.KIND_SESSION, SESSION).last_seq == 1
 
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     header = json.loads(lines[0])
     header["version"] = 0
     path.write_text(json.dumps(header) + "\n" + "".join(lines[1:]), encoding="utf-8")
-    assert Ledger.open(lg.KIND_SESSION, SESSION).last_seq == 1, "an older file was refused"
+    assert CrewLog.open(lg.KIND_SESSION, SESSION).last_seq == 1, "an older file was refused"
 
 
 def test_a_group_with_no_data_is_refused_rather_than_written_empty():
@@ -2291,7 +2289,7 @@ def test_a_group_with_no_data_is_refused_rather_than_written_empty():
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     before = path.read_bytes()
 
     for bad in ({"type": "message/chunk"}, {"type": "message/chunk", "data": None}):
@@ -2323,7 +2321,7 @@ def test_a_point_read_finds_an_entry_in_an_older_segment():
     _split_into_segments(lg.KIND_SESSION, "seg-get", 9)
     _split_into_segments(lg.KIND_SESSION, "seg-get", 5)
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-get")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-get")
     for seq in range(1, 13):
         found = reader.get(seq)
         assert found is not None, f"seq {seq} was reported absent though its segment is on disk"
@@ -2348,7 +2346,7 @@ def test_paging_walks_past_a_segment_boundary():
     _split_into_segments(lg.KIND_SESSION, "seg-page", 9)
     _split_into_segments(lg.KIND_SESSION, "seg-page", 5)
 
-    reader = lg.Ledger.open(lg.KIND_SESSION, "seg-page")
+    reader = lg.CrewLog.open(lg.KIND_SESSION, "seg-page")
     seen: list[int] = []
     cursor: int | None = None
     for _ in range(10):  # bounded: a cursor that never ends is the bug, not a hang
@@ -2394,7 +2392,7 @@ def test_a_group_cites_the_seqs_it_was_actually_allocated():
         # through the intruder's own append.
         if not fired:
             fired.append(1)
-            intruder = Ledger.open(lg.KIND_SESSION, SESSION)
+            intruder = CrewLog.open(lg.KIND_SESSION, SESSION)
             intruder.append("turn/started", {"turn": 99, "actor": "user", "depth": 0}, src="acp")
         return real_open_lock(path)
 
@@ -2447,7 +2445,7 @@ def test_repair_leaves_the_file_alone_when_a_record_cannot_be_accounted_for(capl
     """
     session = _session()
     kept = session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     # An over-cap record, then a chunk group with no citing entry: the orphan shape,
     # sitting behind a record the bounded reader would silently drop.
     with open(path, "ab") as handle:
@@ -2462,14 +2460,14 @@ def test_repair_leaves_the_file_alone_when_a_record_cannot_be_accounted_for(capl
     before = path.read_bytes()
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.store"):
-        Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
+        CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
 
     body = path.read_bytes()
     assert body.startswith(before), (
         "the repair truncated a file whose bytes it could not account for; the "
         f"entry at seq {kept.seq} and the records after it are at risk"
     )
-    reopened = Ledger.open(lg.KIND_SESSION, SESSION)
+    reopened = CrewLog.open(lg.KIND_SESSION, SESSION)
     seqs = [e.seq for e in reopened.iter_from(1)]
     assert kept.seq in seqs, "the repair dropped a valid entry"
     assert orphans[0].seq in seqs, "the chunks were truncated on an offset that was short"
@@ -2488,13 +2486,13 @@ def test_a_group_refuses_a_cite_that_does_not_return_an_entry():
     entry of that session behind it.
 
     Mutation guard: dropping the isinstance check lets a list through to `.get` and
-    raises AttributeError instead, which is not a LedgerError and reddens this.
+    raises AttributeError instead, which is not a CrewLogError and reddens this.
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    before = lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes()
+    before = lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes()
 
-    with pytest.raises(LedgerError) as caught:
+    with pytest.raises(CrewLogError) as caught:
         session.append_many(
             [{"type": "message/chunk", "data": {"turn": 1, "delta": "aa"}, "ignorable": True}],
             src="acp",
@@ -2502,7 +2500,7 @@ def test_a_group_refuses_a_cite_that_does_not_return_an_entry():
         )
     assert caught.value.code == "bad_data", f"refused with the wrong code: {caught.value.code}"
     assert (
-        lg.ledger_path(lg.KIND_SESSION, SESSION).read_bytes() == before
+        lg.crew_log_path(lg.KIND_SESSION, SESSION).read_bytes() == before
     ), "a refused group wrote bytes"
 
 
@@ -2538,7 +2536,7 @@ def test_a_failed_append_leaves_the_file_exactly_as_it_was():
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     before = path.read_bytes()
     burned: list = []
 
@@ -2573,7 +2571,7 @@ def test_a_rollback_never_removes_another_writers_entries():
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    intruder = Ledger.open(lg.KIND_SESSION, SESSION)
+    intruder = CrewLog.open(lg.KIND_SESSION, SESSION)
     landed = intruder.append("message/chunk", {"turn": 1, "delta": "keep me"}, src="acp")
     burned: list = []
 
@@ -2583,7 +2581,7 @@ def test_a_rollback_never_removes_another_writers_entries():
             session.append("turn/completed", {"turn": 1, "stop_reason": "end_turn"}, src="acp")
     assert burned
 
-    survivors = [e.seq for e in Ledger.open(lg.KIND_SESSION, SESSION).iter_from(1)]
+    survivors = [e.seq for e in CrewLog.open(lg.KIND_SESSION, SESSION).iter_from(1)]
     assert (
         landed.seq in survivors
     ), f"the rollback removed another writer's entry at seq {landed.seq}: {survivors}"
@@ -2603,7 +2601,7 @@ def test_a_failed_group_append_rolls_back_the_whole_group():
     """
     session = _session()
     session.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    path = lg.ledger_path(lg.KIND_SESSION, SESSION)
+    path = lg.crew_log_path(lg.KIND_SESSION, SESSION)
     before = path.read_bytes()
     group = [
         {"type": "message/chunk", "data": {"turn": 1, "delta": "aa"}, "ignorable": True},

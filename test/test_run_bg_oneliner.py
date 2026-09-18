@@ -117,7 +117,7 @@ async def test_the_background_owner_is_pinned_before_the_call_not_after_it(monke
     await run_bg_oneliner(
         sessions,
         "prompt",
-        ledger_kind="title",
+        crew_log_kind="title",
         crew_log_session_key="dashboard:chat-7",
     )
     assert recorded == ["owner-sid"], "the entry must name the unit that ordered the work"

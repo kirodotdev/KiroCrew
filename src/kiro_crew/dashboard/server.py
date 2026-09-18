@@ -3182,7 +3182,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         if manager is not None:
             await manager.shutdown()
 
-    async def _session_ledger_drain(app_: web.Application) -> None:
+    async def _crew_log_drain(app_: web.Application) -> None:
         """Write out the session's log buffered appends before the process goes.
 
         The emitter hands appends to a writer thread so a turn never waits on the
@@ -3206,7 +3206,7 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
 
     app.on_startup.append(_instances_startup)
     app.on_cleanup.append(_instances_shutdown)
-    app.on_cleanup.append(_session_ledger_drain)
+    app.on_cleanup.append(_crew_log_drain)
 
 
 def build_host_canonical_redirect(canonical_host: str) -> Any:

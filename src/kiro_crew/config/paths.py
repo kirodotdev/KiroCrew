@@ -471,11 +471,11 @@ def ensure_data_home() -> Path:
     # boundary, and skipping it there leaves every lazily created crew log
     # directory at the process umask. The helper reports its own failure, so a
     # filesystem that refuses both still boots.
-    _ensure_ledger_root(home, restrict_dir_to_owner)
+    _ensure_crew_log_root(home, restrict_dir_to_owner)
     return home
 
 
-def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
+def _ensure_crew_log_root(home: Path, restrict: Callable[[Path], None]) -> None:
     """Establish ``<home>/crew-log`` owner-only, before anything writes a crew log.
 
     Eager rather than lazy because two other mechanisms are stated per PATH and

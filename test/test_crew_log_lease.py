@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger, LedgerError
+from kiro_crew.crew_log import CrewLog, CrewLogError
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.platform_compat import file_lock
 
@@ -70,17 +70,17 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
 
 
-def _session(unit_id: str = SESSION) -> Ledger:
-    return Ledger.create(lg.KIND_SESSION, unit_id, owner="qa", agent="kirocrew")
+def _session(unit_id: str = SESSION) -> CrewLog:
+    return CrewLog.create(lg.KIND_SESSION, unit_id, owner="qa", agent="kirocrew")
 
 
 def _types(unit_id: str = SESSION) -> "list[str]":
     """The entry types on disk, read without opening a handle.
 
-    Read as bytes rather than through ``Ledger``: a handle would be one more
+    Read as bytes rather than through ``CrewLog``: a handle would be one more
     object whose lifetime affects ownership, which is the thing under test.
     """
-    raw = lg.ledger_path(lg.KIND_SESSION, unit_id).read_text(encoding="utf-8")
+    raw = lg.crew_log_path(lg.KIND_SESSION, unit_id).read_text(encoding="utf-8")
     return [json.loads(line)["type"] for line in raw.splitlines()[1:] if line.strip()]
 
 
@@ -93,7 +93,7 @@ class _Foreign:
     """
 
     def __init__(self, unit_id: str = SESSION) -> None:
-        self._path = lg.ledger_dir(lg.KIND_SESSION, unit_id) / LEASE_FILE
+        self._path = lg.crew_log_dir(lg.KIND_SESSION, unit_id) / LEASE_FILE
         self._stack: "contextlib.ExitStack | None" = None
 
     def take(self) -> None:
@@ -144,7 +144,7 @@ def test_an_append_is_refused_while_another_owner_holds_the_log():
     refused = None
     try:
         handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    except LedgerError as exc:
+    except CrewLogError as exc:
         refused = exc.code
     finally:
         foreign.give_up()
@@ -157,7 +157,7 @@ def test_ownership_is_taken_once_the_owner_releases_it():
     handle = _session()
     foreign = _Foreign()
     foreign.take()
-    with pytest.raises(LedgerError):
+    with pytest.raises(CrewLogError):
         handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
     foreign.give_up()
     handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
@@ -175,7 +175,7 @@ def test_a_read_only_open_takes_no_write_ownership():
     del writer
     gc.collect()
 
-    reader = Ledger.open(lg.KIND_SESSION, SESSION)
+    reader = CrewLog.open(lg.KIND_SESSION, SESSION)
     assert [e.type for e in reader.iter_from(1)] == ["turn/started"]
     assert reader.page().entries
     assert _Foreign().can_take(), "a reader is holding write ownership"
@@ -191,7 +191,7 @@ def test_two_handles_in_one_process_share_one_ownership():
     """
     first = _session()
     first.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
-    second = Ledger.open(lg.KIND_SESSION, SESSION)
+    second = CrewLog.open(lg.KIND_SESSION, SESSION)
     # No refusal: the two share one lock through the reference count.
     second.append("message/chunk", {"turn": 1, "delta": "hi"}, src="acp", ignorable=True)
     assert not _Foreign().can_take(), "two live handles are not holding ownership"
@@ -220,7 +220,7 @@ def test_a_release_fired_by_the_collector_inside_an_acquire_does_not_deadlock(mo
     The collector is driven by hand at the one point that matters -- inside
     ``_take``, under the lock -- and automatic collection is off for the window,
     so the interleaving is the test's, not the allocator's. The handle whose
-    release fires is a real ``Ledger`` that claimed ownership through an append,
+    release fires is a real ``CrewLog`` that claimed ownership through an append,
     parked in a cycle so only the collector can free it.
 
     Mutation guard: making the lock a plain ``threading.Lock`` hangs the acquire
@@ -231,7 +231,7 @@ def test_a_release_fired_by_the_collector_inside_an_acquire_does_not_deadlock(mo
     class Cycle:
         pass
 
-    collected_key = str(lg.ledger_dir(lg.KIND_SESSION, "collected-owner") / LEASE_FILE)
+    collected_key = str(lg.crew_log_dir(lg.KIND_SESSION, "collected-owner") / LEASE_FILE)
     owner = _session("collected-owner")
     owner.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
     assert collected_key in lease._held
@@ -253,7 +253,7 @@ def test_a_release_fired_by_the_collector_inside_an_acquire_does_not_deadlock(mo
 
     monkeypatch.setattr(lease, "_take", take_with_collection)
 
-    kept: "list[Ledger]" = []  # keeps the other unit's handle, and so its ownership
+    kept: "list[CrewLog]" = []  # keeps the other unit's handle, and so its ownership
     done = threading.Event()
 
     def other_owner():
@@ -304,8 +304,8 @@ def test_a_repair_is_refused_while_another_owner_holds_the_log():
     foreign.take()
     refused = None
     try:
-        Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
-    except LedgerError as exc:
+        CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
+    except CrewLogError as exc:
         refused = exc.code
     finally:
         foreign.give_up()
@@ -352,7 +352,7 @@ def test_a_lock_whose_inode_moved_is_taken_again_on_the_file_that_stands():
     now stands there is what makes the lock mean something.
     """
     handle = _session()
-    path = lg.ledger_dir(lg.KIND_SESSION, SESSION) / LEASE_FILE
+    path = lg.crew_log_dir(lg.KIND_SESSION, SESSION) / LEASE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
     with pytest.MonkeyPatch.context() as patch:
@@ -370,12 +370,12 @@ def test_a_lease_file_that_keeps_moving_is_refused_rather_than_trusted():
     write at the same time.
     """
     handle = _session()
-    path = lg.ledger_dir(lg.KIND_SESSION, SESSION) / LEASE_FILE
+    path = lg.crew_log_dir(lg.KIND_SESSION, SESSION) / LEASE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(os, "fstat", _replacing_fstat(path, 99))
-        with pytest.raises(LedgerError) as excinfo:
+        with pytest.raises(CrewLogError) as excinfo:
             handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
     assert excinfo.value.code == lg.CODE_ALREADY_OWNED
     assert "keeps being replaced" in str(excinfo.value), "the cause is reported as contention"
@@ -497,8 +497,8 @@ def test_a_resume_in_another_process_cannot_close_a_live_writers_turn(tmp_path):
     try:
         refused = None
         try:
-            Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
-        except LedgerError as exc:
+            CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
+        except CrewLogError as exc:
             refused = exc.code
         # The damage first: under the mutation this names the shape a fold cannot
         # interpret -- a closed turn followed by the rest of the live one.
@@ -523,7 +523,7 @@ def test_ownership_returns_when_the_owning_process_exits(tmp_path):
     child = _child(tmp_path / "home", tmp_path)
     _release(child)
 
-    repaired = Ledger.open(lg.KIND_SESSION, SESSION, repair=True)
+    repaired = CrewLog.open(lg.KIND_SESSION, SESSION, repair=True)
     types = _types()
     assert "tool/completed" in types, f"the successor could not close the call: {types}"
     assert types[-1] == "turn/completed", f"the successor could not close the turn: {types}"

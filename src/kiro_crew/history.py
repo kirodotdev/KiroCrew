@@ -935,7 +935,7 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     (``session.archive_retention_days``).  A negative value disables cleanup
     entirely — the user manages archive deletion manually.
 
-    The same pass expires closed SESSION LEDGERS, on the same setting and inside
+    The same pass expires closed SESSION CREW LOGS, on the same setting and inside
     the same throttle (:func:`kiro_crew.crew_log.store.sweep_expired`). One switch
     governs both because a session's message bodies live in its crew log now: a
     build that expired the transcript archive while the crew log it points into grew
@@ -981,11 +981,11 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
                 pass
     if removed:
         logger.info("Cleaned %d expired archive files (>%dd)", removed, retention_days)
-    _cleanup_expired_ledgers(retention_days, now)
+    _cleanup_expired_crew_logs(retention_days, now)
     return removed
 
 
-def _cleanup_expired_ledgers(retention_days: int, now: float) -> None:
+def _cleanup_expired_crew_logs(retention_days: int, now: float) -> None:
     """Expire closed the sessions' logs, best-effort, never at the transcript's cost.
 
     Off the event loop, which is what makes the added filesystem work safe rather

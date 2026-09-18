@@ -518,7 +518,7 @@ async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monke
     assert crew_log_emit.flush()
     body = [
         json.loads(line)
-        for line in lg.ledger_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
+        for line in lg.crew_log_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
     ]
     # Every message-domain entry, not one named type: an entry claiming the turn
     # received the steer would be caught whatever it was called.
@@ -3662,7 +3662,7 @@ def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_pat
 
 
 def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
-    """``_ledger_lineage`` is the one seam between the slot and the crew-log
+    """``_crew_log_lineage`` is the one seam between the slot and the crew-log
     ``session/opened.parent`` write. It yields the creator only when this process
     minted the slot; attribution that arrived any other way -- restored from a
     transcript an agent's file tools can edit, or set by hand -- yields nothing,
@@ -3673,26 +3673,26 @@ def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
     """
     from types import SimpleNamespace
 
-    from kiro_crew.dashboard.chat_runner import _ledger_lineage
+    from kiro_crew.dashboard.chat_runner import _crew_log_lineage
 
     minted = SimpleNamespace(
         _created_by="chat-1", _created_by_sid="acp-sess-creator-at-mint", _lineage_minted=True
     )
-    assert _ledger_lineage(minted) == ("chat-1", "acp-sess-creator-at-mint")
+    assert _crew_log_lineage(minted) == ("chat-1", "acp-sess-creator-at-mint")
 
     restored = SimpleNamespace(
         _created_by="chat-1", _created_by_sid="acp-forged-by-editing-the-transcript"
     )
-    assert _ledger_lineage(restored) == ("", "")
+    assert _crew_log_lineage(restored) == ("", "")
     restored_explicit = SimpleNamespace(
         _created_by="chat-1", _created_by_sid="acp-sess-x", _lineage_minted=False
     )
-    assert _ledger_lineage(restored_explicit) == ("", "")
+    assert _crew_log_lineage(restored_explicit) == ("", "")
 
     minted_without_handle = SimpleNamespace(
         _created_by="chat-1", _created_by_sid="", _lineage_minted=True
     )
-    assert _ledger_lineage(minted_without_handle) == ("chat-1", "")
+    assert _crew_log_lineage(minted_without_handle) == ("chat-1", "")
 
 
 def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):

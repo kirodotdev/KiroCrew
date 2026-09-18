@@ -935,9 +935,9 @@ async def _generate_title_via_kiro(
     """Generate a title using the shared background kiro-cli session.
 
     ``session_key`` names the session this call is charged to, so the spend lands
-    in that session's ledger as well as the usage store. It is optional because
+    in that session's crew log as well as the usage store. It is optional because
     the title's own correctness does not depend on it: a caller that cannot name
-    the owner still gets a title, and the ledger simply records nothing.
+    the owner still gets a title, and the crew log simply records nothing.
     """
 
     # Off-loop: the config read behind _ui_language() is synchronous file IO
@@ -958,7 +958,7 @@ async def _generate_title_via_kiro(
         state.sessions,
         prompt,
         model=_TITLE_MODEL,
-        ledger_kind="title",
+        crew_log_kind="title",
         crew_log_session_key=session_key,
     )
     title = _validate_title_reply(text)
@@ -992,7 +992,7 @@ async def _generate_refreshed_title(
         state.sessions,
         prompt,
         model=_TITLE_MODEL,
-        ledger_kind="title",
+        crew_log_kind="title",
         crew_log_session_key=session_key,
     )
     title = _validate_title_reply(text)

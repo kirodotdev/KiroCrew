@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import Ledger
+from kiro_crew.crew_log import CrewLog
 
 #: Written to stdout once the turn is open and this process owns the log.
 OWNED = "owned"
@@ -29,8 +29,8 @@ RELEASE = "release"
 
 def main() -> int:
     session_id = sys.argv[1]
-    Ledger.create(lg.KIND_SESSION, session_id, owner="qa", agent="kirocrew")
-    handle = Ledger.open(lg.KIND_SESSION, session_id)
+    CrewLog.create(lg.KIND_SESSION, session_id, owner="qa", agent="kirocrew")
+    handle = CrewLog.open(lg.KIND_SESSION, session_id)
     # Two entries the parent can recognize: a turn that is open, and a tool call
     # inside it that has no outcome yet. A repair would close both.
     handle.append("turn/started", {"turn": 1, "actor": "user", "depth": 0}, src="acp")
