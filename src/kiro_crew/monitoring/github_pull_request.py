@@ -72,7 +72,7 @@ commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:PAGE_SIZE,afte
   totalCount pageInfo{hasNextPage endCursor}
   nodes{
     __typename
-    ... on CheckRun{name status conclusion checkSuite{workflowRun{workflow{name}}}}
+    ... on CheckRun{name status conclusion checkSuite{conclusion workflowRun{databaseId event workflow{databaseId name}}}}
     ... on StatusContext{context state}
   }
 }}}}}
@@ -945,11 +945,138 @@ def _normalize_response(
     )
 
 
+def _superseded_key(raw: object) -> tuple[object, ...] | None:
+    """The identity a check run can be superseded within, or ``None`` to exempt it.
+
+    The identity is the workflow DEFINITION's id, the RUN's triggering event and the
+    check name. Never the workflow's display name: a host permits two workflow files
+    to carry one ``name:``, and each may publish a check of the same name, so a label
+    groups two independent workflows together and the collapse would drop one of
+    them. The event belongs in it because one workflow file can declare several
+    triggers, and a file on ``push`` and ``pull_request`` produces two runs of itself
+    on one commit. Those are concurrent dispatches rather than an attempt and its
+    replacement, so only a later run of the SAME trigger may replace an earlier one.
+
+    A row is exempt whenever the response did not supply one of those, which is the
+    same rule the run id gets one level down. The two ids are nullable ``Int`` on the
+    wire even though the objects carrying them are not, so either can be absent on
+    its own; the event is non-null, so its absence means a truncated response rather
+    than a permitted shape. It is still guarded, because a missing key component would
+    silently MERGE two triggers into one group, where a missing id simply leaves the
+    row out of the comparison. Either way, evidence the host withheld is not evidence
+    that two rows are one check, and the only thing left to key on would be the
+    display name, which is what this refuses.
+    Anything that is not a well-formed CheckRun is exempt too and reaches the
+    normalizer untouched, which keeps a malformed row raising there rather than
+    being quietly dropped here.
+    """
+    if not isinstance(raw, Mapping) or raw.get("__typename") != "CheckRun":
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    definition = _identifier(raw.get("workflowDefinitionId"))
+    if definition is None:
+        return None
+    event = raw.get("workflowRunEvent")
+    if not isinstance(event, str) or not event:
+        return None
+    return (definition, event, name)
+
+
+def _check_run_of(raw: object) -> object:
+    """The workflow run a check row belongs to, or ``None`` when unidentified."""
+    return _identifier(raw.get("workflowRunId") if isinstance(raw, Mapping) else None)
+
+
+def _run_was_cancelled(raw: object) -> bool:
+    """Whether this row's own RUN was cancelled -- the only proof of displacement here.
+
+    The rollup carries no lineage edge: nothing in it states that one run replaced
+    another. A higher run id proves only that a run started later, and a later run of
+    one workflow can be an independent dispatch, since a single file may declare
+    several triggers and ``WorkflowRun.event`` is coarser than the action that fired
+    it -- a ``synchronize`` run and an ``edited`` run share ``pull_request``. So
+    recency alone cannot license dropping a row.
+
+    A cancelled RUN is the case where displacement IS established: the concurrency
+    group cancelled the run in favour of the one that superseded it. That is a
+    property of the run, so it is read from the run and never inferred from the row.
+    A row reaches ``CANCELLED`` for reasons that are not supersession at all -- a
+    fail-fast matrix cancelling its siblings, a job cancelled because something in
+    its ``needs`` failed, an operator cancelling one job -- and in each of those the
+    run itself concludes ``FAILURE`` and is entirely live. Treating the row's own
+    cancellation as displacement would drop a row out of a live run, and because the
+    fold re-runs identically on every poll the loss is silent and never self-corrects.
+
+    Both are required. The run's cancellation is what proves the row was displaced;
+    the row's own ``COMPLETED``+``CANCELLED`` is what proves removing it takes no
+    verdict with it, since a cancelled run can still contain a row that reached a
+    real ``FAILURE`` before the cancel landed. Requiring both drops only a row that
+    was cancelled inside a cancelled run, so neither a live run's cancelled row nor a
+    cancelled run's decided row is ever discarded.
+    """
+    if not isinstance(raw, Mapping):
+        return False
+    if raw.get("workflowRunConclusion") != "CANCELLED":
+        return False
+    return raw.get("status") == "COMPLETED" and raw.get("conclusion") == "CANCELLED"
+
+
+def _collapse_superseded_rows(rows: list[object]) -> list[object]:
+    """Drop check rows a newer run of the same check has already replaced.
+
+    A host keeps a replaced round's completed rows in the rollup beside the round
+    that replaced them. Counting every row then reports a failure that is not live,
+    and the monitor wakes the session on a phantom it cannot act on. What decides
+    supersession is the RUN a row belongs to and whether that run was cancelled --
+    never the row's own conclusion, which reaches ``CANCELLED`` inside live runs too.
+
+    Newest is the greatest RUN ID, which increases monotonically. Not a timestamp:
+    ``WorkflowRun.createdAt`` resolves only to the second, and two runs of one
+    workflow on one head routinely share it -- a workflow firing on both
+    ``synchronize`` and ``edited`` produces exactly that, both under the
+    ``pull_request`` event. Ordering on it leaves such a pair tied, both rows survive,
+    and the state fold then reports the replaced one, so a lane whose newest run
+    succeeded reads as a blocking failure. The run id orders them on its own.
+
+    Two rows of ONE run do not replace each other and both survive, because they share
+    one id: a workflow can publish a check run through the Checks API under its own
+    job's display name, so both are live at the same time and dropping either would
+    hide a live failure. No filter on conclusion either -- discarding a cancelled
+    newest run would revive the verdict of the run it superseded.
+
+    A row whose run the response did not identify is kept and takes no part in
+    choosing the winner, since it may BE the run that would supersede the others.
+    Over-report rather than hide a live failure.
+    """
+    winner: dict[tuple[object, ...], int] = {}
+    for raw in rows:
+        key = _superseded_key(raw)
+        if key is None:
+            continue
+        run = _check_run_of(raw)
+        if not isinstance(run, int):
+            continue
+        if key not in winner or run > winner[key]:
+            winner[key] = run
+    kept: list[object] = []
+    for raw in rows:
+        key = _superseded_key(raw)
+        if key is None or key not in winner:
+            kept.append(raw)
+            continue
+        run = _check_run_of(raw)
+        if not isinstance(run, int) or run == winner[key] or not _run_was_cancelled(raw):
+            kept.append(raw)
+    return kept
+
+
 def _normalize_checks(raw: object) -> tuple[GitHubCheck, ...]:
     if not isinstance(raw, list):
         raise ValueError("GitHub check rollup is malformed")
     grouped: dict[tuple[str, ...], tuple[str, list[str]]] = {}
-    for row_index, item in enumerate(raw):
+    for row_index, item in enumerate(_collapse_superseded_rows(raw)):
         if not isinstance(item, Mapping):
             raise ValueError("GitHub check rollup is malformed")
         identity, state, group_key = _normalize_check(item)
@@ -1329,9 +1456,20 @@ def _page_cursor(page_info: object) -> tuple[bool, str | None]:
 def _flat_check_row(raw: object) -> dict[str, Any]:
     """Present one rollup node in the flat shape the check normalizer reads.
 
-    ``workflowName`` is GitHub's own workflow name, reached through the check
-    suite's run; every other field is passed through untouched, so
-    ``_normalize_check`` reads exactly the keys it always has.
+    A ``CheckRun``'s workflow name, its run's id, its run's triggering event, its
+    run's conclusion and its workflow definition's id are all reached through the
+    check suite; every other field is passed through untouched, so
+    ``_normalize_check`` reads exactly the keys it always has. Those four travel
+    beside the name because the collapse is keyed on them rather than on a display
+    string: the definition id and the event say which check a row IS, the run id says
+    which attempt of it this is and, because it increases monotonically, which
+    attempt came later, and the run's conclusion says whether that attempt was
+    displaced at all.
+
+    The run's conclusion is read from the check suite, which is the run's own status
+    container -- ``WorkflowRun`` exposes no ``conclusion`` of its own, and
+    ``CheckSuite.workflowRun`` is the inverse edge of the one followed here, so the
+    suite's conclusion IS this run's.
     """
     if not isinstance(raw, Mapping):
         raise ValueError("GitHub check rollup is malformed")
@@ -1342,7 +1480,31 @@ def _flat_check_row(raw: object) -> dict[str, Any]:
     name = workflow.get("name") if isinstance(workflow, Mapping) else None
     if isinstance(name, str):
         row["workflowName"] = name
+    run_id = run.get("databaseId") if isinstance(run, Mapping) else None
+    if _identifier(run_id) is not None:
+        row["workflowRunId"] = run_id
+    event = run.get("event") if isinstance(run, Mapping) else None
+    if isinstance(event, str) and event:
+        row["workflowRunEvent"] = event
+    definition_id = workflow.get("databaseId") if isinstance(workflow, Mapping) else None
+    if _identifier(definition_id) is not None:
+        row["workflowDefinitionId"] = definition_id
+    run_conclusion = suite.get("conclusion") if isinstance(suite, Mapping) else None
+    if isinstance(run_conclusion, str) and run_conclusion:
+        row["workflowRunConclusion"] = run_conclusion
     return row
+
+
+def _identifier(value: object) -> object:
+    """*value* when it can serve as a host-supplied id, else ``None``.
+
+    Both ids the collapse reads are nullable ``Int`` on the wire, so absence is a
+    normal answer rather than a malformed one. ``bool`` is refused because it is an
+    ``int`` subclass and would silently group two rows under ``True``.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _rollup_page(
