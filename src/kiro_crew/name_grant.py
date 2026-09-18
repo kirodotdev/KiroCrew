@@ -232,6 +232,101 @@ class Refusal:
         return _REFUSAL_LOG_TEXT.get(self.code, "a program name could not be vouched for")
 
 
+#: Refusal codes that describe the PLATFORM rather than the command. Every other
+#: code is a fact about the line that was run -- this name shadows a system
+#: program, that file is not the one an approval identified -- so it is worth
+#: saying every time it happens. A platform-scope code says the same thing about
+#: every command a session will ever run, so repeating it per invocation buries
+#: the per-command refusals it sits among -- on Windows that is roughly fifteen
+#: identical lines a session -- and reads like a misconfiguration the user could
+#: fix.
+#:
+#: Only ``WINDOWS_UNMODELLED`` qualifies today. ``AMBIGUOUS_PATH`` and
+#: ``AMBIGUOUS_ENV`` are near-misses that are deliberately NOT here: both are
+#: environment state a user can change mid-session, so a later invocation can
+#: legitimately answer differently and each line is a fresh fact.
+_PLATFORM_SCOPE_CODES = frozenset({WINDOWS_UNMODELLED})
+
+#: ``(session bucket, code) -> None`` for platform-scope declines already logged.
+#: Bounded like :data:`_PINS` so a long-lived gateway cannot accumulate an entry
+#: per session it has ever served. An eviction costs one extra log line for a
+#: session that comes back after 512 others, which is the right way to be wrong.
+#: The key holds :func:`_notice_bucket` of the session key rather than the key
+#: itself, so the retained SIZE is bounded as well as the entry count.
+_DECLINE_NOTICES: "OrderedDict[tuple[str, str], None]" = OrderedDict()
+_DECLINE_NOTICE_LIMIT = 512
+
+#: Guards :data:`_DECLINE_NOTICES`. The tiers reach this from worker threads, so
+#: the read and the insert have to be one critical section or two concurrent
+#: invocations both read "not seen yet" and both log.
+_DECLINE_NOTICE_LOCK = threading.Lock()
+
+
+def _notice_bucket(session_key: str) -> str:
+    """A fixed-size stand-in for *session_key* in :data:`_DECLINE_NOTICES`.
+
+    The ledger only tests membership -- every value is ``None`` and nothing reads
+    a key back out -- so a digest dedupes exactly as the key itself did while
+    making the retained bytes independent of how long the key is.
+
+    That independence is the point, because the key is caller-supplied and its
+    length is not checked anywhere. The agent webhook takes ``sessionKey`` from
+    the request body and validates its type and its PREFIX, but caps no length,
+    unlike the ``message`` field beside it. Bounding the ledger by entry COUNT
+    alone therefore bounds the wrong dimension: 512 entries of a caller's chosen
+    size is not a bound. A blank key still digests to its own stable value, so a
+    headless caller keeps the separate bucket it is documented to get.
+    """
+
+    digest = hashlib.blake2b(session_key.encode("utf-8", "surrogatepass"), digest_size=16)
+    return digest.hexdigest()
+
+
+def should_log_decline(session_key: str, refusal: Refusal) -> bool:
+    """Answer whether this decline's log LINE is worth writing again.
+
+    Governs the human-facing ``logger.warning`` only. It never governs
+    :func:`log_decline`, which writes the SEL audit row: declining is a security
+    decision and every one of them is audited, per invocation, whatever this
+    returns. Nothing observable is lost by suppressing a repeat -- the text of a
+    platform-scope refusal is a constant read out of :data:`_REFUSAL_LOG_TEXT`
+    and carries nothing about the command that met it.
+
+    True for every command-scope code, always: those differ per invocation.
+    True the first time a :data:`_PLATFORM_SCOPE_CODES` member is met in a
+    session, then False for that same session and code.
+
+    A blank *session_key* is treated as its own bucket rather than shared, so a
+    surface that has no session (a headless caller) still gets its first notice.
+    """
+
+    if refusal.code not in _PLATFORM_SCOPE_CODES:
+        return True
+    key = (_notice_bucket(session_key), refusal.code)
+    with _DECLINE_NOTICE_LOCK:
+        if key in _DECLINE_NOTICES:
+            return False
+        _DECLINE_NOTICES[key] = None
+        while len(_DECLINE_NOTICES) > _DECLINE_NOTICE_LIMIT:
+            _DECLINE_NOTICES.popitem(last=False)
+    return True
+
+
+def platform_scope_notice() -> str | None:
+    """Name the platform-scope limitation in force here, or None.
+
+    One spelling for the surfaces that report it away from an invocation --
+    ``kirocrew doctor`` today -- so the CLI cannot describe a posture this module
+    does not actually hold. Derived from the same
+    :data:`platform_compat.IS_WINDOWS` branch :func:`name_grant_refusal` takes,
+    so the two cannot drift.
+    """
+
+    if not platform_compat.IS_WINDOWS:
+        return None
+    return WINDOWS_UNMODELLED
+
+
 #: Shell RESERVED WORDS and grouping tokens. This walk models one grammar --
 #: simple commands joined by pipes, ``&&``/``||``/``;`` and subshells -- and a
 #: reserved word means the command is using grammar it does NOT model, where the

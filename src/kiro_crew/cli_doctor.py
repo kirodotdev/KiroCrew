@@ -1738,6 +1738,36 @@ def _doctor_trust_root() -> None:
     print("               restart the gateway if another process relocated it.")
 
 
+def _doctor_name_grant_platform_scope() -> None:
+    """Report whether hook auto-approve can be satisfied on this platform.
+
+    Windows declines every name-based auto-approve by design. In the log that
+    shows only as a decline line per invocation, and a user reading those cannot
+    tell a platform scope from their own misconfiguration; what they would have
+    to read to find out is the source of :mod:`kiro_crew.name_grant`. This says
+    it where they are already looking for what their install can and cannot do.
+
+    Not a failure, so it never joins *issues*: the fail-closed is the intended
+    posture and stays closed. Imported locally to keep ``kirocrew doctor`` from
+    pulling a security module in on every invocation just to print one row.
+    """
+
+    from kiro_crew import name_grant
+
+    if name_grant.platform_scope_notice() is None:
+        print("  hook auto-approve:  ✅ name grants can be satisfied on this platform")
+        return
+    print(f"  hook auto-approve:  ⏹ declined on Windows ({name_grant.WINDOWS_UNMODELLED})")
+    _print_wrapped(
+        "This is the platform's scope, not your configuration. A name grant "
+        "cannot be satisfied here because the tokenizer does not preserve a "
+        "backslash path and the shell searches the command's own directory "
+        "before the search path, so this check cannot say which file a program "
+        "name would run. Hooks that auto-approve on macOS and Linux go to the "
+        "approval card instead."
+    )
+
+
 #: MCP servers that host strict-identity tools — the reflexive verbs
 #: (``monitor_start``, ``session_ledger_*``, ``set_project``, ``ask_question``)
 #: and the authorization-subject ones (session control, ``chat_folder_*``).
@@ -4213,6 +4243,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_deprecated_agent_specs(cfg, issues)
     _doctor_path_launcher()
     _doctor_trust_root()
+    _doctor_name_grant_platform_scope()
     _doctor_strict_identity(cfg)
     _doctor_mcp_gateway_daemon(issues)
     _doctor_unresolved_mcp_refs()

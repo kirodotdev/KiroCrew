@@ -3336,3 +3336,40 @@ class TestProjectSectionAndAuthRow:
         assert "/api/status" not in token_auth._BYPASS_EXACT
         assert "/api/status" not in token_auth._BYPASS_EXACT_METHODS
         assert not any("/api/status".startswith(p) for p in token_auth._BYPASS_PREFIXES)
+
+
+class TestNameGrantPlatformScopeRow:
+    """`kirocrew doctor` says whether hook auto-approve works on this platform.
+
+    A Windows user who sees repeated decline lines in `gateway.log` has no other
+    way to tell a platform scope from their own configuration.
+    """
+
+    def test_windows_names_the_code_and_says_it_is_not_your_config(self, monkeypatch, capsys):
+        from kiro_crew import name_grant
+
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        cli_doctor._doctor_name_grant_platform_scope()
+        out = capsys.readouterr().out
+        # The code is what a reader greps `gateway.log` for.
+        assert name_grant.WINDOWS_UNMODELLED in out
+        assert "not your configuration" in out
+        assert "approval card" in out
+
+    def test_posix_reports_that_grants_can_be_satisfied(self, monkeypatch, capsys):
+        from kiro_crew import name_grant
+
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
+        cli_doctor._doctor_name_grant_platform_scope()
+        out = capsys.readouterr().out
+        assert "hook auto-approve:  ✅" in out
+        assert name_grant.WINDOWS_UNMODELLED not in out
+
+    def test_the_row_cannot_contribute_an_issue(self):
+        # The fail-closed is the intended posture, so this row reports scope
+        # rather than a fault. It takes no `issues` list, so unlike the sections
+        # around it there is no way for it to make doctor exit non-zero.
+        import inspect
+
+        params = inspect.signature(cli_doctor._doctor_name_grant_platform_scope).parameters
+        assert not params

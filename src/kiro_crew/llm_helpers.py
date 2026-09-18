@@ -2808,11 +2808,12 @@ async def _resolve_permission(
                 await provider.approve_tool(event.request_id)
                 _log("auto_approved", metadata={"reason": "hook_auto_approve"})
                 return True
-            logger.warning(
-                "declining a hook auto-approve: %s; the request falls through "
-                "to this caller's approval path",
-                _ng_refusal.log_text,
-            )
+            if name_grant.should_log_decline(session_key, _ng_refusal):
+                logger.warning(
+                    "declining a hook auto-approve: %s; the request falls through "
+                    "to this caller's approval path",
+                    _ng_refusal.log_text,
+                )
             name_grant.log_decline(
                 source="",
                 session_key=session_key,

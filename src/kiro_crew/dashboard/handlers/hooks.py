@@ -1159,10 +1159,11 @@ async def _run_hook_inner(
                 # withheld grant denies (same as llm_helpers headless).
                 _ng_refusal = await name_grant.refusal_for_event(event)
                 if _ng_refusal is not None:
-                    logger.warning(
-                        "declining a webhook hook auto-approve: %s",
-                        _ng_refusal.log_text,
-                    )
+                    if name_grant.should_log_decline(session_key, _ng_refusal):
+                        logger.warning(
+                            "declining a webhook hook auto-approve: %s",
+                            _ng_refusal.log_text,
+                        )
                     name_grant.log_decline(
                         source="webhook",
                         session_key=session_key,

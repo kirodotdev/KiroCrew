@@ -1320,3 +1320,137 @@ class TestHookTierIsUntouched:
             "Running: gh pr view 1", command="gh pr view 1", is_shell=True
         )
         assert result.action == TOOL_AUTO_APPROVE
+
+
+class TestPlatformScopeDeclineNotice:
+    """A platform-scope decline is stated once a session, not once a command.
+
+    On Windows every hook auto-approve is declined, so a per-invocation line
+    reaches roughly fifteen identical rows a session in ``gateway.log`` and reads
+    like a misconfiguration the user could fix.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_ledger(self):
+        name_grant._DECLINE_NOTICES.clear()
+        yield
+        name_grant._DECLINE_NOTICES.clear()
+
+    def test_platform_scope_is_stated_once_per_session(self):
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        assert name_grant.should_log_decline("s1", refusal) is True
+        assert name_grant.should_log_decline("s1", refusal) is False
+        assert name_grant.should_log_decline("s1", refusal) is False
+
+    def test_a_second_session_gets_its_own_notice(self):
+        # The limitation is process-wide, but a reader needs to know WHICH
+        # session lost auto-approve, so the notice is per session.
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        assert name_grant.should_log_decline("s1", refusal) is True
+        assert name_grant.should_log_decline("s2", refusal) is True
+
+    def test_a_blank_session_key_is_its_own_bucket(self):
+        # The headless surface passes no session; it must still get one notice.
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        assert name_grant.should_log_decline("", refusal) is True
+        assert name_grant.should_log_decline("", refusal) is False
+        assert name_grant.should_log_decline("s1", refusal) is True
+
+    def test_no_command_scope_code_is_ever_suppressed(self):
+        # Derived from the code table rather than listed, so a code added later
+        # is covered here without anyone remembering to add it. Each of these is
+        # a fact about the line that ran, so every occurrence is worth logging.
+        command_scope = set(name_grant._REFUSAL_LOG_TEXT) - name_grant._PLATFORM_SCOPE_CODES
+        assert command_scope, "the table cannot be entirely platform scope"
+        for code in sorted(command_scope):
+            refusal = name_grant.Refusal(code, "detail")
+            assert name_grant.should_log_decline("s1", refusal) is True, code
+            assert name_grant.should_log_decline("s1", refusal) is True, code
+
+    def test_every_platform_scope_code_is_a_real_code(self):
+        # A retired or mistyped member would silently never match a refusal, so
+        # the gate would quietly stop suppressing anything.
+        assert name_grant._PLATFORM_SCOPE_CODES <= set(name_grant._REFUSAL_LOG_TEXT)
+
+    def test_the_notice_ledger_is_bounded(self):
+        # A gateway serves sessions for weeks; the ledger must not grow one
+        # entry per session forever.
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        for n in range(name_grant._DECLINE_NOTICE_LIMIT + 50):
+            name_grant.should_log_decline(f"s{n}", refusal)
+        assert len(name_grant._DECLINE_NOTICES) <= name_grant._DECLINE_NOTICE_LIMIT
+
+    def test_the_retained_size_does_not_follow_the_session_key_length(self):
+        # Bounding the entry COUNT bounds the wrong dimension on its own: the
+        # session key is caller-supplied and nothing checks its length, so 512
+        # entries of a caller's chosen size is not a bound. What is retained is a
+        # digest, so a key a thousand times longer costs the same bytes.
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        short = "hook:default:1"
+        huge = "hook:default:" + "x" * 262_144
+        assert name_grant.should_log_decline(short, refusal) is True
+        assert name_grant.should_log_decline(huge, refusal) is True
+        sizes = {len(bucket) for bucket, _code in name_grant._DECLINE_NOTICES}
+        assert len(sizes) == 1, name_grant._DECLINE_NOTICES.keys()
+        assert sizes.pop() < 128
+        # The oversized key must not be recoverable from what was kept.
+        assert not any("x" * 64 in bucket for bucket, _code in name_grant._DECLINE_NOTICES)
+
+    def test_two_distinct_keys_still_get_distinct_notices_after_digesting(self):
+        # The digest must not collapse different sessions into one bucket, which
+        # would silently suppress a second session's only notice.
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        assert name_grant.should_log_decline("hook:default:a", refusal) is True
+        assert name_grant.should_log_decline("hook:default:b", refusal) is True
+        assert len(name_grant._DECLINE_NOTICES) == 2
+
+    def test_the_notice_follows_the_same_platform_branch_as_the_refusal(self, monkeypatch):
+        # Read off IS_WINDOWS, like `name_grant_refusal`, so `kirocrew doctor`
+        # cannot describe a posture this module does not hold.
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", False)
+        assert name_grant.platform_scope_notice() is None
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        assert name_grant.platform_scope_notice() == name_grant.WINDOWS_UNMODELLED
+
+    def test_the_audit_row_is_never_gated_by_the_notice(self):
+        # The security invariant here: the LINE is deduplicated, the audit row
+        # is not. Declining is a security decision, so every one of them is
+        # recorded per invocation. Asserted at `log_decline`, the one writer
+        # every surface shares, rather than at any single surface.
+        rows: list[dict] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kwargs):
+                rows.append(kwargs)
+
+        class _Event:
+            title = "Running: head file"
+            tool_kind = "shell"
+            request_id = "r1"
+
+        refusal = name_grant.Refusal(name_grant.WINDOWS_UNMODELLED, "detail")
+        logged = 0
+        for _ in range(3):
+            # The exact order the call sites use: gate the line, always audit.
+            if name_grant.should_log_decline("s1", refusal):
+                logged += 1
+            name_grant.log_decline(
+                source="test",
+                session_key="s1",
+                event=_Event(),
+                refusal=refusal,
+                tier="hook_auto_approve",
+                sel_factory=_Sel,
+            )
+        assert logged == 1, "the platform-scope line should be stated once"
+        assert len(rows) == 3, "every decline must still be audited"
+        assert {r["outcome"] for r in rows} == {"auto_approve_declined"}
+        assert {r["metadata"]["code"] for r in rows} == {name_grant.WINDOWS_UNMODELLED}
+
+    def test_the_windows_refusal_is_the_code_the_notice_names(self, monkeypatch):
+        # Ties the two halves together: whatever `platform_scope_notice` reports
+        # is the code an actual refusal on this platform carries.
+        monkeypatch.setattr(name_grant.platform_compat, "IS_WINDOWS", True)
+        refusal = name_grant.name_grant_refusal("head file")
+        assert refusal is not None
+        assert refusal.code == name_grant.platform_scope_notice()

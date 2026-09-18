@@ -279,6 +279,7 @@ from kiro_crew.name_grant import (
     pin_human_approval,
     refusal_for_command_off_loop,
     shell_command_for_event,
+    should_log_decline,
 )
 from kiro_crew.platform import redact_via_context
 from kiro_crew.providers.base import (
@@ -11450,11 +11451,15 @@ async def _run_chat(
                         # synchronous, loop-bound method must not perform.
                         _hook_shim = await _name_grant_refusal_for(event)
                         if _hook_shim is not None:
-                            logger.warning(
-                                "declining a hook auto-approve: %s; the request "
-                                "falls through to interactive approval",
-                                _hook_shim.log_text,
-                            )
+                            # The LINE is gated, the audit row below is not: a
+                            # platform-scope refusal says the same thing about
+                            # every command this session runs.
+                            if should_log_decline(session_key, _hook_shim):
+                                logger.warning(
+                                    "declining a hook auto-approve: %s; the request "
+                                    "falls through to interactive approval",
+                                    _hook_shim.log_text,
+                                )
                             _audit_name_grant_refusal(
                                 session_key=session_key,
                                 slot=slot,
