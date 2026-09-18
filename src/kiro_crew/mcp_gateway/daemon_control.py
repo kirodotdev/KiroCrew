@@ -11,13 +11,21 @@ gateway runs. Both are synchronous, because the CLI is.
 Everything here is best-effort and never raises past its own boundary: a stop
 that cannot find a daemon is a no-op, not a failed stop, and a daemon that is
 already draining is left to finish.
+
+Both platforms are reached, over the endpoint ``mcp_gateway.transport`` owns for
+each: an ``AF_UNIX`` socket on POSIX, a named pipe on Windows. There is ONE
+client, ``transport.connect``, shared with ``manager``'s async probe and driven
+here through ``asyncio.run`` because the CLI has no loop of its own -- so the
+endpoint's platform handling, including the Windows pipe's read mode and its
+server-principal check, is inherited rather than restated.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
-import socket as _socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,38 +74,82 @@ class DaemonInfo:
 
 
 def _ping(socket_path: Path) -> Optional[dict[str, Any]]:
-    """Blocking ping; the decoded pong or None on any failure."""
-    if platform_compat.IS_WINDOWS:
-        # The named-pipe transport has no blocking client here; the daemon's own
-        # owner-liveness exit covers Windows and the CLI simply reports unknown.
+    """Blocking ping; the decoded pong or None on any failure.
+
+    ``None`` means "no daemon answered on this endpoint", on BOTH platforms, and
+    that equivalence is a requirement rather than an accident. Neither caller has
+    a way to render an inconclusive probe: ``kirocrew doctor`` prints "not
+    running" and :func:`stop_daemon` returns ``"absent"`` and signals nothing, so
+    a platform that cannot ask the question reports a running daemon as gone and
+    leaves it for the replacement gateway to adopt across a code change. Both
+    platforms therefore ask it for real, and everything below
+    :func:`stop_daemon`'s gate -- the handle-pinned kill, the WMI command-line
+    check -- is reachable on each.
+
+    The round trip is ONE client, ``transport.connect``, driven through
+    :func:`asyncio.run` because this module is synchronous and the CLI has no
+    loop. That client is the same one ``manager._ping_raw`` uses, so this path
+    inherits its endpoint handling on each platform rather than restating it: the
+    ``AF_UNIX`` connect on POSIX, and on Windows the named-pipe connect together
+    with the byte-read-mode fix and the ``socketsec.check_server_is_self`` gate
+    that refuses a pipe served by another principal. That gate matters here
+    beyond the confidentiality reason it was written for -- the pong names the pid
+    and start token :func:`stop_daemon` signals, so an unauthenticated server
+    would get to choose the process an operator kills.
+    """
+    try:
+        return asyncio.run(_ping_async(socket_path))
+    except RuntimeError:
+        # asyncio.run refuses to nest. Both callers are synchronous CLI paths, so
+        # this is a caller in the wrong context rather than a missing daemon --
+        # report it and keep the never-raises contract.
+        logger.warning(
+            "mcp-gateway: cannot ping %s from inside a running event loop; "
+            "use manager's async probe there",
+            socket_path,
+        )
+        return None
+
+
+async def _ping_async(socket_path: Path) -> Optional[dict[str, Any]]:
+    """One ping round-trip over the shared transport client; pong or ``None``.
+
+    Every step is bounded by ``_PING_TIMEOUT_SECS`` rather than the whole trip
+    sharing one budget, matching ``manager._ping_raw``'s fast path: a loaded
+    daemon that needs most of a second to accept and most of another to answer
+    is alive, and reading it as dead is the misverdict this exists to avoid.
+    """
+    try:
+        reader, writer = await asyncio.wait_for(
+            transport.connect(socket_path), timeout=_PING_TIMEOUT_SECS
+        )
+    except (asyncio.TimeoutError, OSError):
+        # OSError covers both halves of "no daemon here": FileNotFoundError when
+        # nothing is listening, and the ConnectionRefusedError transport.connect
+        # raises when a Windows pipe server is not our own principal.
         return None
     try:
-        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-    except OSError:
-        return None
-    try:
-        s.settimeout(_PING_TIMEOUT_SECS)
-        s.connect(transport.resolve_address(socket_path))
-        s.sendall(b'{"type":"ping"}\n')
-        buf = b""
-        while b"\n" not in buf and len(buf) < 65536:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-    except OSError:
-        return None
-    finally:
+        writer.write(b'{"type":"ping"}\n')
         try:
-            s.close()
-        except OSError:
-            pass
-    line = buf.split(b"\n", 1)[0]
-    try:
-        msg = json.loads(line.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return msg if isinstance(msg, dict) and msg.get("type") == "pong" else None
+            await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
+            line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=_PING_TIMEOUT_SECS)
+        except (
+            asyncio.TimeoutError,
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            ConnectionError,
+            OSError,
+        ):
+            return None
+        try:
+            msg = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return msg if isinstance(msg, dict) and msg.get("type") == "pong" else None
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(writer.wait_closed(), timeout=_PING_TIMEOUT_SECS)
 
 
 def configured_socket_path() -> Path:
