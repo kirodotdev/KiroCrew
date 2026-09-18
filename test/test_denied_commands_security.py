@@ -8255,7 +8255,15 @@ class TestSandboxEscapeSshSelf:
         # single-flight worker re-enumerates and merges.
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"oldname"}))
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
-        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_STAMP", 0.0)
+        # A stamp of 0.0 only reads as stale once ``time.monotonic()`` has
+        # passed the refresh window; on Linux that clock counts from boot, so a
+        # CI runner in its first five minutes served the set as fresh and never
+        # kicked the worker. Place the stamp one window behind the clock instead.
+        monkeypatch.setattr(
+            _argv_floor,
+            "_OWN_HOST_RESOLVE_STAMP",
+            _argv_floor.time.monotonic() - _argv_floor._OWN_HOST_REFRESH_SECS - 1.0,
+        )
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False)
         spawned: "list[dict]" = []
