@@ -1378,6 +1378,34 @@ class TestBuildLauncherScript:
         assert "268, 41, 37)" not in script
 
     @_POSIX_ONLY
+    def test_strict_script_denies_the_fence_bypass_syscalls_from_its_own_tuple(self):
+        """io_uring must be denied, and denied from a tuple of its own.
+
+        IORING_OP_CONNECT reaches the network without calling connect(2), so
+        the user-notification fence never sees it; the launcher filter answers
+        ring setup EPERM instead, and liburing consumers fall back to the
+        plain syscalls both tiers do see.
+
+        The split is pinned, not just the numbers. The namespace-escape list
+        above is pinned literally as a pentest remediation, and its
+        link/linkat exclusion is read off the end of that same literal, so
+        extra numbers folded in there still satisfy a "these are denied"
+        check while quietly retiring the escape guard -- which is exactly what
+        happened before this test existed.
+        """
+        script = _build_launcher_script("strict")
+        # io_uring_setup=425 io_uring_enter=426 io_uring_register=427, one
+        # numbering across both supported arches.
+        assert "_FENCE_DENY_SYSCALLS = (425, 426, 427)" in script
+        # The audited escape list must not have absorbed them, on either arch.
+        assert "155, 425" not in script
+        assert "41, 425" not in script
+        # Separate definitions, one emitted filter -- a tuple nothing reads
+        # denies nothing.
+        assert "_all_deny = _DENY_SYSCALLS + _FENCE_DENY_SYSCALLS" in script
+        assert "enumerate(_all_deny)" in script
+
+    @_POSIX_ONLY
     def test_launcher_refuses_when_seccomp_cannot_be_installed(self):
         """An arch with no syscall table, or a libc without prctl(2), must make
         the launcher EXIT -- not skip Step 5/6 and exec the agent anyway.
