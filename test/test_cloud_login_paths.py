@@ -173,3 +173,37 @@ class TestPrivateLoginDir:
         assert "cannot make it private" in res.stderr
         # The loose directory stays loose, and the script did not continue.
         assert stat.S_IMODE(loose.stat().st_mode) == 0o777
+
+    @_needs_posix_bash
+    def test_guard_reads_mode_back_through_bsd_stat_with_bash(self, tmp_path):
+        # macOS ships BSD stat, which has no -c and spells the octal mode
+        # -f %Lp. A shim with that surface stands in for Darwin on a Linux
+        # host: it rejects -c the way BSD does and answers -f %Lp from the real
+        # stat, so a GNU-only read-back fails here exactly as it does on macOS.
+        real_stat = shutil.which("stat")
+        assert real_stat is not None
+        shim = tmp_path / "shim"
+        shim.mkdir()
+        fake_stat = shim / "stat"
+        fake_stat.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  -c) echo "stat: illegal option -- c" >&2; exit 1 ;;\n'
+            f'  -f) [ "$2" = "%Lp" ] || exit 1; exec "{real_stat}" -c %a "$3" ;;\n'
+            "  *) exit 1 ;;\n"
+            "esac\n"
+        )
+        fake_stat.chmod(0o755)
+        env = {
+            "HOME": str(tmp_path),
+            "PATH": f"{shim}{os.pathsep}{os.environ.get('PATH', '')}",
+        }
+        res = subprocess.run(
+            [_BASH, "-c", login._login_dir_guard()],
+            env=env,
+            capture_output=True,
+            **UTF8_TEXT,
+        )
+        assert res.returncode == 0, res.stderr
+        for rel in (".kirocrew", ".kirocrew/login"):
+            assert stat.S_IMODE((tmp_path / rel).stat().st_mode) == 0o700

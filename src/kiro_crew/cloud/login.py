@@ -156,7 +156,12 @@ for kc_dir in "${HOME:?}/.kirocrew" "$KC_LOGIN_DIR"; do
     echo "refusing to use login directory $kc_dir: not a private directory owned by this user" >&2
     exit 1
   fi
-  if ! chmod 0700 "$kc_dir" || [ "$(stat -c %a "$kc_dir" 2>/dev/null)" != "700" ]; then
+  kc_mode=""
+  if chmod 0700 "$kc_dir"; then
+    # GNU stat spells the octal mode -c %a; BSD stat (macOS) has no -c and spells it -f %Lp.
+    kc_mode=$(stat -c %a "$kc_dir" 2>/dev/null || stat -f %Lp "$kc_dir" 2>/dev/null)
+  fi
+  if [ "$kc_mode" != "700" ]; then
     echo "refusing to use login directory $kc_dir: cannot make it private (mode 0700)" >&2
     exit 1
   fi
