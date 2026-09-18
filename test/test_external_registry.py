@@ -18,6 +18,7 @@ import pytest
 from kiro_crew.apps.registry import (
     _EXTERNAL_REGISTRY_CACHE_TTL,
     _clone_sandbox_mode,
+    _external_registry_cache_identity,
     _external_registry_cache_path,
     _external_registry_repos,
     _fetch_external_registry_index,
@@ -407,13 +408,14 @@ async def test_unnamed_credentialed_registry_cache_hit_and_stale_rows_are_public
     raw_registry = f"https://user:{secret}@git.example.com/org/apps.git"
     public_registry = "https://git.example.com/org/apps.git"
     mock_reg = SimpleNamespace(name="", repo=raw_registry, branch="main", trust="index")
+    cache_key = _external_registry_cache_identity(mock_reg)
     _write_external_registry_cache(
-        raw_registry,
+        cache_key,
         [{"name": "private-app", "repo": public_registry, "branch": "main"}],
     )
     if stale:
         old = time.time() - 7200
-        os.utime(_external_registry_cache_path(raw_registry), (old, old))
+        os.utime(_external_registry_cache_path(cache_key), (old, old))
         monkeypatch.setattr(
             reg,
             "_fetch_and_cache_external_registry",
@@ -441,7 +443,7 @@ async def test_url_shaped_registry_name_is_credential_free_in_cached_rows(cache_
         trust="index",
     )
     _write_external_registry_cache(
-        raw_name,
+        _external_registry_cache_identity(mock_reg),
         [{"name": "private-app", "repo": mock_reg.repo, "branch": "main"}],
     )
     monkeypatch.setattr(reg, "_effective_registries", lambda: [mock_reg])
@@ -569,12 +571,12 @@ class TestLoadExternalRegistries:
     @pytest.mark.asyncio
     async def test_returns_cached_entries(self, cache_dir, monkeypatch):
         entries = [{"name": "cached-app", "repo": "R", "branch": "mainline"}]
-        _write_external_registry_cache("myorg", entries)
 
         mock_reg = MagicMock()
         mock_reg.name = "myorg"
         mock_reg.repo = "MyOrgRepo"
         mock_reg.branch = "mainline"
+        _write_external_registry_cache(_external_registry_cache_identity(mock_reg), entries)
 
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
@@ -591,12 +593,12 @@ class TestLoadExternalRegistries:
     @pytest.mark.asyncio
     async def test_tags_entries_with_registry_name(self, cache_dir, monkeypatch):
         entries = [{"name": "app1"}, {"name": "app2"}]
-        _write_external_registry_cache("identity", entries)
 
         mock_reg = MagicMock()
         mock_reg.name = "identity"
         mock_reg.repo = "IdentityApps"
         mock_reg.branch = "mainline"
+        _write_external_registry_cache(_external_registry_cache_identity(mock_reg), entries)
 
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
@@ -606,6 +608,7 @@ class TestLoadExternalRegistries:
         )
 
         result = await _load_external_registries()
+        assert len(result) == 2
         assert all(e["_registry"] == "identity" for e in result)
 
 
@@ -619,13 +622,13 @@ class TestGetRegistryAppExternal:
         entries = [
             {"name": "ext-app", "repo": "ExtRepo", "branch": "mainline"},
         ]
-        _write_external_registry_cache("myorg", entries)
 
         # Mock config to have one registry
         mock_reg = MagicMock()
         mock_reg.name = "myorg"
         mock_reg.repo = "MyOrgRepo"
         mock_reg.branch = "mainline"
+        _write_external_registry_cache(_external_registry_cache_identity(mock_reg), entries)
 
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
@@ -696,12 +699,12 @@ class TestGetRegistryAppByRepoExternal:
         # configured branch for external-registry apps, not silently use "main"
         # (which 403s the icon for repos pinned to another branch).
         entries = [{"name": "ext-app", "repo": "ExtRepo", "branch": "release"}]
-        _write_external_registry_cache("myorg", entries)
 
         mock_reg = MagicMock()
         mock_reg.name = "myorg"
         mock_reg.repo = "MyOrgRepo"
         mock_reg.branch = "release"
+        _write_external_registry_cache(_external_registry_cache_identity(mock_reg), entries)
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
 
@@ -849,13 +852,14 @@ class TestKnownRegistryRepos:
 
     def test_unions_external_registry_app_repos(self, cache_dir, monkeypatch):
         # External registry "PCN" lists app pcn-radar whose repo is PCNRadar.
-        _write_external_registry_cache(
-            "PCN", [{"name": "pcn-radar", "repo": "PCNRadar", "branch": "mainline"}]
-        )
         mock_reg = MagicMock()
         mock_reg.name = "PCN"
         mock_reg.repo = "PCNAppRegistry"
         mock_reg.branch = "mainline"
+        _write_external_registry_cache(
+            _external_registry_cache_identity(mock_reg),
+            [{"name": "pcn-radar", "repo": "PCNRadar", "branch": "mainline"}],
+        )
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
@@ -873,14 +877,16 @@ class TestKnownRegistryRepos:
     def test_trusts_stale_cache_via_ignore_ttl(self, cache_dir, monkeypatch):
         # Age the cache past the 1h TTL; ignore_ttl must still trust the repo
         # so icons don't 403 between list_registry refreshes.
-        _write_external_registry_cache(
-            "PCN", [{"name": "pcn-radar", "repo": "PCNRadar", "branch": "mainline"}]
-        )
-        stale = time.time() - 7200
-        os.utime(_external_registry_cache_path("PCN"), (stale, stale))
         mock_reg = MagicMock()
         mock_reg.name = "PCN"
         mock_reg.repo = "PCNAppRegistry"
+        mock_reg.branch = "mainline"
+        cache_key = _external_registry_cache_identity(mock_reg)
+        _write_external_registry_cache(
+            cache_key, [{"name": "pcn-radar", "repo": "PCNRadar", "branch": "mainline"}]
+        )
+        stale = time.time() - 7200
+        os.utime(_external_registry_cache_path(cache_key), (stale, stale))
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
@@ -917,12 +923,14 @@ class TestKnownRegistryRepos:
 
 class TestExternalRegistryRepos:
     def test_returns_external_repos_only(self, cache_dir, monkeypatch):
-        _write_external_registry_cache(
-            "PCN", [{"name": "pcn-radar", "repo": "PCNRadar", "branch": "mainline"}]
-        )
         mock_reg = MagicMock()
         mock_reg.name = "PCN"
         mock_reg.repo = "PCNAppRegistry"
+        mock_reg.branch = "mainline"
+        _write_external_registry_cache(
+            _external_registry_cache_identity(mock_reg),
+            [{"name": "pcn-radar", "repo": "PCNRadar", "branch": "mainline"}],
+        )
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
@@ -1106,18 +1114,19 @@ class TestRefreshRegistries:
     async def test_success_swaps_cache_and_expires_manifests(self, cache_dir, monkeypatch):
         # Seed a stale index cache for registry "acme" listing one app, plus
         # that app's manifest cache.
-        _write_external_registry_cache(
-            "acme", [{"name": "cool-app", "repo": "R", "branch": "main"}]
-        )
-        manifest_path = _manifest_cache_path({"name": "cool-app", "repo": "R", "branch": "main"})
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text('{"name": "cool-app"}', encoding="utf-8")
-        index_path = _external_registry_cache_path("acme")
-
         mock_reg = MagicMock()
         mock_reg.name = "acme"
         mock_reg.repo = "https://github.com/acme/apps"
         mock_reg.branch = "main"
+        cache_key = _external_registry_cache_identity(mock_reg)
+        _write_external_registry_cache(
+            cache_key, [{"name": "cool-app", "repo": "R", "branch": "main"}]
+        )
+        manifest_path = _manifest_cache_path({"name": "cool-app", "repo": "R", "branch": "main"})
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text('{"name": "cool-app"}', encoding="utf-8")
+        index_path = _external_registry_cache_path(cache_key)
+
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
@@ -1153,15 +1162,16 @@ class TestRefreshRegistries:
     @pytest.mark.asyncio
     async def test_fetch_failure_preserves_stale_and_reports_failed(self, cache_dir, monkeypatch):
         # Seed a stale index cache; the refetch will fail.
-        _write_external_registry_cache(
-            "acme", [{"name": "cool-app", "repo": "R", "branch": "main"}]
-        )
-        index_path = _external_registry_cache_path("acme")
-
         mock_reg = MagicMock()
         mock_reg.name = "acme"
         mock_reg.repo = "https://github.com/acme/apps"
         mock_reg.branch = "main"
+        cache_key = _external_registry_cache_identity(mock_reg)
+        _write_external_registry_cache(
+            cache_key, [{"name": "cool-app", "repo": "R", "branch": "main"}]
+        )
+        index_path = _external_registry_cache_path(cache_key)
+
         mock_config = MagicMock()
         mock_config.registries = [mock_reg]
         monkeypatch.setattr(
@@ -1183,7 +1193,7 @@ class TestRefreshRegistries:
         # The prior cache is PRESERVED (not dropped) so apps don't vanish, and
         # the failure is surfaced instead of being reported as a sync.
         assert index_path.is_file()
-        assert _read_external_registry_cache("acme", ignore_ttl=True) == [
+        assert _read_external_registry_cache(cache_key, ignore_ttl=True) == [
             {"name": "cool-app", "repo": "R", "branch": "main"}
         ]
         assert result["ok"] is False
@@ -1273,7 +1283,9 @@ class TestRefreshRegistries:
         assert result["ok"] is True
         assert result["refreshed"] == ["acme"]
         # Only the well-formed object entry was cached.
-        cached = _read_external_registry_cache("acme", ignore_ttl=True)
+        cached = _read_external_registry_cache(
+            _external_registry_cache_identity(mock_reg), ignore_ttl=True
+        )
         assert cached == [
             {
                 "name": "good",
@@ -1323,7 +1335,9 @@ class TestRefreshRegistries:
         result = await refresh_registries()
 
         assert result["ok"] is True
-        cached = _read_external_registry_cache("acme", ignore_ttl=True)
+        cached = _read_external_registry_cache(
+            _external_registry_cache_identity(mock_reg), ignore_ttl=True
+        )
         # Only the single kebab-case-valid entry survived; every unsafe name
         # was dropped before it could be cached or listed.
         assert [e["name"] for e in cached] == ["good-app"]
@@ -2066,7 +2080,9 @@ class TestConfiguredBranchOverride:
             entries = await reg._fetch_and_cache_external_registry(_Reg())
         assert entries[0]["branch"] == "develop"
         # The cached copy carries the override too — install reads the cache.
-        cached = reg._read_external_registry_cache("acme", ignore_ttl=True)
+        cached = reg._read_external_registry_cache(
+            reg._external_registry_cache_identity(_Reg()), ignore_ttl=True
+        )
         assert cached[0]["branch"] == "develop"
         # The divergence is logged, naming both branches and the entry.
         divergence_logs = [r for r in caplog.records if "declares branch" in r.getMessage()]
@@ -2184,8 +2200,11 @@ class TestConfiguredBranchOverride:
 
         import kiro_crew.apps.registry as reg
 
+        configured_reg = SimpleNamespace(
+            name="acme", repo="https://github.com/acme/apps", branch="develop"
+        )
         reg._write_external_registry_cache(
-            "acme",
+            reg._external_registry_cache_identity(configured_reg),
             [
                 {
                     "name": "legacy-app",
@@ -2197,9 +2216,7 @@ class TestConfiguredBranchOverride:
             ],
         )
         mock_config = MagicMock()
-        mock_config.registries = [
-            SimpleNamespace(name="acme", repo="https://github.com/acme/apps", branch="develop")
-        ]
+        mock_config.registries = [configured_reg]
         monkeypatch.setattr(
             "kiro_crew.apps.registry._load_registry_file",
             lambda: [],

@@ -2878,17 +2878,54 @@ def _credential_free_external_registry_entries(
     return [_credential_free_external_registry_value(entry) for entry in entries]
 
 
-def _external_registry_cache_path_for_identity(name: str) -> Path:
+def _external_registry_cache_identity(reg: Any) -> str:
+    """Stable cache identity for one configured registry source.
 
-    # Pure-safe names keep the historical byte-identical path (no hash suffix)
-    # so existing caches stay valid. Names carrying disallowed characters (e.g.
-    # URL-derived registry names) are slugified AND disambiguated with a short
-    # stable hash of the ORIGINAL name, so two distinct such names can never
-    # clobber the same ``_registry_<name>.json`` cache file.
+    A display name is not provenance: operators may repoint the same name to a
+    different repository or branch. Include the normalized credential-free
+    source coordinates so stale-fallback readers cannot answer from the old
+    source after that change.
+
+    ``branch`` is read defensively: registry objects reaching this helper are
+    duck-typed and may not carry the attribute at all. An absent branch, a
+    ``None`` branch, and an empty-string branch all mean "the source's default
+    branch" and share one identity component (the empty string), which can
+    never collide with a real branch because a configured branch is always a
+    non-empty string.
+    """
+    name = _public_registry_name(reg)
+    repo = _normalize_git_target(reg.repo)
+    branch = str(getattr(reg, "branch", "") or "")
+    return f"{name}|{repo}|{branch}"
+
+
+def _external_registry_cache_path_for_identity(name: str, *, slug_cap: int | None = None) -> Path:
+
+    # Pure-safe names map to the historical byte-identical path (no hash
+    # suffix). A coordinate identity from _external_registry_cache_identity
+    # always contains "|", so live index caches always take the slug+digest
+    # form; the byte-identical branch remains load-bearing for LEGACY path
+    # computation (_legacy_external_registry_cache_path and the name-keyed
+    # cleanup need to derive exactly the file an older release wrote). Names
+    # carrying disallowed characters are slugified AND disambiguated with a
+    # short stable hash of the ORIGINAL name, so two distinct such names can
+    # never clobber the same ``_registry_<name>.json`` cache file.
+    #
+    # ``slug_cap`` bounds the human-readable prefix for CURRENT identity
+    # paths (an URL-derived name repeats much of the repo URL, and an
+    # over-long filename makes every cache write fail with ENAMETOOLONG,
+    # silently disabling the stale-fallback). Identity lives in the digest
+    # of the FULL original string, so truncation can never make two names
+    # collide. The DEFAULT is uncapped: that is the byte-identical
+    # derivation every previous release used, and legacy cleanup must keep
+    # deriving exactly those paths — a capped derivation would miss a
+    # credential-bearing legacy filename whose slug ran past the cap.
     if re.match(r"^[A-Za-z0-9_\-]+$", name):
         safe = name
     else:
         slug = re.sub(r"[^A-Za-z0-9_\-]+", "-", name).strip("-") or "registry"
+        if slug_cap is not None:
+            slug = slug[:slug_cap].strip("-") or "registry"
         digest = sha256(name.encode("utf-8")).hexdigest()[:8]
         safe = f"{slug}-{digest}"
     return _manifest_cache_dir() / f"_registry_{safe}.json"
@@ -2896,7 +2933,7 @@ def _external_registry_cache_path_for_identity(name: str) -> Path:
 
 def _external_registry_cache_path(name: str) -> Path:
     safe_name = _credential_free_external_registry_value(name)
-    return _external_registry_cache_path_for_identity(safe_name)
+    return _external_registry_cache_path_for_identity(safe_name, slug_cap=120)
 
 
 def _legacy_external_registry_cache_path(name: str) -> Path:
@@ -2914,6 +2951,36 @@ def _remove_legacy_credential_registry_cache(name: str) -> None:
         legacy_path.unlink(missing_ok=True)
     except OSError:
         logger.warning("Failed to remove a legacy credential-bearing registry cache")
+
+
+def _remove_legacy_name_keyed_registry_cache(reg: Any) -> None:
+    """Best-effort removal of caches written under the pre-identity key.
+
+    Before the cache identity included source coordinates, the index cache
+    was keyed on ``reg.name or reg.repo`` alone. No reader derives that path
+    any more, so the file is reclaimed here rather than left behind — in BOTH
+    filename forms: the sanitized one a recent release wrote, and the raw one
+    an older release wrote, whose filename can embed URL userinfo when the
+    display name is a credential-bearing URL. Runs before the fetch so the
+    credential-bearing artifact is removed even when the registry is
+    unreachable. Both derivations are deliberately UNCAPPED
+    (``slug_cap=None``): previous releases wrote uncapped slugs, and a capped
+    derivation would miss any legacy file whose slug ran past the cap.
+    """
+    legacy_name = str(getattr(reg, "name", "") or "") or reg.repo
+    current_path = _external_registry_cache_path(_external_registry_cache_identity(reg))
+    for legacy_path in (
+        _external_registry_cache_path_for_identity(
+            _credential_free_external_registry_value(legacy_name)
+        ),
+        _legacy_external_registry_cache_path(legacy_name),
+    ):
+        if legacy_path == current_path:
+            continue
+        try:
+            legacy_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove a legacy name-keyed registry cache")
 
 
 def _read_external_registry_cache(
@@ -3254,8 +3321,12 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     """
     # An unnamed legacy registry used its raw URL as the old cache identity,
     # which exposed HTTP userinfo in the filename. Remove that exact artifact
-    # even when this is a fresh fetch with no preceding cache read.
+    # even when this is a fresh fetch with no preceding cache read — and the
+    # pre-identity name-keyed caches with it (both filename forms), so a
+    # credential-bearing artifact is reclaimed even when the fetch below
+    # fails. No reader derives any of these paths any more.
     _remove_legacy_credential_registry_cache(reg.repo)
+    _remove_legacy_name_keyed_registry_cache(reg)
     public_registry_repo = _strip_git_target_userinfo(reg.repo)
     name = _public_registry_name(reg)
     entries = await _fetch_external_registry_index(reg.repo, reg.branch)
@@ -3315,7 +3386,7 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
-    await asyncio.to_thread(_write_external_registry_cache, name, entries)
+    await asyncio.to_thread(_write_external_registry_cache, _external_registry_cache_identity(reg), entries)
     return entries
 
 
@@ -3333,7 +3404,7 @@ async def _load_external_registries() -> list[dict[str, Any]]:
     all_entries: list[dict[str, Any]] = []
 
     async def _load_one(reg) -> list[dict[str, Any]]:
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
 
         # Try cache first
@@ -3458,7 +3529,7 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     failed: list[str] = []
     results: list[dict[str, Any]] = []
     for reg in registries:
-        name = reg.name or reg.repo
+        name = _external_registry_cache_identity(reg)
         display_name = _public_registry_name(reg)
         # Read the (possibly stale) prior index up front so we know which
         # per-app manifest caches this registry contributed, even if the
@@ -4058,7 +4129,7 @@ def _external_registry_row(name: str) -> dict[str, Any] | None:
     attached here at the lookup boundary so a stale cache cannot omit it.
     """
     for reg in _effective_registries():
-        cache_name = reg.name or reg.repo
+        cache_name = _external_registry_cache_identity(reg)
         public_name = _public_registry_name(reg)
         cached = _read_external_registry_cache(cache_name, ignore_ttl=True)
         if cached:
@@ -4132,7 +4203,7 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         # this is its sibling and must refuse the same way.
         return []
     for reg in _effective_registries():
-        cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+        cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
                 _apply_configured_branch([entry], reg)
@@ -4207,7 +4278,7 @@ def _external_registry_app_by_repo(repo: str) -> dict[str, Any] | None:
     blob-proxy worker. Fails open to ``None``."""
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
@@ -4256,7 +4327,7 @@ def _external_registry_repos() -> set[str]:
     repos: set[str] = set()
     try:
         for reg in _effective_registries():
-            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            cached = _read_external_registry_cache(_external_registry_cache_identity(reg), ignore_ttl=True)
             for entry in cached or []:
                 if (
                     isinstance(entry, dict)
