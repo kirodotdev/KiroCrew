@@ -522,14 +522,17 @@ async def test_kas_readiness_accepts_provenance_less_wire_for_injected_servers(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+@pytest.mark.parametrize("catalog", [True, False], ids=["catalog", "no-catalog"])
 async def test_kas_default_managed_core_is_hoisted_and_ready_on_provenance_less_wire(
-    kas_readiness_wire, monkeypatch, resume
+    kas_readiness_wire, monkeypatch, resume, catalog
 ):
     """The ordinary install: ``kirocrew-core`` declared only by the agent spec,
     nothing stubbed. The runtime carries the projected declaration in the
     session-level array (``2.18.0-payload-probe.json``: that payload connects
     Crew's own server past colliding global and workspace entries on new and
     load), so the provenance-less wire reads it as injected and startup completes.
+    Exposure comes from the connected entry's own catalog when it carries one
+    (2.18.0 through 2.22.0 all do), and only otherwise from a tag frame.
     """
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
@@ -556,10 +559,13 @@ async def test_kas_default_managed_core_is_hoisted_and_ready_on_provenance_less_
         sent = wire.runtime._kas_custom_agents.call_args
         assert sent.kwargs["session_key"] == "subagent:default-worker"
         await wire.take(wire.reads)
-        wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
-        await wire.take(wire.reads)
-        assert not start.done(), "exposure is still required for an injected server"
-        wire.tags("kirocrew-core", "kirocrew-dashboard")
+        if catalog:
+            wire.status("connected", origin=None, tools=[{"name": "ping", "disabled": False}])
+        else:
+            wire.status("connected", origin=None)
+            await wire.take(wire.reads)
+            assert not start.done(), "exposure is still required for an injected server"
+            wire.tags("kirocrew-core", "kirocrew-dashboard")
         handle = await asyncio.wait_for(start, 3.0)
         assert set(handle.mcp_session_report().payload()["ready"]) == {
             "kirocrew-core",
@@ -603,21 +609,20 @@ async def test_kas_readiness_accepts_pre_response_reports_for_unchanged_mode(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
 @pytest.mark.parametrize(
-    "tools,excluded,catalog_state,needs_tag",
+    "tools,excluded,catalog_state",
     [
-        (["read"], [], "enabled", False),
-        (["*"], ["@kirocrew-core"], "enabled", False),
-        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "enabled", False),
-        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "empty", False),
+        (["read"], [], "enabled"),
+        (["*"], ["@kirocrew-core"], "enabled"),
+        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "enabled"),
+        (["@kirocrew-core/memory_recall"], ["@kirocrew-core/memory_recall"], "empty"),
         (
             ["@kirocrew-core"],
             ["@kirocrew-core/memory_recall", "@kirocrew-core/learn_add"],
             "enabled",
-            False,
         ),
-        (["@kirocrew-core/memory_recall"], [], "disabled", False),
-        (["*"], [], "disabled", False),
-        (["@kirocrew-core"], ["@kirocrew-core/learn_add"], "enabled", True),
+        (["@kirocrew-core/memory_recall"], [], "disabled"),
+        (["*"], [], "disabled"),
+        (["@kirocrew-core"], ["@kirocrew-core/learn_add"], "enabled"),
     ],
     ids=[
         "no-server-grant",
@@ -627,13 +632,17 @@ async def test_kas_readiness_accepts_pre_response_reports_for_unchanged_mode(
         "excluded-all-tools",
         "disabled-selected-tool",
         "disabled-all-tools",
-        "unapproved-recall-still-needs-exposure",
+        "unapproved-recall-exposed-by-catalog",
     ],
 )
 async def test_kas_readiness_respects_projected_tool_restrictions(
-    kas_readiness_wire, monkeypatch, resume, tools, excluded, catalog_state, needs_tag
+    kas_readiness_wire, monkeypatch, resume, tools, excluded, catalog_state
 ):
-    """A declared server with intentionally hidden tools must still connect."""
+    """A declared server with intentionally hidden tools must still connect.
+
+    The last case is the one with an exposed tool: its connected catalog is the
+    exposure evidence, so no tag frame is needed (none arrives on 2.22.0).
+    """
     from kiro_crew.acp.kas_agents import to_client_custom_agent
 
     wire = kas_readiness_wire
@@ -670,10 +679,6 @@ async def test_kas_readiness_respects_projected_tool_restrictions(
             await wire.take(wire.reads)
         assert not start.done(), "A restricted tool policy does not waive connection readiness"
         wire.status("connected", tools=catalog)
-        if needs_tag:
-            await wire.take(wire.reads)
-            assert not start.done(), "Approval policy does not remove exposure requirements"
-            wire.tags("kirocrew-core", "kirocrew-dashboard")
         handle = await asyncio.wait_for(start, 3.0)
         assert set(handle.mcp_session_report().payload()["ready"]) == {
             "kirocrew-core",
