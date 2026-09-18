@@ -2041,6 +2041,17 @@ class TestPidLivenessPosix:
         monkeypatch.setattr(pc.os, "kill", fake_kill)
         assert pc.pid_liveness(os.getpid()) == pc.PID_UNSIGNALABLE
 
+    def test_pid_liveness_unsignalable_for_out_of_range_pid(self, monkeypatch):
+        """A corrupt PID stamp is unknown, never evidence that a holder died."""
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+
+        def fake_kill(pid, sig):
+            raise OverflowError("Python int too large to convert to C long")
+
+        monkeypatch.setattr(pc.os, "kill", fake_kill)
+        assert pc.pid_liveness(10**100) == pc.PID_UNSIGNALABLE
+        assert pc.pid_exists(10**100) is True
+
     def test_pid_exists_true_on_permission_error(self, monkeypatch):
         # pid_exists EPERM branch: a PID we exist-but-cannot-signal must still
         # count as existing. Force os.kill to raise PermissionError; pid_exists

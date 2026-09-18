@@ -5878,7 +5878,8 @@ def pid_liveness(pid: int) -> str:
     a PID we merely can't signal is wrong) branch on ``PID_UNSIGNALABLE``.
 
     POSIX: ``os.kill(pid, 0)`` — ``ProcessLookupError`` -> DEAD,
-    ``PermissionError`` -> UNSIGNALABLE, success -> ALIVE.
+    ``PermissionError`` or an out-of-range PID -> UNSIGNALABLE, success ->
+    ALIVE.
     Windows: no EPERM distinction for our processes; map ``pid_exists`` onto
     DEAD/ALIVE (UNSIGNALABLE never returned).
     """
@@ -5889,6 +5890,11 @@ def pid_liveness(pid: int) -> str:
         except ProcessLookupError:
             return PID_DEAD
         except PermissionError:
+            return PID_UNSIGNALABLE
+        except OverflowError:
+            # The PID may have come from corrupt persistent state.  It is not
+            # evidence that the named process is dead, so preserve fail-closed
+            # callers by classifying it as unknown/unsignalable.
             return PID_UNSIGNALABLE
         except OSError:
             # Unknown errno — be conservative and treat as unsignalable
@@ -5997,7 +6003,7 @@ def pid_exists(pid: int) -> bool:
             return True
         except ProcessLookupError:
             return False
-        except (PermissionError, OSError):
+        except (PermissionError, OSError, OverflowError):
             return True  # exists but we can't signal it
     try:
         _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806 — Windows API constant
