@@ -1942,6 +1942,50 @@ def _caller_channel_id() -> str:
     return ctx.channel_id if ctx is not None else ""
 
 
+#: Prefix of a Slack session key (``canonical_key(reply_ts)`` == ``slack:<ts>``).
+_SLACK_KEY_PREFIX = "slack:"
+
+#: A bare Slack thread timestamp: "{epoch_seconds}.{microseconds}" — pure
+#: digits with exactly one dot. Distinguishes the legacy ``slack:<ts>`` thread
+#: key from a canonical multi-segment key or a DM bucket, neither of which is a
+#: postable thread ts.
+_SLACK_TS_RE = re.compile(r"^\d+\.\d+$")
+
+
+def _caller_thread_id() -> str:
+    """The Slack thread the calling session runs in, or ``""``.
+
+    A cron created from within a Slack thread should reply INTO that thread, but
+    ``cron_add`` only set ``thread_ts`` when passed explicitly -- so a cron
+    scheduled by an agent running in a Slack thread produced a job with no
+    thread, and its results posted as a NEW top-level channel message instead of
+    a thread reply.
+
+    The thread is recoverable with no extra gateway state: a Slack session key
+    is ``canonical_key(reply_ts)`` == ``"slack:<thread_ts>"`` (see
+    slack/transport_dispatch.py), where ``reply_ts`` is the bare thread
+    timestamp. So the caller's own strict session key already names its thread.
+    Parsing it here keeps the fix entirely inside the MCP tool (no CallerContext
+    schema change, no claim/rekey plumbing, no SessionManager import), and is
+    correct under pooling because the key comes from the strict resolver, not the
+    forgeable environment.
+
+    Returns ``""`` for any non-Slack or unrecognized key (DM buckets, dashboard,
+    cron, canonical multi-segment keys) so the caller falls back to no thread.
+    """
+    key = _authz_session_key()
+    if not key.startswith(_SLACK_KEY_PREFIX):
+        return ""
+    rest = key[len(_SLACK_KEY_PREFIX) :]
+    # Legacy Slack thread key is exactly ``slack:<ts>`` where <ts> is the bare
+    # thread timestamp: pure digits, one dot (Slack's "{epoch}.{micros}"). A
+    # canonical multi-segment key (``slack:agent:chat_type:...``) or a DM bucket
+    # is NOT a postable thread ts, so require the bare-ts shape.
+    if _SLACK_TS_RE.match(rest):
+        return rest
+    return ""
+
+
 def _authz_session_key() -> str:
     """The session key an ownership decision may be made from, or ``""``.
 
@@ -2496,6 +2540,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 if not is_valid_skip_date(d):
                     return f"Error: invalid skip_date: {redact(str(d))!r} (expected YYYY-MM-DD)"
         thread_ts = (args.get("thread_ts") or "").strip() or None
+        # Auto-inherit the caller's thread when not passed explicitly, mirroring
+        # the channel default above: a cron scheduled from inside a Slack thread
+        # replies INTO that thread rather than posting a new top-level message.
+        # Only meaningful with a channel (a thread_ts is scoped to its channel),
+        # so it is gated on one being resolved.
+        if thread_ts is None and channel:
+            thread_ts = _caller_thread_id() or None
         # Resolve EVERY first-save field before the single locked add_job() so
         # the job is persisted fully-formed in one transaction -- no
         # create-then-mutate + second unlocked _save() window that a crash or a

@@ -93,6 +93,98 @@ class TestCronAddThreadTs:
             assert "def" in result
 
 
+class TestCronAddInheritsCallerThread:
+    """A cron scheduled by an agent running IN a Slack thread inherits that
+    thread automatically, with no explicit thread_ts.
+
+    The caller's strict session key is ``slack:<thread_ts>`` (canonical_key of
+    the bare reply_ts), so cron_add can recover the thread from the caller's own
+    identity — no gateway/caller-schema change. Gated on a channel being present,
+    since a thread_ts is meaningless without its channel.
+    """
+
+    @staticmethod
+    def _mock_job():
+        return type(
+            "Job",
+            (),
+            {
+                "id": "thr",
+                "name": "test",
+                "timezone": "",
+                "schedule": type(
+                    "S",
+                    (),
+                    {"kind": "every", "every_secs": 300, "cron_expr": None, "at_ts": None},
+                )(),
+                "agent_id": "",
+            },
+        )()
+
+    def test_slack_caller_thread_is_inherited(self, tmp_path: Path, monkeypatch) -> None:
+        # Caller runs in a Slack thread: session key is slack:<thread_ts>.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "slack:1789696119.009399")
+        with patch("kiro_crew.mcp_cron.CronService") as mock_svc_cls:
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.add_job.return_value = self._mock_job()
+            _call_tool(
+                "cron_add",
+                {
+                    "name": "ops",
+                    "message": "check",
+                    "every": 300,
+                    "channel": "C0AP77JJSN6",
+                    # no explicit thread_ts
+                },
+            )
+            kw = mock_svc.add_job.call_args.kwargs
+            assert kw.get("thread_ts") == "1789696119.009399", "caller thread not inherited"
+
+    def test_explicit_thread_ts_wins_over_caller(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "slack:1789696119.009399")
+        with patch("kiro_crew.mcp_cron.CronService") as mock_svc_cls:
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.add_job.return_value = self._mock_job()
+            _call_tool(
+                "cron_add",
+                {
+                    "name": "ops",
+                    "message": "check",
+                    "every": 300,
+                    "channel": "C0AP77JJSN6",
+                    "thread_ts": "1776298241.408339",
+                },
+            )
+            kw = mock_svc.add_job.call_args.kwargs
+            assert kw.get("thread_ts") == "1776298241.408339", "explicit thread_ts overridden"
+
+    def test_non_slack_caller_gets_no_thread(self, tmp_path: Path, monkeypatch) -> None:
+        # Dashboard caller: no thread to inherit.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:conftest-slot")
+        with patch("kiro_crew.mcp_cron.CronService") as mock_svc_cls:
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.add_job.return_value = self._mock_job()
+            _call_tool(
+                "cron_add",
+                {"name": "ops", "message": "check", "every": 300, "channel": "C0AP77JJSN6"},
+            )
+            kw = mock_svc.add_job.call_args.kwargs
+            assert kw.get("thread_ts") is None, "non-Slack caller must not inherit a thread"
+
+    def test_no_channel_no_thread_inherit(self, tmp_path: Path, monkeypatch) -> None:
+        # Even a Slack caller: without a channel a thread_ts is meaningless.
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "slack:1789696119.009399")
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+        with patch("kiro_crew.mcp_cron._caller_channel_id", return_value=""):
+            with patch("kiro_crew.mcp_cron.CronService") as mock_svc_cls:
+                mock_svc = mock_svc_cls.return_value
+                mock_svc.add_job.return_value = self._mock_job()
+                _call_tool("cron_add", {"name": "ops", "message": "check", "every": 300})
+                kw = mock_svc.add_job.call_args.kwargs
+                assert kw.get("thread_ts") is None
+                assert kw.get("channel") is None
+
+
 class TestCronUpdateThreadTs:
     """Forwarding-only coverage: ``CronService`` is a ``MagicMock`` here.
 
