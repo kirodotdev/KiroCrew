@@ -114,10 +114,12 @@ METHOD_SET_MODE = "session/set_mode"
 METHOD_PROMPT = "session/prompt"
 METHOD_CANCEL = "session/cancel"
 METHOD_REQUEST_PERMISSION = "session/request_permission"
+METHOD_ELICITATION_CREATE = "elicitation/create"
 METHOD_SESSION_UPDATE = "session/update"
 METHOD_METADATA = "_kiro.dev/metadata"
 METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
 METHOD_SESSION_LOAD = "session/load"
+METHOD_SESSION_LIST = "session/list"
 #: The other standard restore verb, for an agent that keeps sessions but does not
 #: implement full loading: it restores the session WITHOUT replaying the previous
 #: messages. Its request and response carry the same fields as ``session/load``'s,
@@ -285,6 +287,15 @@ CC_PERMISSION_MODE_AUTO = "auto"
 # something this constant closes.
 CC_PERMISSION_MODE_BYPASS = "bypassPermissions"
 
+# Agent-role selector vocabulary served to ACP editors. Model selection uses
+# session/set_config_option; reasoning effort uses session/set_mode.
+CONFIG_OPTION_MODEL = "model"
+CONFIG_CATEGORY_MODEL = "model"
+CONFIG_OPTION_TYPE_SELECT = "select"
+CONFIG_OPTION_TYPE_BOOLEAN = "boolean"
+SESSION_MODE_DEFAULT_ID = "default"
+SESSION_MODE_DEFAULT_NAME = "Default"
+
 # ── ACP Session Update Types ──
 
 UPDATE_USER_MESSAGE_CHUNK = "user_message_chunk"
@@ -335,6 +346,21 @@ OUTCOME_SELECTED = "selected"
 OUTCOME_CANCELLED = "cancelled"
 OPTION_ALLOW_ONCE = "allow_once"
 OPTION_ALLOW_ALWAYS = "allow_always"
+OPTION_REJECT_ONCE = "reject_once"
+OPTION_REJECT_ALWAYS = "reject_always"
+
+# Shared JSON-RPC 2.0 errors for both client and agent roles.
+JSONRPC_PARSE_ERROR = -32700
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_METHOD_NOT_FOUND = -32601
+JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
+
+# ACP agent capabilities advertised during initialize.
+CAP_LOAD_SESSION = "loadSession"
+CAP_SESSION_CAPABILITIES = "sessionCapabilities"
+CAP_SESSION_LIST = "list"
+CAP_SESSION_RESUME = "resume"
 
 # ── Stop Reasons ──
 
@@ -477,6 +503,18 @@ def classify_stop_reason(
         return StopClass(STOP_CLASS_FAILED, reason, retryable=True)
     return StopClass(STOP_CLASS_FAILED, reason, known=False)
 
+
+# Stop reasons permitted by the public ACP v1 session/prompt schema. Internal
+# recovery sentinels are never emitted to an editor.
+ACP_VALID_STOP_REASONS = frozenset(
+    {
+        STOP_REASON_END_TURN,
+        "max_tokens",
+        "max_turn_requests",
+        STOP_REASON_REFUSAL,
+        STOP_REASON_CANCELLED,
+    }
+)
 
 # ── Approval Modes ──
 

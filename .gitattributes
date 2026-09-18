@@ -62,3 +62,7 @@ test/fixtures/acp_frames/**/*.json text eol=lf
 # checkout bytes, so a CRLF rewrite on a Windows clone would refuse every pi
 # session there and only there. Pin LF like the vendor manifest above.
 src/kiro_crew/agent_sdk/gate_extensions/**/*.ts text eol=lf
+
+# The ACP conformance oracle hashes checkout bytes; CRLF conversion invalidates
+# the pinned upstream checksums on Windows.
+test/conformance/vendor/acp-v1/* text eol=lf

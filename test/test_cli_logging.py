@@ -372,6 +372,22 @@ class TestSetupCliLoggingForeground:
         assert type(fh) is RotatingFileHandler
         assert fh.level == logging.INFO
 
+    def test_acp_preserves_queued_logging(self):
+        from kiro_crew.cli_acp import _configure_logging
+
+        _setup_cli_logging("acp", 1)
+        queued = [
+            h for h in logging.getLogger("kiro_crew").handlers if isinstance(h, _CliLogQueueHandler)
+        ]
+        assert len(queued) == 1
+
+        _configure_logging(verbose=False)
+
+        assert queued[0] in logging.getLogger("kiro_crew").handlers
+        for logger in (logging.getLogger(), logging.getLogger("kiro_crew")):
+            assert not any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
+        assert cli_mod._LOG_QUEUE_LISTENER is not None
+
     def test_record_written_once_to_file(self):
         _setup_cli_logging("gateway", 1)
         logging.getLogger("kiro_crew.test_foreground").warning("fg-sentinel")

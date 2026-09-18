@@ -2615,6 +2615,25 @@ class TestKillSubprocessPosix:
             except subprocess.TimeoutExpired:
                 pass
 
+    def test_kill_process_group_uses_retained_pgid(self, monkeypatch):
+        calls: list[tuple[int, int]] = []
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(
+            pc,
+            "os",
+            types.SimpleNamespace(killpg=lambda pgid, sig: calls.append((pgid, sig))),
+        )
+
+        assert pc.kill_process_group(4321, pc.SIGKILL) is True
+        assert calls == [(4321, pc.SIGKILL)]
+
+    def test_kill_process_group_refuses_reserved_or_own_group(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        with pytest.raises(ValueError):
+            pc.kill_process_group(1, pc.SIGKILL)
+        with pytest.raises(ValueError):
+            pc.kill_process_group(pc._OWN_PGID, pc.SIGKILL)
+
 
 class TestTaskkillErrorMapping:
     """Regression guards for the Windows taskkill rc -> exception mapping.

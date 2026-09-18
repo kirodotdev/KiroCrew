@@ -106,6 +106,7 @@ class _Req:
     def __init__(self, state, slot: str = NAME, body: dict | None = None) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        self.headers: dict[str, str] = {}
         self._has_body = body is not None
         self._body = body if body is not None else {}
         # ``body is None`` is NO body, which is what every call site here sends and

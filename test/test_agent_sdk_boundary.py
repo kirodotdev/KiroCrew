@@ -5,10 +5,10 @@ application code. This test pins the three properties that make that gate
 trustworthy rather than decorative, in the shape the sibling architecture gates
 use (``test_messaging_import_purity.py``, ``test_workflows_architecture.py``):
 
-1. **The exempt set is exactly the boundary.** Only ``agent_sdk/``, ``acp/`` and
-   ``providers/`` may reach the ACP layer, the set is pinned here, and each
-   prefix must name a directory that exists. Widening the boundary fails a test
-   rather than passing quietly.
+1. **The exempt set is exactly the boundary.** Only ``agent_sdk/``, ``acp/``,
+   ``acp_server/`` and ``providers/`` may reach the ACP layer, the set is pinned
+   here, and each prefix must name a directory that exists. Widening the boundary
+   fails a test rather than passing quietly.
 2. **The recorded violations still exist.** A baseline entry that has been paid
    off must be pruned, or the list stops shrinking and starts lying.
 3. **The scan cannot be walked around.** ``TYPE_CHECKING``-only imports,
@@ -83,16 +83,15 @@ def test_the_sdk_package_exists_and_is_exempt(gate):
 
 
 def test_the_exempt_set_is_exactly_the_boundary(gate):
-    """A fourth exemption is someone widening the boundary; ratchet the set.
+    """Boundary changes require an explicit reviewed update to this contract.
 
-    Hand-listing all 230-odd top-level modules as "consumers" would rot on every
-    new module and prove nothing. What is worth pinning is the SHORT side: the
-    trees allowed to reach the ACP layer. providers/ is on it only until the
-    RFC's final phase deletes the package.
+    Hand-listing all consumer modules would rot on every new module. The short
+    boundary list is pinned instead, so any future exemption changes this test.
     """
     assert set(gate.EXEMPT_PREFIXES) == {
         "src/kiro_crew/agent_sdk/",
         "src/kiro_crew/acp/",
+        "src/kiro_crew/acp_server/",
         "src/kiro_crew/providers/",
     }
 

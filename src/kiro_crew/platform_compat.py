@@ -4547,6 +4547,23 @@ def kill_process_tree(pid: int, sig: int = SIGTERM) -> bool:
     return True
 
 
+def kill_process_group(pgid: int, sig: int = SIGTERM) -> bool:
+    """Signal a retained POSIX process-group id after its leader may have exited.
+
+    A group id remains reserved while any member survives, so callers that spawned
+    an isolated session can safely retain ``pgid == leader_pid`` for final cleanup.
+    The broadcast and self-group guards match :func:`kill_process_tree`.
+    """
+    if not IS_POSIX:
+        raise OSError("process-group signaling is unavailable on Windows")
+    if type(pgid) is not int or pgid <= 1:
+        raise ValueError(f"kill_process_group: refusing non-int/reserved pgid {pgid!r}")
+    if pgid == _OWN_PGID:
+        raise ValueError(f"kill_process_group: refusing own process group {pgid}")
+    os.killpg(pgid, sig)
+    return True
+
+
 def _open_process_query_handle(pid: int) -> int | None:
     """Open a QUERY-ONLY Windows handle to *pid*, or ``None``.
 
