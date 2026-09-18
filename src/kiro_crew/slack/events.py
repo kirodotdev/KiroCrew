@@ -82,6 +82,12 @@ from kiro_crew.slack.files import (
     process_slack_files,
     voice_memo_notes,
 )
+from kiro_crew.slack.format import (
+    ForwardedFile,
+    ForwardedMessage,
+    assemble_forward_message,
+    forwarded_files_from_slack,
+)
 from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
@@ -2005,6 +2011,35 @@ def _normalize_message_blocks(raw: list) -> list[dict]:
     return result
 
 
+def _is_share_attachment(att: object) -> bool:
+    """True for a forwarded-message attachment (``is_share``/``is_msg_unfurl``)."""
+    return isinstance(att, dict) and bool(att.get("is_share") or att.get("is_msg_unfurl"))
+
+
+def _has_share_attachments(event: dict) -> bool:
+    """True when the event carries any forwarded-message share attachment.
+
+    Detected independently of whether top-level ``text`` is set, so a native
+    forward that arrives WITH an accompanying note (the note in ``text``, the
+    forwarded body in the ``attachments`` array) is still recognized as a
+    forward instead of being treated as a plain note.
+    """
+    return any(_is_share_attachment(att) for att in (event.get("attachments") or []))
+
+
+def _first_share_attachment(event: dict) -> dict:
+    """Return the first forwarded-message share attachment, or ``{}`` if none.
+
+    Supplies the provenance (``author_id`` / ``channel_id`` / ``ts`` /
+    ``from_url``) for the untrusted-content fence. When one event forwards
+    several messages, the first share attachment supplies the provenance anchor.
+    """
+    for att in event.get("attachments") or []:
+        if _is_share_attachment(att):
+            return att
+    return {}
+
+
 def _extract_shared_text(event: dict) -> str:
     """Recover message text from forwarded-message attachments.
 
@@ -2059,6 +2094,30 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def _extract_share_attachment_text(att: dict) -> str:
+    """Recover message text from one forwarded-message share attachment."""
+    att_text = att.get("text") or ""
+    if att_text:
+        return att_text
+    # att["blocks"] is already flat; att["message_blocks"] needs normalization.
+    att_blocks = att.get("blocks")
+    if isinstance(att_blocks, list) and att_blocks:
+        extracted = _extract_blocks_text(att_blocks)
+        if extracted:
+            return extracted
+    msg_blocks = att.get("message_blocks")
+    if msg_blocks:
+        normalized = _normalize_message_blocks(msg_blocks)
+        if normalized:
+            extracted = _extract_blocks_text(normalized)
+            if extracted:
+                return extracted
+    fallback = att.get("fallback") or ""
+    if fallback and fallback not in _SLACK_BLOCK_FALLBACKS:
+        return fallback
+    return ""
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -2075,10 +2134,66 @@ async def _route_message(
     team_id = event.get("team", "")
     files = event.get("files", [])
 
-    # Slack forwards carry content in attachments, not text — recover it so the
-    # forward isn't silently dropped by the (not text and not files) guard below.
-    # Also recover when Slack sets text to a generic Block Kit fallback placeholder.
-    if not text or text in _SLACK_BLOCK_FALLBACKS:
+    # Slack forwards carry the real body in the ``attachments`` array
+    # (``is_share`` / ``is_msg_unfurl``), NOT in top-level ``text`` — and when a
+    # forward carries an accompanying note, that note occupies top-level
+    # ``text``. A gate that only fires on empty text would therefore (1) drop the
+    # forwarded body of a note-bearing forward entirely, and (2) route a
+    # note-less forward's third-party body as if the owner had authored it. So:
+    # detect share attachments regardless of whether ``text`` is set, quarantine
+    # the third-party body in the same nonce'd untrusted-content fence the
+    # message shortcut uses (XPIA / prompt-injection guard), and keep the owner's
+    # note OUTSIDE the fence as trusted first-party intent.
+    #
+    # Files carried by the forwarded message (inside the share attachments) are
+    # surfaced as metadata lines in the fence, so an image-only forward routes a
+    # non-empty fence instead of being silently dropped. Redaction of the
+    # third-party body lives in assemble_forward_message; the owner's note is
+    # first-party text and is not redacted, matching handler.handle_message.
+    if _has_share_attachments(event):
+        share_entries: list[tuple[dict, str, tuple[ForwardedFile, ...]]] = []
+        for att in event.get("attachments") or []:
+            if not _is_share_attachment(att):
+                continue
+            share_entries.append(
+                (
+                    att,
+                    _extract_share_attachment_text(att),
+                    forwarded_files_from_slack(att.get("files")),
+                )
+            )
+        if share_entries and not any(body for _, body, _ in share_entries):
+            event_fallback = _extract_shared_text(event)
+            if event_fallback:
+                att, _, share_files = share_entries[0]
+                share_entries[0] = (att, event_fallback, share_files)
+
+        forwards = [
+            ForwardedMessage(
+                text=body,
+                files=share_files,
+                author_id=att.get("author_id", "") or "",
+                channel=att.get("channel_id", "") or "",
+                ts=att.get("ts", "") or "",
+                from_url=att.get("from_url", "") or "",
+            )
+            for att, body, share_files in share_entries
+            if body or share_files
+        ]
+        if forwards:
+            note = "" if (not text or text in _SLACK_BLOCK_FALLBACKS) else text
+            text = "\n\n".join(
+                assemble_forward_message(fwd, note=note if index == 0 else "")
+                for index, fwd in enumerate(forwards)
+            )
+        elif text in _SLACK_BLOCK_FALLBACKS:
+            # Share attachment(s) present but nothing extractable: drop the
+            # generic Block Kit placeholder so the empty-message guard fires.
+            text = ""
+    elif not text or text in _SLACK_BLOCK_FALLBACKS:
+        # No forward: recover a message whose content lives in event-level blocks
+        # and drop a bare generic Block Kit placeholder. Byte-identical to the
+        # original non-forward recovery path.
         fallback = "" if text in _SLACK_BLOCK_FALLBACKS else text
         text = _extract_shared_text(event) or fallback
 

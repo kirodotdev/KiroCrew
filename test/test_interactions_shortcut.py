@@ -331,6 +331,170 @@ class TestHandleMessageShortcut:
         view = orch.slack.views_opened[0]["view"]
         assert "safe_final_text" in view["blocks"][0]["text"]["text"]
 
+    @pytest.mark.asyncio
+    async def test_image_only_message_round_trips_file_metadata(self, orch):
+        """(b) Forwarding an image-only message via the shortcut produces a
+        NON-empty fence describing the file — metadata travels through
+        private_metadata and into the fence, never file content."""
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_OWNER"})
+        with patch("kiro_crew.slack.interactions._orch", orch):
+            await _handle_message_shortcut({
+                "callback_id": "send_to_kirocrew",
+                "user": {"id": "U_OWNER"},
+                "trigger_id": "T123",
+                "message": {
+                    "text": "",
+                    "ts": "5.6",
+                    "user": "U_SENDER",
+                    "files": [
+                        {
+                            "name": "cat.png",
+                            "mimetype": "image/png",
+                            "filetype": "png",
+                            "size": 4242,
+                            "permalink": "https://x.slack.com/files/U_SENDER/F1/cat.png",
+                        }
+                    ],
+                },
+                "channel": {"id": "C_CHAN"},
+            })
+            built = orch.slack.views_opened[0]["view"]
+            # The modal display names the file so the submitter sees what is
+            # being forwarded even with no message text.
+            assert "cat.png" in built["blocks"][0]["text"]["text"]
+            meta = json.loads(built["private_metadata"])
+            assert meta["files"][0]["name"] == "cat.png"
+            with patch("kiro_crew.slack.interactions.handle_message", new_callable=AsyncMock):
+                await _handle_shortcut_submission({
+                    "user": {"id": "U_OWNER"},
+                    "team": {"id": "T_TEAM"},
+                    "view": {
+                        "callback_id": "send_to_kirocrew",
+                        "private_metadata": built["private_metadata"],
+                        "state": {"values": {}},
+                        "blocks": [],
+                    },
+                })
+                await asyncio.sleep(0.05)
+        assert len(orch.slack.messages_posted) == 1
+        _, text = orch.slack.messages_posted[0]
+        begin = text.index("UNTRUSTED FORWARDED CONTENT BEGIN")
+        end = text.index("UNTRUSTED FORWARDED CONTENT END")
+        assert begin < text.index("[file 1/1] name=cat.png mimetype=image/png") < end
+        assert "size=4242" in text
+        assert "permalink=https://x.slack.com/files/U_SENDER/F1/cat.png" in text
+
+    @pytest.mark.asyncio
+    async def test_long_message_and_file_names_fit_modal_section(self, orch):
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_OWNER"})
+        files = [
+            {"name": f"{index}-" + "&" * 118, "filetype": "txt"}
+            for index in range(5)
+        ]
+        with patch("kiro_crew.slack.interactions._orch", orch):
+            await _handle_message_shortcut({
+                "callback_id": "send_to_kirocrew",
+                "user": {"id": "U_OWNER"},
+                "trigger_id": "T123",
+                "message": {
+                    "text": "x" * 2500,
+                    "ts": "5.65",
+                    "user": "U_SENDER",
+                    "files": files,
+                },
+                "channel": {"id": "C_CHAN"},
+            })
+
+        display_text = orch.slack.views_opened[0]["view"]["blocks"][0]["text"]["text"]
+        file_line_start = display_text.index("\n📎 5 file(s): ")
+        assert len(display_text) <= 3000
+        assert display_text[file_line_start - 1] == "…"
+        file_line = display_text[file_line_start:]
+        assert all(f"{index}-" in file_line for index in range(5))
+
+    @pytest.mark.asyncio
+    async def test_text_and_file_both_fenced(self, orch):
+        """(c) A shortcut forward carrying text AND a file fences both."""
+        set_owner_id("U_OWNER")
+        set_allowed_users({"U_OWNER"})
+        with patch("kiro_crew.slack.interactions._orch", orch):
+            await _handle_message_shortcut({
+                "callback_id": "send_to_kirocrew",
+                "user": {"id": "U_OWNER"},
+                "trigger_id": "T123",
+                "message": {
+                    "text": "the report is attached",
+                    "ts": "5.7",
+                    "user": "U_SENDER",
+                    "files": [{"name": "report.pdf", "mimetype": "application/pdf", "size": 9}],
+                },
+                "channel": {"id": "C_CHAN"},
+            })
+            built = orch.slack.views_opened[0]["view"]
+            with patch("kiro_crew.slack.interactions.handle_message", new_callable=AsyncMock):
+                await _handle_shortcut_submission({
+                    "user": {"id": "U_OWNER"},
+                    "team": {"id": "T_TEAM"},
+                    "view": {
+                        "callback_id": "send_to_kirocrew",
+                        "private_metadata": built["private_metadata"],
+                        "state": {"values": {}},
+                        "blocks": [],
+                    },
+                })
+                await asyncio.sleep(0.05)
+        _, text = orch.slack.messages_posted[0]
+        begin = text.index("UNTRUSTED FORWARDED CONTENT BEGIN")
+        end = text.index("UNTRUSTED FORWARDED CONTENT END")
+        assert begin < text.index("the report is attached") < end
+        file_line = "[file 1/1] name=report.pdf mimetype=application/pdf size=9"
+        assert begin < text.index(file_line) < end
+
+
+class TestFitPrivateMetadata:
+    """_fit_private_metadata keeps the JSON within Slack's 3000-char cap."""
+
+    def test_small_payload_unchanged(self):
+        from kiro_crew.slack.interactions import _fit_private_metadata
+
+        out = _fit_private_metadata({"channel": "C1", "ts": "1.1", "user": "U1"}, "hi", [])
+        parsed = json.loads(out)
+        assert parsed["text"] == "hi"
+        assert parsed["files"] == []
+
+    def test_oversized_text_is_trimmed_to_fit(self):
+        from kiro_crew.slack.interactions import _fit_private_metadata
+
+        files = [
+            {"name": f"f{i}.png", "mimetype": "image/png", "filetype": "png",
+             "size": 1, "permalink": f"https://x.slack.com/files/F{i}"}
+            for i in range(5)
+        ]
+        out = _fit_private_metadata(
+            {"channel": "C1", "ts": "1.1", "user": "U1"}, "x" * 2500, files
+        )
+        assert len(out) <= 3000
+        parsed = json.loads(out)
+        # Files metadata survives intact; the text absorbed the trim.
+        assert len(parsed["files"]) == 5
+        assert 0 < len(parsed["text"]) < 2500
+
+    def test_files_dropped_only_after_text_exhausted(self):
+        from kiro_crew.slack.interactions import _fit_private_metadata
+
+        files = [
+            {"name": "n" * 120, "mimetype": "image/png", "filetype": "png",
+             "size": 1, "permalink": "https://x.slack.com/files/" + "F" * 500}
+            for _ in range(5)
+        ]
+        out = _fit_private_metadata({"channel": "C1", "ts": "1.1", "user": "U1"}, "", files)
+        assert len(out) <= 3000
+        parsed = json.loads(out)
+        assert parsed["text"] == ""
+        assert 0 < len(parsed["files"]) < 5
+
 
 class TestHandleShortcutSubmission:
     @pytest.mark.asyncio
