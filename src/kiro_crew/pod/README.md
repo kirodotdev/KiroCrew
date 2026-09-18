@@ -632,3 +632,16 @@ session and `Linger=no` — `require_systemd()` refuses with the fix
 (`loginctl enable-linger <user>`) instead of letting systemctl emit a message
 that names neither cause nor remedy. `kirocrew doctor` reports the same three
 states (present / absent / present-but-no-linger).
+
+An explicitly-set `DBUS_SESSION_BUS_ADDRESS` stays trusted as an availability
+hint, because a stale address is never proof that no backend exists and that
+proof is what authorizes destructive Dev Fleet worktree removal. What changes is
+the **remedy**: when the socket the address names holds nothing, the failure is
+reported as a stale address with the stopped-manager fix, rather than an
+instruction to rerun the command that just failed. A login session exports the
+address and a `Linger=no` manager then stops at logout and deletes the socket,
+which is the usual state on a Cloud Dev Desktop. `USER_BUS_NO_SESSION` and that
+stale case share one remedy naming `loginctl enable-linger <user>`, the
+privileged `sudo loginctl enable-linger <uid>` form, and `./dev-backend.sh`,
+because `loginctl` needs the system bus and so is not self-service on a host that
+cannot reach one. Refusals name the path actually judged.

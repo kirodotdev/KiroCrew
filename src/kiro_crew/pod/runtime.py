@@ -835,8 +835,48 @@ def _session_runtime_dir() -> str:
     return f"/run/user/{uid}"
 
 
+def _address_socket_paths(address: str) -> list[str] | None:
+    """Filesystem socket paths named by a D-Bus address, or ``None``.
+
+    A D-Bus address is a semicolon-separated list of ``transport:key=value``
+    entries whose values are percent-escaped. ``unix:path=`` is the only form
+    that names something on the filesystem to check: ``unix:abstract=`` lives in
+    the abstract namespace, and ``tcp:``/``unixexec:``/``autolaunch:`` are not
+    filesystem objects at all. ``None`` means at least one entry cannot be
+    checked, so the address as a whole carries no filesystem verdict.
+    """
+    entries = [entry for entry in address.split(";") if entry.strip()]
+    if not entries:
+        return None
+    paths: list[str] = []
+    for entry in entries:
+        transport, _, arguments = entry.partition(":")
+        if transport.strip() != "unix":
+            return None
+        path = None
+        for pair in arguments.split(","):
+            key, separator, value = pair.partition("=")
+            if separator and key.strip() == "path":
+                path = urllib.parse.unquote(value.strip())
+                break
+        if not path:
+            return None
+        paths.append(path)
+    return paths
+
+
 def session_bus_socket() -> str:
-    """Path of the D-Bus socket that fronts this user's systemd instance."""
+    """Path of the D-Bus socket that fronts this user's systemd instance.
+
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` that names a filesystem
+    socket wins, so a refusal names the path it actually judged rather than a
+    conventional one the caller never pointed at.
+    """
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if address:
+        paths = _address_socket_paths(address)
+        if paths:
+            return paths[0]
     return os.path.join(_session_runtime_dir(), "bus")
 
 
@@ -847,6 +887,12 @@ def has_session_bus() -> bool:
     it may name a non-filesystem transport. Otherwise the conventional socket
     must exist. This is only the cheap availability hint; :func:`probe_user_bus`
     makes the authoritative connection attempt.
+
+    Face value is deliberate and load-bearing beyond diagnosis: a stale explicit
+    address must never be reported as a provably absent backend, because that is
+    what authorizes destructive Dev Fleet worktree removal. Naming the stale case
+    is :func:`user_bus_failure_message`'s job, and it keeps the operational
+    classification untouched.
     """
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         return True
@@ -961,6 +1007,28 @@ def probe_user_bus() -> UserBusProbe:
     return UserBusProbe(USER_BUS_ERROR, sock, detail)
 
 
+def _no_user_manager_remedy() -> str:
+    """The remedy for a host with no per-user systemd instance running.
+
+    ``loginctl`` talks to the SYSTEM bus, so it is not self-service on a host
+    that cannot reach a bus at all, and ``sudo loginctl enable-linger <name>``
+    still fails where root's name lookup does not resolve the account. Naming the
+    privileged uid form and a preview path that needs no systemd leaves an actor
+    who can act in every case.
+    """
+    uid = getattr(os, "getuid", lambda: -1)()
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
+    return (
+        f"Fix: loginctl enable-linger {user}\n"
+        "If that command itself cannot connect to a bus, this shell cannot reach the "
+        "system bus either, so it can never be the remedy from here: run it from a "
+        "host shell, or have an administrator run "
+        f"`sudo loginctl enable-linger {uid}` — the numeric uid resolves where a "
+        "name lookup does not.\n"
+        "To preview a worktree with no systemd at all, use `./dev-backend.sh`."
+    )
+
+
 def user_bus_failure_message(result: UserBusProbe) -> str:
     """Render one actionable pod error and retain any systemctl diagnostic."""
     raw = result.detail.strip()
@@ -972,12 +1040,23 @@ def user_bus_failure_message(result: UserBusProbe) -> str:
             "process from reaching the user bus. Run pod commands from a host shell."
         )
     elif result.status == USER_BUS_NO_SESSION:
-        uid = getattr(os, "getuid", lambda: -1)()
-        user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
         message = (
             f"Cannot reach the systemd user bus at {result.socket} (no user session bus). "
-            "Pods are systemd --user units, so one is required. "
-            f"Fix: loginctl enable-linger {user}"
+            "Pods are systemd --user units, so one is required.\n" + _no_user_manager_remedy()
+        )
+    elif not os.path.exists(result.socket):
+        # A probe ran and failed against a path that holds no socket. The class
+        # stays operationally unknown — an explicit address is never proof that
+        # no backend exists — but the remedy is the one a stopped per-user
+        # manager needs, not an instruction to rerun the command that just
+        # failed. A login session exports the address and a `Linger=no` manager
+        # then stops at logout and deletes the socket, which is the usual state
+        # on a Cloud Dev Desktop.
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "Nothing is listening at that path, so the address is stale: a per-user "
+            "systemd instance is not running, and pods are systemd --user units.\n"
+            + _no_user_manager_remedy()
         )
     else:
         message = (

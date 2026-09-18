@@ -107,8 +107,20 @@ kirocrew pod status <worktree>
 kirocrew pod up <worktree>
 ```
 
-If doctor reports `no user session bus`, start the per-user manager using the
-`loginctl enable-linger <user>` command it prints. Probe and unit operations resolve
+If doctor reports `no user session bus`, or reports the address as stale because
+the socket it names holds nothing, no per-user systemd instance is running for
+this uid, and pods are `systemd --user` units. Start it with the
+`loginctl enable-linger <user>` command doctor prints. That command talks to the
+**system** bus, so it is not self-service on a host that cannot reach a bus at
+all: if it answers `Failed to create bus connection: Permission denied`, run it
+from a host shell, or have an administrator run
+`sudo loginctl enable-linger <uid>` — the numeric uid resolves where a name
+lookup answers `Failed to look up user <user>: No such process`. A Cloud Dev
+Desktop reaches the stale case by exporting `DBUS_SESSION_BUS_ADDRESS` from a
+login session whose manager has since stopped. To preview a worktree with no
+systemd at all, use `./dev-backend.sh`.
+
+Probe and unit operations resolve
 `systemctl` only from trusted system directories and ignore same-named PATH entries. A
 missing trusted executable, missing interpreter, or other failure while executing the
 resolved command is reported as an operational error, not as an absent backend.

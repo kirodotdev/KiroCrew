@@ -5883,6 +5883,58 @@ class TestPlatformGuard:
         assert not isinstance(exc.value, rt.PodBackendAbsent)
         assert detail in str(exc.value)
 
+    def test_stale_explicit_bus_address_still_gets_the_manager_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operationally unknown, yet the remedy names what a stale address needs.
+
+        The class must stay a plain :class:`rt.PodError` — a stale address is
+        never proof that no backend exists, and that proof is what authorizes
+        destructive worktree removal. Only the text changes: the old one told the
+        caller to rerun the command that had just failed.
+        """
+        stale = "unix:path=/run/user/4242/stale-bus"
+        detail = "Failed to get D-Bus connection: Connection refused"
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", stale)
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(returncode=1, stderr=detail),
+        )
+
+        result = rt.probe_user_bus()
+        message = rt.user_bus_failure_message(result)
+
+        assert result.status == rt.USER_BUS_ERROR
+        assert "stale" in message
+        assert "loginctl enable-linger tester" in message
+        assert "sudo loginctl enable-linger 4242" in message
+        assert "./dev-backend.sh" in message
+        # The circular instruction is gone.
+        assert "fix that error before using pod commands" not in message
+        assert detail in message
+
+    def test_a_present_socket_keeps_the_generic_probe_remedy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The socket exists, so a stopped per-user manager is not the diagnosis."""
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        (tmp_path / "bus").touch()
+        detail = "Failed to connect to bus: Connection reset by peer"
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(returncode=1, stderr=detail),
+        )
+
+        message = rt.user_bus_failure_message(rt.probe_user_bus())
+
+        assert "fix that error before using pod commands" in message
+        assert "enable-linger" not in message
+
     def test_user_bus_probe_preserves_an_unclassified_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -6205,6 +6257,77 @@ class TestSessionBus:
         self._bus(monkeypatch, tmp_path / "run", exists=False)
         monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=/tmp/dbus-abc")
         assert rt.has_session_bus() is True
+
+    def test_uncheckable_transports_are_never_called_stale(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Only ``unix:path=`` names something to stat, so nothing else is judged.
+
+        ``session_bus_socket()`` falls back to the conventional path for an
+        address it cannot resolve, and that path existing is what keeps the
+        generic remedy. A transport with no filesystem identity must not be
+        described as a stopped per-user manager.
+        """
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        (tmp_path / "bus").touch()
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:abstract=/tmp/dbus-abc")
+        monkeypatch.setattr(
+            rt,
+            "_run",
+            lambda _cmd, **_kwargs: _cp(
+                returncode=1, stderr="Failed to connect to bus: Connection refused"
+            ),
+        )
+
+        assert rt.has_session_bus() is True
+        assert rt.session_bus_socket() == str(tmp_path / "bus")
+        assert "stale" not in rt.user_bus_failure_message(rt.probe_user_bus())
+
+    def test_present_socket_named_by_the_address_is_the_path_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A refusal names the path actually judged, not a conventional one."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        sock = elsewhere / "bus"
+        sock.touch()
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={sock}")
+        assert rt.session_bus_socket() == str(sock)
+
+    def test_percent_escaped_address_path_is_decoded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """D-Bus percent-escapes address values, so a raw compare would miss."""
+        spaced = tmp_path / "run dir"
+        spaced.mkdir(parents=True, exist_ok=True)
+        sock = spaced / "bus"
+        sock.touch()
+        self._bus(monkeypatch, tmp_path / "run", exists=False)
+        escaped = str(sock).replace(" ", "%20")
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", f"unix:path={escaped}")
+        assert rt.session_bus_socket() == str(sock)
+
+    def test_no_session_remedy_is_actionable_for_the_actor_who_can_act(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``loginctl`` needs the SYSTEM bus, so it is not always self-service.
+
+        A caller that cannot reach a bus cannot run ``loginctl`` either, and
+        ``sudo loginctl enable-linger <name>`` fails outright where root's name
+        lookup does not resolve the account. The message therefore also names the
+        privileged uid form and a preview path that needs no systemd at all.
+        """
+        sock = self._bus(monkeypatch, tmp_path / "run", exists=False)
+        monkeypatch.setenv("USER", "tester")
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+
+        message = rt.user_bus_failure_message(
+            rt.UserBusProbe(rt.USER_BUS_NO_SESSION, str(sock), "")
+        )
+        assert "loginctl enable-linger tester" in message
+        assert "sudo loginctl enable-linger 4242" in message
+        assert "./dev-backend.sh" in message
 
     def test_require_systemd_explains_a_missing_bus(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
