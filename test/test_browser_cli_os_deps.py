@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import shutil
 
 import pytest
 
@@ -37,6 +38,19 @@ def _no_os_release(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(platform, "freedesktop_os_release", _raise)
     monkeypatch.setattr(platform_compat, "IS_LINUX", True)
+
+
+def _managers(monkeypatch: pytest.MonkeyPatch, present: frozenset[str] | set[str]) -> None:
+    """Make ``shutil.which`` find exactly *present* and nothing else.
+
+    Stubbed for the same reason the os-release reader is: the test host has its
+    own package managers (this repo's CI runs on hosts that carry ``dnf``), and
+    an unstubbed probe would make these tests assert the CI image, not the code.
+    ``sudo`` belongs in *present* only for tests modeling a sudo-capable host.
+    """
+    monkeypatch.setattr(
+        shutil, "which", lambda name: f"/usr/bin/{name}" if name in present else None
+    )
 
 
 class TestFamilyDetection:
@@ -101,10 +115,14 @@ class TestWithDepsIsOfferedOnlyWherePlaywrightHonoursIt:
 
 
 class TestTheManualRemedy:
-    def test_rpm_family_names_dnf_and_rpm_package_names(self, monkeypatch):
-        _os_release(monkeypatch, {"ID": "amzn", "ID_LIKE": "fedora"})
+    def test_a_dnf_host_is_told_dnf_with_rpm_package_names(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "fedora"})
+        _managers(monkeypatch, {"dnf", "yum", "sudo"})
         command = mod.manual_deps_command()
         assert command is not None
+        # The manager token itself, not merely "some string came back": a test
+        # that only checks non-emptiness passes for the wrong reason, which is
+        # how a hardcoded manager survived on hosts that do not have it.
         assert command.startswith("sudo dnf install -y ")
         # rpm names, not a mechanical mapping of Playwright's Debian list: a
         # command that fails on its own first package teaches the operator that
@@ -114,12 +132,92 @@ class TestTheManualRemedy:
         assert "libgbm1" not in command
         assert "libcups2" not in command
 
-    def test_apt_family_defers_to_playwright_rather_than_pinning_a_list(self, monkeypatch):
+    def test_a_yum_only_host_is_told_yum_not_dnf(self, monkeypatch):
+        """Amazon Linux 2 and 7-era RHEL/CentOS carry ``yum`` and no ``dnf``.
+
+        Both managers take the same rpm package names, so only the manager token
+        differs; the hardcoded ``dnf`` was the whole defect on these hosts.
+        """
+        _os_release(monkeypatch, {"ID": "amzn", "VERSION_ID": "2"})
+        _managers(monkeypatch, {"yum", "sudo"})
+        command = mod.manual_deps_command()
+        assert command is not None
+        assert command.startswith("sudo yum install -y ")
+        assert "dnf" not in command
+
+    def test_dnf_wins_when_both_are_present(self, monkeypatch):
+        """Modern rpm hosts ship ``yum`` as a compatibility shim for ``dnf``;
+        the real manager is the one to name."""
+        _os_release(monkeypatch, {"ID": "amzn", "ID_LIKE": "fedora", "VERSION_ID": "2023"})
+        _managers(monkeypatch, {"dnf", "yum", "sudo"})
+        command = mod.manual_deps_command()
+        assert command is not None
+        assert command.startswith("sudo dnf install -y ")
+
+    def test_the_package_list_is_identical_for_dnf_and_yum(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "centos", "ID_LIKE": "rhel fedora"})
+        _managers(monkeypatch, {"dnf", "sudo"})
+        dnf_command = mod.manual_deps_command()
+        mod.linux_family.cache_clear()
+        _managers(monkeypatch, {"yum", "sudo"})
+        yum_command = mod.manual_deps_command()
+        assert dnf_command is not None and yum_command is not None
+        assert dnf_command.removeprefix("sudo dnf") == yum_command.removeprefix("sudo yum")
+
+    def test_an_rpm_host_with_neither_manager_gets_silence_not_a_guess(self, monkeypatch):
+        """An rpm host with no supported manager on PATH is offered nothing:
+        silence is the rule the docstring already prescribes for a host we
+        cannot serve correctly."""
+        _os_release(monkeypatch, {"ID": "centos", "ID_LIKE": "rhel fedora"})
+        _managers(monkeypatch, set())
+        assert mod.linux_family() == mod.FAMILY_RPM
+        assert mod.manual_deps_command() is None
+        assert mod.missing_deps_hint() == ""
+
+    @pytest.mark.parametrize(
+        "present",
+        [{"dnf"}, {"yum"}, {"dnf", "yum"}, set()],
+        ids=["dnf-installed", "yum-installed", "both-installed", "neither"],
+    )
+    def test_a_suse_host_is_silent_no_matter_which_binaries_it_carries(self, monkeypatch, present):
+        """SUSE resolves to the rpm family but is decided by LINEAGE, not by
+        which binaries happen to be installed. ``dnf`` and ``yum`` are packaged
+        in SUSE's own repos, where this module's Fedora/RHEL package names do
+        not resolve (``libgbm1`` for ``mesa-libgbm``) -- a command completed for
+        them would fail on its package list instead of its first argument, the
+        same defect this probe exists to remove, wearing a different hat.
+        """
+        _os_release(monkeypatch, {"ID": "opensuse-leap", "ID_LIKE": "suse opensuse"})
+        _managers(monkeypatch, present)
+        assert mod.linux_family() == mod.FAMILY_RPM
+        assert mod.manual_deps_command() is None
+        assert mod.missing_deps_hint() == ""
+
+    def test_a_microdnf_only_host_without_sudo_gets_a_bare_command(self, monkeypatch):
+        """Minimal RHEL/UBI images ship ``microdnf`` and run as root, but do
+        not carry ``sudo``. Their remedy must start with the manager that exists.
+        """
+        _os_release(monkeypatch, {"ID": "rhel", "ID_LIKE": "fedora"})
+        _managers(monkeypatch, {"microdnf"})
+        command = mod.manual_deps_command()
+        assert command is not None
+        assert command.startswith("microdnf install -y ")
+        assert "sudo" not in command
+
+    def test_apt_family_with_sudo_defers_to_playwright(self, monkeypatch):
         """On apt Playwright installs its own per-version set; a copy here goes
         stale against the CLI the user actually has."""
         _os_release(monkeypatch, {"ID": "ubuntu"})
+        _managers(monkeypatch, {"sudo"})
         command = mod.manual_deps_command()
         assert command == "sudo npx playwright install-deps chromium"
+
+    def test_apt_family_without_sudo_gets_a_bare_command(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "debian"})
+        _managers(monkeypatch, set())
+        command = mod.manual_deps_command()
+        assert command == "npx playwright install-deps chromium"
+        assert "sudo" not in command
 
     def test_unknown_linux_offers_nothing(self, monkeypatch):
         _os_release(monkeypatch, {"ID": "alpine"})
@@ -133,6 +231,7 @@ class TestTheManualRemedy:
 
     def test_the_hint_carries_the_command_and_says_root_is_needed(self, monkeypatch):
         _os_release(monkeypatch, {"ID": "amzn", "ID_LIKE": "fedora"})
+        _managers(monkeypatch, {"dnf", "sudo"})
         command = mod.manual_deps_command()
         hint = mod.missing_deps_hint()
         assert command is not None
@@ -140,13 +239,26 @@ class TestTheManualRemedy:
         assert command in hint
 
     def test_nothing_here_runs_a_package_manager(self, monkeypatch):
-        """This module composes a command for a human; it never elevates itself."""
+        """This module composes a command for a human; it never elevates itself.
+
+        Probing for the manager binary (``shutil.which``) is a directory stat,
+        not a spawn. The guard patches every subprocess entry point a later
+        edit would plausibly reach for, so a probe rewritten to shell out fails
+        here instead of shipping.
+        """
         _os_release(monkeypatch, {"ID": "amzn", "ID_LIKE": "fedora"})
+        _managers(monkeypatch, {"dnf", "yum", "sudo"})
+        import os
         import subprocess
 
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: pytest.fail("os_deps must not spawn")
-        )
+        def _fail(*a, **k):
+            pytest.fail("os_deps must not spawn")
+
+        monkeypatch.setattr(subprocess, "run", _fail)
+        monkeypatch.setattr(subprocess, "Popen", _fail)
+        monkeypatch.setattr(subprocess, "check_output", _fail)
+        monkeypatch.setattr(subprocess, "check_call", _fail)
+        monkeypatch.setattr(os, "system", _fail)
         mod.linux_family()
         mod.with_deps_supported()
         mod.manual_deps_command()

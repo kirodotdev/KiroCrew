@@ -697,7 +697,7 @@ step adapts:
 | Family | `--with-deps` | On failure |
 |---|---|---|
 | debian / ubuntu | passed | retried without the flag, so the download still lands |
-| rpm (rhel, fedora, centos, amzn, rocky, alma, suse) | never passed | failure detail carries a `sudo dnf install` line naming the rpm packages |
+| rpm (rhel, fedora, centos, amzn, rocky, alma, suse) | never passed | failure detail carries an install line for whichever supported manager the host actually has — `dnf`, else `yum`, else `microdnf`, probed not assumed — naming the rpm packages. A SUSE host gets no remedy by lineage, even if `dnf`/`yum` is installed there: `zypper`-world package names differ, so a completed line would fail on its package list |
 | unrecognized Linux | never passed | no remedy offered — a guessed package manager fails on its own first argument and reads as the product being broken |
 | macOS / Windows | not applicable | the browser download alone is sufficient |
 
