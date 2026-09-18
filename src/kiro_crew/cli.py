@@ -1904,6 +1904,49 @@ Examples:
         action="store_true",
         help="Store the secrets and rewrite .env to secret:// refs (default: dry-run)",
     )
+    # authorize — owner binds a stored Custom secret to an exact https origin for
+    # the mediated `call_api_with_secret` tool, and SIGNS the policy so trusted
+    # host code can confirm the owner (not the agent) set the destination.
+    secrets_authorize = secrets_sub.add_parser(
+        "authorize",
+        help="Authorize a Custom secret for an exact https origin (mediated chat requests)",
+    )
+    secrets_authorize.add_argument("secret_name", help="Name of the stored Custom secret")
+    secrets_authorize.add_argument(
+        "origin", help="Exact https origin the agent may call, e.g. https://api.example.com"
+    )
+    secrets_authorize.add_argument(
+        "--header",
+        default=None,
+        help="Inject the secret into this request header (default: Authorization: Bearer)",
+    )
+    secrets_authorize.add_argument(
+        "--remove",
+        action="store_true",
+        help="Remove the authorization for secret_name instead of adding it",
+    )
+    secrets_authorize.add_argument(
+        "--reset",
+        action="store_true",
+        help=(
+            "Discard an existing policy that does not verify (tampered or not "
+            "owner-signed) and start fresh. Required to overwrite such a file; "
+            "without it, authorize refuses rather than silently erasing entries."
+        ),
+    )
+    secrets_authorize.add_argument(
+        "--return-body",
+        action="store_true",
+        dest="return_body",
+        help=(
+            "Return this origin's (scrubbed) response body to the agent. Off by "
+            "default: the mediated result is a fixed constant that reveals nothing "
+            "about the upstream response — no body, headers, status, content-type, "
+            "or length (a sentinel status of 0) — so an origin that reflects the "
+            "credential through any transform cannot hand it back. Set only for an "
+            "origin you trust to receive the raw response."
+        ),
+    )
 
     # pod — isolated, throwaway, full-stack test instances per worktree (kubectl-style)
     pod_parser = cli_help.add_command(sub, "pod")
@@ -2445,6 +2488,11 @@ Examples:
     # like mcp-dashboard: mounted only for an agent whose spec grants it, so a
     # session that is neither a conductor nor a worker spends nothing on it.
     sub.add_parser("mcp-work")
+
+    # mcp-secrets (MCP server — the trusted mediated-secret request tool).
+    # Always-on like mcp-core: an agent may use an owner-authorized Custom secret
+    # to call its bound API without the value ever reaching the model.
+    sub.add_parser("mcp-secrets")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
@@ -3148,6 +3196,12 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # Same importlib form and the same reason as mcp-dashboard above: a
         # default-off optional subsystem must not be imported to start the gateway.
         importlib.import_module("kiro_crew.mcp_work").run_mcp_server()
+    elif args.command == "mcp-secrets":
+        # Same importlib form as the other optional core servers: the sandboxed
+        # forwarder pulls in requests (its loopback client), which the gateway
+        # boot path must not import just to exist. It does NOT import the vault —
+        # the vault read happens host-side in the dashboard handler, never here.
+        importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the

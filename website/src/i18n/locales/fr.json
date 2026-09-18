@@ -15534,7 +15534,7 @@
       "wakatime_api_key_label": "Clé API WakaTime",
       "wakatime_api_key_description": "Authentifie la synchronisation de l’activité de programmation lorsque WakaTime est activé.",
       "custom_title": "Secrets personnalisés",
-      "custom_description": "Les secrets personnalisés sont stockés chiffrés pour être utilisés par les serveurs MCP et les paramètres d'identifiants .env. Référencez-en un sous la forme secret://YOUR_KEY depuis l'environnement d'un serveur MCP ou un paramètre d'identifiants .env et la passerelle injecte la valeur au démarrage — elle n'est jamais exposée dans le chat.",
+      "custom_description": "Des secrets chiffrés, jamais affichés dans le chat. Référencez-en un sous la forme secret://YOUR_KEY dans l'environnement d'un serveur MCP ou un paramètre .env (injecté au démarrage). Ou autorisez un secret pour une origine https exacte avec `kirocrew secrets authorize`, et l'agent peut appeler cette API depuis une conversation de membre relayée par la passerelle — {{productName}} injecte la valeur côté hôte et ne renvoie qu'un résultat nettoyé (un chat global par défaut est refusé).",
       "custom_empty": "Aucun secret personnalisé stocké pour l'instant. Ajoutez-en un pour le référencer depuis un serveur MCP sous la forme secret://YOUR_KEY.",
       "managed_config_error": "Certains identifiants automatiques sont masqués, car $KIROCREW_HOME/config.json (par défaut : ~/.kiro/crew/config.json) n’a pas pu être lu.",
       "managed_name_hint": "Enregistrer ici met à jour {{name}} dans la section des identifiants automatiques. — {{productName}}",

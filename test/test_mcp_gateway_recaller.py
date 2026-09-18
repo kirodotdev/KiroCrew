@@ -12,6 +12,7 @@ audit events), so we verify actual loop behaviour AND the audit trail:
 * an empty/malformed recaller is ignored (``denied`` audit) — all recaller
   outcomes land on the SEL trail.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +35,7 @@ async def test_member_proof_uses_kernel_peer_for_each_tool_listing_and_call(monk
     issued = []
     loop_thread = threading.get_ident()
 
-    def issue(session, peer_pid):
+    def issue(session, peer_pid, *, audience=""):
         assert threading.get_ident() != loop_thread
         issued.append((session, peer_pid))
         return f"issued-{len(issued)}"
@@ -71,7 +72,7 @@ async def test_member_proof_uses_kernel_peer_for_each_tool_listing_and_call(monk
 async def test_forged_member_register_never_supplies_private_authority(monkeypatch, peer_pid):
     issued = []
 
-    def refuse(session, pid):
+    def refuse(session, pid, *, audience=""):
         issued.append((session, pid))
         return ""
 
@@ -87,7 +88,7 @@ async def test_forged_member_register_never_supplies_private_authority(monkeypat
 
 @pytest.mark.asyncio
 async def test_member_issuer_failure_refuses_authority_without_leaking_error(monkeypatch, caplog):
-    def fail(_session, _pid):
+    def fail(_session, _pid, *, audience=""):
         raise OSError("secret-proof-material")
 
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
@@ -207,7 +208,8 @@ async def _run(
 ) -> tuple[_FakeBackend, list[dict[str, Any]]]:
     monkeypatch.setattr(socketsec, "PEER_IDENTITY_SUPPORTED", True)
     monkeypatch.setattr(
-        socketsec, "check_peer_is_self",
+        socketsec,
+        "check_peer_is_self",
         lambda _w: socketsec.PeerCredResult.MATCH,
     )
     monkeypatch.setattr(socketsec, "socket_owner_only", lambda _path: True)
@@ -267,7 +269,7 @@ async def test_protected_peer_cannot_downgrade_to_v1_or_omit_its_caller(
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
     monkeypatch.setattr(gw, "_resolve_peer_identity", lambda _pid: ("", []))
     monkeypatch.setattr(gw, "protected_member_session_for_pid", resolve)
-    monkeypatch.setattr(gw, "issue_member_session_proof", lambda *args: issued.append(args) or "")
+    monkeypatch.setattr(gw, "issue_member_session_proof", lambda *a, **k: issued.append(a) or "")
     writer = _FakeWriter()
     backend, _audit = await _run(
         [_register(claimed), {**_CALL, "method": method}], monkeypatch, writer=writer
@@ -284,7 +286,7 @@ async def test_protected_peer_cannot_downgrade_to_v1_or_omit_its_caller(
 @pytest.mark.parametrize("method", ["tools/list", "tools/call"])
 @pytest.mark.parametrize("failure", ["blank", "exception"])
 async def test_a_protected_peer_never_continues_without_its_proof(monkeypatch, failure, method):
-    def issue(_session, _pid):
+    def issue(_session, _pid, *, audience=""):
         if failure == "exception":
             raise OSError("private-key-material")
         return ""
@@ -320,7 +322,9 @@ async def test_protected_identity_is_rechecked_after_a_runtime_rekey(monkeypatch
     bindings = iter(["dashboard:reviewer", "dashboard:writer"])
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
     monkeypatch.setattr(gw, "protected_member_session_for_pid", lambda _pid: next(bindings))
-    monkeypatch.setattr(gw, "issue_member_session_proof", lambda _session, _pid: "current.proof")
+    monkeypatch.setattr(
+        gw, "issue_member_session_proof", lambda _s, _p, *, audience="": "current.proof"
+    )
     writer = _FakeWriter()
     backend, _audit = await _run(
         [_register("dashboard:reviewer"), _CALL, {**_CALL, "id": 2}], monkeypatch, writer=writer
@@ -336,7 +340,7 @@ async def test_protected_identity_is_rechecked_after_a_runtime_rekey(monkeypatch
 async def test_an_unowned_legacy_v1_caller_keeps_working_without_a_proof(monkeypatch, method):
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda _writer: 8001)
     monkeypatch.setattr(gw, "protected_member_session_for_pid", lambda _pid: None)
-    monkeypatch.setattr(gw, "issue_member_session_proof", lambda _session, _pid: "")
+    monkeypatch.setattr(gw, "issue_member_session_proof", lambda _s, _p, *, audience="": "")
     backend, _audit = await _run(
         [_register("dashboard:global"), {**_CALL, "method": method}], monkeypatch
     )
@@ -352,8 +356,13 @@ async def test_recaller_flips_injected_caller(monkeypatch: pytest.MonkeyPatch) -
         [
             _register(""),
             _CALL,
-            {"type": "recaller", "session_key": "dashboard:chat-RC-1",
-             "session_type": "dashboard", "principal_id": "rc", "channel_id": "C_RC"},
+            {
+                "type": "recaller",
+                "session_key": "dashboard:chat-RC-1",
+                "session_type": "dashboard",
+                "principal_id": "rc",
+                "channel_id": "C_RC",
+            },
             _CALL,
             {"type": "unregister"},
         ],
@@ -377,8 +386,13 @@ async def test_recaller_denied_when_caller_already_set(monkeypatch: pytest.Monke
         [
             _register("dashboard:orig-1"),
             _CALL,
-            {"type": "recaller", "session_key": "dashboard:evil-2",
-             "session_type": "dashboard", "principal_id": "x", "channel_id": "C_RC"},
+            {
+                "type": "recaller",
+                "session_key": "dashboard:evil-2",
+                "session_type": "dashboard",
+                "principal_id": "x",
+                "channel_id": "C_RC",
+            },
             _CALL,
             {"type": "unregister"},
         ],
@@ -495,7 +509,8 @@ def test_recaller_rejected_emits_denied_sel_audit_event(monkeypatch: "pytest.Mon
 
     monkeypatch.setattr(gw, "SecurityEventLog", _FakeSEL)
     gw._audit_recaller_rejected(
-        "dashboard:orig-1", "kirocrew:kirocrew-core",
+        "dashboard:orig-1",
+        "kirocrew:kirocrew-core",
         "recaller pivot attempt to session_key=dashboard:evil-2",
     )
 

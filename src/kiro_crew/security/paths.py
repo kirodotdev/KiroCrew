@@ -576,6 +576,27 @@ _CREW_SECRET_LEAVES: list[str] = [
     # to the read+write keystone floor. Dashboard PUT is the sole writer and opens the
     # path directly.
     "ops_mission_control_policy.json",
+    # The mediated-secret request AUTHORIZATION: per Custom secret, the exact
+    # https origin the agent may reach with it and where the credential goes
+    # (bearer or a named header). The host-side mediation endpoint
+    # (``dashboard.handlers.sessions.api_mediated_secret_request`` →
+    # ``secrets_mediation.dispatch``) reads this to decide whether an outbound request
+    # is allowed before it resolves the secret. It is the destination allowlist
+    # for a stored credential, so a prompt-injected agent that could write it
+    # would authorize an origin the owner never approved and have trusted code
+    # inject the live secret into a request to it — turning the mediation into an
+    # exfiltration oracle. It therefore sits on the read+write keystone floor
+    # like every other escalation-authorizing control: the owner writes it with
+    # ``kirocrew secrets authorize`` (which signs it), and ``policy.py`` opens it
+    # directly rather than through this gate, so mediation keeps working.
+    "secret_request_policy.json",
+    # The cross-process lock guarding the owner-signed policy's read-modify-write.
+    # Masked on the same floor as the policy itself so a sandboxed agent cannot
+    # pre-create or swap the lock inode — which would let two concurrent
+    # authorizations lock different inodes and silently drop an entry. The
+    # authorize CLI opens it no-follow and re-validates it is an alias-free
+    # regular file; masking removes the write surface that race relied on.
+    ".secret_request_policy.json.lock",
     # Recorded consent to call a PAID AWS service (Amazon Polly for TTS, Amazon
     # Transcribe for STT). Same class of control as ``computer_use.json`` above:
     # the record is what AUTHORIZES billable requests against a specific AWS

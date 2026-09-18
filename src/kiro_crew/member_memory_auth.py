@@ -602,8 +602,16 @@ def _proof_payload(proof: str) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
-def issue_member_session_proof(session_key: str, peer_pid: int) -> str:
-    """Delegate only the originating process's current protected member store."""
+def issue_member_session_proof(session_key: str, peer_pid: int, *, audience: str = "") -> str:
+    """Delegate only the originating process's current protected member store.
+
+    ``audience`` optionally binds the proof to the target MCP server (its
+    ``server_name``). When set, the payload carries an ``aud`` field and a
+    verifier that passes the same ``audience`` requires it to match — so a proof
+    minted for one auto-approved server cannot be relayed to a different server's
+    endpoint. An empty ``audience`` mints the generic proof (unchanged), which
+    the member-memory path continues to verify without an audience.
+    """
     binding = _protected_member_binding_for_pid(peer_pid)
     if not binding or binding[0] != session_key or not binding[1]:
         return ""
@@ -619,18 +627,23 @@ def issue_member_session_proof(session_key: str, peer_pid: int) -> str:
         or platform_compat.get_process_start_id(peer_pid) != start
     ):
         return ""
-    body = json.dumps(
-        {"v": 2, "s": session_key, "p": peer_pid, "i": start, "m": binding[1], "n": scope},
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
+    row = {"v": 2, "s": session_key, "p": peer_pid, "i": start, "m": binding[1], "n": scope}
+    if audience:
+        row["aud"] = audience
+    body = json.dumps(row, separators=(",", ":"), sort_keys=True).encode()
     payload = base64.urlsafe_b64encode(body).decode().rstrip("=")
     digest = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{digest}"
 
 
-def verify_member_session_proof(proof: str, session_key: str) -> bool:
-    """A proof remains valid only while its live process retains this session."""
+def verify_member_session_proof(proof: str, session_key: str, *, audience: str = "") -> bool:
+    """A proof remains valid only while its live process retains this session.
+
+    When ``audience`` is non-empty the proof MUST carry a matching ``aud`` field
+    (a proof minted for a different server, or a legacy generic proof with no
+    ``aud``, is refused). When ``audience`` is empty the ``aud`` field is ignored,
+    preserving the member-memory path's generic-proof semantics.
+    """
     if not isinstance(proof, str) or len(proof) > _MAX_RECORD_BYTES:
         return False
     try:
@@ -647,6 +660,10 @@ def verify_member_session_proof(proof: str, session_key: str) -> bool:
             or row["v"] not in (1, 2)
             or row.get("s") != session_key
         ):
+            return False
+        if audience and row.get("aud") != audience:
+            # A required audience must match exactly: a generic (aud-less) proof
+            # or one minted for a different server cannot be relayed here.
             return False
         if row["v"] == 1:
             now = time.time()
