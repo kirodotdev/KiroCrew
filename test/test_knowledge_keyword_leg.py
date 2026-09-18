@@ -51,10 +51,18 @@ def crowded(store):
 
     Fused scores: each vector hit scores ``2.0 / (60 + rank)`` and the target
     ``1.0 / 61``, so the target sorts last of the five.
+
+    Items are attached to a local (``local_folder``) source so the query-time
+    ACL gate classifies them as trusted-local (the personal library sees them);
+    a sourceless item is fail-closed managed and would be denied -- production
+    ingestion always attaches a source, so this fixture models that.
     """
-    target = store.add_item("Exact Error String", "ORA-01555 snapshot too old", "doc")
+    sid = store.add_source("Local", "local_folder", "file:///kwleg")
+    target = store.add_item("Exact Error String", "ORA-01555 snapshot too old", "doc",
+                            source_id=sid)
     vec_ids = [
-        store.add_item(f"Semantic Neighbour {n}", f"related prose {n}", "doc") for n in range(4)
+        store.add_item(f"Semantic Neighbour {n}", f"related prose {n}", "doc", source_id=sid)
+        for n in range(4)
     ]
     return target, vec_ids
 
@@ -100,7 +108,8 @@ def test_appended_row_carries_citation_metadata(store):
         "Exact Error String", "ORA-01555 snapshot too old", "doc", source_id=sid
     )
     store.add_source_location(target, sid, chunk_range="10-25", section_title="Snapshot Errors")
-    vec_ids = [store.add_item(f"Prose {n}", f"neighbour {n}", "doc") for n in range(4)]
+    vec_ids = [store.add_item(f"Prose {n}", f"neighbour {n}", "doc", source_id=sid)
+               for n in range(4)]
     results = _search(store, target, vec_ids, limit=3)
     rescued = results[-1]
     assert rescued["id"] == target

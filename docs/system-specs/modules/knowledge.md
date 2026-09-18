@@ -110,7 +110,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
 | `knowledge/dedup.py` | Cross-source deduplication |
-| `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
+| `knowledge/connectors/` | `BaseConnector`, `local_folder` and `github_structured` source connectors |
 | `mcp_core.py` | `local_knowledge_search` MCP tool + cached store/embedder |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search, source-scoped list + `/source-counts`) |
 | `agent.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
@@ -381,6 +381,181 @@ filter set the sweep applies, so the count describes the files that would actual
 ingested. The chunk figure is derived from the chunker's target size and file bytes
 (`_estimated_chunks`), never measured: it exists to show order of magnitude before the
 user confirms, and no code path treats it as a bound.
+
+## 2c. GitHub structured source (`connectors/github_structured.py`)
+
+GitHub's issues, pull requests, commits and check-runs are records, not prose:
+each has a stable identity and typed fields. `GithubStructuredConnector` makes
+them one refreshable source inside this same Library — it is a `BaseConnector`
+(`source_type="github"`), driven by the same `SyncScheduler` as `local_folder`.
+It adds no second knowledge base, registry, ACL, auth or sync engine, and no new
+table.
+
+**Typed rows, keyed by a full-domain identity.** The connector's domain model is
+three frozen dataclasses with real fields, never opaque blobs. Every row's
+primary key spans the **whole domain** — `source_id | instance | repo_full_name
+| entity_type | <entity-key>` — so two records that share an entity key never
+collapse across knowledge sources, GitHub hosts, repositories or kinds:
+
+| Row | Entity key (appended to the domain) | Why |
+|---|---|---|
+| `IssueOrPullRow` | `number` | GitHub numbers issues and PRs in one shared per-repo sequence; a `pull_request` sub-object (or the pulls API's own shape) marks a PR |
+| `CommitRow` | `sha` | unique within a repo |
+| `CheckRunRow` | `id` | the numeric check-run id |
+
+`primary_key_for` composes those five segments with a `|` separator that no
+segment may contain (checked at construction), so one repo's issue #1 and
+another repo's issue #1, or the same `owner/repo/number` on github.com and a
+GitHub Enterprise host, or one repo mirrored under two sources, all key apart.
+The key is the dedup/idempotency key across refreshes. The title is a mutable
+field and is **never** part of any key, so a renamed issue keeps its identity and
+re-refreshes as an upsert, not a duplicate. Conversion
+(`issue_or_pull_from_payload` / `commit_from_payload` / `check_run_from_payload`)
+turns one GitHub API payload into one typed row and **raises** rather than
+storing a row it cannot key or trace.
+
+**Per-row lineage is mandatory.** Every row carries a `RowLineage` — source id,
+instance, repo full name, entity type, primary key, source API URL, and read
+timestamp. `validate()` raises `LineageError` when any is missing or malformed
+(including a domain segment carrying the key separator), so a row a search could
+surface without being able to say where it came from is refused at conversion
+time, not stored.
+
+**Incremental refresh = `since` + primary-key diff.** GitHub exposes no single
+delta token, so a refresh asks only for records changed since the last watermark
+and `diff_rows` diffs the returned keys against the stored keys: every fetched
+row is an upsert (it changed). `diff_rows` takes a `full_listing` flag that
+decides `disappeared`: on the incremental (`since`) path it is always empty,
+because a window carries only changes and nearly every stored key is absent from
+it without being gone; only a **full listing** (no `since`) proves a stored key
+is genuinely gone and reports it for the caller to retire. The connector never
+deletes on its own. A primary-key collision inside a fetched set (a record
+re-listed across a page boundary) collapses last-writer-wins, so overlapping
+windows and page boundaries are idempotent. The watermark (`next_since`) is the
+max `updated_at`/`committed_date`/`completed_date` seen and is **monotonic** — a
+clock-skewed or re-listed older stamp never moves it backwards.
+
+**Resumable checkpoint in the existing per-source state.** The `Checkpoint`
+(watermark plus the entity-order index and page cursor of an in-progress walk)
+lives under a reserved key in the source's existing `properties` blob — the same
+per-source state the scheduler already round-trips for `last_synced` /
+`consecutive_failures`. `read_checkpoint` / `write_checkpoint` are pure and touch
+no store; a persisted index that no longer names a valid entity clamps to the
+start rather than resuming out of range. **No new table.**
+
+**Rendering to the pipeline's shape, and how a row will flow in.** `render_row_text`
+/ `render_row_metadata` project a typed row into the prose-shaped `(text,
+metadata)` the ingestion pipeline consumes, with the primary key and the full
+lineage domain in the metadata so the stored item stays traceable through the
+existing citation path. When the live path is wired, each typed row is one
+independently-replaceable document keyed by its primary key: the connector
+upserts it through the pipeline's existing per-group replace path —
+`ingest_text(..., source_id=<source>, old_item_ids=<group for this PK>)`, the
+same mechanism the aggregate artifact and agent sources use to hold many
+documents in one source (§2b, `artifact_item_state` / `agent_item_state`). That
+is why `RefreshPlan.upserts` is keyed per primary key and needs no new store
+path; the plan names one replace-group per row. The seam change this requires on
+the scheduler side (today `sync.py` does a single `fetch()` → whole-source
+replace) is the registration/wiring follow-up below, tracked as the conductor's
+decision — not invented here.
+
+**Live path wired through W01's transport, and the row payload now closes it.**
+Given a `GithubTransportProvider` (the caller composes a real W01
+`build_github_transport` — per-binding custody via `BindingSecretSelector`, no
+credential seen here — and the executor's handle/gate inputs), `fetch` and
+`detect_changes` drive a REAL W01 `PageWalk` for each wired repo-scoped entity
+through `connections.vendors.github.dispatch`: the operation is invoked,
+authorized per page, and the walk advances on W01's SINGLE
+`OperationResult.next_cursor` (never a vendor `Link` re-parsed downstream). The
+fetched rows come back on `ExecutionOutcome.payload` — a `CollectionPayload`, the
+one neutral data channel W01 added at `RESULT_SCHEMA_VERSION=3` /
+`EXECUTOR_SCHEMA_VERSION=4` / `PRODUCTION_SCHEMA_VERSION=3` — and the connector
+runs PR-2's converters over `payload.items`, folds them through PR-2's `diff_rows`
+(a `since` window, so `disappeared` stays empty), and renders the upserts into
+the pipeline's `(text, metadata)` shape. `detect_changes` reports changed iff the
+`since` window returned rows. Nothing is copied, cached, or re-declared: the rows
+are read off the single `ExecutionOutcome.payload` and the cursor off the single
+`next_cursor`.
+
+The cursor is driven off `next_cursor` alone. GitHub REST list endpoints carry
+their next-page position only in the `Link` response header, so the vendor
+*decoder* reads `Link` — where it already decodes the reply — and turns it into
+that single `next_cursor`; the cursor is then single and authoritative on the
+envelope and nothing downstream re-parses `Link` (`ExecutionOutcome.metadata` is
+a rate-limit-only allowlist that never carries it). This is the established
+interface, read once into the one place a cursor lives.
+
+The wired kinds are pull requests (`gh_list_pull_requests`) and commits
+(`gh_list_commits`), both repo-scoped REST list operations with real path
+templates. **Issues** (repo-scoped list) and **check-runs** (list) are the
+authorized scope addition but their vendor descriptors live in the shared 45-op
+`descriptors.py` (owned by the W02 vendor-data slice), so the exact rows are
+reported to the conductor for coordination rather than written here.
+
+Built with **no** transport provider (the default), `fetch` / `detect_changes`
+still refuse with `NotImplementedError` exactly as PR-2 shipped — a mock read is
+not a live read.
+
+**Per-row ingest (`supports_rows` / `fetch_rows`) — integrated.** The connector
+implements the per-row ingest contract, so the real `SyncScheduler` drives the
+per-row ACL path. `supports_rows()` returns True; `fetch_rows(source)` walks each
+entity through W01's transport, reads the rows off `ExecutionOutcome.payload`,
+builds a real `knowledge.rows.SourceRow` per record, and returns
+`(rows, snapshot, checkpoint)`:
+
+- each `row` is a `SourceRow` carrying its own `key` (the primary-key identity),
+  `text` (the row's projection), `resource_ref` (the GitHub
+  `knowledge.acl.ProviderResourceRef` — `provider="github"`, `account=owner`, and
+  the documented locator, each ALSO carrying `endpoint` — the trusted execution
+  host the dispatch locator actually targets (read from
+  `vendors.github.locator.GITHUB_API_BASE`): `{endpoint, owner, repo, number}`
+  for an issue/PR, `{endpoint, owner, repo, sha}` for a commit, `{endpoint,
+  owner, repo, check_run_id}` for a check-run. `endpoint` exists because
+  `ProviderResourceRef` has no host field of its own, so without it the same
+  `owner/repo/number` on two GitHub deployments is indistinguishable. NAMED GAP:
+  `GITHUB_API_BASE` is a single module constant, so it cannot yet express a
+  per-source/per-binding GitHub Enterprise host — a trusted per-binding endpoint
+  on the transport composition is still needed), and `tenant`
+  (a PROVIDER-SUPPLIED tenant string carried on the transport bundle — NOT the
+  repo owner, and NOT yet a proven-verified identity: the trusted view the W01
+  executor returns exposes no `tenant_ref` today, so this slice cannot verify it
+  and every row stays fail-closed regardless; see the open tenant question);
+- **`subjects` is an EMPTY tuple — explicit deny-all — for every row**, the
+  confirmed-correct fail-closed state: this slice has no authorization evidence
+  mapping a GitHub object to the subjects allowed to see it, and real evidence
+  needs an authorized binding (repo visibility / collaborators), which is PR-4's
+  live territory plus W01's binding identity, not something this slice may
+  synthesise. `managed` is fixed True by the DTO;
+- **`snapshot=False` (incremental), deliberately**: the source refreshes by a
+  `since` watermark, so a round returns only changed rows. Absent rows are not
+  gone — they simply did not change — so `snapshot=True` (which authorises
+  DELETING absent rows) would destroy live rows every round;
+- `checkpoint` is the opaque advanced `since` watermark; the scheduler persists
+  it at `props['checkpoint']` and advances only after the ingest reports every
+  row fully persisted (`RowsIngestOutcome.fully_persisted`).
+
+All four entities are covered. Issues, pull requests and commits are repo-scoped
+REST lists (`gh_list_issues_rest`, `gh_list_pull_requests`, `gh_list_commits`).
+Check-runs have no repo-wide list — they hang off a commit ref
+(`gh_list_check_runs`, `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`) — so
+they are walked per-commit as a dependent fan-out over the commits just fetched.
+The `gh_list_issues_rest` and `gh_list_check_runs` descriptors are additive rows
+in `vendors/github/descriptors.py` (this stream's own file); nothing existing was
+removed or narrowed.
+
+Built with **no** transport provider (the default), `fetch` / `detect_changes`
+still refuse with `NotImplementedError` exactly as PR-2 shipped — a mock read is
+not a live read.
+
+**Registration.** The core connector map is assembled by hand in
+`dashboard/handlers/knowledge.py`; `connectors["github"] =
+GithubStructuredConnector()` is set alongside `local_folder` / `obsidian_vault`,
+**before** the `platform.interfaces.KnowledgeProvider.extra_connectors` edition
+merge, so an edition can still override `github` (built-ins first, edition on
+top). Mapping the `source_type` does **not** make the source syncable without a
+transport provider wired in; that wiring (the provider that composes W01's
+per-binding transport) is the scheduler-integration follow-up. The connector
+wiring is one import plus one map entry; nothing else in that handler changes.
 
 ## 3. LLMPool workers (`llm_pool.py`)
 

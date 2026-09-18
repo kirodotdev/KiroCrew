@@ -850,6 +850,75 @@ _DESCRIPTOR_LIST: Tuple[GithubOperationDescriptor, ...] = (
         note="Does not count against the primary limit but CAN count against the secondary; prefer "
         "reading x-ratelimit-* headers on ordinary calls.",
     ),
+    # --- W02 PR-3 additive read/list rows for the structured source ---------
+    # A repo-scoped REST issues LIST (page/perPage + Link). Distinct from the
+    # GraphQL-backed gh_list_issues (cursor 'after', prose endpoint the REST
+    # locator cannot shape): the structured source needs a shapeable REST path
+    # with an {owner}/{repo} template. Additive; narrows nothing.
+    _d(
+        "gh_list_issues_rest",
+        "GET /repos/{owner}/{repo}/issues",
+        "GET",
+        READ,
+        ("list_issues_rest",),
+        Pagination.REST_PAGE,
+        IdempotencyClass.NONE_READ,
+        False,
+        scopes=("repo",),
+        note="Repo-scoped REST issue listing (page/perPage + Link). The GitHub "
+        "issues API returns pull requests too, each marked by a pull_request "
+        "sub-object. Additive alongside the GraphQL gh_list_issues.",
+    ),
+    # A check-runs LIST for a commit ref (page/perPage + Link, rows wrapped under
+    # the response's `check_runs` array). GitHub has no repo-wide check-runs
+    # list; check-runs hang off a commit ref, so the walk is per {owner,repo,ref}.
+    _d(
+        "gh_list_check_runs",
+        "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+        "GET",
+        READ,
+        ("list_check_runs",),
+        Pagination.REST_PAGE,
+        IdempotencyClass.NONE_READ,
+        False,
+        scopes=("repo",),
+        note="Check-runs for a commit ref; response wraps the rows under a "
+        "`check_runs` array. No repo-wide check-runs list exists, so this is "
+        "keyed on {owner,repo,ref}. Additive.",
+    ),
+    # A repository read (its `private` flag is the public-vs-private visibility
+    # signal the GitHub permission probe reads). Single object, no pagination.
+    _d(
+        "gh_get_repository",
+        "GET /repos/{owner}/{repo}",
+        "GET",
+        READ,
+        ("get_repository",),
+        Pagination.NONE,
+        IdempotencyClass.NONE_READ,
+        False,
+        scopes=("repo",),
+        note="Repository object; its `private` boolean is the visibility signal "
+        "the W02 permission probe reads (public repo -> readable by anyone). "
+        "Additive.",
+    ),
+    # The repository collaborators list -- the subjects allowed to see a PRIVATE
+    # repo's contents. page/perPage + Link. The permission probe reads this to
+    # resolve a private repo's subject set.
+    _d(
+        "gh_list_repository_collaborators",
+        "GET /repos/{owner}/{repo}/collaborators",
+        "GET",
+        READ,
+        ("list_repository_collaborators",),
+        Pagination.REST_PAGE,
+        IdempotencyClass.NONE_READ,
+        False,
+        scopes=("repo",),
+        note="Collaborators on a repo (page/perPage + Link). The W02 permission "
+        "probe reads this to resolve a private repo's allowed subject set. "
+        "Additive.",
+    ),
 )
 
 

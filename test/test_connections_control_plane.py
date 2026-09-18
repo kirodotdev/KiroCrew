@@ -9,6 +9,7 @@ no-credential / two-axis invariants hold (negative).
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -969,6 +970,7 @@ def test_a_caller_supplied_candidate_outside_the_trusted_store_is_refused(tmp_pa
         verifier=_store_verifier,
     )
     assert hit["binding_id"] == fabricated["binding_id"]
+    assert "bindings" not in inspect.signature(BindingStore.resolve).parameters
     # (b) the trusted store never admitted it -> refused.
     store = _fresh_store(tmp_path)
     with pytest.raises(BindingResolutionError):
@@ -1321,8 +1323,18 @@ def test_only_one_process_rotates_under_contention(tmp_path) -> None:
         # the two-worker site.)
         p1 = p2 = None
         try:
-            p1 = subprocess.Popen(common + [str(barrier), str(out1)], env=env, cwd=str(tmp_path))
-            p2 = subprocess.Popen(common + [str(barrier), str(out2)], env=env, cwd=str(tmp_path))
+            p1 = subprocess.Popen(
+                common + [str(barrier), str(out1)],
+                env=env,
+                cwd=str(tmp_path),
+                start_new_session=True,
+            )
+            p2 = subprocess.Popen(
+                common + [str(barrier), str(out2)],
+                env=env,
+                cwd=str(tmp_path),
+                start_new_session=True,
+            )
             time.sleep(0.3)
             barrier.write_text("go", encoding="utf-8")
             assert p1.wait(timeout=60) == 0
@@ -1933,6 +1945,7 @@ def test_JUDGEMENT_fencing_reads_the_live_store_after_revoke(tmp_path) -> None:
     # own ref name -- no plaintext leaves the test.
     ok = store.select_secret(handle, reader=vault)
     assert ok["secret"] is not None
+    assert ok["binding_id"] == b["binding_id"]
     assert ok["secret_ref"]["name"] == name
     # Revoke, then the SAME handle is fenced by a fresh live-store read.
     store.revoke(b["binding_id"])

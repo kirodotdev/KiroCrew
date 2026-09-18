@@ -22,14 +22,17 @@ from kiro_crew.platform.governance import SCOPE_CATALOG
 
 
 def test_all_45_operations_present() -> None:
-    assert len(d.DESCRIPTORS) == 45
+    # 45 base ops + 4 additive W02 PR-3 read/list rows: issues REST, check-runs,
+    # repository (visibility), collaborators (both for the permission probe).
+    assert len(d.DESCRIPTORS) == 49
 
 
 def test_effect_tally_matches_evidence() -> None:
     from collections import Counter
 
     tally = Counter(desc.effect for desc in d.DESCRIPTORS.values())
-    assert tally[READ] == 24
+    # 24 base READs + 4 additive PR-3 read/list rows.
+    assert tally[READ] == 28
     assert tally[WRITE] == 16
     assert tally[ADMIN] == 3
     assert tally[DELETE] == 2

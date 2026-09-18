@@ -42,10 +42,19 @@ def _on_worker(fn, store):
 
 def _add_item(store: KnowledgeStore, title: str, content: str) -> None:
     now = datetime.utcnow().isoformat()
+    # A trusted-local source so the query-time ACL gate (sourceless => fail-closed
+    # managed) admits the item to the local library. Idempotent per store.
+    sid = "cross-thread-local-src"
     store.db.execute(
-        "INSERT INTO items (id, title, content, item_type, created_at, updated_at)"
-        " VALUES (?, ?, ?, 'note', ?, ?)",
-        (title.lower().replace(" ", "-"), title, content, now, now),
+        "INSERT OR IGNORE INTO sources "
+        "(id, name, source_type, uri, trust_class, created_at, updated_at) "
+        "VALUES (?, 'Local', 'local_folder', 'file:///cross-thread', 'local_admitted', ?, ?)",
+        (sid, now, now),
+    )
+    store.db.execute(
+        "INSERT INTO items (id, title, content, item_type, source_id, created_at, updated_at)"
+        " VALUES (?, ?, ?, 'note', ?, ?, ?)",
+        (title.lower().replace(" ", "-"), title, content, sid, now, now),
     )
     row = store.db.execute("SELECT rowid FROM items WHERE title = ?", (title,)).fetchone()
     store.db.execute(
