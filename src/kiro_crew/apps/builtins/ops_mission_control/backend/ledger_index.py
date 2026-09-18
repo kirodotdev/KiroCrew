@@ -224,7 +224,13 @@ def _importance(entry: LedgerEntry) -> float:
     return min(1.0, score)
 
 
-def search_similar(store: Any, query: str, *, limit: int = 5) -> list[dict]:
+def search_similar(
+    store: Any,
+    query: str,
+    *,
+    limit: int = 5,
+    query_embedding: list[float] | None = None,
+) -> list[dict]:
     """Ledger-derived memories similar to ``query``, most relevant first.
 
     Tag-filtered to ``SOURCE_TAG`` so an ops investigation searching for a failure does
@@ -239,6 +245,7 @@ def search_similar(store: Any, query: str, *, limit: int = 5) -> list[dict]:
     try:
         return list(
             store.search_episodic(
+                query_embedding=query_embedding,
                 query_text=query,
                 limit=limit,
                 tag_filter=[SOURCE_TAG],
