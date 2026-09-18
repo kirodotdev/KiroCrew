@@ -5873,6 +5873,38 @@ class GatewayOrchestrator:
                             # here is the point: a cron name is LLM-authored (the
                             # agent can create crons via cron_add), and the
                             # hand-rolled version of this had already forgotten to
+                            # ── Extract embedded local images and upload them
+                            # natively (mirror the chat renderer's on_done seal).
+                            # The cron delivery path posts text only; without
+                            # this an inline ![alt](/abs/path.png) in the reply
+                            # ships as literal Markdown and Slack shows nothing.
+                            # within_root is the cron session's resolved cwd
+                            # (client.cwd — the agent's workspace), which bounds
+                            # extraction to files the session may read.
+                            _cron_upload_files: list = []
+                            _cron_root = getattr(client, "cwd", "") or ""
+                            if _cron_root:
+                                try:
+                                    from kiro_crew.messaging.outbound_files import (
+                                        extract_local_refs_off_loop,
+                                    )
+                                    from kiro_crew.slack.files import UPLOAD_LIMITS
+
+                                    _cron_extract = await extract_local_refs_off_loop(
+                                        result_text,
+                                        within_root=_cron_root,
+                                        limits=UPLOAD_LIMITS,
+                                    )
+                                    _cron_body = _cron_extract.rewritten_text.strip()
+                                    if _cron_body or _cron_extract.files:
+                                        result_text = _cron_body or result_text
+                                    _cron_upload_files = list(_cron_extract.files)
+                                except Exception:
+                                    logger.warning(
+                                        "Cron '%s': image extraction failed",
+                                        job.name,
+                                        exc_info=True,
+                                    )
                             # redact it once.
                             parts = render_for_slack(
                                 result_text,
@@ -5897,6 +5929,25 @@ class GatewayOrchestrator:
                             # Overflow parts as threaded follow-up messages
                             for part in parts[1:]:
                                 await self.slack.post_message(channel, part, thread_root)
+                            # Upload any extracted local images natively into the
+                            # same thread (bytes travel, not the path — every gate
+                            # in outbound_files was already applied).
+                            if _cron_upload_files:
+                                try:
+                                    from kiro_crew.slack.files import upload_outbound_files
+
+                                    await upload_outbound_files(
+                                        self.slack,
+                                        channel,
+                                        thread_root or "",
+                                        _cron_upload_files,
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "Cron '%s': image upload failed",
+                                        job.name,
+                                        exc_info=True,
+                                    )
                             # Dedup state: only advance after confirmed delivery.
                             self._record_cron_delivery(job, rh)
                         else:

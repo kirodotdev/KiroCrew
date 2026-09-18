@@ -1890,3 +1890,99 @@ class TestTaskNotifyChannelRouting:
 
         deliver.assert_not_awaited()
         orch.slack.post_message.assert_not_awaited()
+
+
+class TestCronDeliversEmbeddedImages:
+    """A cron reply that embeds a local image (![alt](/abs/path.png)) must have
+    that image uploaded natively to Slack, not posted as literal Markdown text.
+
+    Regression: the cron delivery path posted text only; the local-image
+    extraction+upload lived solely in the chat renderer's on_done seal, so a
+    cron reply's embedded PNG never reached the user.
+    """
+
+    @staticmethod
+    def _slack_double() -> MagicMock:
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D1")
+        slack.post_blocks = AsyncMock(return_value="parent-ts")
+        slack.post_message = AsyncMock()
+        slack.upload_file = AsyncMock()
+        return slack
+
+    def _orch_with_cwd(self, cwd: str) -> Any:
+        orch = _make_orchestrator()
+        sessions = _message_arm_sessions()
+        client = MagicMock()
+        client.cwd = cwd  # the extraction within_root
+        sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        orch.sessions = sessions
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = self._slack_double()
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_embedded_local_png_is_uploaded_natively(self, tmp_path):
+        # A real PNG inside the session cwd (the extraction within_root).
+        img = tmp_path / "mon.png"
+        # Minimal valid PNG (8-byte signature + IHDR is enough for the raster sniff).
+        img.write_bytes(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        orch = self._orch_with_cwd(str(tmp_path))
+        reply = f"Máy in RUNNING bình thường.\n\n![Máy in A1]({img})"
+        # session_key="" → skip the channel leg, take the Slack branch directly.
+        job = _job(
+            id="jimg1",
+            name="Chup may in",
+            session_key="",
+            created_by="U_OWNER",
+            thread_ts="1789607951.617559",
+        )
+
+        with patch.object(gw, "_resolve_channel_target", MagicMock(return_value=None)):
+            async with _cron_message_cb(orch, result_text=reply) as callback:
+                await callback(job)
+
+        # The image was uploaded natively into the requesting thread.
+        orch.slack.upload_file.assert_awaited_once()
+        up_args = orch.slack.upload_file.await_args.args
+        # upload_file(channel, thread_ts, file, filename, title)
+        assert up_args[1] == "1789607951.617559", "image not uploaded into the job's thread"
+        # The literal local path Markdown was stripped from the posted text.
+        posted = orch.slack.post_blocks.await_args.args[2]
+        assert str(img) not in posted, "raw local image path leaked into the posted text"
+
+    @pytest.mark.asyncio
+    async def test_reply_without_images_uploads_nothing(self, tmp_path):
+        orch = self._orch_with_cwd(str(tmp_path))
+        job = _job(id="jimg2", name="Chup may in", session_key="", created_by="U_OWNER")
+
+        with patch.object(gw, "_resolve_channel_target", MagicMock(return_value=None)):
+            async with _cron_message_cb(orch, result_text="Máy in bình thường, không ảnh.") as cb:
+                await cb(job)
+
+        orch.slack.upload_file.assert_not_awaited()
+        orch.slack.post_blocks.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_posts_into_job_thread_ts(self, tmp_path):
+        """The cron result posts into the job's thread_ts (the requesting thread),
+        not a new top-level channel message."""
+        orch = self._orch_with_cwd(str(tmp_path))
+        job = _job(
+            id="jimg3",
+            name="Chup may in",
+            session_key="",
+            created_by="U_OWNER",
+            thread_ts="1789607951.617559",
+        )
+
+        with patch.object(gw, "_resolve_channel_target", MagicMock(return_value=None)):
+            async with _cron_message_cb(orch, result_text="RUNNING 40%") as cb:
+                await cb(job)
+
+        # post_blocks(channel, blocks, fallback, thread_ts) — 4th arg is the thread.
+        assert orch.slack.post_blocks.await_args.args[3] == "1789607951.617559"
