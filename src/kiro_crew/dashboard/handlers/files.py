@@ -5331,9 +5331,65 @@ def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict
     return dirs, files
 
 
+#: A Windows drive root -- ``C:``, ``C:\\`` or ``C:/`` -- with nothing after it.
+#: Only such a path has a parent the filesystem cannot name: ``ntpath.dirname``
+#: answers ``C:\\`` for ``C:\\``, which the browser reads as "no parent" and
+#: hides its Back control on, stranding the user on one drive.
+_WIN_DRIVE_ROOT_RE = re.compile(r"[A-Za-z]:[\\/]?")
+
+
+def _is_windows_drive_root(path: str) -> bool:
+    return platform_compat.IS_WINDOWS and _WIN_DRIVE_ROOT_RE.fullmatch(path) is not None
+
+
+def _browse_drives_sync() -> list[dict[str, str]]:
+    """Enumerate the mounted Windows drive roots, as browse-dirs rows.
+
+    Blocking -- callers run it on the transfer pool, like the other listings.
+    ``os.listdrives`` exists on every supported interpreter (``requires-python
+    >= 3.12``); it is reached through ``getattr`` only because typeshed declares
+    it under ``sys.platform == "win32"``, so a direct attribute fails mypy on
+    the Linux CI runner. The caller has already refused non-Windows hosts.
+    """
+    roots = list(getattr(os, "listdrives")())
+    return [{"name": r, "path": r} for r in roots]
+
+
+def _browse_parent(base: str) -> str:
+    """The Back target for *base*: its dirname, or ``""`` for a Windows drive root.
+
+    Shared by ``/api/browse-dirs`` and ``/api/browse-files`` so both listings
+    describe a drive root the same way. ``""`` is the caller's cue that the level
+    above is the virtual drive list (``?drives=1``), not a directory; a consumer
+    without a drive list (the folder panel) reads it as "top", exactly as it
+    read the old ``C:\\`` == ``C:\\`` answer. A POSIX ``/`` keeps ``dirname``'s
+    answer of ``/`` -- equal to itself, which every consumer already reads as
+    "top".
+    """
+    if _is_windows_drive_root(base):
+        return ""
+    return os.path.dirname(base)
+
+
 async def api_browse_dirs(request: web.Request) -> web.Response:
-    """GET /api/browse-dirs?path=... — list subdirectories for directory browser."""
+    """GET /api/browse-dirs?path=... — list subdirectories for directory browser.
+
+    ``?drives=1`` (Windows only) lists the mounted drive roots instead, as the
+    virtual level above every ``X:\\``; the response carries ``path: ""`` --
+    the one listing that is not a directory -- and ``parent: ""`` so the picker
+    knows it is at the top. On other platforms the flag is a 400: there is no
+    such level to show.
+    """
     caller = request.get("user", "dashboard")
+    if request.query.get("drives") == "1":
+        if not platform_compat.IS_WINDOWS:
+            return web.json_response({"error": "Drive listing is only available on Windows", "code": "drives_windows_only"}, status=400)
+        try:
+            drives = await _run_path_probe(_browse_drives_sync, transfer=True)
+        except _PathProbeBusy:
+            return _probe_busy_response(resource="drives", operation="browse_dirs", caller=caller)
+        _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="allowed", resources="drives")
+        return web.json_response({"path": "", "parent": "", "dirs": drives})
     raw = request.query.get("path", "").strip()
     # Off-loop: realpath then the isdir probe, on a caller-supplied root (the
     # shared resolver answers $HOME for an unnamed one). is_sensitive_path below
@@ -5353,7 +5409,7 @@ async def api_browse_dirs(request: web.Request) -> web.Response:
     except _PathProbeBusy:
         return _probe_busy_response(resource=base, operation="browse_dirs", caller=caller)
     _sel().log_api_access(caller=caller, operation="browse_dirs", outcome="allowed", resources=base)
-    return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs})
+    return web.json_response({"path": base, "parent": _browse_parent(base), "dirs": dirs})
 
 
 #: Depth ceiling for the walk-up that looks for a repository root. A project
@@ -5622,7 +5678,7 @@ async def api_browse_files(request: web.Request) -> web.Response:
     except _PathProbeBusy:
         return _probe_busy_response(resource=base, operation="browse_files", caller=caller)
     _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)
-    return web.json_response({"path": base, "parent": os.path.dirname(base), "dirs": dirs, "files": files})
+    return web.json_response({"path": base, "parent": _browse_parent(base), "dirs": dirs, "files": files})
 
 
 async def api_dashboard_config(request: web.Request) -> web.Response:

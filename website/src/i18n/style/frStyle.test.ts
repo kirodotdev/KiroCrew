@@ -128,7 +128,12 @@ describe('fr spacing (style/fr.md §1)', () => {
       .filter(([, value]) => {
         if (/https?:\/\//.test(value)) return false
         if (/\d:\d/.test(value)) return false
-        return WRONG_DOUBLE_SPACE.test(value)
+        // A Windows drive-letter path (`D:\`, `D:\chemin\vers\projet`) is a
+        // literal the user types, not a French colon. Strip the token and test
+        // the REST of the value, so prose beside a path is still held to §1 —
+        // an early return here would let a malformed sentence ride in on a path.
+        const withoutDrivePaths = value.replace(/\b[A-Za-z]:[\\/]\S*/g, '')
+        return WRONG_DOUBLE_SPACE.test(withoutDrivePaths)
       })
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)
