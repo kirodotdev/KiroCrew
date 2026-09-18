@@ -45,12 +45,13 @@ export interface TranscriptEarlierPaging {
   handOff?: boolean
 }
 
-/** Imperative surface a host reaches through `ref`. Deliberately just what
- *  today's hosts call (the jump pill, the new-reply scroll); the page's
- *  navigation needs (`scrollToIndex`, `mountIndex`, `getFollow`) join when
- *  P5-f mounts the page here — surface follows a caller, not the other way. */
+/** Imperative surface hosts use for bottom pins and virtualized row steering. */
 export interface VirtualTranscriptHandle {
   scrollToBottom: (behavior?: ScrollBehavior) => void
+  /** Ensure a row is mounted without scrolling; `unionOnly` preserves a far window. */
+  mountIndex: (index: number, opts?: { unionOnly?: boolean }) => boolean
+  /** Estimate a row's scroller-coordinate top while it is unmounted. */
+  estimateRowTop: (index: number) => number | null
 }
 
 export interface VirtualTranscriptProps {
@@ -184,7 +185,11 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
       initialPlacement,
     })
 
-    useImperativeHandle(ref, () => ({ scrollToBottom: virt.scrollToBottom }), [virt.scrollToBottom])
+    useImperativeHandle(ref, () => ({
+      scrollToBottom: virt.scrollToBottom,
+      mountIndex: virt.mountIndex,
+      estimateRowTop: virt.estimateRowTop,
+    }), [virt.scrollToBottom, virt.mountIndex, virt.estimateRowTop])
 
     const { isAtBottom } = virt
     useEffect(() => { onAtBottomChange?.(isAtBottom) }, [isAtBottom, onAtBottomChange])

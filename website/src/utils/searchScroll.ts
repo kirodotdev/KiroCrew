@@ -119,8 +119,12 @@ let activeScrollOwner: (() => void) | null = null
  * owner that it has been taken over. Returns a release function that clears
  * ownership only if this owner is still the active one (so a stale poll's
  * teardown can never revoke a newer poll's claim).
+ *
+ * Exported for the one other scroll driver, the converging glide
+ * (utils/convergingGlide), whose eased travel writes `scrollTop` every frame
+ * without going through a poll and so must hold the claim itself.
  */
-function claimScrollOwnership(supersede: () => void): () => void {
+export function claimScrollOwnership(supersede: () => void): () => void {
   const prev = activeScrollOwner
   // Install FIRST: `prev()` may synchronously run its own teardown, whose
   // release must compare against `prev` and therefore no-op.

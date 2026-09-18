@@ -141,11 +141,18 @@ describe('VirtualTranscript', () => {
     expect(rows).toHaveLength(3)
   })
 
-  it('exposes scroll-to-bottom through its handle', () => {
+  it('exposes scroll and virtualized row steering through its handle', () => {
     const ref = createRef<VirtualTranscriptHandle>()
-    render(<VirtualTranscript ref={ref} items={singles(3)} renderRow={renderRow} sessionId="t:handle" />)
+    const { container } = render(
+      <VirtualTranscript ref={ref} items={singles(40)} renderRow={renderRow} sessionId="t:handle" />,
+    )
     expect(ref.current).not.toBeNull()
     act(() => { ref.current!.scrollToBottom('auto') })
+    expect(ref.current!.estimateRowTop(0)).toBe(0)
+    let far = false
+    act(() => { far = ref.current!.mountIndex(0) })
+    expect(far).toBe(true)
+    expect(mountedIndices(container)).toContain(0)
   })
 
   it('shares an external scroller ref with the host and reports the at-bottom state', () => {

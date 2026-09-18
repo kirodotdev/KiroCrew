@@ -1,5 +1,4 @@
 import type { DisplayItem } from '../pages/chat/types'
-import type { ChatMessage } from '../types'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import { mdImageDestToPath } from './fileTokens'
 import { type PasteBlock, expandAll } from './pasteTokens'
@@ -74,23 +73,26 @@ export function pinHandoffY(foldY: number, collapsedCardH: number): number {
  * prompt, however many cycles ago that was. The distance is the honest answer:
  * nothing closer was the user's.
  *
- * Two `user`-role rows are still excluded because the role alone over-admits:
+ * A STEER (`meta.steer`, set by the `steer_push` echo) IS admitted, on the same
+ * grounds that admit any other typed row: the user wrote it, and inside the reply
+ * that followed it, it is the most recent thing they asked. This deliberately
+ * differs from the turn-BOUNDARY scans that share its shape —
+ * `isTurnBoundaryUser` and the `lastUserIdx` walk in `store/chatSlice.ts`, the
+ * turn-head walk in `app-sdk/turnPolicyBlock.ts` — all of which must skip a steer
+ * because they answer "where does this turn BEGIN", and a row injected into a
+ * running turn cannot end that scan. The banner answers "what did I last ask",
+ * so it takes the opposite answer. The row that OPENED a steered turn is not
+ * lost: it is the head of the steer's own prompt run, so it is where clicking the
+ * banner lands (`jumpAnchorIdx`) or one step further up the chain.
  *
- * - A STEER (`meta.steer`, set by the `steer_push` echo) is injected INTO a turn
- *   already running; its row lays out between the opener and that turn's reply,
- *   so admitting it hands the pin to the interruption for the rest of the turn.
- * - A subagent completion in OLDER scrollback was persisted under role `user`
- *   (before the `subagent` role existed). The same completion-event parser the
- *   transcript card uses recognises it, so it is excluded by SHAPE, not by role.
+ * A subagent completion in OLDER scrollback was persisted under role `user`
+ * (before the `subagent` role existed) and IS excluded, by SHAPE rather than by
+ * role: the same completion-event parser the transcript card uses recognises it.
  */
-function isSteer(msg: ChatMessage): boolean {
-  return !!(msg.meta as { steer?: boolean } | undefined)?.steer
-}
-
 function isPrompt(item: DisplayItem | undefined): boolean {
   if (!item || item.kind !== 'single') return false
   const { msg } = item
-  return msg.role === 'user' && !isSteer(msg) && !isSubagentCompletionMessage(msg)
+  return msg.role === 'user' && !isSubagentCompletionMessage(msg)
 }
 
 /**
@@ -140,17 +142,20 @@ export function findNextPromptIdx(items: DisplayItem[], afterIdx: number): numbe
  * puts a non-prompt row (or the top of the list) on the line instead, so the
  * previous turn's banner survives and the chain continues.
  *
- * The walk consumes only rows `isPrompt` admits — consecutive USER prompts (a
- * double-send, a prompt typed while the previous one was still queued). Machine
- * openers (nudge and subagent rows) are not prompts here, so a run of them above
- * the target is an ordinary non-prompt gap and the walk stops at the target: the
- * previous user prompt's banner then survives the landing exactly as it would
- * over any other reply row. The walk used to consume machine runs so a jump
- * never landed "between two machine rows with the context that explains them
- * still hidden above"; that concern went away with the rows themselves — a
- * nudge is now a one-line self-labelled system row and a subagent completion a
- * self-labelled headline card, so a landing beside either reads on its own, and
- * the banner above it names the user prompt the whole block answers.
+ * The walk consumes only rows `isPrompt` admits — consecutive rows the USER
+ * typed: a steer sent before the turn produced any output, a double-send, a
+ * prompt typed while the previous one was still queued. Those are exactly the
+ * rows that can pin and push, so they are the only ones that can straddle. A
+ * steer sent before the turn produced any output lies directly on its opener, so
+ * the walk anchors there and clicking that pinned steer scrolls to the prompt
+ * that started the work; a steer that arrived after some output has a reply row
+ * above it and is its own anchor. Machine openers (nudge and
+ * subagent rows) are not prompts here, so a run of them above the target is an
+ * ordinary non-prompt gap and the walk stops at the target: the previous user
+ * prompt's banner then survives the landing exactly as it would over any other
+ * reply row. A nudge is a one-line self-labelled system row and a subagent
+ * completion a self-labelled headline card, so a landing beside either reads on
+ * its own, with the banner above it naming the prompt the whole block answers.
  *
  * Walking up lengthens the jump. The virtualizer's near/far decision
  * (`mountIndex` in useVirtualChat) compares the anchor's jump window against
