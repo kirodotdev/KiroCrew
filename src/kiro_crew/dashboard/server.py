@@ -154,6 +154,7 @@ from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
     _is_spa_shell_request,
+    internal_path_matches,
     is_csrf_exempt,
     register_app_window_paths,
     token_auth_middleware,
@@ -881,6 +882,165 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/v1/chat/completions",  # OpenAI-compat API
     }
 )
+
+
+def _would_soften_a_strict_path(candidate: str) -> bool:
+    """Whether admitting *candidate* to the mixed set reclassifies a strict route.
+
+    BOTH directions, because `internal_path_matches` is prefix-based and the
+    request is what gets matched, not the entry:
+
+    * candidate is a strict entry, or a CHILD of one — the obvious case.
+    * candidate is an ANCESTOR of a strict entry — the case a one-directional
+      check misses. Contributing ``/api/browser`` against the strict
+      ``/api/browser/command`` admits every route beneath it, so a request for
+      the strict path matches BOTH sets, and token_auth's off-loopback arm tests
+      ``_matches_mixed`` first (``elif _matches_internal: if _matches_mixed:``) —
+      the strict hard-deny is replaced by cookie acceptance.
+
+    The docstring's "never an app root, enumerate" is guidance; this is the
+    enforcement, so the ancestor direction is not left to the contributor.
+    """
+    if internal_path_matches(candidate, _STRICT_INTERNAL_API_PATHS):
+        return True
+    return any(internal_path_matches(strict, {candidate}) for strict in _STRICT_INTERNAL_API_PATHS)
+
+
+def _mixed_internal_api_paths() -> frozenset[str]:
+    """``_MIXED_INTERNAL_API_PATHS`` plus the edition's contributed paths.
+
+    Both middleware construction sites build their mixed set through here — the
+    dashboard chain and the headless ``--slack-only`` one — so the two can never
+    disagree about which routes an internal loopback caller may reach. Drift
+    there is an auth bug, not a cosmetic one.
+
+    WHY A SEAM AT ALL. An edition mounts its routes through
+    ``DashboardContributor.contribute_routes``, so the core cannot name those
+    paths in a module-level frozenset. Without the contribution, an edition's own
+    MCP tool authenticating with the loopback ``X-Internal-Secret`` handshake is
+    not recognized as internal: token_auth ignores the secret, falls through to
+    cookie auth, and the tool answers ``Token required`` on every call.
+
+    TWO LIMITS THE CORE ENFORCES rather than trusting the contributor:
+
+    * a contributed path matching a CORE STRICT entry is DROPPED. Strict and mixed
+      differ off-loopback — strict hard-denies, mixed accepts a validated
+      cookie — so admitting one would soften a route the core deliberately keeps
+      loopback-only. The overlap is checked in BOTH directions (see
+      :func:`_would_soften_a_strict_path`): a contributed ANCESTOR of a strict
+      entry reclassifies it just as a child does. Dropping is audited, because a
+      silently-ignored contribution and an honoured one look identical from the
+      edition's side.
+    * the result is a UNION, so a contribution can never remove a core entry. A
+      contributor returning an unrelated or empty set is harmless by construction,
+      which is why the read below can fail closed to "no contribution".
+
+    Fail-closed through ``safe_context_call``, the idiom this repo centralizes for
+    exactly this seam: a ``PlatformCompositionError`` is RE-RAISED, because a host
+    that could not compose its companion must abort rather than fall back to
+    open-source defaults, while any other contributor failure degrades to no
+    contribution. A contributor that raises, hands back a generator that raises
+    part-way through iteration, returns a non-iterable, or yields non-string
+    entries therefore contributes nothing rather than widening the admitted set on
+    a value the core could not check — and none of those can abort the gateway
+    bind, which is what a raise escaping middleware construction would do.
+
+    BOTH outcomes are recorded, because each is invisible to a different party: a
+    dropped contribution is invisible to the EDITION, and an honoured one is
+    invisible to the OPERATOR. So the admitted set is logged and SEL-audited at
+    composition time alongside the drop audit — without it SEL cannot tell a
+    deployment whose auth surface an edition widened from a stock one. A public
+    build contributes nothing and stays silent.
+    """
+
+    def _read() -> set[str]:
+        # LOOKUP separated from INVOCATION on purpose. Guarding the call itself
+        # against AttributeError would also swallow one raised INSIDE an
+        # implemented contributor, so a genuinely broken edition would take the
+        # silent "predates the seam" path and contribute nothing with no warning —
+        # indistinguishable from an honoured empty contribution, which is the
+        # confusion the audit below exists to remove. A MISSING method is the happy
+        # path (returns nothing, silently); a BROKEN one raises and is reported.
+        reader = getattr(current_context().dashboard, "mixed_internal_api_paths", None)
+        if reader is None:
+            return set()
+        # Materialized INSIDE the thunk. A contributor may hand back a generator,
+        # and one that raises part-way through iteration is a contributor failure
+        # like any other — but the comprehension is where it surfaces, so leaving
+        # it outside would let it escape middleware construction and stop the
+        # gateway binding at all. A non-iterable raises TypeError here and lands on
+        # the same degrade path.
+        return {p for p in reader() if isinstance(p, str) and p.startswith("/")}
+
+    def _degraded() -> set[str]:
+        # Invoked only on the degrade path and INSIDE the except block, so
+        # ``exc_info`` still carries the live exception. WARNING rather than the
+        # helper's debug line because a broken contributor is a fault an operator
+        # has to see: the edition's tool will answer Token required with nothing
+        # else naming the cause.
+        logger.warning(
+            "dashboard contributor mixed_internal_api_paths failed; "
+            "contributing no internal paths",
+            exc_info=True,
+        )
+        return set()
+
+    # safe_context_call, not a hand-written try/except: it is the CPP fail-closed
+    # idiom this repo centralizes, and the reason is exactly the divergence a copy
+    # invites — a bare ``except Exception`` swallows PlatformCompositionError, and a
+    # non-standalone host that could not compose its companion MUST abort rather
+    # than silently fall back to open-source defaults. Degrading THAT to the core
+    # set would answer a mis-composed edition with a quietly narrower auth surface.
+    entries = safe_context_call(_read, fallback_factory=_degraded, log_message=None)
+
+    softening = {p for p in entries if _would_soften_a_strict_path(p)}
+    if softening:
+        # Loud, and dropped rather than honoured: the edition asked for a route
+        # the core keeps loopback-only to be reachable off-loopback with a cookie.
+        logger.error(
+            "dashboard contributor tried to soften strict internal paths to mixed; " "dropping %s",
+            sorted(softening),
+        )
+        try:
+            sel().log_api_access(
+                caller="dashboard_contributor",
+                operation="mixed_internal_api_paths",
+                outcome="denied",
+                source="dashboard",
+                resources=",".join(sorted(softening)),
+                error="would soften a core strict path",
+            )
+        except Exception:  # pragma: no cover - audit must not change the outcome
+            logger.debug("SEL audit for dropped internal paths failed", exc_info=True)
+        entries -= softening
+
+    if entries:
+        # The symmetric half of the drop audit, and the reason both exist: a
+        # dropped contribution is invisible to the EDITION, and an honoured one is
+        # invisible to the OPERATOR. Without this, SEL cannot distinguish a
+        # deployment whose auth surface an edition widened from a stock one, which
+        # is exactly the composed surface SEL exists to make visible.
+        #
+        # Only when something was actually admitted: a public build contributes an
+        # empty set, so staying silent there keeps every stock gateway start free
+        # of a line that says nothing.
+        logger.info(
+            "dashboard contributor admitted %d internal-reachable path(s): %s",
+            len(entries),
+            sorted(entries),
+        )
+        try:
+            sel().log_api_access(
+                caller="dashboard_contributor",
+                operation="mixed_internal_api_paths",
+                outcome="allowed",
+                source="dashboard",
+                resources=",".join(sorted(entries)),
+            )
+        except Exception:  # pragma: no cover - audit must not change the outcome
+            logger.debug("SEL audit for admitted internal paths failed", exc_info=True)
+
+    return _MIXED_INTERNAL_API_PATHS | frozenset(entries)
 
 
 # Base Content-Security-Policy applied to all dashboard responses.
@@ -4452,7 +4612,7 @@ async def start_dashboard(
         csrf_middleware,
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
-            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+            mixed_internal_paths=_mixed_internal_api_paths(),
             internal_secret=_internal_secret,
             port=port,
             local_only=local_only,
@@ -5309,7 +5469,7 @@ async def start_api_server(
         csrf_middleware,
         token_auth_middleware(
             internal_paths=_STRICT_INTERNAL_API_PATHS,
-            mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+            mixed_internal_paths=_mixed_internal_api_paths(),
             internal_secret=_internal_secret,
             port=port,
             local_only=local_only,

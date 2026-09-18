@@ -61,7 +61,7 @@ interface, the public edition is complete standalone.
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
 | `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destination from `telemetry.otlp_endpoint`) | RUM/Cognito config + its own OTLP collector |
-| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler) | secretary/taskkeeper routes + enterprise SSO PTY login |
+| `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `mobile_connect` | adapter | `DefaultMobileConnectProvider` (personal-install pair: `tailnet_qr` + `login_link` (id == kind by design)) | edition-specific phone-connection methods (descriptor-only `{id, kind}`; minting stays on each method's own endpoint; an empty list hides the dashboard entry; list + mint governed by `capabilities.mobile_connect`) |
 | `remote_provisioners` | adapter | `DefaultRemoteProvisionerProvider` (the single built-in `aws_ec2` lane, backed by `RealLaunchEngine`; id == kind by design) | edition-specific ways to CREATE a remote instance (a managed dev environment, a container task): descriptor-only `{id, kind, label, posix_only, step_labels}` plus a `LaunchEngine` per id; the core's durable launch job still drives every launch, so cancel, rollback and orphan reaping are inherited rather than reimplemented |
@@ -751,6 +751,39 @@ Wired sites:
   contract, centralized so the fail-closed policy cannot diverge). `stop_services`
   takes the same `app` handle as `start_services` (symmetric) so a companion need
   not stash services in process-global state.
+- `dashboard/server.py` `_mixed_internal_api_paths()` — unions
+  `dashboard.mixed_internal_api_paths()` into the module-level
+  `_MIXED_INTERNAL_API_PATHS` at BOTH `token_auth_middleware` construction sites
+  (the dashboard chain and the headless `--slack-only` one), so the two cannot
+  gate different route sets. It exists because an edition mounts its routes
+  through `contribute_routes`, so the core cannot name them in a frozenset —
+  without it an edition's own MCP tool authenticating with the loopback
+  `X-Internal-Secret` handshake is not recognized as internal at all and answers
+  `Token required` on every call. ADD-ONLY with two core-enforced limits: a
+  contributed path matching a CORE STRICT entry is DROPPED and SEL-audited
+  (strict hard-denies off-loopback where mixed accepts a validated cookie, so
+  admitting one would soften a deliberately loopback-only route), and the result
+  is a union so a contribution can never remove a core entry. BOTH outcomes are
+  recorded — the admitted set is logged and SEL-audited at composition time
+  alongside the drop audit, because a dropped contribution is invisible to the
+  EDITION while an honoured one is invisible to the OPERATOR, and SEL is what has
+  to distinguish a widened deployment from stock; a public build contributes
+  nothing and stays silent. The degraded-contributor path goes through
+  `safe_context_call`, not a hand-written `try/except`: a
+  `PlatformCompositionError` is RE-RAISED (a host that could not compose its
+  companion must abort, never fall back to open-source defaults) while any other
+  contributor failure degrades to no contribution. The contribution is also
+  MATERIALIZED inside that thunk, so a generator raising part-way through
+  iteration degrades instead of escaping middleware construction and stopping the
+  gateway from binding at all. The overlap is checked in BOTH directions by
+  `_would_soften_a_strict_path`: the request is what
+  gets prefix-matched, so a contributed ANCESTOR of a strict entry reclassifies it
+  exactly as a child does — a request for the strict path then matches both sets,
+  and token_auth's off-loopback arm tests `_matches_mixed` first. Every degraded
+  contributor shape — raising, absent method, non-iterable, non-path entries —
+  contributes nothing rather than widening the set on a value the core could not
+  check; a contributor predating the seam is NOT logged as a fault, while one
+  that raises is.
 - `dashboard/handlers_system.py` — `frontend_rum_config()` added to the status
   payload only when non-None.
 - `config/loader.py` `build_provider_factory(cfg)` (wave 3 wiring) — the

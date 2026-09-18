@@ -602,6 +602,12 @@ class DefaultDashboardContributor:
         # None → the dashboard keeps its built-in /api/sso-login stub handler.
         return None
 
+    def mixed_internal_api_paths(self) -> "frozenset[str]":
+        # The public edition mounts no routes, so it has none to make reachable
+        # by an internal loopback caller. Empty keeps the middleware's admitted
+        # set byte-identical to the core's own.
+        return frozenset()
+
     def on_user_message(self, app: Any, message: str) -> None:
         # The public edition observes no chat messages. A companion uses this to
         # e.g. auto-ingest doc links pasted into chat.

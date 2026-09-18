@@ -1547,6 +1547,43 @@ class DashboardContributor(Protocol):
         """Return the SSO-login WS handler, or ``None`` to keep the core stub."""
         ...
 
+    def mixed_internal_api_paths(self) -> "frozenset[str]":
+        """Edition paths an internal loopback caller may reach (Default: empty).
+
+        WIRED: ``dashboard/server.py`` unions the returned set into its own
+        ``_MIXED_INTERNAL_API_PATHS`` when it builds ``token_auth_middleware`` —
+        for the dashboard chain AND the headless ``--slack-only`` one, so the two
+        entrypoints cannot drift.
+
+        This exists because ``contribute_routes`` is the only way an edition mounts
+        a route, and the core cannot name those paths in a module-level frozenset.
+        Without the seam, an edition's own MCP tool authenticating with the loopback
+        ``X-Internal-Secret`` handshake is not recognized as internal at all:
+        token_auth ignores the secret, falls through to cookie auth, and the tool
+        answers ``Token required`` on every call.
+
+        ADD-ONLY, and the core enforces two limits rather than trusting the
+        contributor:
+
+        * a contributed path that matches a CORE STRICT entry is DROPPED. Strict
+          and mixed differ off-loopback — strict hard-denies, mixed accepts a
+          validated cookie — so admitting such a path would soften a route the
+          core deliberately keeps loopback-only. The overlap is checked in BOTH
+          directions: a contributed ANCESTOR of a strict entry reclassifies it
+          just as a child does, because the request is what gets prefix-matched.
+        * the union can never remove a core entry, by construction.
+
+        Contribute the AGENT SURFACE, never an app root: ``internal_path_matches``
+        matches ``path == entry or path.startswith(entry + "/")`` and carries no
+        method, so a root entry admits every route beneath it to any holder of the
+        machine secret. Enumerate. Where a dynamic segment forces a prefix entry,
+        re-assert at the handler for the legs no tool calls.
+
+        The Default returns an empty set, so public behaviour is unchanged.
+        v1 method addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
     def on_user_message(self, app: "web.Application", message: str) -> None:
         """Observe an inbound user chat message (Default: no-op).
 
