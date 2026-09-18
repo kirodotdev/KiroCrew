@@ -147,6 +147,7 @@ from kiro_crew.session_pid import (
     register_protected_pid,
     unregister_protected_pid,
 )
+from kiro_crew.session_token_sig import publish_session_token
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
@@ -4517,6 +4518,15 @@ class AcpRuntime:
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            # THIS session's own name, minted just above. It reaches the projection
+            # for the same reason ``session_key`` does -- the control-plane elements
+            # are the only carriers a mirrored host has -- but it answers a question
+            # the key cannot: on a shared runtime the key of the session that
+            # CLAIMED the process is not the key of the subagent session running on
+            # it, and after a warm-pool rekey the key baked into an element names the
+            # previous owner. The token is per session and its mapping is
+            # republished, so it stays right in both cases.
+            session_token=stub_token,
         )
         servers = projection.params.get("mcpServers") or []
         return _MirroredSessionMcp(
@@ -4565,17 +4575,29 @@ class AcpRuntime:
     async def _own_stub_session(
         self, entries: list[dict[str, Any]], session_key: str
     ) -> tuple[list[dict[str, Any]], str]:
-        """Give *entries* a token naming ONE session on this shared runtime.
+        """Mint the token that names ONE session on this shared runtime.
 
-        Returns the entries carrying the token plus the token itself, which the
+        Returns *entries* carrying the token plus the token itself, which the
         caller records on the session handle so a later ``rekey()`` can name the
-        same session.
+        same session — and stamps onto this session's control-plane elements.
 
-        Every identity channel a broker stub had before this token is keyed on
-        the process tree, and this runtime multiplexes N sessions over ONE
-        kiro-cli process — so a ``spawn_run`` subagent's stub resolved to the
-        PARENT slot and a parent re-claim overwrote it. The token is what gatewayd
-        matches a claim against instead of the PID alone.
+        Every OTHER identity channel a Crew MCP child has is keyed on the process
+        tree, and this runtime multiplexes N sessions over ONE kiro-cli process, so
+        each of them resolves a ``spawn_run`` subagent's server to the PARENT slot
+        and lets a parent re-claim overwrite it. The token is the per-SESSION name
+        that tree cannot supply.
+
+        Minted UNCONDITIONALLY. A reachable gatewayd socket is not a precondition,
+        because gatewayd is not the token's only reader: the token -> session-key
+        mapping is published to a MAC-signed file that the strict identity resolver
+        reads with no daemon (:mod:`kiro_crew.session_token_sig`). The socket gates
+        the CLAIM alone — with the gateway off, ``entries`` is empty and this still
+        returns a live token for the control-plane elements to carry.
+
+        Publication happens here, before ``session/new``, and off the event loop:
+        a child launched while that request is served may resolve its identity
+        before the first turn's republication, so the mapping has to exist by the
+        time the element does.
 
         When the owning session key is already known, the claim is pushed HERE,
         before ``session/new``, and awaited: kiro-cli launches this session's
@@ -4585,15 +4607,11 @@ class AcpRuntime:
         session whose key is not known yet (a warm-pool worker, claimed later)
         is named by the ``rekey()`` claim instead.
         """
-        if not entries or not self._mcp_gateway_socket:
-            # No socket means no gatewayd this runtime can reach, so no claim can
-            # ever bind a token — and gatewayd's answer for a token nothing bound
-            # is the process-tree behavior it already had. Minting one here would
-            # put an inert value on every session/new for no reader.
-            return entries, ""
         token = mint_stub_session_token()
         entries = attach_stub_session_token(entries, token)
-        if session_key and self.pid:
+        if session_key:
+            await asyncio.to_thread(publish_session_token, token, session_key)
+        if entries and self._mcp_gateway_socket and session_key and self.pid:
             await send_claim(
                 self._mcp_gateway_socket,
                 self.pid,
@@ -4697,7 +4715,7 @@ class AcpRuntime:
             from kiro_crew.members import member_dispatch_session_server
 
             member_entry = await asyncio.to_thread(
-                member_dispatch_session_server, member_session_key
+                member_dispatch_session_server, member_session_key, stub_token
             )
             if member_entry is not None:
                 # Session-level entries outrank same-named spec entries, so drop
@@ -5310,7 +5328,7 @@ class AcpRuntime:
             from kiro_crew.members import member_dispatch_session_server
 
             member_entry = await asyncio.to_thread(
-                member_dispatch_session_server, member_session_key
+                member_dispatch_session_server, member_session_key, stub_token
             )
             if member_entry is not None:
                 mcp_servers = [e for e in mcp_servers if e.get("name") != member_entry["name"]] + [

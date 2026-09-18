@@ -126,7 +126,7 @@ def drop_unadvertised_transports(
     return out
 
 
-def _identity_env(session_key: str, channel_id: str) -> dict[str, str]:
+def _identity_env(session_key: str, channel_id: str, session_token: str = "") -> dict[str, str]:
     """The env Crew's own control plane needs, resolved for this session.
 
     Every value here is something a claude MCP child gets for free by inheriting
@@ -137,7 +137,9 @@ def _identity_env(session_key: str, channel_id: str) -> dict[str, str]:
     key added there for one backend and missed by a copy here would leave this
     control plane silently unable to do whatever the key enabled.
     """
-    return control_plane_identity_env(session_key, channel_id, label="codex")
+    return control_plane_identity_env(
+        session_key, channel_id, label="codex", session_token=session_token
+    )
 
 
 def _with_env(element: dict[str, Any], extra: Mapping[str, str]) -> dict[str, Any]:
@@ -220,6 +222,7 @@ def codex_elements(
     *,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> list[dict[str, Any]]:
     """Apply codex's spelling and identity rules to a translated array.
 
@@ -254,7 +257,11 @@ def codex_elements(
     credential on a spec element this is an ordinary naming clash, not a privilege
     question.
     """
-    identity = _identity_env(session_key, channel_id) if session_key or channel_id else {}
+    identity = (
+        _identity_env(session_key, channel_id, session_token)
+        if session_key or channel_id or session_token
+        else {}
+    )
     claimed: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for element in elements:
@@ -292,6 +299,7 @@ def codex_projection(
     work_dir: object = None,
     session_key: str = "",
     channel_id: str = "",
+    session_token: str = "",
 ) -> SessionProjection:
     """The whole codex array -- spec translation AND pooled stubs -- plus the deny set.
 
@@ -344,7 +352,9 @@ def codex_projection(
             )
             continue
         kept.append(element)
-    out: list[dict[str, Any]] = codex_elements(kept, session_key=session_key, channel_id=channel_id)
+    out: list[dict[str, Any]] = codex_elements(
+        kept, session_key=session_key, channel_id=channel_id, session_token=session_token
+    )
     for stub in stub_elements:
         if not isinstance(stub, Mapping):
             continue
@@ -533,6 +543,7 @@ class CodexMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> dict[str, object]:
         """The wire face: the ``mcpServers`` array for this codex session.
@@ -581,6 +592,7 @@ class CodexMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         ).params
 
     def session_projection(
@@ -592,6 +604,7 @@ class CodexMirror(AgentConfigMirror):
         work_dir: object = None,
         session_key: str = "",
         channel_id: str = "",
+        session_token: str = "",
         **kwargs: object,
     ) -> SessionProjection:
         """The structured face: :func:`codex_projection`, with ``kwargs`` ignored as
@@ -604,4 +617,5 @@ class CodexMirror(AgentConfigMirror):
             work_dir=work_dir,
             session_key=session_key,
             channel_id=channel_id,
+            session_token=session_token,
         )

@@ -151,6 +151,47 @@ The rows below are the declaration's own fields, so a harness answers this bucke
 by writing one literal. Leaves are home-relative and authored with POSIX
 separators; the floor re-joins them for the running platform.
 
+### Which SESSION is calling — the same answer on every harness
+
+Distinct from the credential question above: this is how one of Crew's OWN MCP
+servers (`kirocrew-core`, `kirocrew-cron`, and the session-scoped
+`kirocrew-dashboard` / `kirocrew-work`) learns which session it is acting for. It is
+a host question rather than a declared seam — a harness declares nothing about it —
+and the answer no longer varies by backend, which it used to.
+
+Every ACP session mints a per-session TOKEN (`mcp_gateway/claim.py`) and the gateway
+publishes a MAC-signed `token -> session_key` mapping (`session_token_sig.py`) at
+`session/new` and again on every warm-pool `rekey()`. The token rides the `env` of
+this session's control-plane elements — the mirror projections
+(`providers/mirrors/identity.py`, `control_plane_identity_env`, shared by codex,
+opencode and goose), the member-dispatch element (`members.py`) and the kiro-cli
+child env — and `mcp_core._resolve_session_key_strict` resolves it by verifying that
+mapping.
+
+**It depends on no switch.** Not `mcp_gateway.stub_servers`, not
+`mcp_gateway.enabled`, not a running gatewayd, and there is no config key for it. The
+token used to be readable only by gatewayd, which made per-session identity a
+property of the pooling topology; a signed file gives it a reader that a default
+install already has.
+
+`KIROCREW_SESSION_KEY` stays on the same elements as the FALLBACK, and the resolver
+reads it strictly BELOW the token: after a rekey, the env a child was spawned with
+names the previous session while the republished mapping names the current one. The
+gateway's per-call caller context still outranks both, being stamped per call.
+
+**Trust boundary.** The mapping file sits in a same-uid agent-writable directory, so
+the MAC is the trust root, not the file: it is keyed from `sel_hmac.key` under a domain
+label distinct from the `session_pid` sidecar's. That defeats cross-token replay,
+in-place tampering and symlink planting outright, and FORGERY to the strength of that
+key's own fencing — which is the file-tool path only: `security.md` classifies the leaf
+`VISIBLE`, so a spawned shell's `open()` is not fenced from it. The SEL audit chain
+rests on the same key and carries the same residual, whose remedy is stated there
+(move the in-sandbox reader behind the gateway so the leaf can become `HIDDEN`). None
+of it defends against a same-uid process reading the mapping directory, and it is not
+meant to: that process could already present another session's key through the env var,
+exactly as today. Same-uid is inside the boundary on both channels.
+`docs/architecture/design-notes/mcp-stub-decoupling.md` carries the full statement.
+
 | | kiro-cli | KAS | CC | Codex | OpenCode | Pi | goose | DeepSeek |
 |---|---|---|---|---|---|---|---|---|
 | `entitlement_source` | `host_identity_store` — `kiro-cli login` writes it; org SSO is `--use-device-flow --license pro` (`kiro_prerequisite.py`) | `host_identity_store` — the same store. Spawned as `kiro-cli acp --agent-engine v3 --auth-method cli`, and that flag is the demonstration: the relay resolves every access token from kiro-cli's own store | `own_credential_file` — brings its own sign-in, and Crew implements no login command for it | `own_credential_file` — brings its own sign-in, and Crew implements neither a login command nor an auth probe | `own_credential_file` — brings its own sign-in, and Crew implements neither a login command nor an auth probe. A locally served model needs no sign-in at all, which is why its remedy states an action and asserts no state | `own_credential_file` — brings its own sign-in (`/login` inside `pi`), and Crew implements neither a login command nor an auth probe. A locally served model needs no sign-in at all, only a `models.json` provider entry, which is why its remedy states an action and asserts no state | `own_credential_file` — brings its own provider configuration, and Crew implements neither a login command nor an auth probe. A locally served model needs no key at all, which is why its remedy states an action and asserts no state | `own_credential_file` — and it needs less than the others: `initialize` advertises `authMethods: []` and `authenticate` returns immediate success, so the ACP layer authenticates nothing at all. What it needs is a PROVIDER key, resolved inside the harness from its own store |

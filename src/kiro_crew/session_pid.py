@@ -1516,6 +1516,10 @@ def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
 
     # Third pass: remove stale session_pid_*.txt files for dead processes
     _prune_stale_session_pid_files(narrow_with_leaders=narrow_with_leaders)
+    # Fourth pass: bound the accumulation of session-token mappings, which are
+    # keyed by a token hash rather than by a pid and so cannot be probed for
+    # liveness at all.
+    _prune_stale_session_token_files()
 
     # Fourth pass: remove empty session workspace dirs (orphaned subagent dirs)
     sessions_dir = config_dir() / "sessions"
@@ -1610,6 +1614,59 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
     if stale_pid_files:
         logger.info("Cleaned up %d stale session PID files", stale_pid_files)
     return stale_pid_files
+
+
+#: How long an unrefreshed ``session_token_<sha256>.sig`` mapping is kept.
+#:
+#: Age is the ONLY signal available: the filename is a token hash, so unlike a
+#: ``session_pid_<pid>`` mapping there is no process to probe. It is nonetheless a
+#: safe signal, and for a specific reason rather than because the window is
+#: generous: the mapping is republished at the START of every turn
+#: (``messaging.identity.publish_turn_identity``), BEFORE anything in that turn can
+#: call a tool. So pruning a long-idle session's mapping cannot cost it identity —
+#: its next turn rewrites the file before the first resolution — and the window
+#: only decides how much disk an abandoned session holds in the meantime.
+_SESSION_TOKEN_TTL_SECS = 7 * 24 * 60 * 60
+
+
+def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) -> int:
+    """Remove ``session_token_*.sig`` mappings unrefreshed for *ttl_secs*.
+
+    This pass is the ONLY retraction path, deliberately: a teardown hook cannot
+    reach the case that actually accumulates files — a gateway that dies without
+    running one — so an age-based pass is what bounds the directory.
+
+    It runs where its caller runs: :func:`cleanup_orphaned_sessions` is startup and
+    graceful-shutdown only, NOT periodic. A long-lived gateway therefore holds one
+    mapping per session started since its last boot or clean stop. Stated because
+    the TTL below reads like a continuous expiry and is not one.
+
+    A mapping outliving its session is not a forgery risk: it names a session that
+    does not exist, and any holder of its token is inside the trust boundary. So
+    this is hygiene rather than a control, and it fails soft on every file it
+    cannot read or unlink.
+
+    Returns the number of mappings removed.
+    """
+    removed = 0
+    now = time.time()
+    try:
+        candidates = list(config_dir().glob("session_token_*.sig"))
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if now - path.stat().st_mtime <= ttl_secs:
+                continue
+            path.unlink(missing_ok=True)
+        except OSError:
+            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - path.name is the sha256 DIGEST of a token, never a token  # noqa: E501
+            logger.debug("could not prune identity mapping %s", path.name, exc_info=True)
+            continue
+        removed += 1
+    if removed:
+        logger.info("Cleaned up %d stale session-token mappings", removed)
+    return removed
 
 
 def cleanup_orphaned_session_roots() -> int:

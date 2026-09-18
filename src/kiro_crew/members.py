@@ -39,6 +39,7 @@ from kiro_crew.jsonl_util import (
     rotate_jsonl_at,
     strict_records,
 )
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
     open_in_pinned_parent,
@@ -186,7 +187,9 @@ def select_provider_backend(
 MEMBER_DISPATCH_SERVER = "kirocrew-dashboard"
 
 
-def member_dispatch_session_server(session_key: str) -> dict[str, object] | None:
+def member_dispatch_session_server(
+    session_key: str, session_token: str = ""
+) -> dict[str, object] | None:
     """ACP ``session/new`` ``mcpServers`` element mounting session control.
 
     The entry carries ``KIROCREW_SESSION_KEY`` so the server's strict identity
@@ -195,6 +198,15 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     which the KAS projection's credential stripping never touches (that filter
     applies to the agent-declared ``mcpServers`` block, not to what the host
     itself injects per session).
+
+    ``session_token`` is this ACP session's own name, and it rides BESIDE the key
+    rather than replacing it (see
+    :func:`~kiro_crew.providers.mirrors.identity.control_plane_identity_env` for
+    the full argument). It matters most on a SHARED runtime, where the key baked
+    into this element names the session that was claiming when it was built while
+    the token's mapping is republished on every rekey — so a member thread on a
+    recycled process resolves to itself rather than to its predecessor. Empty
+    leaves the entry byte-identical to the pre-token shape.
 
     The env also carries ``KIROCREW_BOUND_PORT`` — the port this gateway is
     actually serving. Unlike a chat session's MCP child, which inherits the
@@ -241,7 +253,11 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     # DEFAULT home's gateway — where the member slot does not exist and every
     # verb is refused as ``caller_unidentified``. Empty on a default install.
     env: list[dict[str, str]] = [{"name": k, "value": v} for k, v in _managed_mcp_env().items()]
-    # Then the identity key.
+    # Then the identity: the signed per-session token first (the resolver reads it
+    # first, because it cannot go stale across a rekey), then the key as fallback
+    # for the one case the token cannot cover — no SEL trust root to sign with.
+    if session_token:
+        env.append({"name": STUB_SESSION_TOKEN_ENV, "value": session_token})
     env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
     # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
     # through the client order, so one call covers both "the gateway exported the

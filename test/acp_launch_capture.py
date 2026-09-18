@@ -15,10 +15,11 @@ must not move what they ARE -- for kiro-cli above all, whose construction path
 harness-parity H13 keeps free of work added for an adapter.
 
 The environment is recorded as the DELTA from ``os.environ`` rather than in full, so
-the snapshot is a property of the code and not of the machine that ran it. Three
+the snapshot is a property of the code and not of the machine that ran it. Four
 values inside that delta are placeholders for the same reason: the augmented search
-path, the interpreter path, and pi's per-session gate nonce all vary per host or per
-run, while the FACT that the harness receives them is what is pinned.
+path, the interpreter path, pi's per-session gate nonce and the per-session identity
+token all vary per host or per run, while the FACT that the harness receives them is
+what is pinned.
 
 Every collaborator on the spawn path is stubbed to a fixed answer, including the
 resolvers, the sandbox wrapper and each harness's own routing read-back. The point is
@@ -48,6 +49,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.config import paths as config_paths
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 #: The committed fixture. Resolved from this file so both callers agree on it.
 GOLDEN_PATH = Path(__file__).parent / "fixtures" / "acp_launch_goldens.json"
@@ -73,6 +75,10 @@ VOLATILE_ENV = {
     "PATH": "<augmented-path>",
     "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
     "KIROCREW_PI_GATE_SESSION": "<nonce>",
+    # Minted from ``secrets`` on every client, so it can never match a golden twice.
+    # That a one-session client's child RECEIVES it is the fact being pinned: it is
+    # how a control-plane MCP server on that child resolves its own session.
+    STUB_SESSION_TOKEN_ENV: "<session-token>",
 }
 
 #: The parent environment every capture runs against, whatever the recording host's

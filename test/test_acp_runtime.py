@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
 
 # ── Harness ──
@@ -5246,6 +5247,55 @@ class TestAcpRuntimePidTracking:
         assert calls["session"] == []
 
 
+def _identity_tokens(elements):
+    """The per-session token carried by each of *elements*, in order.
+
+    A missing pair yields ``""`` for that element, so a caller can tell "every
+    element carries one" from "one of them stopped".
+    """
+    out = []
+    for element in elements:
+        env = element.get("env")
+        pairs = env if isinstance(env, list) else []
+        value = ""
+        for pair in pairs:
+            if isinstance(pair, dict) and pair.get("name") == STUB_SESSION_TOKEN_ENV:
+                value = str(pair.get("value") or "")
+        out.append(value)
+    return out
+
+
+def _without_identity_env(elements):
+    """*elements* with the per-session identity VALUE dropped from each.
+
+    Lets a comparison assert on the stub SET — names, commands, args, and every
+    other env pair — without asserting that two different sessions were given the
+    same session token, which they must not be.
+
+    Only the VALUE is excluded, never the pair's presence: the pair is rewritten to
+    a fixed placeholder rather than removed, so an element that stops carrying a
+    token at all still differs from one that carries a different token. Removing it
+    outright is what made the ratchet blind to a token disappearing — the
+    comparison alone cannot see presence, so :func:`_identity_tokens` is asserted
+    beside it.
+    """
+    out = []
+    for element in elements:
+        shaped = dict(element)
+        env = shaped.get("env")
+        if isinstance(env, list):
+            shaped["env"] = [
+                (
+                    {"name": STUB_SESSION_TOKEN_ENV, "value": "<per-session>"}
+                    if isinstance(pair, dict) and pair.get("name") == STUB_SESSION_TOKEN_ENV
+                    else pair
+                )
+                for pair in env
+            ]
+        out.append(shaped)
+    return out
+
+
 class TestAcpRuntimeLoadSession:
     """load_session() must mirror AcpClient._initialize_session's resume path:
     issue session/load DIRECTLY (no session/new first) under the ORIGINAL sid,
@@ -5586,9 +5636,30 @@ class TestAcpRuntimeLoadSession:
 
         # Parity with create_session for the same agent + overlay: the two
         # injection paths must never diverge.
+        #
+        # The per-session token's VALUE is the one part that legitimately differs:
+        # each session start mints its own (``_own_stub_session``) and these are two
+        # different sessions. So the value is normalised and everything else --
+        # ``command``, ``args``, every other env pair -- is compared byte-for-byte,
+        # because the parity this guards is the stub SET, and re-declaring a
+        # different one is what silently un-pools a resumed session.
+        #
+        # PRESENCE is asserted separately and is not part of the normalisation: a
+        # comparison that dropped the pair from both sides would pass just as
+        # happily if one path stopped carrying a token at all, which is the
+        # regression this file is the only guard for.
         await rt.create_session(cwd="/w", agent="kirocrew")
         new_params = next(p for m, p in sent if m == METHOD_SESSION_NEW)
-        assert load_params["mcpServers"] == new_params["mcpServers"]
+        load_tokens = _identity_tokens(load_params["mcpServers"])
+        new_tokens = _identity_tokens(new_params["mcpServers"])
+        assert all(load_tokens) and all(new_tokens), (
+            "every re-declared element must carry this session's identity token; "
+            f"load={load_tokens} new={new_tokens}"
+        )
+        assert load_tokens != new_tokens, "two different sessions must not share a token"
+        assert _without_identity_env(load_params["mcpServers"]) == _without_identity_env(
+            new_params["mcpServers"]
+        )
 
     @pytest.mark.asyncio
     async def test_load_session_resolves_stubs_off_the_event_loop(self, monkeypatch):

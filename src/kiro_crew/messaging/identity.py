@@ -29,12 +29,13 @@ from kiro_crew.platform.governance_profiles import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.session_pid_sig import publish_session_pid
+from kiro_crew.session_token_sig import publish_session_token
 
 logger = logging.getLogger(__name__)
 
 
 async def publish_turn_identity(sessions: Any, session_key: str) -> None:
-    """Publish this turn's ``session_pid_<pid>.txt`` mapping (+ HMAC sidecar).
+    """Publish this turn's identity mappings: the pid file AND the session token.
 
     Keyed by the session's kiro-cli host PID (via ``sessions.get_pid``) so the
     gateway PID-walk resolves ``X-Session-Key``. Offloaded to the maintenance
@@ -60,24 +61,80 @@ async def publish_turn_identity(sessions: Any, session_key: str) -> None:
             )
     except Exception:
         logger.debug("publish_turn_identity failed for %s", session_key, exc_info=True)
+    # ONE provider lookup for both steps below. Resolving it twice puts a second
+    # call on a per-turn hot path for no gain, and what a session manager does on a
+    # lookup is its own business rather than something this function should invoke
+    # more often than it needs to.
+    provider = None
     try:
-        _reclaim_gateway_stubs(sessions, session_key)
+        provider = sessions.get_provider(session_key)
+    except Exception:
+        logger.debug("provider lookup failed for %s", session_key, exc_info=True)
+    try:
+        await _publish_session_token(provider, session_key)
+    except Exception:
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure - logs the session key, never the token, which is not in scope here  # noqa: E501
+        logger.debug("identity mapping publication failed for %s", session_key, exc_info=True)
+    try:
+        _reclaim_gateway_stubs(provider)
     except Exception:
         logger.debug("stub re-claim failed for %s", session_key, exc_info=True)
 
 
-def _reclaim_gateway_stubs(sessions: Any, session_key: str) -> None:
+def _provider_inner(provider: Any) -> Any:
+    """The object carrying the ACP-provider surface, or ``None``.
+
+    Both steps below reach it the same way and through ``getattr``: only the ACP
+    providers expose ``reclaim`` and ``session_identity_token``, and every other
+    provider and test double simply has neither and is left alone.
+    """
+    if provider is None:
+        return None
+    return getattr(provider, "client", None) or getattr(provider, "_client", None) or provider
+
+
+async def _publish_session_token(provider: Any, session_key: str) -> None:
+    """Publish this session's TOKEN -> key mapping, if its provider carries a token.
+
+    The pid mapping above answers "which session owns this PROCESS", and on a
+    session-SHARING runtime that is the parent's answer for every subagent on it.
+    The token answers "which session is THIS one" — it is minted per ACP
+    ``session/new`` and rides that session's own MCP elements — so the two are
+    published together rather than one standing in for the other.
+
+    Republished every turn for the same reason the pid file is: a warm-pool process
+    is re-keyed to a new session while its MCP children keep the token they were
+    spawned with, so the FILE is what has to move to the new owner. ``rekey()``
+    publishes it at claim time and this bounds how long a missed publication (a
+    transient write failure, a trust root restored since) can cost identity — one
+    turn.
+
+    Takes the ALREADY-RESOLVED provider rather than the session manager, so this
+    step adds no lookup of its own — see the caller.
+
+    Offloaded: publication is a key read plus an ``atomic_write``.
+    """
+    inner = _provider_inner(provider)
+    if inner is None:
+        return
+    token = getattr(inner, "session_identity_token", "")
+    if not isinstance(token, str) or not token:
+        return
+    await asyncio.get_running_loop().run_in_executor(
+        maintenance_executor(), publish_session_token, token, session_key
+    )
+
+
+def _reclaim_gateway_stubs(provider: Any) -> None:
     """Ask this session's provider to re-push its gateway claim, if it has one.
 
-    Reached through ``getattr`` on purpose: only the ACP providers carry a stub
-    token, every other provider (and every test double) simply has no
-    ``reclaim`` and is left alone. Fire-and-forget inside ``reclaim`` itself, so
-    this adds no await to the turn's critical path.
+    Takes the ALREADY-RESOLVED provider, so the turn pays one lookup rather than
+    two. Fire-and-forget inside ``reclaim`` itself, so this adds no await to the
+    turn's critical path.
     """
-    provider = sessions.get_provider(session_key)
-    if provider is None:
+    inner = _provider_inner(provider)
+    if inner is None:
         return
-    inner = getattr(provider, "client", None) or getattr(provider, "_client", None) or provider
     reclaim = getattr(inner, "reclaim", None)
     if callable(reclaim):
         reclaim()

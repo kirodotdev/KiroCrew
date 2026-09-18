@@ -493,7 +493,26 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "so in-namespace readers can look the file up directly without a /proc walk"
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
-    "session_pid.py": "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead processes",
+    "session_pid.py": (
+        "stale-file cleanup: globs session_pid_*.txt (+ .sig sidecars) for dead "
+        "processes, and (age-bounded) session_token_*.sig mappings, whose "
+        "token-hash filenames name no pid to probe"
+    ),
+    "session_token_sig.py": (
+        "SIBLING contract, NOT a session_pid reader: owns the per-SESSION "
+        "token -> session-key mapping (session_token_<sha256(token)>.sig, one "
+        "file holding MAC + body, signed with a subkey derived from the same SEL "
+        "trust root under a DIFFERENT domain label so the two sidecars cannot be "
+        "cross-replayed). It appears in this scan only because it IMPORTS "
+        "session_pid_sig's hardened reader and key loader rather than copying "
+        "them, and because its docstring contrasts the two contracts. It reads "
+        "and writes no session_pid file and does no /proc walk — deliberately: "
+        "a pid names a PROCESS, and one kiro-cli process hosts many ACP "
+        "sessions, so pid-keyed identity answers with the parent for a "
+        "spawn_run subagent. Being pid-FREE is the property that makes it "
+        "namespace-insensitive, so the pid-view parametrization this file "
+        "requires of a new resolution path has nothing to vary"
+    ),
     "mcp_computer.py": (
         "comment reference only (no code reads): the computer-use stdio shim "
         "explains why it resolves identity with mcp_core._resolve_session_key_strict "
