@@ -3460,8 +3460,9 @@ def _save_slot_to_history(
                 # falsy as "the global store", which is also how a session written
                 # before crew stores existed reads.
                 fields["memory_store"] = named_store_or_empty(slot.memory_store)
-                if slot.project:
-                    fields["project"] = slot.project
+                # Written even when EMPTY: the merge is an upsert that cannot delete a key, so
+                # a retained directory would outlive the clear that replaced it.
+                fields["project"] = slot.project
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:
