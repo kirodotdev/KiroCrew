@@ -21163,6 +21163,110 @@ class TestRunChatTransientRetry:
     def _assistant_texts(self, slot):
         return [m["content"] for m in slot.messages if m.get("role") == "assistant"]
 
+    @staticmethod
+    def _image_error():
+        from kiro_crew.acp.client import AcpError
+
+        exc = AcpError("The model could not process an image", transient=False)
+        exc.structural_terminal = True
+        exc.image_format_unsupported = True
+        return exc
+
+    @pytest.mark.asyncio
+    async def test_retained_tool_image_discards_native_history_and_continues(
+        self, tmp_path, monkeypatch
+    ):
+        """A typed image rejection after a tool result cannot be repaired by
+        retrying the native conversation. With no new user attachment, discard
+        the resume SID once and continue from Kiro Crew's text transcript without
+        replaying the original request or its completed tool side effects."""
+        from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        calls: list[str] = []
+
+        async def _stream(msg):
+            calls.append(msg)
+            if len(calls) == 1:
+                yield LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read")
+                raise self._image_error()
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered without old image bytes")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_stream)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await _run_chat(state, slot, "compose the avatar")
+            await self._drain_bg(state)
+
+        assert len(calls) == 2
+        assert "Continue from where it stopped" in calls[1]
+        state.sessions.discard_conversation.assert_awaited_once()
+        state.sessions.reset.assert_not_awaited()
+        assert any("without binary image history" in t for t in self._err_texts(slot))
+        assert any("recovered without old image bytes" in t for t in self._assistant_texts(slot))
+        assert slot._poisoned_reset_used is False
+
+    @pytest.mark.asyncio
+    async def test_new_image_attachment_is_not_automatically_discarded(self, tmp_path, monkeypatch):
+        """A current attachment may itself be invalid. Preserve the healthy
+        native conversation and let the actionable terminal error tell the user
+        to remove or re-encode that image instead of discarding history."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def _fail(msg):
+            raise self._image_error()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+
+        await _run_chat(state, slot, "inspect this", _attachments=["/tmp/current.png"])
+
+        state.sessions.discard_conversation.assert_not_awaited()
+        state.sessions.reset.assert_not_awaited()
+        assert slot._queue == []
+        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert slot._poisoned_reset_used is False
+
+    @pytest.mark.asyncio
+    async def test_retained_image_discard_is_one_shot_until_a_turn_lands(
+        self, tmp_path, monkeypatch
+    ):
+        """If the fresh conversation also rejects an image, surface the error;
+        never loop through repeated discard and synthetic replay."""
+        from kiro_crew.dashboard.chat import _run_chat
+
+        async def _fail(msg):
+            raise self._image_error()
+            yield  # pragma: no cover
+
+        state = self._make_state(tmp_path, monkeypatch)
+        client = self._client(_fail)
+        self._wire_sessions(state, client)
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        slot._poisoned_reset_used = True
+
+        await _run_chat(state, slot, "continue")
+
+        state.sessions.discard_conversation.assert_not_awaited()
+        assert slot._queue == []
+        assert any(t.startswith("❌") for t in self._err_texts(slot))
+        assert slot._poisoned_reset_used is True
+
     @pytest.mark.asyncio
     async def test_transient_pre_token_retries_then_recovers_no_reset(self, tmp_path, monkeypatch):
         """A transient 5xx before any token streams is retried on the SAME live
