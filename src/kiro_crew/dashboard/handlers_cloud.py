@@ -33,6 +33,7 @@ from aiohttp import web
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import launch_job as lj
+from kiro_crew.cloud import login as login_mod
 from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud import ssm
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
@@ -315,6 +316,34 @@ def _cancels(state: "DashboardState") -> dict:
     return cancels
 
 
+#: Serialises the register/release pair on ``_cancels``. Registration happens on
+#: the event loop and release on a worker thread, so a compare-then-delete
+#: without it could still read one worker's event and delete the next one's.
+_CANCELS_GUARD = threading.Lock()
+
+
+def _register_cancel(state: "DashboardState", job_id: str, cancel: threading.Event) -> None:
+    with _CANCELS_GUARD:
+        _cancels(state)[job_id] = cancel
+
+
+def _release_cancel(state: "DashboardState", job_id: str, cancel: threading.Event) -> None:
+    """Drop the registered event for *job_id* only if it is still *cancel*.
+
+    A worker releases its event AFTER persisting its terminal result -- and the
+    restart route admits a new retry for the same job as soon as the file reads
+    terminal, registering a new event under the same id. An unconditional pop in
+    the finishing worker's ``finally`` therefore raced that registration and could
+    delete the NEW worker's event: a cancel then found nothing to set, wrote
+    CANCELLED, and the new worker overwrote it with its result -- the cancel was
+    silently ignored. Releasing only our own event closes that.
+    """
+    with _CANCELS_GUARD:
+        cancels = _cancels(state)
+        if cancels.get(job_id) is cancel:
+            del cancels[job_id]
+
+
 def _start_worker(
     state: "DashboardState", job: lj.LaunchJob, engine: Optional[lj.LaunchEngine] = None
 ) -> None:
@@ -327,7 +356,7 @@ def _start_worker(
     if engine is None:
         engine = _engine(state, job.provider_id)
     cancel = threading.Event()
-    _cancels(state)[job.id] = cancel
+    _register_cancel(state, job.id, cancel)
     # Claim the job for this process, so a later reap_orphans() does not mistake
     # a launch we are actively driving for one abandoned by a restart.
     store.adopt(job.id)
@@ -336,7 +365,7 @@ def _start_worker(
         try:
             lj.run_launch(job, store, engine, cancel=cancel)
         finally:
-            _cancels(state).pop(job.id, None)
+            _release_cancel(state, job.id, cancel)
 
     if getattr(state, "cloud_launch_sync", False):
         _run()  # deterministic path for tests
@@ -668,32 +697,115 @@ async def api_cloud_launch_cancel(request: web.Request) -> web.Response:
     job = await _in_executor(store.get, job_id)
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
-    ev = _cancels(state).get(job_id)
-    if ev is not None:
-        ev.set()
-    else:
-        # No worker in this process owns a job the file still calls active, so setting
-        # an event would cancel nothing while we answered 200. That is the "cancel
-        # silently lies" case: terminalize it here instead.
-        #
-        # Re-read first. The snapshot above was taken across an await, and a worker
-        # finishing in that gap saves its result and THEN pops its cancel event — so
-        # arriving here does not prove the job is still active. Writing the stale
-        # snapshot would overwrite a completed launch with `cancelled` and discard what
-        # the worker recorded, including the instance id the dashboard uses to tell a
-        # cloud crew from a hand-added machine.
-        fresh = await _in_executor(store.get, job_id) or job
-        if not fresh.terminal:
-            for step in fresh.steps:
-                if step.state == lj.STEP_ACTIVE:
-                    step.state = lj.STEP_FAILED
-            fresh.status = lj.CANCELLED
-            fresh.signin = None
-            fresh.error = "Cancelled — no setup was running for this job on this gateway."
-            await _in_executor(store.save, fresh)
+    # Under the launch lock: the restart route registers its cancel event and
+    # persists RUNNING under this same lock, so a cancel cannot slip between those
+    # two writes, find no event, and terminalize a job whose worker is about to
+    # start. Without the lock that ordering was only probable, not guaranteed.
+    async with _launch_lock(state):
+        ev = _cancels(state).get(job_id)
+        if ev is not None:
+            ev.set()
+        else:
+            # No worker in this process owns a job the file still calls active, so
+            # setting an event would cancel nothing while we answered 200. That is
+            # the "cancel silently lies" case: terminalize it here instead.
+            #
+            # Re-read first. The snapshot above was taken across an await, and a
+            # worker finishing in that gap saves its result and THEN pops its cancel
+            # event — so arriving here does not prove the job is still active.
+            # Writing the stale snapshot would overwrite a completed launch with
+            # `cancelled` and discard what the worker recorded, including the
+            # instance id the dashboard uses to tell a cloud crew from a hand-added
+            # machine.
+            fresh = await _in_executor(store.get, job_id) or job
+            if not fresh.terminal:
+                for step in fresh.steps:
+                    if step.state == lj.STEP_ACTIVE:
+                        step.state = lj.STEP_FAILED
+                fresh.status = lj.CANCELLED
+                fresh.signin = None
+                fresh.error = "Cancelled — no setup was running for this job on this gateway."
+                await _in_executor(store.save, fresh)
     _audit("launch_cancel", "success", request_id=job_id)
     updated = await _in_executor(store.get, job_id) or job
     return web.json_response(updated.to_dict())
+
+
+def _preserved_code_may_be_approved(job: lj.LaunchJob) -> bool:
+    """Is this the one shape where the box can be signed in behind our back?
+
+    A sign-in that ran out of time deliberately KEEPS its device code and leaves
+    the remote login polling, so the user can still approve it from the browser
+    tab that is already open. Nothing re-probes the instance after that, so an
+    approval that lands then signs the crew in while the job still reads
+    ``signin_detected=False`` — badged "Needs sign-in" forever, with Connect held.
+
+    True only for: terminal (no worker owns it, so nothing else is writing it),
+    registered with an instance to probe, not already signed in, and still
+    holding the surviving prompt that makes the approval possible. Deliberately
+    narrow — this must never become a blanket poll of every job, and never touch
+    a job a worker is driving.
+    """
+    if not job.terminal or job.signin_detected or not job.instance_id or not job.signin:
+        return False
+    if lj.target_is_unreadable(job):
+        # `from_dict` substituted the DEFAULT identity for one it could not parse,
+        # so probing would ask "is this box signed in as Builder ID?" about a crew
+        # that belongs to an org portal -- and a match would `mark_signed_in`,
+        # release Connect and save the substitution over the original bytes. Same
+        # refusal as the restart route (`api_cloud_launch_signin_restart`).
+        return False
+    try:
+        return job.step(lj.STEP_CONNECT).state == lj.STEP_DONE
+    except KeyError:  # a provisioner with different steps: nothing to recover
+        return False
+
+
+def _probe_signin_on_box(state: "DashboardState", job: lj.LaunchJob) -> Optional[bool]:
+    """Query sign-in without writing, returning None if the instance cannot be checked.
+
+    Runs in an executor because it is an SSM round trip of seconds. Deliberately
+    free of mutation: a write here would run on that worker thread, where nothing
+    serialises it against a concurrent restart persisting RUNNING under
+    :func:`_launch_lock`. A re-read narrows that window rather than closing it, so
+    :func:`_record_probed_signin` owns the write -- on the loop, under the lock.
+    """
+    try:
+        return bool(
+            login_mod.is_logged_in(
+                job.instance_id, job.profile, job.region, target=job.login_target
+            )
+        )
+    except Exception:  # noqa: BLE001 - a probe failure is not a launch failure
+        logger.info("could not re-probe the Kiro sign-in for %s", job.id, exc_info=True)
+        return None
+
+
+async def _record_probed_signin(state: "DashboardState", job: lj.LaunchJob) -> bool:
+    """Persist a confirmed out-of-band sign-in, under the launch lock.
+
+    Same lock :func:`_claim_signin` writes under, which is what makes this safe: a
+    restart admitted while the probe was talking to the box has already persisted
+    RUNNING, and this must not put a stale terminal snapshot back over it. Holding
+    the lock across the (fast, local) re-read and save is what serialises them --
+    the SSM round trip stays outside it, in :func:`_probe_signin_on_box`.
+
+    Returns whether the write happened. ``False`` means the job moved on and the
+    probe result is stale, which is not an error: the newer writer wins.
+    """
+    store = await _astore(state)
+    async with _launch_lock(state):
+        fresh = await _in_executor(store.get, job.id)
+        if fresh is None:
+            return False
+        if not _preserved_code_may_be_approved(fresh):
+            logger.info("dropping a stale sign-in probe result for %s: the job moved on", job.id)
+            return False
+        lj.mark_signed_in(fresh)
+        await _in_executor(store.save, fresh)
+        # Keep the caller's object consistent with what was persisted.
+        lj.mark_signed_in(job)
+    return True
 
 
 async def api_cloud_launch_signin(request: web.Request) -> web.Response:
@@ -701,20 +813,269 @@ async def api_cloud_launch_signin(request: web.Request) -> web.Response:
 
     The job auto-polls for approval; this returns the URL + code to display (and
     409 when no sign-in is pending), so the UI has a dedicated fetch for it.
+
+    A terminal job that still holds a PRESERVED code is re-probed first: nothing
+    else re-checks the box after the job goes terminal, so a code approved out of
+    band left the crew signed in while the job said it was not. The probe runs
+    only on that narrow shape (see :func:`_preserved_code_may_be_approved`) and
+    answers ``signin_already_complete``, with the corrected job, instead of the
+    bare "no sign-in pending" that hid it.
     """
     denied = _guard(request, "launch_signin")
     if denied is not None:
         return denied
-    store = await _astore(request.app["state"])
+    state: "DashboardState" = request.app["state"]
+    store = await _astore(state)
     job = await _in_executor(store.get, request.match_info["id"])
     if job is None:
         return web.json_response({"error": "not found", "code": "launch_job_not_found"}, status=404)
     if job.status != lj.AWAITING_SIGNIN or not job.signin:
+        if _preserved_code_may_be_approved(job):
+            # Query off the loop, write on it under the lock. Both halves must
+            # succeed to report the crew signed in: a probe that says yes but whose
+            # write is dropped means another writer moved the job on, and the
+            # caller must not claim a state that was not persisted.
+            signed = await _in_executor(functools.partial(_probe_signin_on_box, state, job))
+            if signed is None:
+                error = "could not reach the crew to check its sign-in"
+                _audit("launch_signin", "error", request_id=job.id, error=error)
+                return web.json_response(
+                    {"error": error, "code": "signin_probe_failed"}, status=502
+                )
+            if signed and await _record_probed_signin(state, job):
+                _audit("launch_signin", "success", request_id=job.id)
+                return web.json_response(
+                    {
+                        "error": "already signed in",
+                        "code": "signin_already_complete",
+                        "job": job.to_dict(),
+                    },
+                    status=409,
+                )
         return web.json_response(
             {"error": "no sign-in pending", "code": "no_signin_pending"}, status=409
         )
     _audit("launch_signin", "success", request_id=job.id)
     return web.json_response({"signin": job.signin.to_dict()})
+
+
+def _claim_signin(state: "DashboardState", job: lj.LaunchJob) -> None:
+    """Persist the job as RUNNING before the lock that admitted it is released.
+
+    :func:`lj.run_signin_retry` writes this transition too, but it runs on the
+    worker — so between this handler returning and that first save, the job file
+    still reads terminal. A second restart request in that window passed the
+    "nothing active" check, and two remote logins raced with one cancel handle
+    between them. The guard is only a guard if the state it reads is already
+    written.
+    """
+    job.step(lj.STEP_SIGNIN).state = lj.STEP_ACTIVE
+    job.status = lj.RUNNING
+    # NOT `job.signin = None`: the previous device code stays until the worker
+    # has replaced the login on the box (`run_signin_retry` clears it only after
+    # `begin_signin` returns). The old poller is still live until then, and a
+    # thread-start or SSM failure here must not leave it untracked.
+    job.signin_detected = False
+    job.error = ""
+    store = _store(state)
+    # Adopt BEFORE the save, as `_start_worker` does. `reap_orphans` skips a job
+    # only when it is terminal or owned by this process, so a RUNNING retry that
+    # is not yet adopted is exactly what a first-use reap -- fired by any other
+    # cloud request arriving at startup -- reads as abandoned and parks back to
+    # DONE. A second restart is then admitted, and two logins race with one
+    # tracked device code between them. Adopting first closes the window: the
+    # worker re-adopts (idempotent) when it starts.
+    store.adopt(job.id)
+    store.save(job)
+
+
+def _start_signin_worker(
+    state: "DashboardState",
+    job: lj.LaunchJob,
+    engine: lj.LaunchEngine,
+    cancel: threading.Event,
+) -> None:
+    """Run :func:`lj.run_signin_retry` on a daemon thread (inline when ``cloud_launch_sync``).
+
+    *cancel* is registered in ``_cancels`` by the CALLER, before the claim that
+    persists RUNNING -- not here. Registering it here left a gap in which the
+    file already said RUNNING but no event existed, so a cancel arriving then
+    found nothing to set, terminalized the job CANCELLED, and the worker that
+    started a moment later overwrote that with DONE.
+    """
+    store = _store(state)
+    # Claim the job for this process, so a later reap_orphans() does not mistake
+    # a sign-in we are actively driving for one abandoned by a restart.
+    store.adopt(job.id)
+
+    def _run() -> None:
+        try:
+            lj.run_signin_retry(job, store, engine, cancel=cancel)
+        finally:
+            # Only OUR event: the result was saved above, so a restart may already
+            # have registered the next retry's event under this id.
+            _release_cancel(state, job.id, cancel)
+
+    if getattr(state, "cloud_launch_sync", False):
+        _run()  # deterministic path for tests
+        return
+    try:
+        threading.Thread(target=_run, name=f"cloud-signin-{job.id}", daemon=True).start()
+    except RuntimeError:
+        # `Thread.start` raises when the process is out of threads. Release only
+        # the in-memory handle here; the on-disk revert is the caller's, because
+        # this function is sync and store I/O belongs off the event loop
+        # (see `_unclaim_signin`).
+        _release_cancel(state, job.id, cancel)
+        raise
+
+
+def _unclaim_signin(state: "DashboardState", job: lj.LaunchJob) -> None:
+    """Undo `_claim_signin` after the worker failed to start. Runs in an executor.
+
+    The claim has ALREADY persisted RUNNING, and the only thing that ever moves
+    a job off RUNNING is the worker that failed to exist. Left alone, every later
+    launch and restart answers 409 launch_already_running -- permanently.
+    """
+    store = _store(state)
+    fresh = store.get(job.id) or job
+    # DONE with the error, not FAILED: the crew exists and is registered, and a
+    # red card over a working crew is the shape the reap fix removes elsewhere.
+    # DONE-unsigned keeps the row's "Needs sign-in" badge and its Start sign-in
+    # affordance, which is exactly the retry the error asks for. Same shape as
+    # `run_signin_retry`'s own failure arm.
+    fresh.status = lj.DONE
+    fresh.step(lj.STEP_SIGNIN).state = lj.STEP_SKIPPED
+    fresh.error = "Could not start the sign-in worker (the gateway is out of threads). Try again."
+    store.save(fresh)
+
+
+async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
+    """POST /api/cloud/launch/{id}/signin/restart — start (again) the Kiro sign-in.
+
+    The dashboard's "Start sign-in" / "Start over with a new code" action for a crew whose
+    launch finished without a confirmed sign-in — the code timed out, nobody
+    approved it, or the gateway restarted mid-wait. Re-runs **only** the sign-in
+    step, with the identity stored on the job; the crew itself is left alone and
+    nothing is re-provisioned. 409 while a launch or another sign-in is already
+    running (the guard that keeps one device code live at a time), 400 when the
+    job has no crew to sign in on.
+
+    It cannot change WHICH identity signs in: the job's persisted
+    ``login_target`` is reused, which is the point — an Identity Center crew must
+    never silently get a Builder ID code. A crew launched against the wrong start
+    URL is fixed by deleting it and launching again, since the identity is chosen
+    before the instance exists.
+
+    Owner-only and audited like every other cloud route.
+    """
+    denied = _guard(request, "launch_signin_restart")
+    if denied is not None:
+        return denied
+    state: "DashboardState" = request.app["state"]
+    job_id = request.match_info["id"]
+    # Same lock as create: the "nothing active" check awaits, so two restarts
+    # arriving together would otherwise both pass it and race two remote logins.
+    async with _launch_lock(state):
+        store = await _astore(state)
+        job = await _in_executor(store.get, job_id)
+        if job is None:
+            return web.json_response(
+                {"error": "not found", "code": "launch_job_not_found"}, status=404
+            )
+        if job.signin_detected:
+            # A stale tab asking to restart a sign-in that another tab (or the
+            # re-probe) has since confirmed. Admitting it would clear
+            # `signin_detected` in the claim, and an SSM failure after that would
+            # persist a signed-in crew as unsigned. Nothing to do: say so.
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="already signed in")
+            return web.json_response(
+                {
+                    "error": "this crew is already signed in",
+                    "code": "signin_already_complete",
+                    "job": job.to_dict(),
+                },
+                status=409,
+            )
+        if lj.target_is_unreadable(job):
+            # The job named an identity this release cannot parse, so `from_dict`
+            # substituted the DEFAULT (Builder ID). Admitting the restart would
+            # persist that substitution over the original bytes and start a
+            # Builder ID device flow on a crew that belongs to an org portal --
+            # the silent identity downgrade the target exists to prevent, with the
+            # start URL gone from the job and nothing to recover it from. The
+            # remedy is a release that can read the target, or deleting the crew
+            # and launching again; not a sign-in from here.
+            _audit(
+                "launch_signin_restart", "denied", request_id=job_id, error="unreadable identity"
+            )
+            return web.json_response(
+                {
+                    "error": (
+                        "this crew's Kiro identity cannot be read by this version, so a "
+                        "sign-in here would use the wrong account"
+                    ),
+                    "code": "login_target_unreadable",
+                    "job": job.to_dict(),
+                },
+                status=409,
+            )
+        if not job.instance_id or job.step(lj.STEP_CONNECT).state != lj.STEP_DONE:
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="no crew")
+            return web.json_response(
+                {
+                    "error": "this setup did not create a crew to sign in on",
+                    "code": "launch_has_no_instance",
+                },
+                status=400,
+            )
+        existing = await _in_executor(store.list)
+        active = next((j for j in existing if not j.terminal), None)
+        if active is not None:
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="already running")
+            return web.json_response(
+                {
+                    "error": "a crew setup or sign-in is already running; wait for it or cancel it",
+                    "code": "launch_already_running",
+                    "job": active.to_dict(),
+                },
+                status=409,
+            )
+        try:
+            engine = _engine(state, job.provider_id)
+        except KeyError:
+            _audit("launch_signin_restart", "denied", request_id=job_id, error="no engine")
+            return web.json_response(
+                {
+                    "error": f"provisioner {job.provider_id!r} has no launch engine",
+                    "code": "unknown_provisioner",
+                },
+                status=400,
+            )
+        # Event BEFORE claim, both under the lock: once RUNNING is on disk a
+        # cancel must find something to set, or it terminalizes a job the worker
+        # is about to drive (see `_start_signin_worker`).
+        cancel = threading.Event()
+        _register_cancel(state, job.id, cancel)
+        await _in_executor(functools.partial(_claim_signin, state, job))
+        try:
+            _start_signin_worker(state, job, engine, cancel)
+        except RuntimeError:
+            # Revert the claim off the loop, still under the launch lock that made
+            # it, then tell the caller the truth rather than 202-ing a sign-in that
+            # is not running. Retryable, so 503.
+            await _in_executor(functools.partial(_unclaim_signin, state, job))
+            _audit("launch_signin_restart", "error", request_id=job_id, error="thread start failed")
+            return web.json_response(
+                {
+                    "error": "could not start the sign-in worker; try again",
+                    "code": "signin_worker_unavailable",
+                },
+                status=503,
+            )
+    _audit("launch_signin_restart", "success", request_id=job_id)
+    updated = await _in_executor(store.get, job_id) or job
+    return web.json_response(updated.to_dict(), status=202)
 
 
 def _teardown_after_delete(tag: str, profile: str, region: str, instance_id: str) -> None:

@@ -3174,6 +3174,14 @@ export const api = {
   // there is no pending prompt (surfaced as ApiError(409) to the caller).
   cloudLaunchSignin: (id: string) =>
     post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin').then(j) as Promise<{ signin: CloudLaunchSignin }>,
+  // Starts the Kiro sign-in AGAIN on a crew whose launch finished unsigned: a
+  // fresh device code, run with the `login_target` the job was created with, so
+  // a company-SSO crew is not retried through the Builder ID prompt its
+  // organization cannot approve. Answers the job, which becomes the polled one.
+  // 409 while another launch or sign-in is already running on it, 400 when the
+  // job never created a crew (there is nothing to sign in).
+  cloudLaunchSigninRestart: (id: string) =>
+    post('/api/cloud/launch/' + encodeURIComponent(id) + '/signin/restart').then(j) as Promise<LaunchJob>,
   // The gateway resolves the stack from the tag but needs the launch's AWS
   // coordinates: a crew created under a non-default profile/region is invisible
   // to the default ones, so omitting them makes stop/start/destroy fail. destroy

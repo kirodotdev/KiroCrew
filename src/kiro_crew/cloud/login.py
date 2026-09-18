@@ -56,10 +56,33 @@ _LOCAL_CALLBACK_PORT_RE = re.compile(
 _LOGIN_LOG_PATH = "$KC_LOGIN_DIR/kiro-login.log"
 _LOGIN_PID_PATH = "$KC_LOGIN_DIR/kiro-login.pid"
 _LOGIN_FIFO_PATH = "$KC_LOGIN_DIR/kiro-login.stdin"
+# The command-line fragment that identifies a login this code started -- BOTH
+# forms: the device-code login (`kiro-cli login --use-device-flow`) and the
+# social/callback fallback (`kiro-cli login` with no flow flag, see
+# `_start_callback_login`). A cancel must stop whichever one is polling; matching
+# only the device-flow form left the callback login alive and reported a clean
+# stop. It is deliberately a SUBSTRING of what the launchers run: `$KIRO` always
+# resolves to a path whose basename is `kiro-cli` (see `_KIRO_BIN_RESOLVE`), so
+# the launched command line contains this fragment whether or not `stdbuf` wraps
+# it and whatever flags follow. It does not match `kiro-cli logout` or `kiro-cli
+# acp`. `test_cloud_signin_recovery.py` asserts the coupling against the real
+# builders, so a rename on either side fails a test rather than silently
+# matching nothing on the box.
+_LOGIN_PROCESS_PATTERN = "kiro-cli login"
 # Printed (and the launch skipped) when the pty driver could not be staged in a
 # fresh private directory on the instance -- the caller reports it instead of
 # guessing at a missing device-code prompt.
 _DRIVER_SETUP_FAILED_SENTINEL = "__KIRO_LOGIN_DRIVER_SETUP_FAILED__"
+# Printed by :func:`_cancel_login_command` when the box has no ``pkill``, so the
+# login could not be stopped -- reported as a failed cancel rather than covered
+# up by trusting a PID read from a file.
+_CANCEL_NO_PKILL_SENTINEL = "__KIRO_LOGIN_CANCEL_NO_PKILL__"
+# Printed (and the command exits non-zero) when the login process is STILL
+# running after the kill -- a `pkill` pattern that matches nothing exits 1 and
+# would otherwise be indistinguishable from a clean stop. This path is the only
+# thing standing between a pattern drift on the box and a cancel that reports
+# success while the login keeps polling toward a sign-in nobody wants.
+_CANCEL_UNCONFIRMED_SENTINEL = "__KIRO_CANCEL_UNCONFIRMED__"
 _DEVICE_LOGIN_CAPTURE_ATTEMPTS = 20
 _DEVICE_LOGIN_CAPTURE_SLEEP = 1
 
@@ -544,6 +567,122 @@ def social_login_hint(prompt: Optional[LoginPrompt]) -> str:
     )
 
 
+def cancel_device_login(instance_id: str, profile: str = "", region: str = "") -> bool:
+    """Stop the Kiro device login running on the box, WITHOUT signing it out.
+
+    A cancelled sign-in has to stop polling: the code is already in a browser, and
+    a login left running would complete the sign-in minutes after the owner
+    cancelled it. Deliberately not :func:`logout` — the box may hold an older,
+    valid session that the cancelled attempt was never meant to drop.
+
+    **Blast radius: every ``kiro-cli login`` under the same uid on that instance.**
+    The kill is `pkill -u "$(id -u)" -f "kiro-cli login"` — a command-line match,
+    not a PID this function tracked, because the PID file sits at a predictable
+    path and honouring it would let whoever can write there pick what gets killed.
+    So an operator who is running their own ``kiro-cli login`` in a terminal on
+    that box, as the same user, has it stopped too. Accepted deliberately: the
+    alternative is a cancelled login that keeps polling and signs the crew in
+    anyway, and a crew instance is not a shared login host. It does not reach
+    another user's processes, and it does not touch an established session.
+
+    Returns whether the login is CONFIRMED stopped, which is narrower than "the
+    command ran". Three ways to answer False, and the caller must not tell them
+    apart by guessing: the transport failed, the box has no ``pkill``, or the
+    login was still running after the kill -- the last meaning the command-line
+    pattern does not match what the box launched. Each is logged by name, because
+    the operator's next step differs for each.
+
+    Best-effort in the sense that nothing downstream depends on it: a failure is
+    reported (and surfaced on the job by
+    :meth:`~kiro_crew.cloud.launch_engine._RealSigninHandle.abort`), not raised.
+    """
+    res = ssm.run_command(
+        instance_id,
+        _cancel_login_command(),
+        profile,
+        region,
+        total_wait=60,
+    )
+    # Sentinels are echoed by the script, so they land on stdout; stderr is read
+    # too because a shell that dies mid-script can put its last line there.
+    out = (res.stdout or "") + "\n" + (res.stderr or "")
+    if _CANCEL_UNCONFIRMED_SENTINEL in out:
+        # The dangerous one: the kill ran and the login outlived it, so the box is
+        # still walking toward a sign-in the owner cancelled.
+        logger.warning(
+            "device login on %s was still running after the cancel -- the %r "
+            "pattern may not match what the box launched",
+            instance_id,
+            _LOGIN_PROCESS_PATTERN,
+        )
+        return False
+    if _CANCEL_NO_PKILL_SENTINEL in out:
+        logger.warning(
+            "device login on %s could not be stopped: the box has no pkill",
+            instance_id,
+        )
+        return False
+    if res.status != "Success":
+        logger.warning(
+            "device login cancel on %s did not complete (status=%s)",
+            instance_id,
+            res.status,
+        )
+        return False
+    return True
+
+
+def _cancel_login_command() -> str:
+    """Kill the background device login and remove the files holding its code.
+
+    No ``kiro-cli logout``: that is :func:`_logout_command`'s job and drops the
+    box's session. Here the session (if any) predates the cancelled attempt and
+    must survive it.
+
+    The kill is ``pkill`` scoped to OUR uid and matched on the login command
+    line -- deliberately NOT ``kill $(cat <pid file>)``. That file sits at a
+    predictable path, so anyone able to write a PID into it would choose which
+    process the cancel killed: the cancel would become an arbitrary-process
+    kill running as whatever user the gateway's SSM agent uses. The PID file
+    is only ever REMOVED here, and the private-directory guard runs AFTER the
+    kill and before the removal: a directory that fails the guard must not
+    leave the login alive, but the files are only ever touched inside a
+    directory this user controls.
+
+    When ``pkill`` is absent nothing is killed and the command exits non-zero,
+    so :func:`cancel_device_login` reports the cleanup as unfinished (which
+    :meth:`~kiro_crew.cloud.launch_engine._RealSigninHandle.abort` surfaces on
+    the job) instead of silently trusting the file to guess a PID.
+    """
+    return f"""
+set +e
+killed=0
+if command -v pkill >/dev/null 2>&1; then
+  pkill -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
+  killed=1
+fi
+{_login_dir_guard()}
+rm -f "{_LOGIN_LOG_PATH}" "{_LOGIN_PID_PATH}" "{_LOGIN_FIFO_PATH}"
+if [ "$killed" != 1 ]; then
+  echo "{_CANCEL_NO_PKILL_SENTINEL}"
+  exit 1
+fi
+# Confirm it, do not assume it. `pkill` exits 1 both when the pattern matched
+# nothing and when it matched and killed everything, so its status cannot tell a
+# working cancel from a pattern that no longer matches the box's command line.
+# Re-probe, and report UNCONFIRMED rather than a clean stop.
+if command -v pgrep >/dev/null 2>&1; then
+  for _ in 1 2 3 4 5; do
+    pgrep -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" >/dev/null 2>&1 || exit 0
+    sleep 1
+  done
+  echo "{_CANCEL_UNCONFIRMED_SENTINEL}"
+  exit 1
+fi
+exit 0
+""".strip()
+
+
 def _login_check_command() -> str:
     """Build the remote auth check.
 
@@ -613,7 +752,7 @@ set +e
 {_KIRO_BIN_RESOLVE}
 {_login_dir_guard()}
 if command -v pkill >/dev/null 2>&1; then
-  pkill -u "$(id -u)" -f "kiro-cli login" 2>/dev/null || true
+  pkill -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
   pkill -u "$(id -u)" -f "kiro-cli acp" 2>/dev/null || true
 fi
 "$KIRO" logout < /dev/null 2>&1
@@ -632,9 +771,12 @@ def _device_login_command(
     """Build the remote command that starts login and captures its prompt."""
     replace = ""
     if replace_existing:
-        replace = """
+        # The same constant the cancel uses: a box may be running the social-login
+        # shape (`kiro-cli login`, no device flag), and a replacement that misses it
+        # leaves that poller alive beside the new one.
+        replace = f"""
 if command -v pkill >/dev/null 2>&1; then
-  pkill -u "$(id -u)" -f "kiro-cli login --use-device-flow" 2>/dev/null || true
+  pkill -u "$(id -u)" -f "{_LOGIN_PROCESS_PATTERN}" 2>/dev/null || true
 fi
 """.strip()
     # Build optional kiro-cli flags for enterprise / IAM Identity Center login.

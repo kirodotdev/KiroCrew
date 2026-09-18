@@ -151,7 +151,6 @@ src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli_desktop.py
 src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py
-src/kiro_crew/cloud/launch_job.py
 src/kiro_crew/config/schema.py
 src/kiro_crew/config/validation.py
 src/kiro_crew/connections/alias_record.py
