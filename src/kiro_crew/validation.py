@@ -60,6 +60,7 @@ from kiro_crew.monitoring.registry import (
     publicly_armable_objectives,
 )
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
+from kiro_crew.solo_spawn import SOLO_SPAWN_REASONS
 
 # ── Constants ──
 
@@ -1070,6 +1071,11 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
         FieldSpec("keep", bool),
+        # Why ONE task is being spawned alone. Closed vocabulary from
+        # ``solo_spawn.SOLO_SPAWN_REASONS``; ``""`` is "not given". The gate
+        # that requires it lives in ``mcp_tools.spawn`` (task count) and
+        # ``handlers.messaging.api_spawn`` (roster check); this only bounds it.
+        FieldSpec("solo_reason", str, allowed=SOLO_SPAWN_REASONS),
         # Switchable context groups the sub-agent inherits. Explicit
         # ``default=True`` rather than the implicit ``None``: the semantic
         # default is "on", and without it an explicit JSON ``null`` cleans to
@@ -1135,6 +1141,9 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
+        # Same solo-spawn reason as spawn_run: required when ``agents`` holds
+        # exactly one entry that names no agent_or_mode.
+        FieldSpec("solo_reason", str, allowed=SOLO_SPAWN_REASONS),
     ],
 )
 

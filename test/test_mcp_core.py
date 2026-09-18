@@ -17,7 +17,7 @@ class TestSpawnRunSessionKeyRouting:
         ):
             mock_post.return_value = {"id": "agent1"}
 
-            _call_tool("spawn_run", {"task": "test"})
+            _call_tool("spawn_run", {"task": "test", "solo_reason": "bulk_data"})
 
             call_body = mock_post.call_args[0][1]
             assert call_body["parent_session"] == "sess-from-env"
@@ -41,7 +41,7 @@ class TestSpawnRunSessionKeyRouting:
                 (kirocrew_dir / f"session_pid_{os.getppid()}.txt").write_text("sess-from-pid")
 
                 mock_post.return_value = {"id": "agent1"}
-                _call_tool("spawn_run", {"task": "test"})
+                _call_tool("spawn_run", {"task": "test", "solo_reason": "bulk_data"})
 
                 assert mock_post.call_args[0][1]["parent_session"] == "sess-from-pid"
 

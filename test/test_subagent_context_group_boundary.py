@@ -19,6 +19,24 @@ import pytest
 from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_tool_args
 
 
+def _through_solo_gate(args: dict[str, Any], tool: str) -> dict[str, Any]:
+    """Give a one-task call the reason the solo gate requires.
+
+    These tests are about the context-group wire contract, not the gate: a
+    lone task naming no agent/model/crew is otherwise refused before any POST
+    (see ``test_spawn_solo_gate``). Multi-task calls pass unchanged.
+    """
+    if tool == "spawn_sub_agents":
+        entries = args.get("agents") or []
+        single = len(entries) == 1 and not entries[0].get("agent_or_mode")
+    else:
+        single = bool(args.get("task")) and not args.get("tasks")
+        single = single and not (args.get("model") or args.get("agent") or args.get("crew"))
+    if single and not args.get("solo_reason"):
+        return {**args, "solo_reason": "bulk_data"}
+    return args
+
+
 def _posted(args: dict[str, Any], tool: str = "spawn_run") -> list[dict]:
     """Run a spawn tool call and return the bodies it POSTed to /api/spawn."""
     from kiro_crew import mcp_core
@@ -35,7 +53,7 @@ def _posted(args: dict[str, Any], tool: str = "spawn_run") -> list[dict]:
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        mcp_core._call_tool_inner(tool, args)
+        mcp_core._call_tool_inner(tool, _through_solo_gate(args, tool))
     return bodies
 
 

@@ -30,6 +30,7 @@ The grammar is `spawn <task>` (or `bg <task>`) — there is no `run` subcommand;
 The `spawn_run` tool accepts:
 - `task` — single task description
 - `tasks` — array of tasks for parallel execution
+- `solo_reason` — `bulk_data` or `fresh_context`; why ONE task is being spawned alone (see the solo gate below)
 - `agent` / `agents` — optional agent name(s) for each task
 - `include_memory` / `include_lessons` / `include_project` — booleans (default `true`) switching off a context group the sub-agent would otherwise inherit
 - `max_turns` — per-spawn tool-call budget override (0 = unset, max 1000)
@@ -40,6 +41,33 @@ The `spawn_run` tool accepts:
 
 Setting `model` or `reasoning_effort`, or `keep: true`, forces the
 dedicated-process path instead of session sharing.
+
+#### The solo gate
+
+One sub-agent for one task is a round-trip with no parallelism gain, and the
+base prompt's "delegate to a sub-agent to preserve context" kept producing
+exactly that. So a one-task call is a handshake, not a straight dispatch:
+
+1. `spawn_run(task=...)` (or `spawn_sub_agents` with one entry) that names no
+   `solo_reason` and no `model` / `agent` / `crew` is **refused** — nothing is
+   spawned, and the result asks: can you do this yourself, here, now?
+2. The caller either does the work in its own session, or calls again with
+   `solo_reason="bulk_data"` (the step would flood its context with bulk
+   output) or `solo_reason="fresh_context"` (the result must not see this
+   session's context — a blind review, a clean-slate repro), or names a
+   model / agent / crew that genuinely differs from its own.
+3. The gateway checks the "differs" claim against the parent session's own
+   agent (the resolved template, not a member alias) and, for a dashboard
+   slot, its model: naming your own agent or model to slip past the tool is
+   refused with `solo_spawn_unjustified`. An unknown parent fact fails open.
+   `keep: true` alone is not a reason.
+
+The reason travels into the spawn result (`Solo spawn -- reason: bulk_data.`)
+and the audit log (`spawn.solo`, allowed / denied; a pass on a difference
+records what differed, e.g. `differs=agent`). Batches (`tasks` with 2+
+entries) never pass through the gate, and neither do programmatic clients —
+the SDK and apps posting to `/api/spawn` directly do not send the `solo`
+marker, so they are never gated.
 
 The other spawn tools:
 - `spawn_sub_agents` — same fan-out as `spawn_run`, but BLOCKS and returns the collected results; takes `agents` (array of `{agent_or_mode, prompt}`), `cwd`, and the same `include_*` switches

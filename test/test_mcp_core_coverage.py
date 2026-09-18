@@ -528,14 +528,14 @@ class TestSpawnRunArgumentHandling:
 
     def test_keep_spawn_advertises_continuability(self):
         with patch.object(mcp_core, "_post", return_value={"id": "ag1"}):
-            out = _call_tool("spawn_run", {"task": "one", "keep": True})
+            out = _call_tool("spawn_run", {"task": "one", "keep": True, "solo_reason": "bulk_data"})
         assert "GUARANTEED continuability" in out
         assert "spawn_release" in out
 
     def test_transport_error_is_reported_as_unknown_acceptance(self):
         err = {"error": "read timeout", "transport_error": True}
         with patch.object(mcp_core, "_post", return_value=err) as m:
-            out = _call_tool("spawn_run", {"task": "one"})
+            out = _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
         assert "acceptance status is unknown" in out
         assert "Do not retry automatically" in out
         # A transport failure must NOT be reconciled as a lost wave member.
@@ -601,7 +601,7 @@ class TestSpawnRunArgumentHandling:
     def test_approval_mode_env_is_forwarded(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("KIROCREW_APPROVAL_MODE", "auto")
         with patch.object(mcp_core, "_post", return_value={"id": "ag1"}) as m:
-            _call_tool("spawn_run", {"task": "one"})
+            _call_tool("spawn_run", {"task": "one", "solo_reason": "bulk_data"})
         assert m.call_args[0][1]["approval_mode"] == "auto"
 
 

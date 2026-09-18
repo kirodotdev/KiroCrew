@@ -154,6 +154,10 @@ def respond(text: str, servers: list[dict[str, Any]], cwd: str) -> str | None:
                         "arguments": {
                             "task": f"[[WF_E2E:WORK:{marker}]]",
                             "keep": True,
+                            # One task with only ``keep`` is refused by the solo
+                            # gate; this scenario exercises private-memory
+                            # routing of a nested spawn, not the gate.
+                            "solo_reason": "bulk_data",
                         },
                     },
                 )

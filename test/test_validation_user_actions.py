@@ -30,7 +30,10 @@ class TestMcpCoreUserActions:
             mock_post.return_value = {"id": "abc12345"}
             result = self._simulate_tool_call(
                 "spawn_run",
-                {"task": "search the codebase for uses of SessionManager"},
+                {
+                    "task": "search the codebase for uses of SessionManager",
+                    "solo_reason": "bulk_data",
+                },
             )
         assert "abc12345" in result
         assert "Spawned" in result
@@ -50,7 +53,7 @@ class TestMcpCoreUserActions:
         """spawn_run always returns immediately — fire-and-forget."""
         with patch("kiro_crew.mcp_core._post") as mock_post:
             mock_post.return_value = {"id": "ghi789"}
-            result = self._simulate_tool_call("spawn_run", {"task": "quick check"})
+            result = self._simulate_tool_call("spawn_run", {"task": "quick check", "solo_reason": "bulk_data"})
         assert "Spawned" in result
         assert "completion event" in result.lower()
 
@@ -586,7 +589,7 @@ class TestBadInputsCaught:
             mock_post.return_value = {"id": "clean1"}
             result = self._core_call(
                 "spawn_run",
-                {"task": "search\u200b for\u200d files"},
+                {"task": "search\u200b for\u200d files", "solo_reason": "bulk_data"},
             )
         assert "clean1" in result
         # Verify the API received cleaned text

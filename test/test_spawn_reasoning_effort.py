@@ -55,6 +55,20 @@ def _hermetic_cfg(role_models=None, agent_pins=None):
         yield cfg
 
 
+def _through_solo_gate(args: dict[str, Any]) -> dict[str, Any]:
+    """Give a one-task call the reason the solo gate requires.
+
+    These tests exercise effort FORWARDING, not the gate: a lone ``task`` with
+    no model/agent/crew would otherwise be refused before any POST (see
+    ``test_spawn_solo_gate``). The reason is added only where the gate would
+    fire, so a call that names a model still travels exactly as written.
+    """
+    single = bool(args.get("task")) and not args.get("tasks")
+    if single and not (args.get("model") or args.get("agent") or args.get("crew")):
+        return {**args, "solo_reason": args.get("solo_reason") or "bulk_data"}
+    return args
+
+
 def _run_tool(args: dict[str, Any]) -> tuple[list[dict], str]:
     """Run spawn_run and return (POSTed bodies, returned text)."""
     from kiro_crew import mcp_core
@@ -71,7 +85,7 @@ def _run_tool(args: dict[str, Any]) -> tuple[list[dict], str]:
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        result = mcp_core._call_tool_inner("spawn_run", args)
+        result = mcp_core._call_tool_inner("spawn_run", _through_solo_gate(args))
     return bodies, result
 
 
@@ -140,7 +154,7 @@ def _run_tool_with_server_verdicts(
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        result = mcp_core._call_tool_inner("spawn_run", args)
+        result = mcp_core._call_tool_inner("spawn_run", _through_solo_gate(args))
     return bodies, result
 
 

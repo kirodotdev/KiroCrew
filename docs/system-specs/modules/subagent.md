@@ -1131,9 +1131,9 @@ POSTs to `http://localhost:5476/api/spawn` (dashboard API). Returns immediately 
 Exposed via `kirocrew-core` MCP server. Always fire-and-forget — results
 are delivered back to the calling session via completion event injection.
 
-**Single task:**
+**Single task** (gated -- see "The solo gate" below):
 ```python
-spawn_run(task="search docs for X")
+spawn_run(task="grep the 2 GB build log for the first traceback", solo_reason="bulk_data")
 ```
 
 **Batch parallel:**
@@ -1145,9 +1145,30 @@ All agents spawn at once. The tool returns immediately with agent IDs.
 Results arrive as `[Subagent completion event]` messages in the session,
 processed by the LLM automatically.
 
+**The solo gate.** One sub-agent for one task is a round-trip with no
+parallelism gain, so a one-task call is a handshake, not a straight dispatch.
+`spawn_run(task=...)` (and `spawn_sub_agents` with one entry) that names no
+`solo_reason` and no `model` / `agent` / `crew` is refused before any POST --
+nothing is spawned, and the result asks whether the caller can do the task
+itself. The caller either does the work in its own session, calls again with a
+`solo_reason` from the closed vocabulary in `solo_spawn.py` (`bulk_data`: the
+step would flood the caller's context with bulk output; `fresh_context`: the
+result would be wrong if the run saw this session's context), or names a
+model / agent / crew that genuinely differs from its own. The tool marks such a
+POST with `solo=true`; `/api/spawn` then compares the named agent against the
+parent session's RESOLVED template (never its member alias), the named model
+against a dashboard slot's pinned model, and the named crew against the
+parent's member selection, and refuses a match with `400 solo_spawn_unjustified`.
+An unknown parent fact fails open. `keep: true` alone is not a reason. All
+three outcomes are audited as `spawn.solo` (denied / allowed on a reason /
+allowed on a difference, with the ground). Batches of 2+ tasks and
+programmatic clients (the SDK, apps posting to `/api/spawn` directly, which
+never send `solo`) are not gated.
+
 Parameters:
-- `task` (str): single task description
+- `task` (str): single task description -- gated; see "The solo gate"
 - `tasks` (list[str]): multiple tasks for parallel execution
+- `solo_reason` (str, optional): `bulk_data` or `fresh_context` -- why ONE task is being spawned alone; required for a one-task call that names no `model` / `agent` / `crew` other than the caller's own
 - `cwd` (str, optional): absolute path to launch subagent in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`). Validated via realpath + prefix match. Pool skipped when cwd is set. These roots are a least-privilege allowlist and are never widened automatically: a persisted list whose roots all fail to exist on the host rejects every cwd, and the operator must edit `agent.subagent_cwd_allowed_roots` (or delete the key to take the shipped default). Neither the loader nor the guard stats the configured roots.
 - `max_turns` (int, optional): override tool-call budget for this spawn (default: config or 100)
 - `agent` (str, optional): agent name for the subagent

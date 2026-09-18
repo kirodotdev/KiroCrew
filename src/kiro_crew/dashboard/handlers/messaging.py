@@ -88,6 +88,11 @@ from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
+from kiro_crew.solo_spawn import (
+    SOLO_SPAWN_REFUSED_CODE,
+    solo_spawn_difference,
+    solo_spawn_question,
+)
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent import effort_applied_note, effort_drop_reason
 from kiro_crew.subagent_persistence import _agent_dir, read_state
@@ -254,6 +259,9 @@ async def api_spawn(request: web.Request) -> web.Response:
                 # below unreachable: the block, its unknown_crew refusal and its
                 # store resolution all ran off a value that was always None.
                 "crew": body.get("crew", ""),
+                # Why one task is spawned alone (solo gate). Listed for the same
+                # reason as ``crew``: an unlisted field is dropped, not refused.
+                "solo_reason": body.get("solo_reason", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -395,6 +403,49 @@ async def api_spawn(request: web.Request) -> web.Response:
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
     reasoning_effort = cleaned.get("reasoning_effort") or ""
+    # SOLO GATE, gateway half. ``solo`` is a transport-layer marker only the
+    # MCP spawn tools send for a one-task call (the SDK and apps never do, so
+    # they are never gated). The tool side already refused a solo call that
+    # named nothing; this half catches the one that named the parent's OWN
+    # agent / model / crew to get past it. Pre-spawn, so never ``counted``.
+    solo = body.get("solo", False)
+    if not isinstance(solo, bool):
+        solo = str(solo).lower() in ("true", "1", "yes")
+    solo_reason = cleaned.get("solo_reason") or ""
+    if solo and not solo_reason:
+        ground = solo_spawn_difference(state, parent_session, agent=agent, model=model, crew=crew)
+        if not ground:
+            _sel().log_api_access(
+                caller="internal",
+                operation="spawn.solo",
+                outcome="denied",
+                source="solo_gate",
+                resources=parent_session,
+                error="names only the parent's own agent/model/crew",
+            )
+            return web.json_response(
+                {"error": solo_spawn_question(), "code": SOLO_SPAWN_REFUSED_CODE},
+                status=400,
+            )
+        # Let through on a difference: audited like the reason arm, with the
+        # ground, so no gate outcome is invisible after the fact.
+        _sel().log_api_access(
+            caller="internal",
+            operation="spawn.solo",
+            outcome="allowed",
+            source="solo_gate",
+            resources=f"{parent_session} differs={ground}",
+        )
+    elif solo:
+        # The reason is the caller's own claim; recording it is what makes a
+        # habit of lone spawns visible after the fact.
+        _sel().log_api_access(
+            caller="internal",
+            operation="spawn.solo",
+            outcome="allowed",
+            source="solo_gate",
+            resources=f"{parent_session} reason={solo_reason}",
+        )
     # Batch/wave identity (transport-layer params from spawn_run MCP, like
     # approval_mode/silent above): validated inline, bounded, never LLM-schema.
     batch_id = str(body.get("batch_id", "") or "")[:32]

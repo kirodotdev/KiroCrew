@@ -32,7 +32,7 @@ Call Kiro Crew MCP tools as tools, never via bash. Tool Search hides their specs
 
 ### Subagent Orchestration
 
-1. Dispatch independent work with `spawn_run(task=…)` or `spawn_run(tasks=[…])`.
+1. Dispatch independent work with `spawn_run(tasks=[…])`. A one-task `spawn_run(task=…)` is refused unless it names a `solo_reason` (`bulk_data` / `fresh_context`) or a model/agent/crew that is not your own — the refusal asks whether you can do the task yourself; usually you can.
 2. Report the dispatch and **END YOUR TURN immediately**. No more tools, edits or investigation; do not duplicate the delegated work.
 3. Results arrive as `[Subagent completion event]` messages without polling. Process partial batches, but do not spawn again until the final batch says all results were delivered.
 4. Read the returned results before synthesizing. A dispatch acknowledgment or progress-only result is not a completed task; collect the existing run's outcome instead of reporting success or redoing its work.

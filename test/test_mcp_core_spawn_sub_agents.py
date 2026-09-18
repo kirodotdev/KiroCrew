@@ -54,6 +54,7 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task1"}],
+                "solo_reason": "bulk_data",
             })
 
             assert "Error spawning" in result
@@ -88,6 +89,7 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task1"}],
+                "solo_reason": "bulk_data",
             })
 
             assert "Error spawning" in result
@@ -116,6 +118,7 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "long task"}],
+                "solo_reason": "bulk_data",
             })
 
             assert '"timed_out"' not in result
@@ -178,7 +181,7 @@ class TestSpawnSubAgents:
             mock_time.monotonic.side_effect = [0, 0, 10, 70, 70]
             mock_time.sleep = lambda _: None
 
-            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "slow task"}]})
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "slow task"}], "solo_reason": "bulk_data"})
 
             assert any(
                 call.args and call.args[0] == "/api/session-keepalive"
@@ -196,7 +199,7 @@ class TestSpawnSubAgents:
             # done is False but error is set — must be treated as settled.
             mock_get.return_value = {"done": False, "error": "crashed", "agent": "bad"}
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             assert '"error"' in result
             assert "crashed" in result
@@ -215,7 +218,7 @@ class TestSpawnSubAgents:
             mock_time.monotonic.side_effect = [0, 0, 200]
             mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "t"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "t"}], "solo_reason": "bulk_data"})
 
             assert '"still_running"' in result
             assert '"waited_secs": 120' in result
@@ -230,6 +233,7 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task"}],
+                "solo_reason": "bulk_data",
             })
 
             assert '"error"' in result
@@ -249,6 +253,7 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task"}],
+                "solo_reason": "bulk_data",
             })
 
             assert "AKIAIOSFODNN7EXAMPLE" not in result
@@ -267,6 +272,7 @@ class TestSpawnSubAgents:
 
             result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task"}],
+                "solo_reason": "bulk_data",
             })
 
             assert "AKIAIOSFODNN7EXAMPLE" not in result
@@ -281,6 +287,7 @@ class TestSpawnSubAgents:
 
             _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task"}],
+                "solo_reason": "bulk_data",
                 "cwd": "/workspace/project",
             })
 
@@ -319,6 +326,7 @@ class TestSpawnSubAgents:
             long_prompt = "x" * 10000
             _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": long_prompt}],
+                "solo_reason": "bulk_data",
             })
 
             # The spawn call is the first _post; mark-collected is the last.
@@ -357,7 +365,7 @@ class TestSpawnSubAgentsSummarization:
             short_result = "This is a short result under 3K chars."
             mock_get.return_value = {"done": True, "agent": "w", "result": short_result}
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             assert short_result in result
             assert "Full transcript:" not in result
@@ -379,7 +387,7 @@ class TestSpawnSubAgentsSummarization:
                 "The full result is on disk."
             )
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             # summarize_result should have been called
             mock_summarize.assert_called_once()
@@ -400,7 +408,7 @@ class TestSpawnSubAgentsSummarization:
             mock_get.return_value = {"done": True, "agent": "w", "result": large_result}
             mock_summarize.return_value = "summarized content"
 
-            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             # summarize_result must have been called with the result text and a path
             # containing the agent id
@@ -421,7 +429,7 @@ class TestSpawnSubAgentsSummarization:
             mock_get.return_value = {"done": True, "agent": "w", "result": large_result}
 
             # _agent_dir will raise ValueError for "../bad-id" due to path traversal check
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             # Should still complete without error — falls back to full text
             assert '"completed"' in result
@@ -472,7 +480,7 @@ class TestSpawnSubAgentsSummarization:
             exact_result = "x" * COMPLETION_KEEP_DEFAULT_CHARS
             mock_get.return_value = {"done": True, "agent": "w", "result": exact_result}
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             # Should NOT summarize — threshold is >, not >=
             mock_summarize.assert_not_called()
@@ -489,7 +497,7 @@ class TestSpawnSubAgentsSummarization:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             # Bad env must not raise; the agent still completes.
             assert '"completed"' in result
@@ -511,7 +519,7 @@ class TestSpawnSubAgentsSummarization:
             mock_time.monotonic.side_effect = [0, 0, 10, 70, 70]
             mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             assert '"completed"' in result
 
@@ -532,7 +540,7 @@ class TestSpawnSubAgentsSummarization:
             mock_time.monotonic.side_effect = itertools.count(0, 5)
             mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             assert '"completed"' in result
             # Slept at least once because the first poll was not-done.
@@ -595,7 +603,7 @@ class TestSpawnSubAgentsAuditOwner:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
 
-            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             owners = self._audit_owners(mock_sel)
             # Both the attempt and the outcome record are written.
@@ -617,7 +625,7 @@ class TestSpawnSubAgentsAuditOwner:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
 
-            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             assert self._audit_owners(mock_sel) == ["dashboard:tab7", "dashboard:tab7"]
 
@@ -633,7 +641,7 @@ class TestSpawnSubAgentsAuditOwner:
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
 
-            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             spawn_bodies = [
                 call.args[1] for call in mock_post.call_args_list

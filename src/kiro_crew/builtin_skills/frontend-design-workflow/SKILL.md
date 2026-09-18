@@ -74,7 +74,9 @@ than as a built-in skill, so it is only available where that app is installed.
 
 Before declaring the change ready, run a dedicated review from a
 **brand-new, non-technical user's perspective** — as a separate sub-agent via
-`spawn_run`, with `include_project=true` so it can open the UI but
+`spawn_run`, with `solo_reason="fresh_context"` (the review is wrong if the
+reviewer can see the builder's context, which is also why a one-task
+`spawn_run` needs the reason), `include_project=true` so it can open the UI but
 `include_memory=false` so the reviewer has no builder's context. The reviewer
 answers:
 
