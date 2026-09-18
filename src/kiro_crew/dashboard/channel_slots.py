@@ -616,6 +616,10 @@ def surface_channel_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
+    if meta.get("project_cleared") is True:
+        # See the History-resume path: the guard above tests the project for TRUTH, and a
+        # cleared slot persists an EMPTY one, so the marker has to be restored on its own.
+        slot.project_cleared = True
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the

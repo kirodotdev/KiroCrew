@@ -4500,9 +4500,9 @@ def test_working_dir_validation_is_offloaded():
     src = inspect.getsource(routes._ensure_worker_slot)
     assert "asyncio.to_thread(_safe_dir" in src
     assert src.index("safe_wd = await asyncio.to_thread") < src.index(
-        "slot.project ="
+        "record_project(slot,"
     ), "the cwd is assigned before it is validated"
-    assert "slot.project = wd" not in src, "the raw indexed value is still assigned"
+    assert "record_project(slot, wd)" not in src, "the raw indexed value is still assigned"
 
 
 # ── create refuses, and unwinds, when the spec is replaced ───────────────────

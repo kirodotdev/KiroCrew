@@ -74,6 +74,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
     resolve_effective_model,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import (
@@ -149,10 +150,12 @@ from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
     is_harness_slash_command,
     is_system_injection_item,
+    key_rebind_deferred,
     mirror_is_paused,
     owned_stage_delivery_entry,
     parse_workflow_command,
     remember_slack_options,
+    settling_key,
     slack_mirror_is_paused,
     user_text_span,
 )
@@ -943,6 +946,101 @@ async def _credential_tool_hint_for(reason: str, cause: str, subject: str = "") 
 #: skipping both. Sized to a pipe write with margin, far below the 60s approval
 #: reporting margin, and applied inside the helper so every caller inherits it.
 _STEER_NOTICE_BOUND_SECS = STEER_NOTICE_BOUND_SECS
+
+
+def _retract_own_arm(state: Any, from_key: str, only_generation: int | None) -> None:
+    """Retract *from_key*'s arm only where this caller is the producer that armed it.
+
+    An unscoped retract spends whichever arm is resident, so a caller that armed nothing
+    erased a project arm another producer owned -- and the next claim stating no directory,
+    which is every channel turn, was then served the superseded project's session with
+    nothing left to retire it. A caller holding no generation therefore leaves the arm
+    where it is: it stays owed to a claim on this key, which is the outcome the arm exists
+    to force, and slot mint or final teardown reclaims it.
+    """
+    if only_generation is None:
+        return
+    state.sessions.supersede_arm_for_new_slot(from_key, only_generation=only_generation)
+
+
+async def _settle_arm_target(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str | None,
+    authorize: Callable[[str], Any] | None = None,
+    *,
+    only_generation: int | None = None,
+) -> Any:
+    """Resolve WHICH key an arm should land on, publishing nothing.
+
+    The awaits live here so a caller that must publish its arm and finalize its binding can
+    do both with no suspension between.
+
+    The effective key can move while a cleared cwd resolves off-thread, and a cwd resolved
+    for the losing key names a directory no winner's provider binds. Each pass re-resolves
+    for whichever key wins, and EVERY resolve is verified, including the last, so a rebind
+    landing after the final pass is detected rather than armed onto a key the slot has left.
+
+    `authorize` gates the key an arm would land on: the caller's own gate cleared `from_key`
+    alone, and a rebind can move the slot onto a session it has no claim on.
+
+    Returns the denial (or ``None``), the key that won, the cwd resolved for it, and
+    whether the key SETTLED -- a caller must publish nothing when it did not.
+    """
+    with settling_key(slot, state):
+        current_key = effective_session_key(slot)
+        # `== CWD_CLEARED`, never truthiness: an UNSET project is empty too, and resolving the
+        # cleared default for it would arm a directory the stored-cwd resume must override.
+        armed_cwd = (
+            await state.sessions.resolve_arm_cwd(current_key, CWD_CLEARED)
+            if project == CWD_CLEARED
+            else project
+        )
+        # ONE resolve: every writer of the linked key routes through `bind_linked_session_key`,
+        # which PARKS while this region is open, so the key cannot move under the await.
+        settled = effective_session_key(slot) == current_key
+        if settled and key_rebind_deferred(slot):
+            # A rebind reached the slot inside the region and lands as it unwinds, so the
+            # key just settled on is already spent.
+            settled = False
+        if not settled:
+            _retract_own_arm(state, from_key, only_generation)
+            return None, current_key, armed_cwd, False
+        if authorize is not None and current_key != from_key:
+            denied = authorize(current_key)
+            if denied is not None:
+                _retract_own_arm(state, from_key, only_generation)
+                return denied, current_key, armed_cwd, True
+        return None, current_key, armed_cwd, True
+
+
+async def _settle_and_transfer_arm(
+    state: Any,
+    slot: Any,
+    from_key: str,
+    project: str | None,
+    authorize: Callable[[str], Any] | None = None,
+) -> Any:
+    """Re-point *from_key*'s arm onto the key the slot runs on now.
+
+    For a caller whose binding is already final, so the transfer can follow the resolve
+    directly. One that still has to commit calls :func:`_settle_arm_target` and transfers
+    itself, keeping its publish and its commit in one no-suspension window.
+
+    Returns the denial (or ``None``), the key the slot runs on, and whether the transfer
+    SETTLED. An unsettled resolve reports the key it last observed, which can be the one it
+    started from, so key equality alone does not tell a caller its arm landed.
+    """
+    with settling_key(slot, state):
+        denied, current_key, armed_cwd, settled = await _settle_arm_target(
+            state, slot, from_key, project, authorize
+        )
+        if denied is not None:
+            return denied, current_key, settled
+        if settled:
+            state.sessions.transfer_retire_arm(from_key, current_key, armed_cwd)
+        return None, current_key, settled
 
 
 async def _steer_policy_notice(
@@ -6233,6 +6331,51 @@ def _arm_pending_reset_retry(state: "DashboardState", slot: "_ChatSlot") -> None
     _pending_reset_retries[slot.key] = (slot, asyncio.create_task(_retry()))
 
 
+def _app_owned_rebind_denied(slot: Any) -> Callable[[str], Any] | None:
+    """The authorize gate for a DEFERRED reset, which carries no request to re-check.
+
+    Every other caller of the settle helpers passes `_app_cancel_denied`, re-running the app
+    check against the key the transfer lands on. This path armed its flag inside a turn and
+    consumes it later, so it has no request -- and "authorized when armed" does not survive a
+    rebind: a cron/workflow or channel link moves the arm onto a session the app has no claim
+    on, and the transfer would then retire and re-root it unauthenticated.
+
+    A dashboard-owned slot has no app scope, so it returns None and the settle behaves
+    exactly as before.
+    """
+    owning_app = getattr(slot, "_app", "")
+    if not owning_app:
+        return None
+    # circular import: chat_handlers imports this module at load, so this cannot be top-level.
+    from kiro_crew.dashboard.chat_handlers import _history_key_for
+
+    own_session = _history_key_for(slot.key)
+
+    def _denied(target_key: str) -> Any:
+        if target_key == own_session:
+            return None
+        return f"app {owning_app} does not own this slot's linked session: {target_key}"
+
+    return _denied
+
+
+def _drop_denied_deferred_reset(slot: Any, denied: Any) -> None:
+    """Drop a deferred reset whose target the owning app has no claim on.
+
+    AUDITED, not only logged: this is the app-isolation boundary refusing, and an operator
+    reconstructing who reached across it reads SEL, not the app log.
+    """
+    logger.warning("Dropping deferred reset for slot %s: %s", slot.key, denied)
+    sel().log_api_access(
+        caller=str(getattr(slot, "_app", "") or ""),
+        operation="chat_deferred_reset",
+        outcome="denied",
+        resources=f"slot={slot.key}",
+        error="app-owned slot rebound to a foreign session",
+    )
+    slot._pending_reset_history_key = None
+
+
 async def _consume_pending_reset(
     state: DashboardState, slot: _ChatSlot, *, allow_discard: bool = False
 ) -> bool:
@@ -6291,19 +6434,32 @@ async def _consume_pending_reset(
     torn_down = False
     if slot._pending_reset_history_key:
         pending_key = slot._pending_reset_history_key
-        current_key = effective_session_key(slot)
-        if pending_key != current_key:
+        # Armed regardless of outcome on the key the reset will actually land on, and
+        # TRANSFERRED so a rebind leaves no arm on the key the slot abandoned.
+        denied, current_key, arm_settled = await _settle_and_transfer_arm(
+            state, slot, pending_key, slot.claim_cwd, _app_owned_rebind_denied(slot)
+        )
+        if denied is not None:
+            _drop_denied_deferred_reset(slot, denied)
+            return torn_down
+        if pending_key != current_key or not arm_settled:
             # The slot REBOUND after the flag was armed (a cron/workflow slot
             # gets linked when its first result is injected; a channel link can
             # land between arming and this consume). Resetting the stale key and
             # clearing the flag would tear down a session nobody is on and let
             # the slot's ACTUAL session keep the old CWD forever — the exact
             # stale-binding class this deferral exists to remove. Re-arm to the
-            # current session so the reset lands where the turns run; the
-            # producer already validated the project change belongs to this
-            # slot, and re-pointing the key needs no re-authorization (it names
-            # the slot's own live session, not a new authority).
-            slot._pending_reset_history_key = current_key
+            # current session so the reset lands where the turns run. An UNSETTLED transfer
+            # takes this branch too: it never landed, and the rebind that stopped it moves it.
+            retarget = effective_session_key(slot)
+            # Re-authorized HERE because the settle gate fires only where the landed key
+            # differs from the armed one, so arming a rebound key makes the retry skip it.
+            reauthorize = _app_owned_rebind_denied(slot)
+            retarget_denied = reauthorize(retarget) if reauthorize is not None else None
+            if retarget_denied is not None:
+                _drop_denied_deferred_reset(slot, retarget_denied)
+                return torn_down
+            slot._pending_reset_history_key = retarget
             _arm_pending_reset_retry(state, slot)
             return torn_down
         if await subagents_attached_async(state, slot, pending_key, "consume_pending_reset"):
@@ -6325,17 +6481,16 @@ async def _consume_pending_reset(
                 # channel reply. The check and the teardown must be one atomic
                 # step under the session lock.
                 #
-                # The flag is spent ONLY on a real teardown (reset returned
-                # True). A False return cannot distinguish "nothing registered
+                # A False return cannot distinguish "nothing registered
                 # under the key" from a busy decline or a session that is
                 # COLD-STARTING and not yet registered — clearing on a probe
                 # that answered None would let a concurrent cold start carrying
                 # the old CWD register afterwards and serve the stale project
-                # with the flag already gone. Leaving it armed is always safe:
-                # the next consume lands it, at worst costing one redundant
-                # cold start after the reset tears down an already-correct
-                # idle session.
-                reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
+                # with the flag already gone.
+                # HELD ACROSS THE AWAIT: the settle's region closed before this call.
+                with settling_key(slot, state):
+                    reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
+                    rebound_mid_reset = key_rebind_deferred(slot)
             except Exception:
                 # A teardown that raised leaves the session in a state this
                 # slot cannot vouch for — neither is its withhold verdict, so
@@ -6358,24 +6513,36 @@ async def _consume_pending_reset(
                     # show a withheld model as available.
                     slot.forget_session_model_state()
                     torn_down = True
-                    if slot._pending_reset_history_key == pending_key:
+                    if rebound_mid_reset:
+                        # The key that parked inside the await names a session no arm is owed
+                        # to, so the flag re-points to it instead of clearing.
+                        slot._pending_reset_history_key = effective_session_key(slot)
+                        _arm_pending_reset_retry(state, slot)
+                    elif slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
                     # Freshness push for open tabs; verdict-driven (see
                     # _broadcast_expired_oauth_banners).
                     _broadcast_expired_oauth_banners(state, slot)
                 else:
-                    logger.debug(
-                        "Deferring queued project-change reset for slot %s: "
-                        "no teardown landed (busy, cold-starting, or no session)",
-                        slot.key,
-                    )
-                    # A channel-linked slot's turns never pass a dashboard
-                    # turn boundary, so a decline here would otherwise never
-                    # be retried and the live channel session would keep the
-                    # old CWD indefinitely. The bounded retry task owns the
-                    # follow-up (deduped; a decline observed by the task
-                    # itself does not stack a second one).
-                    _arm_pending_reset_retry(state, slot)
+                    if not state.sessions.has_session(pending_key):
+                        # Nothing registered: the flag's purpose is already met, and
+                        # leaving it armed would reset the eager spawn's own session.
+                        if slot._pending_reset_history_key == pending_key:
+                            slot._pending_reset_history_key = None
+                        logger.debug(
+                            "Cleared queued project-change reset for slot %s: "
+                            "no session was registered, so nothing was owed",
+                            slot.key,
+                        )
+                    else:
+                        logger.debug(
+                            "Deferring queued project-change reset for slot %s: "
+                            "session busy, pinned for retirement at next claim",
+                            slot.key,
+                        )
+                        # A channel-linked slot crosses no dashboard turn boundary, so
+                        # the bounded retry task owns the follow-up.
+                        _arm_pending_reset_retry(state, slot)
     if allow_discard and slot._pending_discard_conversation_key:
         discard_key = slot._pending_discard_conversation_key
         if await subagents_attached_async(state, slot, discard_key, "consume_pending_discard"):
@@ -7166,7 +7333,7 @@ async def _spawn_admitted_prefetch(
             # alias applied, so no override applies.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=slot.claim_cwd,
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
@@ -10972,7 +11139,7 @@ async def _run_chat(
             # carry different watchdog windows.
             crew_agent=crew_alias,
             model=_requested_model or None,
-            cwd=slot.project or None,
+            cwd=slot.claim_cwd,
             # The persisted channel stays separate from the dashboard-owned key
             # so provider startup can distinguish a linked dispatcher from a
             # direct dashboard turn.

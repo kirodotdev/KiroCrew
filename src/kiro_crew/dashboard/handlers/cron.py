@@ -37,6 +37,7 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.dashboard.chat_utils import bind_linked_session_key
 from kiro_crew.dashboard.cron_inject import (
     chat_folder_exists,
     hydrate_slot_from_history,
@@ -45,7 +46,7 @@ from kiro_crew.dashboard.cron_inject import (
 )
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
-from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
+from kiro_crew.dashboard.state import DashboardState, SlotOrigin
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
@@ -1886,11 +1887,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
         if history:
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
             if not slot.linked_session_key:
-                slot.linked_session_key = session_key
-                # A cron link is exempt from the channel class, so this records nothing
-                # in practice -- it is here so that EVERY assignment site reaches the
-                # recorder and the derived pin needs no exception for this one.
-                note_crew_log_class(state, slot)
+                bind_linked_session_key(slot, session_key, state)
                 hydrate_slot_from_history(slot, history)
         else:
             # No session log — fall back to notification body.

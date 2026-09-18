@@ -1176,6 +1176,9 @@ async def fork_slot(
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
+    # A fork COPIES state rather than making a transition, so an inherited empty project
+    # without the marker reads as never-scoped and lets allocation restore a stored cwd.
+    new_slot.project_cleared = bool(getattr(slot, "project_cleared", False))
     # Inherit the sidebar folder so the fork appears next to its parent in the UI.
     new_slot.folder_id = slot.folder_id
     # Inherit tags (copied, so later edits to either slot's list stay independent).
