@@ -67,6 +67,14 @@ src/kiro_crew/static/dist
 src/kiro_crew/static/.dist.staging.*
 src/kiro_crew/static/.dist.previous.*
 
+# Disposable scratch for Dev Fleet's Pull+Build installability probe
+# (npm_preflight). It lives in the checkout rather than TMPDIR so the rehearsal
+# runs on the filesystem the real `npm ci` writes to; probe() removes it in a
+# `finally`, and this rule covers the one a killed process leaves. Same
+# consequence as the staging entries above: an untracked leftover makes the
+# checkout read as dirty and fail-closes "Prune merged".
+/.kirocrew-npm-preflight-*
+
 # Build-time provenance stamp (scripts/stamp-distribution.sh). Generated per
 # packaging path; a committed copy would mislabel every other build's beacon.
 src/kiro_crew/_build_info.py

@@ -1954,8 +1954,10 @@ async def _sync_start_locked() -> dict:
                 "ok": False,
                 "error": (
                     "could not stage the dependency preflight: "
-                    f"{exc.strerror or exc} — free space in the temporary "
-                    "directory and press Pull + Build again"
+                    f"{exc.strerror or exc} — check BOTH the free bytes (df -h) "
+                    "and the free file count (df -i) on the temporary directory, "
+                    "because either budget can be exhausted while the other still "
+                    "looks healthy — then free room and press Pull + Build again"
                 ),
             }
         # File before directory: the run's cleanup unlinks each entry and falls
@@ -2144,8 +2146,10 @@ async def _sync_start_locked() -> dict:
             "ok": False,
             "error": (
                 "could not stage the sync runner: "
-                f"{exc.strerror or exc} — free space in the temporary directory "
-                "and press Pull + Build again"
+                f"{exc.strerror or exc} — check BOTH the free bytes (df -h) and the "
+                "free file count (df -i) on the temporary directory, because either "
+                "budget can be exhausted while the other still looks healthy — then "
+                "free room and press Pull + Build again"
             ),
         }
     # Files before their directory: the run's cleanup unlinks each entry and

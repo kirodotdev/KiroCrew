@@ -943,6 +943,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/dev_fleet/npm_preflight.py::_extract",
         "apps/builtins/dev_fleet/npm_preflight.py::_install_already_proven",
         "apps/builtins/dev_fleet/npm_preflight.py::probe",
+        # _scratch_name_is_ignored decides WHERE the probe's scratch may live, and
+        # is the fourth spawn of the same probe -- so it is already inside the
+        # sandbox server.py applied to the sync step, exactly as the three above.
+        # It spawns `<git> -C <repo> check-ignore -q --no-index <name>` from the
+        # same sources: the binary is the sync's _trusted_bin git (never a PATH
+        # search), the repo is the operator-configured checkout, the four flags are
+        # literals, and <name> is `_SCRATCH_PREFIX` plus a fixed literal suffix --
+        # a module-level constant, not a path any caller supplies and not a path
+        # that exists. It only READS: `check-ignore` resolves the ignore rules and
+        # answers in its exit code, writing nothing. An unanswerable exit is read
+        # as "not ignored", so a blocked or failing spawn can only make the probe
+        # fall back to TMPDIR, never widen what it may touch.
+        "apps/builtins/dev_fleet/npm_preflight.py::_scratch_name_is_ignored",
         # _frontend_build_already_current is the STRONGER build-skip predicate
         # that wraps _install_already_proven (listed directly above) and adds one
         # read-only spawn: `<git> -C <repo> rev-parse <ref>:website`. Same three

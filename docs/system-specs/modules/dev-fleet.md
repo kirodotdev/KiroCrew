@@ -907,6 +907,67 @@ stdlib-only, so the copy needs no package context. Both halves matter: `-I` drop
 the cwd from `sys.path`, and the snapshot means an editable install cannot make
 the tree being synced supply the code doing the verifying.
 
+**The install rehearsal happens on the CHECKOUT's filesystem, not in `TMPDIR`.**
+`tempfile.mkdtemp()` with no `dir` takes `TMPDIR`, which on a default Linux host
+is `/tmp` — commonly a memory-backed filesystem whose inode count is capped at
+mount time and shared with every process on the box. A `node_modules` tree is tens
+of thousands of files, so unrelated litter there can starve Pull + Build while
+tens of gigabytes are still free, and the install is charged to RAM. Residency is
+a correctness property before it is a capacity one: this step exists to *rehearse*
+the real `npm ci`, and a rehearsal held on a filesystem with a different free-room
+budget answers a different question — it can pass where the real step fails for
+room, or fail where the real step would have succeeded. The scratch is taken from
+the repo ROOT rather than `website/`, which is the same filesystem in any ordinary
+checkout but keeps the directory outside both the frontend project `npm` resolves
+config against and the subtree the backend-only skip decision reads.
+
+**The repo root is used only where git hides the name.** The probe code ships with
+the installed gateway while the ignore rule covering its scratch name is a commit
+in the checkout's own history, so a fleet checkout parked on an older ref can run
+this code with no rule for it — and a probe killed in that window leaves an
+untracked directory in the checkout root, which reads as dirty and fail-closes
+`Prune merged`. So `_scratch_name_is_ignored` asks `git check-ignore` about a
+generated name and the repo hosts the scratch only on a yes. `git check-ignore` is
+the oracle rather than a read of `.gitignore`, because ignore resolution spans
+several files with precedence and negation. An unanswerable question — missing
+git, a timeout, not a repo — is read as NOT ignored: being wrong that way costs a
+rehearsal on `TMPDIR`, which is the step's previous behaviour, while the other way
+costs a checkout that silently reads dirty.
+
+**Being out of room is the verdict, never a reason to relocate.** A scratch
+creation that fails for room says the filesystem the real install targets has
+none, which is exactly the answer the step is there to produce; retrying somewhere
+roomier would certify a filesystem the install never touches. Only conditions that
+make the repo unusable as a host at all — missing, not writable, or not hiding the
+name — fall back. "Out of room" covers `ENOSPC` and `EDQUOT` together, because a
+per-user quota is how a managed host says the same thing, and the operator-facing
+sentence names neither a single filesystem nor a single budget: the install writes
+both the scratch and the package cache, which need not share a filesystem, and
+each can exhaust bytes or file slots while the other looks healthy.
+
+**Abandoned scratch directories are swept before a new one is created.** `probe`
+removes its own in a `finally`, so what survives is a run that never reached it —
+SIGKILL, an OOM kill, a reboot. `/tmp` was age-cleaned by the host; the checkout
+root is cleaned by nobody and the name is git-ignored, so without a sweeper an
+abandoned tree accumulates there invisibly. The sweep removes prefix-matching
+directories older than `_SCRATCH_STALE_SECS` (6 h), runs whenever the repo *could*
+host a scratch — including when the ignore gate then sends this probe to `TMPDIR`,
+since litter from an earlier gateway build is what an un-ignored checkout needs
+cleared — and is best-effort, because housekeeping must never be why a
+verification does not happen. Ordering it before creation is what makes it a
+remedy rather than hygiene: the room the litter holds is charged to the same
+budgets the incoming install is measured against. It takes no lock, so the age
+window is the concurrency guard, and the guard holds only while the window
+exceeds every deadline the module declares. That comparison is not left to prose:
+a test reads `probe`'s own default timeout and each fixed helper timeout out of
+the source, charges one probe with all of them back to back, and requires
+`_SCRATCH_STALE_SECS` to exceed that sum by a wide margin — 21600 s against
+1320 s today. Raising a deadline, or adding a helper, without widening the window
+fails that test rather than shipping a sweep that deletes a live probe's scratch.
+The ownership marker cannot cover this case: a running probe's scratch is
+genuinely marked and genuinely prefix-named, so age is the only thing that tells
+it from litter.
+
 **The generated runner itself carries `-I` too, and for the same reason.** `python
 -c` puts the inherited cwd at `sys.path[0]`, ahead of the standard library, and
 the cwd a module-style app backend hands down is the gateway's own source root —
