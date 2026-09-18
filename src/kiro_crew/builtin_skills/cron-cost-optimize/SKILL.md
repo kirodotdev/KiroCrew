@@ -1,6 +1,6 @@
 ---
 name: cron-cost-optimize
-description: Audit the cron jobs a user already registered and recommend a cheaper execution mode for each one, either a zero-token script or command job, or an agent job with minimal context. Use when the user asks why their scheduled jobs cost so much, wants to cut cron or automation token spend, asks which crons could be scripts, or is porting existing scheduled jobs into Kiro Crew and wants cost-efficient defaults. Read-only by default, and it never edits a job on its own.
+description: Audit a user's registered cron jobs and recommend a cheaper mode for each — a zero-token script/command job, or an agent job with minimal context. Use when the user asks why scheduled jobs cost so much, wants to cut cron token spend, or is porting crons into Kiro Crew. Read-only; never edits a job.
 triggers: cron cost, cron token cost, expensive cron, cron spend, optimize my crons, optimise my crons, scan my crons, cron audit, script mode, zero token cron, minimal context, cheaper cron
 ---
 

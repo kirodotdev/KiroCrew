@@ -1,6 +1,6 @@
 ---
 name: frontend-design-workflow
-description: Workflow for frontend features, visual changes, and product design changes. Present mockup options before writing code, build against the project's design system, capture the right evidence type (screenshots vs video), and run a new-user usability review before finalizing. Use when building or changing UI, styling, layouts, animations, or any user-facing visual surface.
+description: Workflow for frontend features and visual/product design changes — present mockup options before code, build on the project's design system, capture the right evidence (screenshots vs video), run a new-user usability review. Use when building or changing UI, styling, layout or animation.
 triggers: mockup, mockups, frontend, redesign, restyle, visual change, UI change, design change, landing page, new page, new component
 ---
 

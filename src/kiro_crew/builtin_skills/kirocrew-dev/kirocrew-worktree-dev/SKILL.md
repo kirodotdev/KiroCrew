@@ -1,6 +1,6 @@
 ---
 name: kirocrew-worktree-dev
-description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers environment setup, build/dist ordering, feature flags, isolated previews, cleanup and publication authorization; prepare-pr owns the PR workflow."
+description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers env setup, build/dist ordering, feature flags, isolated previews, cleanup, publish authorization; prepare-pr owns the PR workflow."
 triggers: kirocrew worktree, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
 repo_scope: src/kiro_crew
 ---

@@ -1,6 +1,6 @@
 ---
 name: five-whys
-description: Enter a guided dive-deep research mode — 5 Whys is the default engine (one focused question at a time along a What-it-is -> Example -> Why-not-alternatives -> Benefits -> Costs chain, user-steered branching), every step appended to an event-sourced log the tree and report are folded from, and extensible with plug-in capabilities (web search, recap, ...) that share that log.
+description: Guided dive-deep research mode. 5 Whys is the default engine — one focused question at a time along What-it-is -> Example -> Why-not-alternatives -> Benefits -> Costs, user-steered branching, every step appended to an event log the tree and report fold from. Use for deep research asks.
 triggers: 5 whys, five whys, five whys mode, dive deep on, root-cause dive
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: pipeline-conductor
-description: "Use when a pipeline conductor session is being seeded, or when inspecting/debugging one. Operating procedure for the kirocrew-pipeline-conductor agent. You are a MANAGER of one issue/PR pipeline on one repository: you track exactly two columns per item - is this session working, is this item solved - you send intent rather than absorbing context, and you never read a PR board or a worker transcript to re-derive why something is red, because that belongs to the worker that owns it. Auto-pick items, preflight every candidate to one deterministic claim verdict, stand up one worker session per item in a dedicated folder, probe them each cycle with one script call, verify claimed greens independently, intervene when a worker loops or stalls, adjudicate blocked items under the override protocol, throttle admission on delivery capacity and never pad the fleet, enforce per-item credit budgets, track the conductor's own obligations in a status file, append every decision to a decision ledger and every lesson to the retrospective as it happens, digest verified greens to the human, and clean up on merge."
+description: "Operating procedure for the kirocrew-pipeline-conductor agent. Use when a pipeline conductor session is seeded, inspected or debugged. You MANAGE one issue/PR pipeline on one repo: two columns per item (session working? item solved?), send intent, never re-derive a red yourself."
 ---
 
 # Pipeline Conductor

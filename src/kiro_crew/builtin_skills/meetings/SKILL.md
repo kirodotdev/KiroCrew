@@ -1,6 +1,6 @@
 ---
 name: meetings
-description: Context for working with the Meetings app's data — where a meeting's notes, diagram, transcript-derived tasks, and calendar cache live, what the lifecycle states mean, and how the app's agents are driven. Load when the user asks about a meeting's notes or action items, or when writing/reading files under the meetings app data dir.
+description: Context for the Meetings app's data — where a meeting's notes, diagram, transcript-derived tasks and calendar cache live, what the lifecycle states mean, how the app's agents are driven. Load when asked about a meeting's notes or action items, or when touching the meetings app data dir.
 triggers: meeting, meeting notes, action items, meeting tasks, transcript, standup, retro, calendar, meetings app
 ---
 

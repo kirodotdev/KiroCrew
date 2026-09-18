@@ -1,6 +1,6 @@
 ---
 name: goal-ledger-conductor
-description: Deprecated alias of the goal-conductor skill, removed next release. The work-ledger conducting procedure - decompose a goal into items, bind each to a session, read reported status as data, verify claims with the acceptance evaluator - now lives in goal-conductor. Read that skill instead of this one.
+description: Deprecated alias of goal-conductor, removed next release. The work-ledger conducting procedure now lives in goal-conductor; read that skill instead.
 ---
 
 # Goal Ledger Conductor (deprecated)

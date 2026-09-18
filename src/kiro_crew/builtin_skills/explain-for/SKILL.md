@@ -1,6 +1,6 @@
 ---
 name: explain-for
-description: Explain a topic, a piece of code, an error, or a design decision calibrated to one named audience — a 5-year-old, a 5th grader, a manager, a designer, a graduate student, a parent. Resolves who the explanation is for (from the request, or from what memory already records about that person), establishes the ground truth before simplifying, then tunes vocabulary, analogy source, tone, depth and framing to that audience instead of producing one generic explanation.
+description: Explain a topic, code, error or design decision for one named audience (a 5-year-old, a manager, a designer, a grad student, a parent). Resolves who it is for, pins the ground truth first, then tunes vocabulary, analogy, tone and depth to that audience. Use when an audience is named.
 triggers: explain like i am, explain like im, explain like a, explain to my, break down for, dumb it down, simplify this for, in plain english
 ---
 

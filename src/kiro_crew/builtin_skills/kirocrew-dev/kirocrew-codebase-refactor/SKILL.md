@@ -1,6 +1,6 @@
 ---
 name: kirocrew-codebase-refactor
-description: "Kiro Crew maintainers only: plan, execute, recover, and measure behavior-preserving refactors of the Kiro Crew source repository. Use for Kiro Crew deduplication, simplification, stale-comment cleanup, decomposition of large modules or classes, coordinated refactor waves, and structural progress audits. Do not use for users' projects, feature rewrites, or an isolated small cleanup that needs no campaign workflow."
+description: "Kiro Crew maintainers only: plan, execute, recover and measure behavior-preserving refactors of the Kiro Crew source repo. Use for dedup, simplification, stale-comment cleanup, splitting large modules, refactor waves and progress audits. Not for users' projects or one small cleanup."
 triggers: kirocrew refactor, refactor Kiro Crew, Kiro Crew codebase refactor, simplify kirocrew, kirocrew deduplication, kirocrew large class, kirocrew large module, kirocrew refactor campaign
 repo_scope: src/kiro_crew
 ---

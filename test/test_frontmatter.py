@@ -867,7 +867,6 @@ class TestTheRepoSkillFileCorpus:
     # needs updating with it.
     NOT_VALID_YAML = frozenset(
         {
-            "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/SKILL.md",
             "src/kiro_crew/builtin_skills/web-verify/SKILL.md",
         }
     )
