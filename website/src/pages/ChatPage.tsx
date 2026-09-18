@@ -1,4 +1,5 @@
-import { Fragment, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { WorkspacePanelContext, WorkspaceFullscreenContext } from '../components/WorkspacePanelContext'
+import { useContext, Fragment, useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation, useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -339,7 +340,8 @@ import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from '
 import { KnowledgePicker } from './chat/KnowledgePicker'
 import { MessageSquare, Clock, Undo2, Columns2, ExternalLink, X } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
-import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
+import { PanelLeftSolid, PanelLeftLight } from '../components/icons/panels'
+import PanelToggles, { PANEL_HEADER_ACTION_CLS, PANEL_HEADER_ACTIONS_CLS } from '../components/PanelToggles'
 
 import InfoTip from '../components/InfoTip'
 import SlotTagPopover from '../components/SlotTagPopover'
@@ -4313,11 +4315,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Stored width is validated against SIDEBAR_MIN..SIDEBAR_MAX only, never the
   // window; clamp for render but leave the preference for the wide viewport.
   const effectiveSidebarWidth = clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
+  const workspaceFullscreen = useContext(WorkspaceFullscreenContext)?.fullscreen ?? false
+  const reportWorkspaceSearch = useContext(WorkspacePanelContext)
+  useEffect(() => {
+    reportWorkspaceSearch(search.isOpen)
+    return () => reportWorkspaceSearch(false)
+  }, [search.isOpen, reportWorkspaceSearch])
+  const { isOpen: workspaceSearchIsOpen, close: closeWorkspaceSearch } = search
   const toggleAct = useCallback(() => {
+    if (workspaceSearchIsOpen) {
+      closeWorkspaceSearch()
+      dispatch(openActivityPanel())
+      return
+    }
     // Opening with no tabs shows the empty-state launcher grid (no seeded
     // default view) -- the user picks what to open.
     dispatch(toggleActivity())
-  }, [dispatch])
+  }, [dispatch, workspaceSearchIsOpen, closeWorkspaceSearch])
   // Header-launched toggle: the top-bar Activity button (App.tsx) dispatches
   // this event so the panel-close coordination above stays in ChatPage.
   useEffect(() => {
@@ -6926,7 +6940,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   values on the same 320ms curve as the panel — an instant
                   class flip here reads as the title jumping sideways at the
                   start of the slide. */}
-              <div className={`relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
+              <div className={`relative pr-[3px] mt-[3px] h-10 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
                 {/* Divider between toggle and title — ALWAYS mounted and
                     absolute (zero width, no flex-gap participation) so it can
                     never change the row's layout; it rides the row (title
@@ -6985,7 +6999,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   below) or docked at the bottom. Right-docked and showing, the
                   panel is at that edge instead and carries the reserve itself, so
                   reserving here too would indent these controls for nothing. */}
-              <div className={`ml-auto flex shrink-0 items-center gap-1.5 pointer-events-none${!sidePanelWantsMount || sidePanelDock === 'bottom' ? ' focus-caption-reserve' : ''}`}>
+              <div data-panel-controls-host="chat" className={`${PANEL_HEADER_ACTIONS_CLS} ml-auto pointer-events-none${!sidePanelWantsMount || sidePanelDock === 'bottom' ? ' focus-caption-reserve' : ''}`}>
+              <div data-panel-controls-host="session-actions" className={PANEL_HEADER_ACTIONS_CLS}>
               {/* Pop-out control, promoted to the title bar (menu items remain for
                   sidebar parity). Mirrors the split-view pattern to its left: a
                   dimmed icon to act, an accent chip when the state is active.
@@ -6995,40 +7010,29 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   <Undo2 size={13} /> {i18nT('pages.chatPage.return')}
                 </Clickable>
               ) : !embedMode && activeSlot && (activePoppedOut ? (
-                <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => focusActivePopout(activeSlot)} title={i18nT('pages.chatPage.this_session_is_open_in_its_own_window_focus_it')} aria-label={i18nT('pages.chatPage.focus_popped_out_window')}>
-                  <ExternalLink size={13} /> {i18nT('pages.chatPage.popped_out')}
+                // State chip, not an action cell: keeps its visible label so the
+                // session's state reads without hover; height matches the 28px row.
+                <Clickable className="flex items-center gap-1 h-7 px-1.5 rounded-md text-[11px] font-medium pointer-events-auto text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer" onClick={() => focusActivePopout(activeSlot)} title={i18nT('pages.chatPage.this_session_is_open_in_its_own_window_focus_it')} aria-label={i18nT('pages.chatPage.focus_popped_out_window')}>
+                  <ExternalLink className="lucide-inline w-3.5 h-3.5" /> {i18nT('pages.chatPage.popped_out')}
                 </Clickable>
               ) : (
-                <Clickable className="flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 text-muted hover:text-text pointer-events-auto" onClick={() => openActivePopout(activeSlot, currentSlot?.title)} title={i18nT('pages.chatPage.pop_out_to_window')} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')}>
-                  <ExternalLink size={15} />
+                <Clickable className={`${PANEL_HEADER_ACTION_CLS} pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer`} onClick={() => openActivePopout(activeSlot, currentSlot?.title)} title={i18nT('pages.chatPage.pop_out_to_window')} aria-label={i18nT('pages.chatPage.pop_out_session_to_its_own_window')}>
+                  <ExternalLink className="lucide-inline w-3.5 h-3.5" />
                 </Clickable>
               ))}
-              {/* Activity panel open toggle — relocated here from the top bar
-                  (item 2.4) so opening the panel no longer narrows the now
-                  full-width header. Shown only while the panel is closed; the
-                  panel's own header carries the close button. Never disabled:
-                  below the mobile breakpoint the panel opens full width, at or
-                  above it opens beside the chat. There is no width at which
-                  the button does nothing. */}
-              {!embedMode && !popout && !activityOpen && (
-                <Clickable
-                  className="pi-morph flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 pointer-events-auto text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-                  onClick={toggleAct}
-                  title={i18nT('pages.chatPage.open_activity_panel')}
-                  aria-label={i18nT('pages.chatPage.open_activity_panel')}
-                >
-                  <PanelRightSolid size={15} />
-                </Clickable>
-              )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
-                <Clickable className="flex items-center gap-1 text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer pointer-events-auto text-[11px] font-medium px-1.5 py-0.5 rounded" onClick={() => enterSplit(splitAnchorForActive)} title={i18nT('pages.chatPage.this_session_is_open_in_a_split_return_to_it')} aria-label={i18nT('pages.chatPage.return_to_split_view')}>
-                <Columns2 size={13} /> {i18nT('pages.chatPage.in_split')}
-              </Clickable>
+                <Clickable className="flex items-center gap-1 h-7 px-1.5 rounded-md text-[11px] font-medium pointer-events-auto text-accent bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer" onClick={() => enterSplit(splitAnchorForActive)} title={i18nT('pages.chatPage.this_session_is_open_in_a_split_return_to_it')} aria-label={i18nT('pages.chatPage.return_to_split_view')}>
+                  <Columns2 className="lucide-inline w-3.5 h-3.5" /> {i18nT('pages.chatPage.in_split')}
+                </Clickable>
               ) : (
-                <Clickable className="opacity-40 hover:opacity-100 transition-opacity cursor-pointer pointer-events-auto" onClick={() => enterSplit(activeSlot)} title={i18nT('pages.chatPage.split_view_d')} aria-label={i18nT('pages.chatPage.enter_split_view')}>
-                <Columns2 size={14} />
-              </Clickable>
+                <Clickable className={`${PANEL_HEADER_ACTION_CLS} pointer-events-auto text-muted opacity-40 hover:opacity-100 hover:text-text hover:bg-bg-hover cursor-pointer`} onClick={() => enterSplit(activeSlot)} title={i18nT('pages.chatPage.split_view_d')} aria-label={i18nT('pages.chatPage.enter_split_view')}>
+                  <Columns2 className="lucide-inline w-3.5 h-3.5" />
+                </Clickable>
               ))}
+              </div>
+              {!embedMode && !popout && !activityOpen && (
+                <PanelToggles showWorkspace workspaceOpen={false} />
+              )}
               </div>
               {/* Header fade — softens content passing up into the opaque title
                   row, so it hangs off that row's bottom edge (anchor="below":
@@ -8026,6 +8030,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           : shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && !activitySlot) && (
           <motion.div
             key="side-panel-inline"
+            layout="position"
+            layoutDependency={workspaceFullscreen}
+            data-workspace-panel-host
             ref={isMobile ? sideOverlayPanelRef : undefined}
             initial={isMobile ? false : { width: 0 }}
             animate={isMobile ? undefined : { width: 'auto' }}
@@ -8081,8 +8088,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           {shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen: search.isOpen }) && (
             <motion.div
               key="side-panel"
+              data-workspace-panel-host
               initial={sidePanelDockAnim.initial}
-              animate={sidePanelDockAnim.animate}
+              animate={workspaceFullscreen
+                ? { ...sidePanelDockAnim.animate, width: '100%', height: '100%' }
+                : sidePanelDockAnim.animate}
               exit={sidePanelDockAnim.exit}
               transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
               className={sidePanelDock === 'bottom' ? 'w-full overflow-visible flex flex-col justify-end' : 'h-full overflow-visible flex justify-end'}

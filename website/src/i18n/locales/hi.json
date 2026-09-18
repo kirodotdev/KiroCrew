@@ -10202,7 +10202,6 @@
       "message_saved_as_draft": "{{error}}। तुम्हारा संदेश उसी सत्र में ड्राफ़्ट के रूप में सहेजा गया है जहाँ से भेजा था।{{extra}}",
       "no_results": "कोई परिणाम नहीं",
       "no_tools": "कोई टूल नहीं",
-      "open_activity_panel": "गतिविधि पैनल खोलो",
       "open_file": "फ़ाइल {{path}} खोलें",
       "attached_file_inert": "संलग्न फ़ाइल (यहाँ नहीं खोली जा सकती): {{path}}",
       "open_folder": "फ़ोल्डर {{path}} खोलें",

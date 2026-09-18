@@ -4093,7 +4093,6 @@
       "message_saved_as_draft": "{{error}}. Your message is saved as a draft in the session you sent it from.{{extra}}",
       "no_results": "No results",
       "no_tools": "No tools",
-      "open_activity_panel": "Open activity panel",
       "open_file": "Open file {{path}}",
       "attached_file_inert": "Attached file (can't be opened here): {{path}}",
       "open_folder": "Open folder {{path}}",

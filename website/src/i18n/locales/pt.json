@@ -10346,7 +10346,6 @@
       "message_saved_as_draft": "{{error}}. Sua mensagem foi salva como rascunho na sessão de onde você a enviou.{{extra}}",
       "no_results": "Nenhum resultado",
       "no_tools": "Sem ferramentas",
-      "open_activity_panel": "Abrir o painel de atividade",
       "open_file": "Abrir o arquivo {{path}}",
       "attached_file_inert": "Arquivo anexado (não pode ser aberto aqui): {{path}}",
       "open_folder": "Abrir a pasta {{path}}",

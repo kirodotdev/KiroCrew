@@ -10058,7 +10058,6 @@
       "message_saved_as_draft": "{{error}}。メッセージは送信元のセッションで下書きとして保存されました。{{extra}}",
       "no_results": "結果なし",
       "no_tools": "ツールなし",
-      "open_activity_panel": "アクティビティパネルを開く",
       "open_file": "ファイル {{path}} を開く",
       "attached_file_inert": "添付ファイル（ここでは開けません）: {{path}}",
       "open_folder": "フォルダー {{path}} を開く",

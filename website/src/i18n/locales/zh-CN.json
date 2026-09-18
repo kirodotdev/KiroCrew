@@ -10058,7 +10058,6 @@
       "message_saved_as_draft": "{{error}}。消息已保存为草稿，存放在你发送它的那个会话中。{{extra}}",
       "no_results": "无结果",
       "no_tools": "无工具",
-      "open_activity_panel": "打开活动面板",
       "open_file": "打开文件 {{path}}",
       "attached_file_inert": "附件（此处无法打开）：{{path}}",
       "open_folder": "打开文件夹 {{path}}",
