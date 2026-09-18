@@ -557,7 +557,21 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
   const ariaLabel = `${count} ${label}`
   return collapsed
     ? <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" role="status" aria-label={ariaLabel} />
-    : <span className="absolute right-2 top-1/2 -translate-y-1/2 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" aria-label={ariaLabel}>{count}</span>
+    // Expanded: IN FLOW, not `absolute right-2`. The row's other right-edge
+    // occupant is the hover/focus shortcut hint, which is an in-flow span — so an
+    // absolutely-positioned badge sat ON TOP of it and a row with an unread count
+    // advertised a chord the badge covered ("Sessions ⌥C" read as "Sessions (1)"
+    // with a sliver of the modifier glyph showing). In flow the two are siblings
+    // in the row's flex line and cannot overlap at any count width.
+    //
+    // `title` names what the number IS, for sighted users: a bare pill beside a
+    // bare bot glyph does not say what either counts, and the fix above makes the
+    // two reliably co-visible. It carries the LABEL ALONE, not `ariaLabel` — the
+    // label is a plural phrase, so "1 unread conversations" would be visibly
+    // wrong at count 1, and the count is already rendered in the pill an inch
+    // away. `aria-label` keeps the count because a screen reader gets no pill.
+    // The update dot (App.tsx) likewise carries different title and aria strings.
+    : <span className="shrink-0 bg-accent text-accent-fg text-[12px] font-bold px-1 py-[2px] rounded-full min-w-[18px] text-center inline-block leading-[12px]" title={label} aria-label={ariaLabel}>{count}</span>
 }
 
 /** Sub-agent activity belongs in the expanded rail, where the bot icon and
@@ -567,7 +581,7 @@ function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed:
 function ActivityIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
   if (count <= 0 || collapsed) return null
   const ariaLabel = `${count} ${label}`
-  return <span className="absolute right-8 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-accent" role="status" aria-label={ariaLabel}>
+  return <span className="shrink-0 flex items-center gap-1 text-[11px] text-accent" role="status" title={label} aria-label={ariaLabel}>
     <Bot size={11} className="animate-pulse" aria-hidden />
     {count}
   </span>
@@ -581,7 +595,7 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
  * prior two-pipeline behavior without leaving per-id branches in the
  * renderer.
  */
-function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: boolean; appBadges: Record<string, number> }) {
+export function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: boolean; appBadges: Record<string, number> }) {
   const surface = getBuiltinSurface(navId)
   // selectSurfaceBadgeCount caches per-navId so this stays referentially
   // stable across renders inside a `.map()`.
@@ -691,7 +705,11 @@ function useNavTip<T extends HTMLElement>(enabled: boolean) {
   return { tip, tipOn, rowRef, showTip, hideTip, dismissTip }
 }
 
-function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
+/** Exported for `capture/nav-badge-chord.tsx`, which measures the row's
+ *  right-edge geometry in a real browser — the one check that can see the
+ *  badge-over-chord overlap this row's unit tests can only pin structurally
+ *  (happy-dom computes no layout). Same seam `UpdateOverlay` is exported on. */
+export function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride, onClick, navId, pressed }: {
   path: string; label: string; icon: React.ReactNode; active: boolean; collapsed: boolean; badge?: React.ReactNode; onClickOverride?: () => void; onClick?: () => void; navId?: string
   /** Set on rows that TOGGLE a surface rather than navigate (e.g. the docked
    *  terminal). `active` only paints the row; without aria-pressed a screen
@@ -764,7 +782,6 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       // attribute is the non-visual route rather than a duplicate of one.
       aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
     >
-      {badge}
       {iconEl}
       {/* `aria-label` carries the FULL label: this span is `whitespace-nowrap overflow-hidden`, so
           a translation longer than the rail is silently cut off with no way to read it. Surfaced by
@@ -806,6 +823,13 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
           {shortcut.chord}
         </span>
       )}
+      {/* LAST in the flex line, so the expanded unread/activity indicators sit to
+          the RIGHT of the chord above rather than over it. Order matters only for
+          the in-flow expanded indicators: every caller-supplied badge (the dev
+          dot, the update dot) and the collapsed dot are absolutely positioned
+          against the row, so they render where they always did regardless of
+          where in the children they appear. */}
+      {badge}
       {collapsed && tip && createPortal(
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
