@@ -121,6 +121,13 @@ class DefaultPublishRegistry:
         register_provider(self._PERSONAL_DRIVE_KEY, _build)
 
 
+class DefaultGatewayLifecycleProvider:
+    """Keep the core's interpreter and managed-venv restart resolution."""
+
+    def restart_launcher(self) -> str | None:
+        return None
+
+
 class DefaultAgentRuntime:
     """Today's managed MCP servers + first-run setup."""
 

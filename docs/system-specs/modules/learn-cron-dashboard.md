@@ -36,6 +36,17 @@ refresh can recover without clearing the report. A provider without usage
 support shows neutral status text, not an error. No report is persisted to disk,
 and the top-bar credit readout keeps its separate billing refresh policy.
 
+## Gateway restart
+
+The dashboard restart endpoint and successful update applies share
+`handlers/updates.py::_restart_gateway`. It coalesces duplicate requests and
+validates the composed stable launcher before saving history or closing sessions.
+An invalid explicit launcher reports an error without draining; no launcher keeps
+the existing Python/managed-venv path. The launcher receives the original CLI
+arguments and inherited instance environment, and owns rebuilding version-specific
+imports. See [platform-context](platform-context.md#gateway-restart-launcher) for
+the CPP contract. Update authorization and command-provider precedence are unchanged.
+
 ## Self-Learning (`learn.py`)
 
 Global Memory V1 retains the background LLM contradiction sweep after a

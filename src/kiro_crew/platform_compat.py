@@ -66,6 +66,20 @@ def _ensure_utf8_process_environment() -> None:
     os.environ.update(_UTF8_PROCESS_ENV)
 
 
+def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
+    """Re-enter a validated stable launcher, preserving its dispatch pathname.
+
+    The launcher, not the core, replaces version-specific environment values.
+    Windows execv joins its arguments without quoting, so quote each token for
+    the native CRT parser. POSIX receives the original argument vector directly.
+    """
+    _ensure_utf8_process_environment()
+    argv = [launcher, *args]
+    if IS_WINDOWS:
+        argv = [subprocess.list2cmdline([arg]) for arg in argv]
+    os.execv(launcher, argv)
+
+
 def reexec_python_module(module: str, args: Sequence[str], executable: str | None = None) -> None:
     """Replace this process with ``<executable> -m module``.
 

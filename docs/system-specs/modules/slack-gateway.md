@@ -164,6 +164,15 @@ or store the user token.
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False) -> None`
 Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=True`, the `CronService` is instantiated but not started — cron jobs are visible in the dashboard but not executed. Use for multi-instance setups where a single primary instance handles cron execution. On shutdown, calls `dashboard_state.close_all_ws()` before `AppRunner.cleanup()` to prevent 30s hang from blocked WebSocket `async for msg` loops.
 
+### Restart after update
+
+Automatic-update restarts select and validate the composed gateway launcher before
+saving state or draining callbacks/sessions. Without a launcher they retain the
+core-managed interpreter resolver loaded before apply. Launcher selection and the
+companion integration contract are defined in
+[platform-context](platform-context.md#gateway-restart-launcher); the callback
+fence and final yield-free drain-to-exec handoff apply to both launch paths.
+
 ### Shutdown Sequence
 
 1. First Ctrl+C sets `shutdown_event` → graceful shutdown begins (10s deadline)

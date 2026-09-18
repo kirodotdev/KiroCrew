@@ -182,6 +182,7 @@ from kiro_crew.executors import (
     subprocess_executor,
 )
 from kiro_crew.frontend import build_frontend_async
+from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
@@ -11519,6 +11520,8 @@ class GatewayOrchestrator:
         """
         logger.info("Update applied, preparing a callback-safe gateway restart")
         self._pending_update_respawn = respawn
+        launcher = await asyncio.to_thread(resolve_restart_launcher)
+        exe = await asyncio.to_thread(respawn) if launcher is None else None
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("restarting", "Preparing safe restart…")
             from kiro_crew.dashboard.chat import save_all_slots_to_history
@@ -11538,13 +11541,11 @@ class GatewayOrchestrator:
                     exc_info=True,
                 )
         # Same reason as the dashboard restart path: os.execv does not drain the
-        # safety-override writer. Resolve the successor executable before the
-        # final fence too; no await is permitted between the final drain and exec.
+        # safety-override writer. No await is permitted between final drain and exec.
         try:
             await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
         except Exception:
             logger.debug("Breadcrumb flush before update restart failed", exc_info=True)
-        exe = await asyncio.to_thread(respawn)
 
         if not await self._drain_update_callback_work(timeout=self._UPDATE_DRAIN_TIMEOUT_SECS):
             self._update_apply_deferred = True
@@ -11575,7 +11576,10 @@ class GatewayOrchestrator:
         await self._drain_update_callback_work(timeout=None)
         logger.info("Update callback drain complete, restarting gateway")
         self._pending_update_respawn = None
-        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        if launcher is not None:
+            platform_compat.reexec_launcher(launcher, sys.argv[1:])
+        else:
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
