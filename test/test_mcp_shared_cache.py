@@ -30,11 +30,13 @@ def reset_module_state(monkeypatch):
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
+    mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
     yield
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
+    mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
 
 
@@ -486,8 +488,10 @@ class TestCachesAreIndependent:
         # the cache short-circuit at the top is the ONLY thing preventing
         # the call, which is exactly what this test asserts.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
-        # Manually populate only the short cache.
+        # Manually populate only the short cache, for THIS identity: the window
+        # answers only for the identity that opened it.
         mcp_shared._last_startup_race_time = mcp_shared.time.monotonic()
+        mcp_shared._last_startup_race_key = "subagent:abc"
         mcp_shared._last_failure_time = 0.0
         urlopen = MagicMock()
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):

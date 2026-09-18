@@ -165,8 +165,12 @@ publishes a MAC-signed `token -> session_key` mapping (`session_token_sig.py`) a
 this session's control-plane elements — the mirror projections
 (`providers/mirrors/identity.py`, `control_plane_identity_env`, shared by codex,
 opencode and goose), the member-dispatch element (`members.py`) and the kiro-cli
-child env — and `mcp_core._resolve_session_key_strict` resolves it by verifying that
-mapping.
+child env — and every client-side resolver resolves it by verifying that mapping
+through the one shared reader, `session_token_sig.session_key_from_env_token`:
+`mcp_core`'s strict and lenient paths, `mcp_caller.CallerContext.from_env` (which is
+what the broker stub reports itself as on its register and recaller frames) and
+`mcp_shared._policy_session_key` (the managed-tool-policy lookup, whose resolved
+session both addresses the request and keys its policy cache).
 
 **It depends on no switch.** Not `mcp_gateway.stub_servers`, not
 `mcp_gateway.enabled`, not a running gatewayd, and there is no config key for it. The

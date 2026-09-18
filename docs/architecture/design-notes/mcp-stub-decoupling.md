@@ -182,8 +182,13 @@ topologies that matter most:
 
 The token now has a second reader that needs no daemon: the gateway publishes a
 `token -> session_key` mapping to a MAC-signed file (`session_token_sig.py`) at
-`session/new` and again on every `rekey()`, and the strict resolver
-(`mcp_core._resolve_session_key_strict`) reads it directly. Three consequences worth
+`session/new` and again on every `rekey()`, and `session_token_sig.session_key_from_env_token`
+reads it directly. Every client-side resolver shares that one reader rather than
+holding its own copy of the order: `mcp_core`'s strict and lenient paths, the
+client-side `mcp_caller.CallerContext.from_env` behind the stub's own caller block,
+and the managed-tool-policy lookup in `mcp_shared`. Two of those sit behind a cache,
+and the token is read ABOVE it in both — a memoised answer is the pre-rekey session,
+so a token read below a cache is inert on exactly the call it exists for. Three consequences worth
 stating because each one was previously false:
 
 - **The token is minted unconditionally.** It used to be gated on a reachable gatewayd

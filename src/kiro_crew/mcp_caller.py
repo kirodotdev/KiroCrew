@@ -58,8 +58,11 @@ This module defines a **namespaced, versioned, typed** protocol extension:
    as an explicit argument. No contextvars, no env reads, no implicit state.
    When the gateway does not inject the extension (non-pooled topology,
    older gateway, legacy clients), a fallback ``CallerContext`` is
-   constructed from the ambient ``KIROCREW_SESSION_KEY`` env var so
-   existing behaviour is preserved.
+   constructed by :meth:`CallerContext.from_env`, which resolves the signed
+   per-session token before the ambient ``KIROCREW_SESSION_KEY`` env var —
+   the env var is what goes stale on a warm-pool rekey and what names the
+   parent for a session-sharing subagent, so it is the last resort rather
+   than the first source.
 
 4. **Forward compatibility** — ``schemaVersion`` lets the extension evolve.
    A v2 schema may add fields; v1 consumers must ignore unknown keys.
@@ -80,6 +83,7 @@ from typing import Any, Mapping
 
 from kiro_crew import platform_compat
 from kiro_crew.member_memory_auth import PROOF_META_KEY
+from kiro_crew.session_token_sig import session_key_from_env_token
 
 # --- Protocol identifiers ---------------------------------------------------
 
@@ -123,13 +127,21 @@ TENANT_SCHEMA_VERSION = 1
 #: 64 bits does that for any number of connections a gateway will ever hold.
 _TENANT_NONCE_BYTES = 8
 
-#: Process-lifetime cache of a RESOLVED ``from_env()`` identity. The env var
+#: Process-lifetime cache of a RESOLVED LEGACY ``from_env()`` identity. The env var
 #: and ancestor pidfile chain are immutable once present, so the walk need run
 #: at most once. The walk does not fork ``ps`` per ancestor (``_parent_pid``
 #: delegates to ``platform_compat.get_ppid``), but it is still a chain of file
 #: reads or syscalls on a hot path. Only a non-empty result is cached, so a
 #: warm-pool session claimed after the first call can still resolve once its
 #: pidfile appears (see ``from_env``).
+#:
+#: LEGACY is the load-bearing word: the protected member binding and the signed
+#: per-session token are both resolved ABOVE this cache and neither is ever stored
+#: in it. A token's mapping is REPUBLISHED on every ``rekey()`` while the token
+#: itself survives one, so the whole mechanism by which a warm-pool claim becomes
+#: visible to an already-running MCP child is that the file is read again. Caching
+#: that answer — or reading the token below a primed cache — makes every call after
+#: the first answer with the session that held the process before the claim.
 _FROM_ENV_CACHE: "CallerContext | None" = None
 
 
@@ -236,10 +248,23 @@ class CallerContext:
 
         Fallback order:
           1. Protected private process ancestry (invalid records stop resolution)
-          2. Cached legacy identity or ``KIROCREW_SESSION_KEY`` env var
-          3. ``config_dir() / session_pid_{parent_pid}.txt`` (warm-pool mode,
+          2. The signed per-SESSION token on this process's own element
+             (``session_token_sig.session_key_from_env_token``)
+          3. Cached legacy identity or ``KIROCREW_SESSION_KEY`` env var
+          4. ``config_dir() / session_pid_{parent_pid}.txt`` (warm-pool mode,
              where kiro-cli is pre-spawned with no key and rekey()+PID file
              provides the mapping once the session is claimed)
+
+        Sources 3 and 4 are both process-keyed, and that is what source 2 exists to
+        correct. One kiro-cli process hosts N ACP sessions under
+        ``agent.session_sharing``, so the env var, the pidfile and the ancestor walk
+        all answer with the PARENT's session for a ``spawn_run`` subagent's server;
+        and after a warm-pool rekey the env a child was spawned with names the
+        session that held the process BEFORE the claim. The token names one session
+        and its mapping is republished on every rekey, so it is the only source here
+        that is both per-session and current. The identity gatewayd injects per CALL
+        still outranks all of them (:func:`current_caller`), being unable to go
+        stale at all.
 
         When neither source provides a key, returns an empty-key context.
         Downstream code decides whether to reject (pooled backends should)
@@ -257,6 +282,18 @@ class CallerContext:
             protected = ""
         if protected is not None:
             return cls(session_key=protected, session_type="protected-pid", from_gateway=False)
+        # The signed token, above the CACHE as well as above the env var. Above the
+        # env var because a rekey makes the env stale; above the cache because this
+        # resolver runs repeatedly in one process — the stub's recaller poll and
+        # every later register — and a memoised legacy answer would hide the
+        # republished mapping that is the only record of the current claim. Not
+        # cached itself, for the same reason.
+        try:
+            from_token = session_key_from_env_token()
+        except Exception:
+            from_token = ""
+        if from_token:
+            return cls(session_key=from_token, session_type="token", from_gateway=False)
         if _FROM_ENV_CACHE is not None:
             return _FROM_ENV_CACHE
         sk = os.environ.get("KIROCREW_SESSION_KEY", "")

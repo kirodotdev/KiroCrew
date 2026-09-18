@@ -2309,10 +2309,14 @@ a trust root on its own; publication therefore also writes a
   no-follow, regular-file, size-bounded) — `session_pid_sig` owns both the
   read and write discipline for the file family. Every `.txt` reader routes
   through it: `mcp_core._resolve_session_key` (host-pid + walk),
-  `mcp_shared._resolve_tool_policy` (policy walk),
+  `mcp_shared._policy_session_key` (the policy walk, called by
+  `_resolve_tool_policy`),
   `mcp_caller.CallerContext.from_env` (host-pid + walk; also serves
   `mcp_gateway/stub.py`), and `mcp_gateway/gatewayd._resolve_peer_identity`
-  (server-side peer walk). The sidecar is additive.
+  (server-side peer walk). The sidecar is additive. All four are pid-keyed and
+  therefore answer with the PARENT for a session-sharing subagent, which is why each
+  client-side one reads the per-SESSION token (`session_token_sig`) above these
+  sources; the walk remains the last resort rather than the first answer.
 - **Unsigned degrade**: if the SEL key is unavailable at publish time the
   `.txt` is still written (lenient readers keep working) and any stale
   sidecar is removed — strict resolvers fail closed for that pid.

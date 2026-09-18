@@ -112,6 +112,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
@@ -385,3 +386,44 @@ def verify_session_token(token: str) -> str:
         )
         return ""
     return body
+
+
+def session_key_from_env_token() -> str:
+    """Resolve THIS process's session key from the token in its own environment.
+
+    The ONE reader every client-side resolver shares, so the position the token holds
+    and the way it fails cannot drift between them. Four resolvers consult it —
+    ``mcp_core``'s lenient and strict paths, ``mcp_caller.CallerContext.from_env``
+    (the client-side resolver behind the stub's caller block) and
+    ``mcp_shared._resolve_excluded_tools`` (the managed-tool-policy lookup) — and each
+    reads it at the SAME position: below a gateway-injected per-call caller context
+    and below a protected member binding, and ABOVE ``KIROCREW_SESSION_KEY``.
+
+    That order is load-bearing rather than arbitrary. A warm-pool process is re-keyed
+    to a new session while the env its MCP children were spawned with keeps naming the
+    PREVIOUS one, so where the two disagree the env var is the stale answer and the
+    republished mapping is the current one. The per-call caller context outranks both
+    because it is stamped per CALL and therefore cannot go stale at all.
+
+    Fails closed to ``""``: no token on this element, no mapping, a mapping that does
+    not verify. A caller then falls through to the sources it had before, because a
+    token that SHADOWED them would trade a stale-identity bug for a no-identity one.
+    Never raises — an identity source that can raise turns a resolvable session into a
+    crashed tool call.
+
+    Never memoise the result. The token deliberately survives a rekey, so the mapping
+    is what changes, and a cache in front of this call is what makes a warm-pool claim
+    invisible to the already-running MCP child the claim exists to re-point.
+    """
+    try:
+        # Imported here rather than at module scope: ``claim`` pulls in the executor
+        # and transport graph, and the verification side of this protocol runs inside
+        # the kirocrew-core stdio server, which must not pay for it.
+        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+        token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
+        if not token:
+            return ""
+        return verify_session_token(token)
+    except Exception:
+        return ""

@@ -951,6 +951,21 @@ Containment for app agents has three layers:
 | Agent config | `managedToolPolicy` renders as `disabledTools`; a `neutralize` entry re-declares a server with every tool disabled and does not add it to `tools` | Written at registration, no network |
 | kiro-cli | Reads `disabledTools` and filters before the model sees the list | In-process, no network |
 | MCP server | `GET /api/session-tool-policy` returns the calling session's `managedToolPolicy.exclude`, and the server filters `tools/list` and `tools/call`. When that read fails the policy is `unresolved`: `tools/call` refuses with an audited error, `tools/list` still lists everything | Gateway round-trip |
+
+Which session that third layer asks for is resolved by `mcp_shared._policy_session_key`
+in the same order the strict resolver uses — the gateway's per-call caller, then the
+protected member binding, then the signed per-session token, then
+`KIROCREW_SESSION_KEY` and the pid sources. The RESOLVED session is what rides the
+request's `X-Session-Key` and what keys the per-session policy cache, so the answer
+returned and the answer stored are the same session's. Keyed on the gateway identity
+instead, every caller the gateway could not name shared one entry, and the cache has no
+TTL: two sessions on one process took each other's policy and a rekeyed session kept its
+predecessor's for the life of the process. The 5s startup-race window is keyed the same
+way: it remembers the identity it was opened for (`""` for "no key yet", or the key the
+gateway answered 404 for) and answers only for that identity, so a `tools/call` that
+resolves a real key mid-window is asked for, not told `no_session_key` — a reason
+`tools/call` does not refuse on.
+
 `managedToolPolicy` and `includeMcpJson` are in
 `bridges._FRAMEWORK_OWNED_AGENT_KEYS`, so they are refreshed from the template on
 every boot rather than preserved as user preferences. Preserving them is wrong in
@@ -1608,7 +1623,9 @@ parent's tree. `mcp_core.py` offers two resolvers:
   enumerates them; a ratchet test rejects direct calls outside `mcp_core`). It
   accepts only the gateway-injected caller context (`mcp_caller.current_caller()`,
   which gatewayd stamps on every forwarded frame after stripping any
-  client-forged `kirocrew.caller` block), the injected `KIROCREW_SESSION_KEY`, or
+  client-forged `kirocrew.caller` block), the signed per-session token
+  (`session_token_sig.session_key_from_env_token`), the injected
+  `KIROCREW_SESSION_KEY`, or
   a `KIROCREW_HOST_PID` lookup whose HMAC sidecar verifies against the
   keystone-protected `sel_hmac.key`. It deliberately **drops** the `/proc`
   ancestor walk and the bare `session_pid_<pid>.txt` fallback: the `.txt` file is
@@ -1726,7 +1743,11 @@ global V1 caller inside the shared backend. Only a genuinely absent protected
 binding retains the legacy unowned V1 behavior.
 For an unpooled MCP process, `CallerContext.from_env()` likewise resolves the
 readonly protected ancestry before any cached legacy identity or environment
-value. It does not cache private results, so rekeys remain visible. A corrupt
+value, and the signed per-session token immediately after it — above the
+process-lifetime cache as well as above the env var, because that cache is what
+would otherwise hide a republished mapping from an already-running child. A resolved
+token is never cached for the same reason. It does not cache private results, so
+rekeys remain visible. A corrupt
 protected record returns an unresolved identity without trying legacy sidecars.
 The caller, recaller and backend-forwarding suites pin forgery removal,
 offloaded per-call issuance and concurrent caller isolation.

@@ -457,7 +457,10 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     ),
     "mcp_caller.py": (
         "reader: client-side /proc ancestry walk — assumes HOST pids; .txt "
-        "reads via session_pid_sig.read_session_pid_txt (hardened, unsigned)"
+        "reads via session_pid_sig.read_session_pid_txt (hardened, unsigned). "
+        "Consulted only BELOW the protected member binding and the per-SESSION "
+        "token (session_token_sig.session_key_from_env_token), which from_env reads "
+        "above its own process-lifetime cache so a warm-pool rekey stays visible"
     ),
     "mcp_core.py": (
         "reader: lenient /proc ancestry walk + stale-file cleanup glob "
@@ -468,8 +471,12 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     ),
     "mcp_shared.py": (
         "reader: policy session-key /proc ancestry walk inline in "
-        "_resolve_tool_policy -- assumes HOST pids; .txt reads via "
-        "session_pid_sig.read_session_pid_txt (hardened, unsigned)"
+        "_policy_session_key, which _resolve_tool_policy calls -- assumes HOST "
+        "pids; .txt reads via session_pid_sig.read_session_pid_txt (hardened, "
+        "unsigned). Last resort there: the gateway's per-call caller, the protected "
+        "member binding and the per-SESSION token are all consulted first, and the "
+        "session this resolves keys the tool-policy cache as well as the policy "
+        "request"
     ),
     "mcp_gateway/stub.py": "reader via CallerContext.from_env; register-time caller block — assumes HOST pids",
     "peer_resolve.py": (

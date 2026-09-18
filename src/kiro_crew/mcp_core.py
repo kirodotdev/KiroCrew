@@ -77,6 +77,7 @@ from kiro_crew.session_directive import (
     clear_vouch,
     refuse_if_markerless,
 )
+from kiro_crew.session_token_sig import session_key_from_env_token
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.trigger_match import rank_triggered
 from kiro_crew.validation import (
@@ -720,7 +721,12 @@ def _session_key_from_token() -> str:
     and again on every warm-pool ``rekey()``, and the MAC is what makes the file
     trustworthy in a directory an agent can write.
 
-    Read by BOTH resolvers, and read at the SAME position in both: after the
+    The read itself belongs to
+    :func:`kiro_crew.session_token_sig.session_key_from_env_token`, the one reader
+    every resolver shares — this module's two, the client-side
+    ``mcp_caller.CallerContext.from_env`` and the managed-tool-policy lookup in
+    ``mcp_shared`` — so the token's position and its fail-closed behaviour cannot
+    drift between them. Read at the SAME position in each: after the
     gateway-injected per-call caller context, and BEFORE the
     ``KIROCREW_SESSION_KEY`` env var. That order is load-bearing rather than
     arbitrary — a warm-pool process is re-keyed to a new session while the env its
@@ -736,12 +742,7 @@ def _session_key_from_token() -> str:
     session into a crashed tool call.
     """
     try:
-        from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
-        from kiro_crew.session_token_sig import verify_session_token
-
-        token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
-        if token:
-            return verify_session_token(token)
+        return session_key_from_env_token()
     except Exception:
         # No logger here, and no bare stderr write: this module runs inside the
         # kirocrew-core stdio MCP server, whose stray stdout/stderr would corrupt
