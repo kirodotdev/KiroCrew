@@ -161,13 +161,24 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // can always reach the toggle that re-enables them.
   { id: 'shortcuts-modal', group: 'actions', dispatch: 'registry',
     defaults: both({ key: '/', mod: true }), aliases: alias({ key: 'k', alt: true }) },
-  // ⌘, on macOS was already the default (the OS-standard Preferences chord, and
-  // the one electron/app-menu.js advertises); Ctrl+, joins on Windows/Linux (VS
-  // Code). Option/Alt+, stays an alias on every platform: a Mac browser can
-  // claim ⌘, as its own Preferences accelerator before the page sees it, and the
-  // desktop shell's menu item handles Ctrl+, itself on Windows/Linux.
+  // ⌘, on macOS (the OS-standard Preferences chord, and the one
+  // electron/app-menu.js advertises); Option/Alt+, stays a Mac alias because a
+  // Mac browser can claim ⌘, as its own Preferences accelerator before the page
+  // sees it, which would leave no keyboard route to Settings.
+  //
+  // Windows/Linux is DELIBERATELY Alt+, not the Ctrl+, conventional default (see
+  // PR #783). Ctrl+, is how a Chinese IME types a comma, so a Ctrl+, binding is a
+  // full comma-input blocker for CJK users (#9824) — and this chord fires ahead
+  // of the global enable/disable gate (so it stays reachable to re-enable
+  // shortcuts), meaning turning shortcuts off cannot even work around it.
+  // Nothing CLAIMS Ctrl+, off macOS: electron/app-menu.js shows Alt+, on its
+  // File > Settings… item with `registerAccelerator: false`, a Linux/Windows
+  // option that displays a chord without binding it, keyed off the same `isMac`
+  // predicate. So the caption tells a user where the chord went, this handler
+  // keeps Alt+, with its gates, and a Ctrl+, keystroke still reaches the IME.
   { id: 'open-settings', group: 'actions', dispatch: 'registry',
-    defaults: both({ key: ',', mod: true }), aliases: alias({ key: ',', alt: true }) },
+    defaults: mac({ key: ',', mod: true }, { key: ',', alt: true }),
+    aliases: { mac: [{ key: ',', alt: true }] } },
   // Route-history Back/Forward (#8258) — ⌘←/⌘→ on macOS, Ctrl+←/→ elsewhere,
   // matching browser convention (⌘[/⌘] being taken by session cycling above).
   // Registry-dispatched, so the P3 rebind UI covers them for free. The handler
