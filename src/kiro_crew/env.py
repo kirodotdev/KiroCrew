@@ -232,6 +232,10 @@ _NODE_MANAGER_DIRS = (
     "{mise_data}/shims",
     "{home}/.volta/bin",
     "{home}/n/bin",
+    # n honours N_PREFIX; the dotted prefix (N_PREFIX="$HOME/.n") is a common
+    # dotfile convention. A static glob is deliberate: the gateway is a non-login
+    # process and does not inherit N_PREFIX from the user's shell rc.
+    "{home}/.n/bin",
 )
 # Standalone Node TREES -- an unpacked distribution rather than a manager's
 # per-version store, so there is no version to glob and no shim to consult.

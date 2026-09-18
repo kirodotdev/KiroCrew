@@ -277,6 +277,7 @@ def test_each_version_manager_layout_is_found(isolated_home, layout):
     ".local/share/mise/shims",
     ".volta/bin",
     "n/bin",
+    ".n/bin",
 ])
 def test_shim_dirs_are_found(isolated_home, layout):
     d = _fake_node_bin(isolated_home / layout)
