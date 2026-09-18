@@ -27,8 +27,10 @@ from tmpdir_helpers import short_tmp_base
 from conftest import requires_symlinks
 from kiro_crew.dashboard.chat_runner import (
     _MAX_SNAPSHOT,
+    _bind_pending_str_replace,
     _flush_file_changes,
     _safe_read_snapshot,
+    _settle_pending_str_replace_outcome,
     _snapshot_write_target,
     _truncate_snapshot,
 )
@@ -772,6 +774,279 @@ class TestStrReplaceFullBeforeReconstruction:
         assert result is not None
         # Fell through to the fragment (diff_old_text) chain.
         assert result["content"] == "OLD"
+
+
+class TestPendingStrReplaceResolution:
+    """An undecidable strReplace snapshot is settled at flush time.
+
+    ``newStr ⊂ oldStr`` (drop a line next to a kept one) and ``oldStr ⊂
+    newStr`` (add a line next to a kept one) leave the disk file valid as
+    BOTH states at snapshot time, whichever side of the write the snapshot
+    lands on. A fragment-only before would render the chip as ``-1 +N``. The
+    after-content read at turn end is unambiguous once the tool has reported
+    a COMPLETED write, so the snapshot carries the disk content along and the
+    flush picks the state.
+    """
+
+    PARAMS = {
+        "command": "strReplace",
+        "oldStr": "export A=0\nexport B=1\n",
+        "newStr": "export B=1\n",
+    }
+    BEFORE = "line 1\nexport A=0\nexport B=1\n"
+    AFTER = "line 1\nexport B=1\n"
+    TOOL = "tc-1"
+
+    def _snapshot(self, path: Path, on_disk: str, slot: _ChatSlot) -> dict:
+        path.write_text(on_disk)
+        snap = _snapshot_write_target(
+            {**self.PARAMS, "path": str(path)},
+            diff_old_text=self.PARAMS["oldStr"],
+            diff_path=str(path),
+        )
+        assert snap is not None
+        _bind_pending_str_replace(snap, self.TOOL, slot)
+        slot._file_changes = [snap]
+        return snap
+
+    def _flush(
+        self, slot: _ChatSlot, path: Path, on_disk_at_flush: str, outcome: str | None
+    ) -> dict:
+        if outcome is not None:
+            _settle_pending_str_replace_outcome(slot, self.TOOL, completed=outcome == "completed")
+        path.write_text(on_disk_at_flush)
+        _flush_file_changes(slot)
+        return slot.messages[-1]["meta"]["file_changes"][0]
+
+    def test_snapshot_taken_before_the_write_resolves_to_disk_content(self, short_tmp_dir: Path):
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        snap = self._snapshot(f, self.BEFORE, slot)
+        # Undecidable at snapshot time: fragment now, hypotheses pending.
+        assert snap["content"] == self.PARAMS["oldStr"]
+        assert snap["pending_str_replace"]["if_post_write"] == self.BEFORE
+        assert snap["pending_str_replace"]["if_pre_write"] == self.AFTER
+        assert snap["pending_str_replace"]["tool_call_id"] == self.TOOL
+        entry = self._flush(slot, f, self.AFTER, outcome="completed")
+        assert entry["before"] == self.BEFORE
+        assert entry["after"] == self.AFTER
+
+    def test_pending_payload_is_capped(self, short_tmp_dir: Path, monkeypatch):
+        """The payload retains only truncated hypotheses, never the raw disk
+        read — an ambiguous edit of a large file costs no more than an ordinary
+        snapshot."""
+        import kiro_crew.dashboard.chat_runner as cr
+
+        monkeypatch.setattr(cr, "_MAX_SNAPSHOT", 64)
+        marker = f"\n... (truncated at {cr._MAX_SNAPSHOT} chars)"
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        snap = self._snapshot(f, "x" * 4096 + self.BEFORE, slot)
+
+        pending = snap["pending_str_replace"]
+        assert set(pending) == {"if_post_write", "if_pre_write", "before_if_post", "tool_call_id"}
+        for key, value in pending.items():
+            if key == "tool_call_id":
+                continue
+            assert len(value) <= cr._MAX_SNAPSHOT + len(marker)
+
+    def test_later_write_restoring_snapshot_content_keeps_fragment(self, short_tmp_dir: Path):
+        """A second tool call restores the snapshot content, so the turn-end
+        after matches the post-write hypothesis for an edit whose snapshot was
+        actually pre-write — resolving it would fabricate a before."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        _settle_pending_str_replace_outcome(slot, self.TOOL, completed=True)
+        slot._file_changes.append({"path": str(f), "content": self.AFTER, "tool_call_id": "tc-2"})
+        f.write_text(self.BEFORE)
+
+        _flush_file_changes(slot)
+
+        entry = slot.messages[-1]["meta"]["file_changes"][0]
+        assert entry["before"] == self.PARAMS["oldStr"]
+        assert entry["after"] == self.BEFORE
+
+    def test_same_tool_call_second_snapshot_still_resolves(self, short_tmp_dir: Path):
+        """One write is snapshotted at both the tool_call and tool_call_update
+        sites when the backend repeats ``rawInput`` — same tool call, so the
+        deferred resolution still runs."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        slot._file_changes.append(
+            {"path": str(f), "content": self.BEFORE, "tool_call_id": self.TOOL}
+        )
+        _settle_pending_str_replace_outcome(slot, self.TOOL, completed=True)
+        f.write_text(self.AFTER)
+
+        _flush_file_changes(slot)
+
+        entry = slot.messages[-1]["meta"]["file_changes"][0]
+        assert entry["before"] == self.BEFORE
+        assert entry["after"] == self.AFTER
+
+    def test_second_snapshot_without_tool_call_id_keeps_fragment(self, short_tmp_dir: Path):
+        """An unidentified snapshot cannot be attributed to the pending
+        payload's tool call, so it counts as a distinct writer."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        slot._file_changes.append({"path": str(f), "content": self.BEFORE})
+        _settle_pending_str_replace_outcome(slot, self.TOOL, completed=True)
+        f.write_text(self.AFTER)
+
+        _flush_file_changes(slot)
+
+        entry = slot.messages[-1]["meta"]["file_changes"][0]
+        assert entry["before"] == self.PARAMS["oldStr"]
+
+    def test_snapshot_taken_after_the_write_is_already_proven(self, short_tmp_dir: Path):
+        """Post-write, oldStr is gone, so reversal proves the state at
+        snapshot time and nothing is deferred."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        snap = self._snapshot(f, self.AFTER, slot)
+        assert "pending_str_replace" not in snap
+        entry = self._flush(slot, f, self.AFTER, outcome="completed")
+        assert entry["before"] == self.BEFORE
+        assert entry["after"] == self.AFTER
+
+    def test_append_style_edit_resolves(self, short_tmp_dir: Path):
+        """oldStr ⊂ newStr (the mirror shape): here it is the POST-write disk
+        state that is valid as both (oldStr still occurs once inside newStr),
+        so the deferral happens on the other side of the write."""
+        f = short_tmp_dir / "cfg"
+        after = "head\nvalue = 1  # tuned\ntail\n"
+        f.write_text(after)
+        params = {
+            "command": "strReplace",
+            "path": str(f),
+            "oldStr": "value = 1",
+            "newStr": "value = 1  # tuned",
+        }
+        snap = _snapshot_write_target(params, diff_old_text="value = 1", diff_path=str(f))
+        assert snap is not None and "pending_str_replace" in snap
+        slot = _make_slot_with_assistant_message()
+        _bind_pending_str_replace(snap, self.TOOL, slot)
+        slot._file_changes = [snap]
+        entry = self._flush(slot, f, after, outcome="completed")
+        assert entry["before"] == "head\nvalue = 1\ntail\n"
+        assert entry["after"] == after
+
+    def test_rejected_write_keeps_the_fragment(self, short_tmp_dir: Path):
+        """The user rejects the permission-gated write: the file is unchanged,
+        which reads exactly like the post-write state. Without the tool's
+        outcome the resolver would fabricate a before for an edit that never
+        landed; a refused/failed frame drops the pending payload instead."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        entry = self._flush(slot, f, self.BEFORE, outcome="refused")
+        assert entry["before"] == self.PARAMS["oldStr"]
+        assert entry["after"] == self.BEFORE
+
+    def test_no_terminal_frame_keeps_the_fragment(self, short_tmp_dir: Path):
+        """A turn cancelled before the tool reports never confirms the write,
+        so an unchanged file is not read as post-write."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        entry = self._flush(slot, f, self.BEFORE, outcome=None)
+        assert entry["before"] == self.PARAMS["oldStr"]
+
+    def test_outcome_of_another_tool_call_is_ignored(self, short_tmp_dir: Path):
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        snap = self._snapshot(f, self.BEFORE, slot)
+        _settle_pending_str_replace_outcome(slot, "tc-other", completed=True)
+        assert "completed" not in snap["pending_str_replace"]
+        _settle_pending_str_replace_outcome(slot, "tc-other", completed=False)
+        assert "pending_str_replace" in snap
+
+    def test_outcome_recorded_before_the_snapshot_is_bound(self, short_tmp_dir: Path):
+        """One tool_call_update can carry the first rawInput AND the terminal
+        status; the dispatcher emits the tool_result before the refinement, so
+        the outcome lands on the slot first and bind picks it up."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        _settle_pending_str_replace_outcome(slot, self.TOOL, completed=True)
+        snap = self._snapshot(f, self.BEFORE, slot)
+        assert snap["pending_str_replace"]["completed"] is True
+        entry = self._flush(slot, f, self.AFTER, outcome=None)
+        assert entry["before"] == self.BEFORE
+
+        slot = _make_slot_with_assistant_message()
+        _settle_pending_str_replace_outcome(slot, self.TOOL, completed=False)
+        snap = self._snapshot(f, self.BEFORE, slot)
+        assert "pending_str_replace" not in snap
+
+    def test_flush_clears_the_outcome_map(self, short_tmp_dir: Path):
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        self._flush(slot, f, self.AFTER, outcome="completed")
+        assert slot._write_tool_outcomes == {}
+        assert slot._file_changes == []
+
+    def test_flush_clears_the_outcome_map_on_a_no_write_turn(self):
+        """The map is per-turn state, and a turn that wrote nothing takes the
+        early return — so the reset cannot live at the end of the body."""
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = []
+        _settle_pending_str_replace_outcome(slot, self.TOOL, completed=True)
+        assert slot._write_tool_outcomes == {self.TOOL: True}
+
+        _flush_file_changes(slot)
+
+        assert slot._write_tool_outcomes == {}
+
+    def test_unbound_snapshot_is_never_resolved(self, short_tmp_dir: Path):
+        """No tool_call_id on the frame: nothing can confirm the write, so the
+        fragment stands even when the after matches a hypothesis."""
+        f = short_tmp_dir / "rc"
+        f.write_text(self.BEFORE)
+        snap = _snapshot_write_target(
+            {**self.PARAMS, "path": str(f)},
+            diff_old_text=self.PARAMS["oldStr"],
+            diff_path=str(f),
+        )
+        assert snap is not None
+        slot = _make_slot_with_assistant_message()
+        _bind_pending_str_replace(snap, "", slot)
+        assert "tool_call_id" not in snap["pending_str_replace"]
+        slot._file_changes = [snap]
+        f.write_text(self.AFTER)
+        _flush_file_changes(slot)
+        entry = slot.messages[-1]["meta"]["file_changes"][0]
+        assert entry["before"] == self.PARAMS["oldStr"]
+
+    def test_file_changed_again_keeps_the_fragment(self, short_tmp_dir: Path):
+        """Neither hypothesis matches the turn-end content (a later edit in
+        the same turn) → no guess; the fragment fallback stands."""
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        entry = self._flush(slot, f, "something else entirely\n", outcome="completed")
+        assert entry["before"] == self.PARAMS["oldStr"]
+
+    def test_pending_payload_never_reaches_message_meta(self, short_tmp_dir: Path):
+        f = short_tmp_dir / "rc"
+        slot = _make_slot_with_assistant_message()
+        self._snapshot(f, self.BEFORE, slot)
+        entry = self._flush(slot, f, self.AFTER, outcome="completed")
+        assert set(entry) == {"path", "before", "after"}
+
+    def test_decided_snapshot_carries_no_pending(self, short_tmp_dir: Path):
+        """A provable state (newStr absent → pre-write) needs no deferral."""
+        f = short_tmp_dir / "plain"
+        f.write_text("OLD\n")
+        snap = _snapshot_write_target(
+            {"command": "strReplace", "path": str(f), "oldStr": "OLD", "newStr": "NEW"},
+            diff_old_text="OLD",
+            diff_path=str(f),
+        )
+        assert snap == {"path": str(f), "content": "OLD\n"}
 
 
 class TestNoOpPassThrough:

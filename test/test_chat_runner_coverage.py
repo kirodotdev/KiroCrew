@@ -737,28 +737,26 @@ class TestSnapshotHelpers:
         # candidate is tool-inconsistent, so neither hypothesis survives.
         target.write_text("cabab", newline="\n")
 
-        out = chat_runner._reconstruct_str_replace_before(
-            str(target), {"oldStr": "ab", "newStr": "c"}
-        )
+        out = chat_runner._classify_str_replace_before(str(target), {"oldStr": "ab", "newStr": "c"})
 
-        assert out is None
+        assert out == (None, None)
 
     def test_reconstruct_declines_on_replace_all(self, tmp_path):
         target = tmp_path / "all.txt"
         target.write_text("aaa", newline="\n")
 
-        assert (
-            chat_runner._reconstruct_str_replace_before(
-                str(target), {"oldStr": "a", "newStr": "b", "replaceAll": True}
-            )
-            is None
-        )
+        assert chat_runner._classify_str_replace_before(
+            str(target), {"oldStr": "a", "newStr": "b", "replaceAll": True}
+        ) == (None, None)
 
     def test_reconstruct_declines_on_missing_params(self, tmp_path):
         target = tmp_path / "missing.txt"
         target.write_text("body", newline="\n")
 
-        assert chat_runner._reconstruct_str_replace_before(str(target), {"oldStr": "x"}) is None
+        assert chat_runner._classify_str_replace_before(str(target), {"oldStr": "x"}) == (
+            None,
+            None,
+        )
 
     def test_snapshot_write_target_ignores_non_write_commands(self):
         assert chat_runner._snapshot_write_target({"command": "read", "path": "/tmp/x"}) is None

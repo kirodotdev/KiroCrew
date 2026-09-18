@@ -2043,8 +2043,14 @@ def _safe_read_snapshot(path: str) -> str | None:
         return None
 
 
-def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
-    """Reconstruct the FULL-FILE before-content for a strReplace edit.
+def _classify_str_replace_before(path: str, raw_params: dict) -> tuple[str | None, str | None]:
+    """Classify the on-disk file of a strReplace edit as pre- or post-write.
+
+    Returns ``(before, undecidable_content)``: ``before`` is the proven
+    full-file before-content, or ``None``; ``undecidable_content`` is the
+    raw disk content when the file is valid as BOTH states, so the caller
+    can settle the question later against the turn-end after-content
+    (see ``_resolve_pending_str_replace``). At most one of the two is set.
 
     kiro-cli's ACP diff content block carries only the replaced FRAGMENT as
     ``oldText`` for strReplace — not the whole file. Using it verbatim as the
@@ -2064,29 +2070,32 @@ def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
     * ``newStr`` present but not unique (overlap-safe ``find()==rfind()``)
       → post-write can neither be excluded nor reversed → decline.
     * ``newStr`` unique → the single reversal candidate decides: candidate
-      tool-consistent AND pre-write plausible → undecidable, decline (seam
-      shapes); consistent only → reverse; inconsistent with pre-write
-      plausible → pre-write proven (post-write excluded).
+      tool-consistent AND pre-write plausible → undecidable now, hand the
+      content back for deferred resolution (seam shapes, and the common
+      ``oldStr ⊂ newStr`` / ``newStr ⊂ oldStr`` edits that add or drop a
+      line next to a kept one); consistent only → reverse; inconsistent
+      with pre-write plausible → pre-write proven (post-write excluded).
 
-    Returns None when reconstruction isn't provable (missing/empty params —
-    including an empty ``newStr`` deletion, whose position in the after-state
-    is unrecoverable — ``replaceAll`` edits, where oldStr uniqueness is not
-    enforced and reversal would over-revert pre-existing ``newStr``
-    occurrences, non-regular or oversized files (``_MAX_RECONSTRUCT_BYTES``),
-    unreadable files, or an undecidable/implausible state); the caller then
-    falls through to the pre-existing source-priority chain.
+    Returns ``(None, None)`` when reconstruction isn't provable (missing/empty
+    params — including an empty ``newStr`` deletion, whose position in the
+    after-state is unrecoverable — ``replaceAll`` edits, where oldStr
+    uniqueness is not enforced and reversal would over-revert pre-existing
+    ``newStr`` occurrences, non-regular or oversized files
+    (``_MAX_RECONSTRUCT_BYTES``), unreadable files, or an implausible
+    state); the caller then falls through to the pre-existing
+    source-priority chain.
     """
     old_str = raw_params.get("oldStr")
     new_str = raw_params.get("newStr")
     if not isinstance(old_str, str) or not isinstance(new_str, str) or not old_str or not new_str:
-        return None
+        return None, None
     if raw_params.get("replaceAll"):
         # replaceAll is the one mode where strReplace does NOT enforce oldStr
         # uniqueness, so the pre-write proof below doesn't hold and reversing
         # every newStr occurrence over-reverts any that pre-existed the edit,
         # fabricating counts. Position/count is unrecoverable — decline and
         # fall through to the fragment chain.
-        return None
+        return None, None
     try:
         # Bound the read: only regular files —
         # /dev/zero and FIFOs stat as 0 bytes but read unboundedly — and
@@ -2094,7 +2103,7 @@ def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
         # since stat() races with an external writer growing the file).
         st = Path(path).expanduser().stat()
         if not stat_module.S_ISREG(st.st_mode) or st.st_size > _MAX_RECONSTRUCT_BYTES:
-            return None
+            return None, None
         # Read through hooks.safe_read_file — the symlink-safe chokepoint
         # (re-checks the RESOLVED target + O_NOFOLLOW open, closing the
         # validate→read TOCTOU window; AWS-33/AWS-62). Raw content, no
@@ -2104,17 +2113,17 @@ def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
         # the except-fallback — file-chip capture must never block a turn.
         content = safe_read_file(path)
     except Exception:
-        return None
+        return None, None
     if len(content) > _MAX_RECONSTRUCT_BYTES:
         # Re-check after the read: the stat() gate above races with an
         # external writer growing the file, and the substring scans below
         # are O(n) — keep them bounded.
-        return None
+        return None, None
     pre_write_plausible = content.count(old_str) == 1
     # Post-write content ALWAYS contains newStr (the edit just inserted it),
     # so newStr absent excludes post-write entirely.
     if new_str not in content:
-        return content if pre_write_plausible else None
+        return (content if pre_write_plausible else None), None
     # newStr present but NOT unique (overlap-safe: find()==rfind()):
     # post-write can neither be excluded (any occurrence could be the edit
     # site) nor reversed (ambiguous). strReplace "ab"→"a" on "aabb" → "aab"
@@ -2122,20 +2131,123 @@ def _reconstruct_str_replace_before(path: str, raw_params: dict) -> str | None:
     # pre-write records the after as the before and erases the edit from the
     # chip. Decline.
     if content.count(new_str) != 1 or content.find(new_str) != content.rfind(new_str):
-        return None
+        return None, None
     # newStr unique: the single possible reversal candidate decides.
     candidate = content.replace(new_str, old_str, 1)
     post_write_consistent = candidate.count(old_str) == 1
     if post_write_consistent and pre_write_plausible:
-        return None  # seam shapes: valid as both states — undecidable
+        # Valid as both states. Not a guess either way: the turn-end
+        # after-content tells them apart (see _resolve_pending_str_replace).
+        return None, content
     if post_write_consistent:
-        return candidate
+        return candidate, None
     if pre_write_plausible:
         # Post-write EXCLUDED (its only possible edit site is
         # tool-inconsistent), so pre-write is proven even with newStr
         # coincidentally present in the file.
-        return content
+        return content, None
+    return None, None
+
+
+def _resolve_pending_str_replace(pending: dict[str, Any], after: str) -> str | None:
+    """Settle an undecidable strReplace snapshot against the turn-end after.
+
+    ``pending`` holds the three ``_MAX_SNAPSHOT``-capped hypotheses
+    ``_pending_str_replace_payload`` precomputed, so a deferred snapshot retains
+    at most three capped strings and never the raw disk read. If the disk
+    content seen at snapshot time was the post-write state the file reads
+    ``if_post_write`` at turn end; if it was the pre-write state it reads
+    ``if_pre_write``. Exactly one match
+    proves the state and yields the full-file before — ``before_if_post`` (the
+    reverse substitution) or ``if_post_write`` itself. Neither (the file
+    changed again during the turn) or both (the edit lies past the truncation,
+    so the compared prefixes agree) returns ``None`` and the caller keeps the
+    fragment it already has.
+
+    Requires the write to have COMPLETED (``pending["completed"]``, set by
+    ``_settle_pending_str_replace_outcome`` from the tool's terminal frame): a
+    rejected or failed write leaves the file unchanged, which reads exactly
+    like the post-write state and would otherwise fabricate a before-diff for
+    an edit that never landed.
+    """
+    if not pending.get("completed"):
+        return None
+    if_post_write = pending["if_post_write"]
+    if_pre_write = pending["if_pre_write"]
+    if after == if_post_write and after != if_pre_write:
+        return pending["before_if_post"]
+    if after == if_pre_write and after != if_post_write:
+        return if_post_write
     return None
+
+
+def _pending_str_replace_payload(content: str, old_str: str, new_str: str) -> dict[str, str]:
+    """Precompute the bounded hypotheses a deferred strReplace resolution needs.
+
+    Every string is ``_truncate_snapshot``-capped, so the payload never retains
+    the raw disk read (up to ``_MAX_RECONSTRUCT_BYTES``) for a whole turn.
+    """
+    return {
+        "if_post_write": _truncate_snapshot(content),
+        "if_pre_write": _truncate_snapshot(content.replace(old_str, new_str, 1)),
+        "before_if_post": _truncate_snapshot(content.replace(new_str, old_str, 1)),
+    }
+
+
+def _apply_write_outcome(snapshot: dict, completed: bool) -> None:
+    if completed:
+        snapshot["pending_str_replace"]["completed"] = True
+    else:
+        del snapshot["pending_str_replace"]
+
+
+def _bind_pending_str_replace(snapshot: dict | None, tool_call_id: str, slot: "_ChatSlot") -> None:
+    """Stamp a snapshot with the tool call that produced it.
+
+    ``tool_call_id`` is recorded on every snapshot, so ``_flush_file_changes``
+    can tell one write's repeated snapshots (the same tool call reported at
+    both the tool_call and tool_call_update sites) from a second write to the
+    same path.
+
+    A pending strReplace payload additionally carries the id, because its
+    resolution is gated on that call's terminal outcome. A single
+    ``tool_call_update`` can carry both the first ``rawInput`` (which is what
+    produces the snapshot) and the terminal status, and the dispatcher emits
+    the tool_result event before the refinement event — so the outcome may
+    already be known here and is applied at once.
+    """
+    if snapshot is None:
+        return
+    snapshot["tool_call_id"] = tool_call_id
+    if not (tool_call_id and "pending_str_replace" in snapshot):
+        return
+    snapshot["pending_str_replace"]["tool_call_id"] = tool_call_id
+    outcomes = getattr(slot, "_write_tool_outcomes", None)
+    if isinstance(outcomes, dict) and tool_call_id in outcomes:
+        _apply_write_outcome(snapshot, outcomes[tool_call_id])
+
+
+def _settle_pending_str_replace_outcome(
+    slot: "_ChatSlot", tool_call_id: str, completed: bool
+) -> None:
+    """Record a write tool's terminal outcome for its pending snapshots.
+
+    Only a completed write is ever resolved; any other terminal outcome
+    (refused, failed, cancelled) removes the pending payload so the flush
+    keeps the fragment it already has.
+    """
+    if not tool_call_id:
+        return
+    outcomes = getattr(slot, "_write_tool_outcomes", None)
+    if isinstance(outcomes, dict):
+        outcomes[tool_call_id] = completed
+    fc_changes = getattr(slot, "_file_changes", None)
+    if not isinstance(fc_changes, list):
+        return
+    for fc in fc_changes:
+        pending = fc.get("pending_str_replace")
+        if pending and pending.get("tool_call_id") == tool_call_id:
+            _apply_write_outcome(fc, completed)
 
 
 def _snapshot_write_target(
@@ -2145,8 +2257,13 @@ def _snapshot_write_target(
 ) -> dict | None:
     """Return {"path", "content"} of a file before modification for write tools.
 
+    A strReplace whose on-disk state is valid as both pre- and post-write adds
+    ``pending_str_replace`` (the ``_MAX_SNAPSHOT``-capped hypotheses of
+    ``_pending_str_replace_payload``) for ``_flush_file_changes`` to settle
+    against the turn-end after-content.
+
     For strReplace, FIRST reconstructs the full-file before via
-    ``_reconstruct_str_replace_before`` (disk read + reverse substitution),
+    ``_classify_str_replace_before`` (disk read + reverse substitution),
     because the ACP diff content block's ``oldText`` is only the replaced
     fragment for that command.
 
@@ -2183,11 +2300,20 @@ def _snapshot_write_target(
     # strReplace: the content block's oldText is only the replaced fragment,
     # never the full file — reconstruct the true full-file before from disk +
     # reverse substitution. Falls through to the generic chain when
-    # reconstruction is impossible.
+    # reconstruction is impossible; an undecidable file rides along as
+    # ``pending_str_replace`` so _flush_file_changes can settle it against
+    # the turn-end after-content instead of shipping the fragment.
+    pending: dict[str, Any] | None = None
     if cmd == "strReplace":
-        before_full = _reconstruct_str_replace_before(path, raw_params)
+        before_full, undecidable = _classify_str_replace_before(path, raw_params)
         if before_full is not None:
             return {"path": path, "content": _truncate_snapshot(before_full)}
+        if undecidable is not None:
+            pending = dict(
+                _pending_str_replace_payload(
+                    undecidable, raw_params["oldStr"], raw_params["newStr"]
+                )
+            )
 
     # Prefer authoritative content-block before-text when available.
     if diff_old_text is not None:
@@ -2195,7 +2321,10 @@ def _snapshot_write_target(
         # Apply truncation so content-block-sourced text obeys the same cap as
         # disk-sourced text (security + message-meta size invariant).
         before = _truncate_snapshot(diff_old_text) if diff_old_text else ""
-        return {"path": path, "content": before}
+        snapshot = {"path": path, "content": before}
+        if pending is not None:
+            snapshot["pending_str_replace"] = pending
+        return snapshot
 
     # Fallback: read from disk (correct on the blocking permission-request path
     # where the write has NOT yet executed).
@@ -2205,17 +2334,28 @@ def _snapshot_write_target(
         # OR was unreadable. Either way, record an empty before so the chip
         # still surfaces.
         return {"path": path, "content": ""}
-    return {"path": path, "content": content}
+    snapshot = {"path": path, "content": content}
+    if pending is not None:
+        snapshot["pending_str_replace"] = pending
+    return snapshot
 
 
 def _flush_file_changes(slot: "_ChatSlot") -> None:
     """Attach accumulated file changes to the last assistant message.
 
     Dedups by path (first before, last after), reads the AFTER content from
-    disk, and writes the list to message meta as ``file_changes``. Called on
-    every exit path (success / cancel / error) so users always see what was
-    modified, even on aborted turns.
+    disk, and settles a ``pending_str_replace`` snapshot only when every
+    snapshot for that path carries the same known tool call id. Writes the list
+    to message meta as ``file_changes``. Called on every exit path (success /
+    cancel / error) so users always see what was modified, even on aborted
+    turns. Resets the per-turn write-outcome map on every path, including a
+    turn that wrote nothing.
     """
+    # The outcome map is per-turn state: reset it before the early return below,
+    # so a turn with no writes cannot carry tool call ids into the next one.
+    # Binding and settling both read it before the flush, never inside it.
+    if isinstance(getattr(slot, "_write_tool_outcomes", None), dict):
+        slot._write_tool_outcomes = {}
     # Defensive: only proceed when a real, non-empty list is present. Tests
     # using MagicMock slots leave _file_changes as a MagicMock attribute
     # (always truthy), so an isinstance check is needed in addition to the
@@ -2227,16 +2367,32 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
     # Dedup: keep first before for each path (truest "before") since a file
     # may be modified multiple times in one turn.
     deduped: dict[str, dict[str, str]] = {}
+    pending_by_path: dict[str, dict[str, Any]] = {}
+    writers_by_path: dict[str, set[str]] = {}
     for fc in slot._file_changes:
         p = fc["path"]
+        # An unidentified snapshot ("") counts as its own writer: it cannot be
+        # attributed to the pending payload's tool call.
+        writers_by_path.setdefault(p, set()).add(str(fc.get("tool_call_id") or ""))
         if p not in deduped:
             deduped[p] = {"path": p, "before": fc["content"], "after": ""}
+            if fc.get("pending_str_replace"):
+                pending_by_path[p] = fc["pending_str_replace"]
     # Read after-content once per path. Uses _safe_read_snapshot so sensitive
     # paths and unreadable files yield empty after rather than crashing or
     # leaking credentials.
     for entry in deduped.values():
         after = _safe_read_snapshot(entry["path"])
         entry["after"] = after if after is not None else ""
+        pending = pending_by_path.get(entry["path"])
+        writers = writers_by_path[entry["path"]]
+        single_writer = len(writers) == 1 and "" not in writers
+        if pending is not None and after is not None and single_writer:
+            resolved = _resolve_pending_str_replace(pending, after)
+            if resolved is not None:
+                # Already _MAX_SNAPSHOT-capped by _pending_str_replace_payload;
+                # re-truncating would append a second marker.
+                entry["before"] = resolved
     # Scrub credentials and exfil URLs from path/before/after BEFORE attaching
     # to message meta. _save_slot_to_history runs _redact_meta on persist, but
     # the in-memory slot.messages reaches the dashboard UI via SSE/WS BEFORE
@@ -10398,6 +10554,7 @@ async def _run_chat(
                     diff_path=event.diff_path,
                 )
                 if _file_snapshot:
+                    _bind_pending_str_replace(_file_snapshot, event.tool_call_id, slot)
                     slot._file_changes.append(_file_snapshot)
                 state.broadcast_ws(
                     "tool_call",
@@ -10587,6 +10744,7 @@ async def _run_chat(
                         diff_path=event.diff_path,
                     )
                     if _file_snapshot_upd:
+                        _bind_pending_str_replace(_file_snapshot_upd, event.tool_call_id, slot)
                         slot._file_changes.append(_file_snapshot_upd)
                     # Refresh the toolLog entry (sseToolActivity merges by id).
                     state.broadcast_ws(
@@ -10725,6 +10883,9 @@ async def _run_chat(
                         result=event.tool_output or "",
                         result_digest=event.tool_output_digest,
                         result_bytes=event.tool_output_bytes,
+                    )
+                    _settle_pending_str_replace_outcome(
+                        slot, event.tool_call_id or "", completed=_tool_status == "completed"
                     )
                 # MCP Apps (flag-independent on this side): if gatewayd spooled a
                 # UI payload it injected an opaque marker into the result text.
