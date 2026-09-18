@@ -356,7 +356,7 @@ describe("loading.html reveals the exit on reconnect, and on a cold boot only af
     it(`${name} paints the splash with the reconnect marker`, () => {
       assert.match(
         fnBody(name),
-        /loadFile\(path\.join\(dirname, "loading\.html"\), \{ query: splashQuery\(window, \{ reconnect: true \}\) \}\)/,
+        /loadFile\(resolveLoadingPagePath\(dirname, \{ fs, path \}\), \{\s*query: splashQuery\(window, \{ reconnect: true \}\),\s*\}\)/,
       );
     });
   }
@@ -367,7 +367,7 @@ describe("loading.html reveals the exit on reconnect, and on a cold boot only af
     const body = fnBody("showLoadingThenConnect");
     assert.match(
       body,
-      /loadFile\(path\.join\(dirname, "loading\.html"\), \{\s*query: splashQuery\(window, \{ reconnect, accent: currentThemeAccent\(\) \}\),\s*\}\)/,
+      /loadFile\(resolveLoadingPagePath\(dirname, \{ fs, path \}\), \{\s*query: splashQuery\(window, \{ reconnect, accent: currentThemeAccent\(\) \}\),\s*\}\)/,
     );
   });
 
@@ -375,7 +375,7 @@ describe("loading.html reveals the exit on reconnect, and on a cold boot only af
     const body = fnBody("relaunchViaConfirmedSuccessor");
     assert.match(
       body,
-      /loadFile\(path\.join\(dirname, "loading\.html"\), \{\s*query: splashQuery\(window, \{ accent: currentThemeAccent\(\) \}\),\s*\}\)/,
+      /loadFile\(resolveLoadingPagePath\(dirname, \{ fs, path \}\), \{\s*query: splashQuery\(window, \{ accent: currentThemeAccent\(\) \}\),\s*\}\)/,
     );
     assert.doesNotMatch(body, /query:\s*\{\s*accent:\s*currentThemeAccent\(\)/);
   });

@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "parse5": "7.3.0"
   },
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
@@ -223,6 +224,7 @@
       "crew-companion/galleryWindow.js",
       "anime.global.js",
       "loading.html",
+      "edition-loading.html",
       "token-prompt.html",
       "icon.png",
       "icon-nightly.png",

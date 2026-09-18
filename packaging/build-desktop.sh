@@ -34,6 +34,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ELECTRON_DIR="$ROOT/website/electron"
+
+# Clear interrupted-build inputs before validation or backend work can fail.
+# The same cleanup also removes inputs staged by this run on every normal exit.
+cleanup_desktop_staging() {
+  rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/edition-loading.html"
+}
+cleanup_desktop_staging
+trap cleanup_desktop_staging EXIT
+
 cd "$ROOT"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -96,8 +106,6 @@ else
   printf '\n\033[1;33m▶ Building for host arch only: %s/%s.\033[0m\n' \
     "$(uname -s)" "$HOST_ARCH"
 fi
-
-ELECTRON_DIR="$ROOT/website/electron"
 
 # Version from the package.
 KC_VERSION="$(grep -m1 '__version__' "$ROOT/src/kiro_crew/__init__.py" \
@@ -816,12 +824,6 @@ else
   fi
 fi
 
-# A leftover staged marker from an earlier interrupted build is removed on
-# EVERY run, before any early exit: step 3b re-stages it when asked. This sits
-# ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
-# stale declaration behind for a hand-run electron-builder to pack.
-rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"
-
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
   log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
   exit 0
@@ -873,14 +875,9 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
     if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
   ' "$MARKER_SRC" || { echo "❌ KIROCREW_MANAGED_INSTALL_MARKER rejected: $MARKER_SRC" >&2; exit 1; }
   # Staged for THIS build only: electron-builder packs it below, and the copy
-  # must not outlive the run -- a later build of a different edition from the
-  # same tree (or a hand-run electron-builder) would otherwise pack the previous
-  # edition's commands. The unconditional rm above covers the next
-  # build-desktop.sh run; this covers every other exit path. The trap is armed
-  # BEFORE the copy so there is no instant at which the file exists without
-  # its cleanup -- an interrupt between the two would leave a stale marker for
-  # a hand-run `npm run dist` to pack.
-  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"' EXIT
+  # must not outlive the run. The combined desktop-staging trap was armed before
+  # any generated file was written and removes both inputs when the shell exits.
+  # An uncatchable kill is covered by cleanup at the next build's entry.
   cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"
   log "Baking EXTERNALLY-MANAGED marker into the app from $MARKER_SRC"
 fi
@@ -889,6 +886,12 @@ fi
 log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
 ( cd "$ELECTRON_DIR"
   if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+  # Stage optional edition-owned native shell assets only after installing the
+  # desktop package that owns the HTML parser. This keeps SKIP_FRONTEND=1
+  # builds independent of website/node_modules while retaining parsed-head CSP
+  # insertion. The entry cleanup has already armed the EXIT trap.
+  node "$ROOT/website/scripts/lib/editionDesktop.mjs" stage "$ELECTRON_DIR"
 
   EB_ARGS=( "-c.extraMetadata.version=$KC_VERSION" )
   if [ "$PRODUCT_NAME" = "KiroCrew Nightly" ]; then

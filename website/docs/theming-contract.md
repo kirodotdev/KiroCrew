@@ -379,6 +379,10 @@ registerThemeBranding({
   mytheme: {
     logo: '/mytheme/logo.png',
 
+    // First-run and prerequisite panels reuse `logo` for the lockup and may
+    // replace the complete decorative layer.
+    onboardingDecorations: MyOnboardingDecorations,
+
     // Level 1: keep the stock carousel, swap the artwork it cycles.
     loaderIcons: [Sun, Moon, Star, Cloud, Comet],
 
@@ -387,6 +391,18 @@ registerThemeBranding({
   },
 })
 ```
+
+The first-run and prerequisite lockup reuses **`logo`**, the same brand asset as
+the application shell and welcome page. This keeps one registration authoritative:
+an edition cannot accidentally brand the ordinary shell while leaving a stock
+onboarding mark. **`onboardingDecorations`** replaces the whole floating-mascot
+layer and renders inside an `aria-hidden`, pointer-events-none, absolutely
+positioned wrapper. The component owns the decorative placement within that
+wrapper and must honour reduced motion when it animates. Keep high-contrast
+artwork outside the copy column at every viewport width and copy length: the
+stock copy is near-white, so light artwork behind it can make text unreadable.
+Use the panel's outer padding gutters for decorative marks. Omitting `logo` keeps
+the stock lockup mark; omitting `onboardingDecorations` keeps the stock mascots.
 
 **`loaderIcons`** is the easy path and the one to reach for first. The default
 loader is a 4-slot carousel: each slot cross-fades between two icons, the slots
