@@ -156,8 +156,8 @@ _EXPECTED_ROUTED_JOBS = {
 # carrying their own copy of the routing expression. Without this set, one
 # of these could quietly hardcode a literal fleet label -- bypassing the
 # resolver, and its fork-safety, entirely -- with no test catching it.
-# `frontend-test` reads the `_large` variant; every other entry here reads
-# the plain one.
+# `frontend-test` reads the `_large` variant. The backend canary reads it
+# only for shard 1; the remaining consumers read the plain resolver output.
 _CANONICAL_CONSUMER_EXPR = "${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}"
 _CANONICAL_CONSUMER_EXPR_LARGE = (
     "${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}"

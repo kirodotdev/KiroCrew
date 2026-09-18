@@ -479,7 +479,9 @@ Details worth knowing:
   - **Only shard 1 is routed, on purpose.** `runs-on` reads
     `${{ matrix.group == 1 && needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}`,
     so shards 2–8 stay hosted and act as controls while also exercising the
-    passthrough. The remaining shards move only after the canary is green on
+    passthrough. `test/test_ci_fleet_routing_expression_parity.py` pins this
+    complete conditional expression, including the shard-1 condition and
+    hosted-runner fallback. The remaining shards move only after the canary is green on
     three consecutive runs including one rerun, with coverage uploaded by the
     unprivileged process each time.
   - **The boundary is asserted, not assumed.** A CodeBuild-only step asserts
