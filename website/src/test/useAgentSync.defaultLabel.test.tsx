@@ -20,8 +20,8 @@ import type { ChatSlot } from '../types'
 vi.mock('../api/client', () => ({
   api: {
     defaultAgent: vi.fn(),
-    crons: vi.fn().mockResolvedValue([]),
-    spawnList: vi.fn().mockResolvedValue([]),
+    crons: vi.fn().mockResolvedValue({ jobs: [] }),
+    spawnList: vi.fn().mockResolvedValue({ agents: [] }),
   },
 }))
 
@@ -43,6 +43,37 @@ const storeWithSlots = (slots: ChatSlot[]) => {
 describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('maps a paused running cron and live subagent from their API envelopes (#11802)', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [{
+        id: 'job-1', name: 'Nightly check', message: 'check', enabled: false,
+        schedule: 'every 5m', last_status: 'ok', is_running: true,
+      }],
+    })
+    vi.mocked(api).spawnList.mockResolvedValue({
+      agents: [{ id: 'child-1', task: 'Inspect the build', done: false }],
+    })
+
+    const { result } = renderHookWithProviders(() => useAgentSync(), {
+      store: storeWithSlots([]),
+    })
+
+    await waitFor(() => {
+      expect(result.current.agents).toEqual([
+        {
+          id: 'cron-job-1', name: 'Nightly check', label: 'cron', kind: 'cron',
+          running: true, detail: 'every 5m',
+        },
+        {
+          id: 'spawn-child-1', name: 'Inspect the build', label: 'spawn', kind: 'spawn',
+          running: true, detail: 'running',
+        },
+      ])
+    })
   })
 
   it('labels an agent-less slot with the resolved default alias', async () => {

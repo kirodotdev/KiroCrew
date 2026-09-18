@@ -131,6 +131,11 @@ The downstream `_is_restricted_session` check can still reject the call with HTT
 
 ## Cron Service (`cron.py`)
 
+The dashboard list route returns `{"jobs": [...]}`. Agent Worlds polls that
+envelope every five seconds and marks a cron sprite active only while `is_running`
+is true; `last_status` remains the outcome of the latest completed run. A job with
+`is_running: true` remains visible even when it is paused (`enabled: false`).
+
 App-owned pause/resume uses `CronSDK.set_enabled` or its async sibling. The
 existing service transition checks `expected_owner` after reloading the store
 inside the mutation lock, so a stale SDK snapshot cannot authorize a foreign job.

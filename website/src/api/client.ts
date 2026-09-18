@@ -3,6 +3,7 @@ import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
   AppContributor,
   ChatSlot,
+  CronJob,
   IssueSource,
   McpApplyChange,
   MemoryBackup,
@@ -21,6 +22,7 @@ import type {
   SessionStorageEmptyJob,
   SessionStorageReport,
   SessionTrashResult,
+  SubagentInfo,
   UpdateCheckResult,
   WorkflowRunSummary,
 } from '../types'
@@ -3379,7 +3381,7 @@ export const api = {
   deleteWorkspace: (name: string) =>
     del('/api/workspaces/' + encodeURIComponent(name)).then(j),
   // Crons
-  crons: () => fetch('/api/crons').then(j),
+  crons: (): Promise<{ jobs?: CronJob[] }> => fetch('/api/crons').then(j),
   createCron: (body: object) => post('/api/crons', body).then(j),
   deleteCron: (id: string) => del('/api/crons/' + id).then(j),
   batchDeleteCron: (ids: string[]) => del('/api/crons', { ids }).then(j),
@@ -4078,7 +4080,7 @@ export const api = {
   // Autocomplete
   autocomplete: (q: string): Promise<{suggestions: string[]}> => fetch('/api/autocomplete?q=' + encodeURIComponent(q)).then(j),
   // Spawn
-  spawnList: () => fetch('/api/spawn').then(j),
+  spawnList: (): Promise<{ agents?: SubagentInfo[] }> => fetch('/api/spawn').then(j),
   spawn: (task: string) => post('/api/spawn', { task }).then(j),
   spawnStatus: (id: string, opts?: { signal?: AbortSignal }) => fetch('/api/spawn/' + encodeURIComponent(id), opts).then(j),
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),

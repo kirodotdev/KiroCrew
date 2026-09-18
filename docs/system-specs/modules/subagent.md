@@ -1456,6 +1456,11 @@ adopted live by `reconfigure` through `update_completion_keep`. User-facing docs
 
 ### Dashboard API: `POST /api/spawn`
 
+The view-only Agent Worlds hook polls the global `GET /api/spawn` list and reads
+its `{"agents": [...]}` envelope; it does not call the parent-scoped
+`running_agents_for(parent_key)`, so both dedicated and shared-process children
+are eligible for sprites.
+
 Crew binding resolution and inherited memory lookup for persisted parent runs
 execute off the gateway event loop. Unavailable member memory remains a typed
 refusal before any child provider is allocated.
