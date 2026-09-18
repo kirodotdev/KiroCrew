@@ -43,13 +43,13 @@ describe('private member memory controls', () => {
     const initialize = vi.fn()
     renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" onInitialize={initialize} />)
     expect(screen.getByText('default', { exact: true })).toBeVisible()
-    const hint = screen.getByText(/This member uses its current memory \(V1\)\./)
-    expect(hint).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
-    expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
+    const hint = screen.getByText(/This agent uses its current memory \(V1\)\./)
+    expect(hint).toHaveTextContent(/^This agent uses its current memory \(V1\)\.$/)
+    expect(screen.queryByText(/This agent cannot return to its previous memory/)).toBeNull()
     expect(initialize).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Create private memory', exact: true }))
     const confirmation = await screen.findByRole('dialog', { name: 'Create private memory' })
-    await waitFor(() => expect(within(confirmation).getByText(/This member cannot return to its previous memory/)).toBeVisible())
+    await waitFor(() => expect(within(confirmation).getByText(/This agent cannot return to its previous memory/)).toBeVisible())
     expect(confirmation).toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(confirmation).toHaveTextContent('Existing data and chats stay')
     expect(initialize).not.toHaveBeenCalled()
@@ -98,14 +98,14 @@ describe('private member memory controls', () => {
   })
 
   it.each([
-    ['unavailable', 'This member’s configured memory store is unavailable. Inspect the cause on the gateway: kirocrew doctor'],
-    ['ownership_mismatch', 'This member’s configured memory store belongs to another member. It cannot be used here. Inspect the cause on the gateway: kirocrew doctor'],
+    ['unavailable', 'This agent’s configured memory store is unavailable. Inspect the cause on the gateway: kirocrew doctor'],
+    ['ownership_mismatch', 'This agent’s configured memory store belongs to another agent. It cannot be used here. Inspect the cause on the gateway: kirocrew doctor'],
   ] as const)('does not offer V1 creation or V2 management for an %s binding', (memoryState, reason) => {
     renderWithProviders(<MemoryStoreField member="reviewer" value="missing-store" memoryState={memoryState} onInitialize={() => {}} onManage={() => {}} />)
     expect(screen.getByText(reason, { exact: true })).toBeVisible()
-    expect(screen.queryByText(/Open the crew manager/i)).toBeNull()
+    expect(screen.queryByText(/Open agent editor/i)).toBeNull()
     expect(screen.queryByText(/unavailable or belongs/i)).toBeNull()
-    expect(screen.queryByText(/This member uses its current memory \(V1\)\./)).toBeNull()
+    expect(screen.queryByText(/This agent uses its current memory \(V1\)\./)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Manage memory' })).toBeNull()
   })

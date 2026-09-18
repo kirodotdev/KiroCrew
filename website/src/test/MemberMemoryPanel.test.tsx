@@ -125,9 +125,9 @@ describe('private member memory lifecycle', () => {
 
     await screen.findByRole('heading', { name: `Memory for ${LEGACY_STORE}` })
     expect(screen.getByText('Memory V1', { exact: true })).toBeVisible()
-    const guidance = screen.getByText(/This member uses its current memory \(V1\)\./)
-    expect(guidance).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
-    expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
+    const guidance = screen.getByText(/This agent uses its current memory \(V1\)\./)
+    expect(guidance).toHaveTextContent(/^This agent uses its current memory \(V1\)\.$/)
+    expect(screen.queryByText(/This agent cannot return to its previous memory/)).toBeNull()
     expect(screen.queryByText('Private to this member · Memory V2')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
     expect(api.memberMemoryPage).toHaveBeenCalledWith(LEGACY_STORE, 'semantic', 0)
@@ -179,7 +179,7 @@ describe('private member memory lifecycle', () => {
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
     expect(api.memorySettings).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent editor' }))
     expect(screen.getByTestId('route-location').textContent).toBe(condition === 'unsupported-version'
       ? '/capabilities?tab=crews&crew=Review%20%26%20QA'
       : '/capabilities?tab=crews')
@@ -193,7 +193,7 @@ describe('private member memory lifecycle', () => {
       <MemoryTab refreshTrigger={0} />
       <RouteLocation />
     </NavigationLeaveGuardProvider>)
-    const openManager = await screen.findByRole('button', { name: 'Open crew manager' })
+    const openManager = await screen.findByRole('button', { name: 'Open agent editor' })
     fireEvent.click(openManager)
     expect(guard).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('route-location').textContent).toBe('/')
@@ -208,7 +208,7 @@ describe('private member memory lifecycle', () => {
     const summary = { ...stores[2], memory_version: 3, owner_member: 'Review & QA' }
     renderWithProviders(<><MemberMemoryPanel store={MEMBER_STORE} summary={summary} /><RouteLocation /></>)
     expect(screen.getByText(/configured memory store is unavailable/i)).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent editor' }))
     expect(screen.getByTestId('route-location').textContent).toBe('/capabilities?tab=crews&crew=Review%20%26%20QA')
     expect(api.memberMemoryPage).not.toHaveBeenCalled()
   })

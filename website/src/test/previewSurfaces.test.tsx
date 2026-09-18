@@ -392,17 +392,20 @@ describe('Settings > Developer > Feature Previews', () => {
   it('carries a crew card that starts off', () => {
     // One card per feature: crew's own toggle, not a row folded into the
     // webhooks card. Anchored (`^…$`) because the label's words also appear in
-    // this card's description and in the "Chat on a crew" card next to it. The
-    // label names the page the flag holds so it stops sharing a bare "Crew"
-    // with that neighbour, which a newcomer could not tell apart.
+    // this card's description and in the "Chat on a crew" card next to it.
+    // The switch is named for the mode it turns on, NOT for the page it
+    // reveals: the page is "Agents", the flag is "Agent Mode". That split is
+    // deliberate -- a switch reads as something you turn on, and the previous
+    // rule (label the flag after its page) is what left it sharing a bare
+    // "Crew" with the neighbouring card a newcomer could not tell apart.
     renderTab()
-    expect(screen.getByRole('switch', { name: /^crew members$/i }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: /^agent mode$/i }).getAttribute('aria-checked')).toBe('false')
   })
 
   it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
     renderTab()
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members$/i }).click()
+      screen.getByRole('switch', { name: /^agent mode$/i }).click()
     })
     expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
     // Two flags, two keys: a shared write would release both features at once.
@@ -429,7 +432,7 @@ describe('Settings > Developer > Feature Previews', () => {
       Array.from(container.querySelectorAll('button:not([data-testid="feature-preview-intro-button"])'))
     expect(realButtons()).toHaveLength(0)
     await act(async () => {
-      screen.getByRole('switch', { name: /^crew members$/i }).click()
+      screen.getByRole('switch', { name: /^agent mode$/i }).click()
     })
     expect(realButtons()).toHaveLength(0)
     // The webhooks card still HAS its link, so this is an asymmetry on purpose

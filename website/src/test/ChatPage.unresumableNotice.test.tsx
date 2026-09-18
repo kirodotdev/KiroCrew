@@ -209,7 +209,12 @@ describe('unresumable-resume notice on the chat pane (#5925)', () => {
     await renderWith({ key: 'member-ada', title: 'Ada', surface: 'member', reason: 'surface' })
 
     const notice = await screen.findByTestId('unresumable-resume-error')
-    expect(notice.textContent).toContain('Crew Members')
+    expect(notice.textContent).toContain('Agents')
     expect(notice.textContent).not.toContain('member session')
+    // The label is a page name, so the sentence must not put an indefinite
+    // article in front of it: "it's a Agents session" was the result of
+    // hardcoding "a" ahead of {{surface}}. Pin the article-free construction.
+    expect(notice.textContent).toContain('it belongs to Agents')
+    expect(notice.textContent).not.toMatch(/\ba Agents\b/)
   })
 })

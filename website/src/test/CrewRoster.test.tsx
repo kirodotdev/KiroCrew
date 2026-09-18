@@ -210,7 +210,7 @@ async function openEditor(name: string): Promise<HTMLElement> {
 /** Open the editor dialog in create mode and return the dialog element. */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'Add crew member' })
+  return await screen.findByRole('dialog', { name: 'Add agent' })
 }
 
 /**
@@ -315,8 +315,8 @@ describe('crew roster — memory ownership notice', () => {
     // so the page-level notice is not readable from here — the tooltip is the
     // only place this caveat reaches a user who is mid-edit.
     expect(within(sheet).getAllByTitle(TIP)).toHaveLength(1)
-    const memory = within(sheet).getByText(/This member uses its current memory \(V1\)\./)
-    expect(memory).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    const memory = within(sheet).getByText(/This agent uses its current memory \(V1\)\./)
+    expect(memory).toHaveTextContent(/^This agent uses its current memory \(V1\)\.$/)
     expect(within(sheet).queryByText(/This member cannot return to its previous memory/)).toBeNull()
   })
 
@@ -570,7 +570,7 @@ describe('crew editor — opening', () => {
     expect(within(sheet).getByRole('combobox', { name: 'Edit default model' })).toHaveTextContent('claude-opus-5')
   })
 
-  it('opens the create dialog from "Add crew member"', async () => {
+  it('opens the create dialog from "Add agent"', async () => {
     await renderRoster()
     const sheet = await openCreate()
     // Create mode has no crew to edit yet, so the bindings start on the defaults.
@@ -594,7 +594,7 @@ describe('crew editor — create', () => {
     expect(await within(sheet).findByText('Name is required')).toBeInTheDocument()
     expect(mockApi.createKirocrewAgent).not.toHaveBeenCalled()
     // The dialog stays open so the user can fix it in place.
-    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Add agent' })).toBeInTheDocument()
   })
 
   it('refuses a crew with no Agent Template chosen, without calling the api', async () => {
@@ -1400,7 +1400,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
   it('deep link ?new=1 opens the create form directly, then strips the param', async () => {
     renderPage('/capabilities?tab=crews&new=1')
     // A "New crew" deep link with no origin is this page's own form.
-    await screen.findByRole('dialog', { name: 'Add crew member' })
+    await screen.findByRole('dialog', { name: 'Add agent' })
     // Consumed: closing the form must not re-open it on the next render, and
     // Back must not land on a form the user already left.
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
@@ -1410,24 +1410,24 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     renderPage('/capabilities?tab=crews&new=1&from=members')
     // The Members roster's "+" lands HERE — on the form, not on the list a
     // second "New crew" click would be needed on (#9513) — and the form says
-    // what the user pressed ("Add crew member"), not "Create Agent".
-    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
-    expect(screen.getByRole('heading', { name: 'Add crew member' })).toBeInTheDocument()
+    // what the user pressed ("Add agent"), not "Create Agent".
+    const sheet = await screen.findByRole('dialog', { name: 'Add agent' })
+    expect(screen.getByRole('heading', { name: 'Add agent' })).toBeInTheDocument()
     // The body keeps the same word: the section heading and the triggers
-    // helper say "member", not "agent", so the form never renames the thing
+    // helper say "agent", not "member", so the form never renames the thing
     // one field in.
-    expect(within(sheet).getByRole('heading', { name: 'What this member uses' })).toBeInTheDocument()
-    expect(within(sheet).queryByRole('heading', { name: 'What this agent uses' })).toBeNull()
-    expect(within(sheet).getByText(/hand work to this member/)).toBeInTheDocument()
-    expect(within(sheet).getByText(/The starting setup this member uses/)).toBeInTheDocument()
-    expect(within(sheet).getByText(/no member color/)).toBeInTheDocument()
-    expect(within(sheet).queryByText(/this agent/)).toBeNull()
+    expect(within(sheet).getByRole('heading', { name: 'What this agent uses' })).toBeInTheDocument()
+    expect(within(sheet).queryByRole('heading', { name: 'What this member uses' })).toBeNull()
+    expect(within(sheet).getByText(/hand work to this agent/)).toBeInTheDocument()
+    expect(within(sheet).getByText(/The starting setup this agent uses/)).toBeInTheDocument()
+    expect(within(sheet).getByText(/no agent color/)).toBeInTheDocument()
+    expect(within(sheet).queryByText(/this member/)).toBeNull()
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
   })
 
   it('cancelling a create that arrived from the Members roster returns to the roster', async () => {
     renderPage('/capabilities?tab=crews&new=1&from=members')
-    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
+    const sheet = await screen.findByRole('dialog', { name: 'Add agent' })
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
     // Not stranded on a crew list the user never asked to visit.
@@ -1437,7 +1437,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
 
   it('a create that arrived via ?new=1&from=members lands on the new member\'s thread', async () => {
     renderPage('/capabilities?tab=crews&new=1&from=members')
-    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
+    const sheet = await screen.findByRole('dialog', { name: 'Add agent' })
     const user = userEvent.setup()
     await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
     const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
@@ -1445,7 +1445,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
     // The primary action names its object in the roster's words.
     expect(within(sheet).queryByRole('button', { name: 'Create' })).toBeNull()
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create member' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create agent' }))
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     // Exact name in `?member=` — MembersPage resolves by name, not slug.
     await waitFor(() => expect(screen.getByTestId('location-pathname')).toHaveTextContent('/members'))
@@ -1455,19 +1455,19 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
   it('a duplicate name from the Members roster is refused in the form\'s own word', async () => {
     mockApi.createKirocrewAgent.mockRejectedValueOnce(new ApiError(409, "Agent 'staging' already exists", '{"error":"Agent \'staging\' already exists"}'))
     renderPage('/capabilities?tab=crews&new=1&from=members')
-    const sheet = await screen.findByRole('dialog', { name: 'Add crew member' })
+    const sheet = await screen.findByRole('dialog', { name: 'Add agent' })
     const user = userEvent.setup()
     await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), 'staging')
     const template = within(sheet).getByRole('combobox', { name: 'Agent Template' })
     fireEvent.keyDown(template, { key: 'ArrowDown' })
     fireEvent.click(await screen.findByRole('option', { name: 'oncall-agent' }))
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create member' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Create agent' }))
     // The server says "Agent"; the member-titled form does not repeat it.
     const err = await screen.findByTestId('crew-sheet-error')
-    expect(err).toHaveTextContent("A member named 'staging' already exists.")
+    expect(err).toHaveTextContent("An agent named 'staging' already exists.")
     expect(err).not.toHaveTextContent(/Agent/)
     // Still on the form — a refusal is not a dismissal.
-    expect(screen.getByRole('dialog', { name: 'Add crew member' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Add agent' })).toBeInTheDocument()
     // Editing the name answers the error: it clears, so Create reads as
     // safe to press again.
     await user.type(within(sheet).getByPlaceholderText('e.g. oncall'), '2')

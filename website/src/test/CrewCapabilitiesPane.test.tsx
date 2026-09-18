@@ -272,7 +272,7 @@ describe('crew capability draft editor with mocked HTTP', () => {
     expect(scope.queryByRole('checkbox', { name: 'crewA' })).toBeNull()
     // The hint says why a name is listed (declared) and leaves eligibility to
     // the server; it never claims a listed member is eligible.
-    expect(scope.getByText('Declared crew members. Eligibility for this same parent is verified when you review.')).toBeInTheDocument()
+    expect(scope.getByText('Declared agents. Eligibility for this same parent is verified when you review.')).toBeInTheDocument()
     fireEvent.click(scope.getByRole('checkbox', { name: 'crewB' }))
     fireEvent.click(scope.getByRole('checkbox', { name: 'crewC' }))
     fireEvent.click(scope.getByRole('checkbox', { name: 'crewC' }))

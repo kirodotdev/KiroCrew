@@ -351,14 +351,14 @@ test('an empty private memory opens its exact member conversation and reuses the
   await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === owner.name)
   const memberHeader = page.getByTestId('member-thread-header')
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
-  await expect(memberHeader.getByRole('button', { name: 'Edit member', exact: true })).toBeAttached()
+  await expect(memberHeader.getByRole('button', { name: 'Edit agent', exact: true })).toBeAttached()
   await expect(page.getByPlaceholder(/message/i)).toBeVisible()
 
   const panelToggle = page.getByTestId('member-panel-toggle')
   if (await panelToggle.isVisible()) await panelToggle.click()
   await page.getByTestId('side-panel-leading-tab').click()
   const summary = page.getByTestId('member-crew-summary')
-  const memoryStatus = summary.getByText('Private Memory V2 — only this member can use it.', { exact: true })
+  const memoryStatus = summary.getByText('Private Memory V2 — only this agent can use it.', { exact: true })
   await expect(memoryStatus).toBeVisible()
   const manageMemory = summary.getByRole('button', { name: 'Manage memory', exact: true })
   await manageMemory.scrollIntoViewIfNeeded()
@@ -451,9 +451,9 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     const memoryTab = editor.getByRole('tab', { name: /^Workspace · Memory(?: Shared)?$/ })
     await expect(memoryTab).toBeVisible()
     await memoryTab.click()
-    const guidance = editor.getByText(/This member uses its current memory \(V1\)\./)
-    await expect(guidance).toHaveText('This member uses its current memory (V1).')
-    await expect(editor.getByText(/This member cannot return to its previous memory/)).toHaveCount(0)
+    const guidance = editor.getByText(/This agent uses its current memory \(V1\)\./)
+    await expect(guidance).toHaveText('This agent uses its current memory (V1).')
+    await expect(editor.getByText(/This agent cannot return to its previous memory/)).toHaveCount(0)
     await expect(editor.getByRole('button', { name: 'Create private memory', exact: true })).toBeEnabled()
     await expect(editor.getByText(/Also used by/)).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v1-choice.png'), fullPage: false, animations: 'disabled' })
@@ -464,7 +464,7 @@ test('a legacy configured default member keeps V1 until its owner creates empty 
     const confirmation = page.getByRole('dialog', { name: 'Create private memory', exact: true })
     await expect(confirmation).toBeVisible()
     await expect(confirmation).toContainText('Private memory (V2) starts empty in a new chat')
-    await expect(confirmation).toContainText('This member cannot return to its previous memory')
+    await expect(confirmation).toContainText('This agent cannot return to its previous memory')
     await expect(confirmation).toContainText('Existing data and chats stay')
     await expect.poll(readOwner).toMatchObject({ memory_store: 'default', memory_version: 1 })
     await page.screenshot({ path: testInfo.outputPath('legacy-member-memory-v2-confirm.png'), fullPage: false, animations: 'disabled' })
@@ -552,8 +552,8 @@ test('intentional bad memory configuration shows unavailable, mismatch and a rea
   expect(await rows(request, healthy.store)).toEqual([])
 
   for (const [name, message, screenshot] of [
-    [fixture.unavailable_member, 'This member’s configured memory store is unavailable.', 'member-memory-unavailable-binding.png'],
-    [fixture.mismatched_member, 'This member’s configured memory store belongs to another member. It cannot be used here.', 'member-memory-mismatched-binding.png'],
+    [fixture.unavailable_member, 'This agent’s configured memory store is unavailable.', 'member-memory-unavailable-binding.png'],
+    [fixture.mismatched_member, 'This agent’s configured memory store belongs to another agent. It cannot be used here.', 'member-memory-mismatched-binding.png'],
   ]) {
     await page.goto(`/capabilities?tab=crews&crew=${encodeURIComponent(name)}`)
     const editor = page.getByRole('dialog').filter({ has: page.getByTestId('crew-editor-identity') })

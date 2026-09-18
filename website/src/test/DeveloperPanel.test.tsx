@@ -84,7 +84,7 @@ describe('DeveloperPanel', () => {
       renderPanel()
       expect(screen.getByRole('heading', { name: 'Feature Previews' })).toBeInTheDocument()
       expect(screen.getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'false')
-      expect(screen.getByRole('switch', { name: 'Crew Members' })).toHaveAttribute('aria-checked', 'false')
+      expect(screen.getByRole('switch', { name: 'Agent Mode' })).toHaveAttribute('aria-checked', 'false')
       expect(screen.getByRole('switch', { name: 'Chat on a crew' })).toHaveAttribute('aria-checked', 'false')
     })
 

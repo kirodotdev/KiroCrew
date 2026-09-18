@@ -35,7 +35,7 @@ vi.mock('../../api/client', () => ({
     // the page without a loop in the way.
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
     // The side panel's + menu gates its Summary row on this read; "disabled"
-    // keeps the chat-style Summary row out of the menu so the Crew summary tab
+    // keeps the chat-style Summary row out of the menu so the Agent summary tab
     // is the one summary these cases see.
     sessionSummary: vi.fn(() => Promise.resolve({ enabled: false })),
     // The wake block's create dialog hosts JobForm, whose only two reads are
@@ -217,7 +217,7 @@ function LocationProbe() {
 }
 const currentUrl = () => screen.getByTestId('location-probe').textContent
 
-/* The open member's name also renders in the thread header (and the Crew summary tab),
+/* The open member's name also renders in the thread header (and the Agent summary tab),
  * so a bare screen query by name is ambiguous once anything is open — and
  * something is open from the first paint now. Scope name lookups to the
  * roster column. */
@@ -263,7 +263,7 @@ describe('MembersPage roster', () => {
   it('shows the empty state when no crews exist', async () => {
     await renderPage([])
     expect(
-      await screen.findByText(/No crew members yet/i),
+      await screen.findByText(/No agents yet/i),
     ).toBeInTheDocument()
   })
 
@@ -271,7 +271,7 @@ describe('MembersPage roster', () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     renderWithProviders(<MembersPage />)
     expect(
-      await screen.findByText(/Could not load the member roster/i),
+      await screen.findByText(/Could not load the agent roster/i),
     ).toBeInTheDocument()
     // No roster to count: the header says so with a dash, never "0 members"
     // above a failure it would contradict.
@@ -307,7 +307,7 @@ describe('MembersPage roster cache (React Query)', () => {
     utils.rerender(page)
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(roster().getByText('research')).toBeInTheDocument()
-    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+    expect(screen.queryByText(/No agents yet/i)).toBeNull()
     // The roster carries its own 30s staleTime (membersRosterQuery), which
     // wins over the test client's 0: a return inside that window is served
     // from cache with NO refetch — that is the request the user stopped
@@ -401,7 +401,7 @@ describe('MembersPage roster cache (React Query)', () => {
     expect(await rosterRow('research')).toBeInTheDocument()
     // In place: the row that was already there never left the screen.
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/No crew members yet/i)).toBeNull()
+    expect(screen.queryByText(/No agents yet/i)).toBeNull()
   })
 
   it('a refetch failure after a good read keeps the last roster instead of flipping to the error state', async () => {
@@ -413,7 +413,7 @@ describe('MembersPage roster cache (React Query)', () => {
     })
     await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not load the member roster/i)).toBeNull()
+    expect(screen.queryByText(/Could not load the agent roster/i)).toBeNull()
   })
 })
 
@@ -434,7 +434,7 @@ describe('MembersPage thread', () => {
     })
     const { queryClient } = await renderPage([row()], 'kirocrew', { thread: new Error(rawReason) })
     const notice = await screen.findByTestId('member-thread-error')
-    expect(notice).toHaveTextContent(/Could not open this member's conversation/i)
+    expect(notice).toHaveTextContent(/Could not open this agent's conversation/i)
     expect(notice).not.toHaveTextContent('Private memory database is unreadable')
     expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
       slot_key: '', failed: true, errorReport: report,
@@ -518,7 +518,7 @@ describe('MembersPage thread', () => {
     // the failing POST is the auto-open itself.
     await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
-      await screen.findByText(/Could not open this member's conversation/i),
+      await screen.findByText(/Could not open this agent's conversation/i),
     ).toBeInTheDocument()
     // Non-API exceptions have no journal report; do not invent a diagnostic
     // object or leak an unredacted thrown message into the localized banner.
@@ -578,14 +578,14 @@ describe('MembersPage thread', () => {
   })
 })
 
-describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
+describe('MembersPage side panel (Agent summary tab) and edit jump', () => {
   it('shows the read-only config summary and the usable V1 migration choice', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5', memory_version: 1 })])
     fireEvent.click(await rosterRow('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
     expect(drawer).toHaveTextContent('kirocrew')
     expect(drawer).toHaveTextContent('claude-opus-5')
-    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).toHaveTextContent('This agent uses its current memory (V1).')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(drawer).not.toHaveTextContent('Existing data and chats stay.')
     expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
@@ -597,7 +597,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
-    expect(drawer).toHaveTextContent(/only this member can use it/i)
+    expect(drawer).toHaveTextContent(/only this agent can use it/i)
     expect(screen.getByRole('button', { name: 'Manage memory' })).toBeInTheDocument()
   })
 
@@ -608,14 +608,14 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
-    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).toHaveTextContent('This agent uses its current memory (V1).')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
-    expect(drawer).not.toHaveTextContent(/only this member can use it/i)
+    expect(drawer).not.toHaveTextContent(/only this agent can use it/i)
   })
 
   it.each([
-    ['a V2 store owned by another member', { memory_store: 'beta-own', memory_version: 2, memory_owner: 'beta' }, /configured memory store belongs to another member/i],
+    ['a V2 store owned by another agent', { memory_store: 'beta-own', memory_version: 2, memory_owner: 'beta' }, /configured memory store belongs to another agent/i],
     ['an undeclared named store', { memory_store: 'missing-store' }, /configured memory store is unavailable/i],
     ['a V2 store with no known owner', { memory_store: 'ownerless', memory_version: 2, memory_owner: '' }, /configured memory store is unavailable/i],
   ] as const)('explains %s without offering a V1 downgrade', async (_case, memory, reason) => {
@@ -624,9 +624,9 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     const drawer = await screen.findByTestId('member-crew-summary')
     expect(drawer).toHaveTextContent(reason)
     expect(drawer).not.toHaveTextContent(/unavailable or belongs/i)
-    expect(drawer).not.toHaveTextContent(/This member uses its current memory \(V1\)\./)
-    expect(drawer).not.toHaveTextContent(/only this member can use it/i)
-    fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
+    expect(drawer).not.toHaveTextContent(/This agent uses its current memory \(V1\)\./)
+    expect(drawer).not.toHaveTextContent(/only this agent can use it/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent editor' }))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
   })
 
@@ -647,7 +647,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(screen.getByRole('separator', { name: /resize panel/i })).toBeInTheDocument()
   })
 
-  it('the Crew summary is the FIRST tab, selected by default, and has no close control', async () => {
+  it('the Agent summary is the FIRST tab, selected by default, and has no close control', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
@@ -655,7 +655,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // Ahead of the pinned Changes / Artifacts / Files block, not merely present.
     expect(tabs[0]).toBe(screen.getByTestId('side-panel-leading-tab'))
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
-    expect(tabs[0]).toHaveAccessibleName(/crew summary/i)
+    expect(tabs[0]).toHaveAccessibleName(/agent summary/i)
     // Structure, not label: no nested button means no close (or transfer) control.
     expect(tabs[0].querySelectorAll('button')).toHaveLength(0)
     // The chat page's own Summary (session summary) is a different tab and
@@ -663,7 +663,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(CREW_SUMMARY_TAB_ID).not.toBe('summary')
   })
 
-  it('selecting another tab swaps the body; the Crew summary comes back on its chip', async () => {
+  it('selecting another tab swaps the body; the Agent summary comes back on its chip', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
@@ -698,7 +698,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
   it('withholds the views this page cannot feed: no Changes chip, no Pins / Issues / Links / Summary rows', async () => {
     // The set itself is the contract the design lanes asked for: every view
     // fed by ChatPage-owned transcript indexes, plus the chat page's session
-    // Summary (an indistinguishable sibling of the Crew summary chip).
+    // Summary (an indistinguishable sibling of the Agent summary chip).
     expect([...MEMBERS_UNFED_VIEWS].sort()).toEqual(['changes', 'issues', 'links', 'pins', 'summary'])
     // Nothing else is withheld once the thread is confirmed: Side chat is
     // offered (its draft persists in the chat-core store, and the selection
@@ -714,9 +714,9 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
-    // Pinned block: Crew summary, Artifacts, Files — and NOT Changes.
+    // Pinned block: Agent summary, Artifacts, Files — and NOT Changes.
     expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual([
-      'Crew summary', 'Artifacts', 'Files',
+      'Agent summary', 'Artifacts', 'Files',
     ])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
@@ -818,7 +818,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     fireEvent.click(await rosterRow('oncall'))
     // In flight: thread still renders the cached key, panel is summary-only.
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Agent summary']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
     // Confirmed: the slot-bound views return.
@@ -852,7 +852,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ;(api.memberThread as ReturnType<typeof vi.fn>).mockReturnValueOnce(pending)
     fireEvent.click(await rosterRow('oncall'))
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Agent summary']),
     )
     // …while its BODY is the same mounted element, on the same key — not
     // unmounted, not re-keyed to the empty slot.
@@ -864,9 +864,9 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(body).toHaveAttribute('data-session-key', 'member-oncall')
   })
 
-  it('a stored tab focus survives the re-open round-trip: Artifacts stays focused, not reset to Crew summary', async () => {
+  it('a stored tab focus survives the re-open round-trip: Artifacts stays focused, not reset to Agent summary', async () => {
     // While the re-open POST is in flight every slot view is withheld and the
-    // strip falls back to the Crew summary — but that fallback must not be
+    // strip falls back to the Agent summary — but that fallback must not be
     // written into the bucket, or every switch would wipe the user's focus.
     let resolveRepost: (v: unknown) => void = () => {}
     const pending = new Promise((resolve) => { resolveRepost = resolve })
@@ -904,13 +904,13 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Agent summary']),
     )
     act(() => { resolveFirst({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: false }) })
     // Still unbound after the stale answer: the refusal stands, no slot-bound views.
     await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(screen.getByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Agent summary'])
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
 
@@ -918,12 +918,12 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // The roster binding says `member-oncall`, but the thread endpoint refuses
     // (a stale binding whose canonical key an ordinary slot now occupies). The
     // panel must not aim Side chat / Artifacts / Files at that occupant: with no
-    // confirmed slot, only the slot-free Crew summary is on the strip and the
+    // confirmed slot, only the slot-free Agent summary is on the strip and the
     // + menu offers nothing slot-bound.
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })], 'kirocrew', { thread: new Error('409') })
-    await screen.findByText(/Could not open this member's conversation/i)
+    await screen.findByText(/Could not open this agent's conversation/i)
     expect(await screen.findByTestId('member-crew-summary')).toBeInTheDocument()
-    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary'])
+    expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Agent summary'])
     fireEvent.pointerDown(
       screen.getByRole('button', { name: 'Open side panel tab' }),
       { button: 0, ctrlKey: false, pointerType: 'mouse' },
@@ -952,7 +952,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-thread-error')).toHaveTextContent(/Couldn't reconnect/i)
     await waitFor(() =>
-      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Crew summary']),
+      expect(screen.getAllByRole('tab').map((t) => t.getAttribute('aria-label'))).toEqual(['Agent summary']),
     )
     expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
   })
@@ -1018,7 +1018,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     expect(panelSitsBeside({ winW: 2000, rosterW: 264, isMobile: true })).toBe(false)
   })
 
-  it('the edit affordance lives in the Crew summary tab only and navigates to this member\'s editor in the crew manager', async () => {
+  it('the edit affordance lives in the Agent summary tab only and navigates to this member\'s editor in the crew manager', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
@@ -1028,7 +1028,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     // beats CapabilitiesPage's remembered last tab, and ?crew=<name> opens
     // THIS member's editor rather than the roster), so retargeting the jump
     // anywhere else fails here.
-    for (const btn of screen.getAllByRole('button', { name: /edit in crew manager/i })) {
+    for (const btn of screen.getAllByRole('button', { name: /edit this agent/i })) {
       fireEvent.click(btn)
       expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
       navigateSpy.mockClear()
@@ -1050,7 +1050,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
   it('the empty roster\'s call to action lands on the same create form as the header "+"', async () => {
     await renderPage([])
     const cta = await screen.findByTestId('member-empty-cta')
-    expect(cta).toHaveTextContent('Add member')
+    expect(cta).toHaveTextContent('Add agent')
     fireEvent.click(cta)
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
   })
@@ -1066,7 +1066,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
   it.each([
     ['the live clock', false],
     ['a clock 23 seconds after local midnight', true],
-  ])('the Crew summary folds the recorded activity by day, with the time strip behind each row, and honest counters (%s)', async (_label, pinMidnight) => {
+  ])('the Agent summary folds the recorded activity by day, with the time strip behind each row, and honest counters (%s)', async (_label, pinMidnight) => {
     const midnight = new Date()
     midnight.setHours(0, 0, 0, 0)
     if (pinMidnight) {
@@ -1141,7 +1141,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     }
   })
 
-  it('the Crew summary lists wake sources filtered to the member, via the shared predicates', async () => {
+  it('the Agent summary lists wake sources filtered to the member, via the shared predicates', async () => {
     vi.mocked(api.crons).mockResolvedValue({
       jobs: [
         { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'shared-template', member_id: 'oncall' },
@@ -1659,7 +1659,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     await screen.findByTestId('member-wake-error')
     // "Nothing wakes this member" would be a false statement about the member
     // when the request simply failed.
-    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+    expect(screen.queryByText(/nothing wakes this agent/i)).toBeNull()
   })
 
   it('a saturated activity window renders counters as floors (N+), never exact claims', async () => {
@@ -1938,7 +1938,7 @@ describe('MembersPage unread drain', () => {
   })
 })
 
-describe('MembersPage Crew summary — driving sessions', () => {
+describe('MembersPage Agent summary — driving sessions', () => {
   // The member operating model: the DM thread dispatches work into worker
   // sessions it opens (session_create) and steers (session_send). The backend
   // fences a member caller to the slots it created, so `created_by` on the
@@ -2230,14 +2230,14 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
     expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/auto patrol/i)
     expect(screen.getByTestId('member-wake-patrol')).toHaveTextContent(/every 20m/i)
-    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+    expect(screen.queryByText(/nothing wakes this agent/i)).toBeNull()
   })
 
   it('without a live patrol the Wake sources empty line still renders', async () => {
     await openDrawerWith({ loops: [loop({ active: false, stopped_reason: 'manual' })] })
     await waitFor(() => expect(screen.queryByTestId('member-wake-loading')).toBeNull())
     expect(screen.queryByTestId('member-wake-patrol')).toBeNull()
-    expect(screen.getByText(/nothing wakes this member/i)).toBeInTheDocument()
+    expect(screen.getByText(/nothing wakes this agent/i)).toBeInTheDocument()
   })
 
   it('a failed registry read renders the error state, never the affirmative empty state', async () => {
@@ -2347,14 +2347,14 @@ describe('MembersPage member edit entry (issue #9425)', () => {
 
   beforeEach(() => { localStorage.clear() })
 
-  it('the DM header carries a pencil right of the name, named "Edit member", that opens this member\'s editor', async () => {
+  it('the DM header carries a pencil right of the name, named "Edit agent", that opens this member\'s editor', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     const btn = await screen.findByTestId('member-edit-name-button')
     expect(btn.tagName).toBe('BUTTON')
     // The label names what the click does — the whole editor, not the builder.
-    expect(btn).toHaveAccessibleName('Edit member')
-    expect(btn).toHaveAttribute('title', 'Edit member')
+    expect(btn).toHaveAccessibleName('Edit agent')
+    expect(btn).toHaveAttribute('title', 'Edit agent')
     expect(btn.querySelector('svg')).not.toBeNull()
     // It sits INSIDE the title row, right AFTER the name — never a
     // header-level peer (docked wide, the header carries no panel control at
@@ -2419,7 +2419,7 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(header.className).toMatch(/\bpy-2\b/)
   })
 
-  it('the Crew summary\'s one text route agrees with the pencil on the destination', async () => {
+  it('the Agent summary\'s one text route agrees with the pencil on the destination', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     await screen.findByTestId('member-crew-summary')
@@ -2469,7 +2469,7 @@ describe('MembersPage default member, memory and URL', () => {
     // opened on arrival, its thread mounted, and the URL says so.
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-fresh-talker')
     expect(api.memberThread).toHaveBeenCalledWith('fresh-talker')
-    expect(screen.queryByText(/Pick a member/i)).toBeNull()
+    expect(screen.queryByText(/Pick an agent/i)).toBeNull()
     expect(currentUrl()).toBe('/members?member=fresh-talker')
     expect(localStorage.getItem(LAST_MEMBER_KEY)).toBe('fresh-talker')
   })

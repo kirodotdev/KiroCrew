@@ -198,9 +198,9 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and the strip is the slot-free bucket: only the Crew summary, no Side
+    // … and the strip is the slot-free bucket: only the Agent summary, no Side
     // Chat on the roster's unconfirmed `member-other` key.
-    await waitFor(() => expect(tabLabels()).toEqual(['Crew summary']))
+    await waitFor(() => expect(tabLabels()).toEqual(['Agent summary']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

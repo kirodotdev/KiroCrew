@@ -41,7 +41,6 @@ vi.mock('../api/client', () => ({
 }))
 
 const NOTE = /switch this agent's template anytime/
-const MEMBER_NOTE = /switch this member's template anytime/
 
 describe('template edit-later note — create-only', () => {
   it('renders under the Agent Template field in the create sheet', async () => {
@@ -51,14 +50,16 @@ describe('template edit-later note — create-only', () => {
     expect(screen.getByText(NOTE)).toBeTruthy()
   })
 
-  it('names the thing the way the surface that opened the form does: members-origin create says "member"', async () => {
-    // The Crew Members roster's "+" lands here with ?new=1&from=members and
-    // every string in that form says "member", never "agent" — the note is
-    // one of those strings, so it follows `subject` like the field hints do.
+  it('names the thing the same way whichever surface opened the form: both say "agent"', async () => {
+    // The Agents roster's "+" lands here with ?new=1&from=members, and the
+    // form speaks ONE vocabulary: the dialog is titled "Add agent" and every
+    // string in it says "agent", so the note reads the same from either
+    // origin. It still follows `subject` like the field hints do — what
+    // changed is that both subjects now resolve to the same noun.
     renderWithProviders(<KiroCrewAgentsPage />, { route: '/capabilities?tab=crews&new=1&from=members' })
-    await screen.findByRole('dialog', { name: 'Add crew member' })
-    expect(screen.getByText(MEMBER_NOTE)).toBeTruthy()
-    expect(screen.queryByText(/this agent/)).toBeNull()
+    await screen.findByRole('dialog', { name: 'Add agent' })
+    expect(screen.getByText(NOTE)).toBeTruthy()
+    expect(screen.queryByText(/this member/)).toBeNull()
   })
 
   it('does not render in the edit sheet, template pane included', async () => {

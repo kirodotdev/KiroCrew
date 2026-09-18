@@ -1357,19 +1357,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.chat-on-a-crew",
-    "label": "Chat on a crew",
-    "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
-    "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
+    "id": "developer.agent-mode",
+    "label": "Agent Mode",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_members",
+    "description": "The Agents page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1
   },
   {
-    "id": "developer.crew-members",
-    "label": "Crew Members",
-    "labelKey": "pages.developer.featurePreviewsTab.crew_members",
-    "description": "The Crew Members page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on.",
+    "id": "developer.chat-on-a-crew",
+    "label": "Chat on a crew",
+    "labelKey": "pages.developer.featurePreviewsTab.chat_on_a_crew",
+    "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote instance — another machine you have connected under Settings > Remote Instances. Unfinished: the session opens in that instance’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that instance’s pane.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1

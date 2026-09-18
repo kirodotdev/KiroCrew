@@ -76,7 +76,7 @@ registerBuiltinSurface({
 registerBuiltinSurface({
   navId: 'members',
   route: '/members',
-  label: surfaceMachineValue('Crew Members'),
+  label: surfaceMachineValue('Agents'),
   labelKey: 'nav.crew_members',
   icon: <CrewMemberMark />,
   group: surfaceMachineValue('Main'),
