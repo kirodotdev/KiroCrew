@@ -1414,7 +1414,7 @@ describe('AgentBackendTab detail card', () => {
     highlight('deepseek')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
     // The reason, from the routing enum rather than from prose written per agent.
-    expect(screen.getByText(/Nothing shows that this agent asks/)).toBeInTheDocument()
+    expect(screen.getByText(/cannot confirm this agent asks/)).toBeInTheDocument()
     // Listed, never offered: a button whose PATCH the wire refuses is not a button.
     expect(screen.queryByRole('button', { name: 'Use deepseek' })).toBeNull()
   })
