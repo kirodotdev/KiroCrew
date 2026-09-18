@@ -113,6 +113,10 @@ export function BrowserPanel() {
   // Separate from `!installCmdCopied`: idle and failed both read as not-copied,
   // but only the failure needs a notice (same split as MobileLoginCard).
   const [installCmdCopyFailed, setInstallCmdCopyFailed] = useState(false)
+  // Separate from the installCmd pair: both blocks can be on screen in
+  // different states, so one shared flag would flip the wrong label.
+  const [depsCmdCopied, setDepsCmdCopied] = useState(false)
+  const [depsCmdCopyFailed, setDepsCmdCopyFailed] = useState(false)
 
   const tokenMut = useMutation({
     mutationFn: (value: string) => api.setBrowserToken(value),
@@ -623,6 +627,84 @@ export function BrowserPanel() {
           from this screen.
         */
         <ErrorNotice message={data.last_error} askAgent />
+      )}
+
+      {/*
+        An ADVISORY notice, deliberately not an ErrorNotice: the install
+        succeeded, and a red failure banner would send the operator to retry a
+        download that worked. It reports a downloaded browser whose shared
+        libraries may not resolve on this host, naming what to install before the
+        first launch fails cryptically instead of after.
+
+        Muted rather than coloured, matching the panel's other explanatory text,
+        because the probe re-implements the loader's search and can be wrong on an
+        unusual host -- a warning colour would overstate a heuristic.
+      */}
+      {data.last_notice && !installing && (
+        <SettingsCard>
+          <div className="flex items-start gap-3">
+            {/* AlertTriangle, not Info: the panel's explainer rows use Info, and
+                sharing that glyph is part of why this reads as chrome. Uncoloured,
+                so it distinguishes without alarming. */}
+            <AlertTriangle size={18} className="text-muted shrink-0 mt-[2px]" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] text-muted mt-0 mb-0 break-words">
+                {data.last_notice}
+              </p>
+              {/*
+                A `<pre>` and a copy button, not selectable prose -- the same
+                treatment this panel gives `standalone_install`, and for the same
+                reason: this is a ~300-character package list that must be
+                transcribed EXACTLY, and a typo in it produces another opaque
+                failure for someone already stuck.
+
+                `copyToClipboard` awaited before the label flips, because the
+                Clipboard API is unavailable on a plain-HTTP remote gateway --
+                a plausible way to be reading this panel -- and a "Copied" that
+                lies is worse than none.
+              */}
+              {data.last_notice_command && (
+                <>
+                  <pre className="mt-1.5 mb-1 whitespace-pre-wrap break-all text-[12px] bg-bg-elevated rounded px-2 py-1.5">
+                    <code>{data.last_notice_command}</code>
+                  </pre>
+                  <Btn
+                    onClick={async () => {
+                      let ok = false
+                      try {
+                        ok = await copyToClipboard(data.last_notice_command as string)
+                      } catch {
+                        ok = false
+                      }
+                      setDepsCmdCopied(ok)
+                      setDepsCmdCopyFailed(!ok)
+                    }}
+                  >
+                    <Copy size={13} className="lucide-inline" />{' '}
+                    {depsCmdCopied
+                      ? i18nT('pages.settings.browserPanel.copied')
+                      : i18nT('pages.settings.browserPanel.copy_command')}
+                  </Btn>
+                  {/*
+                    The SAME treatment `standalone_install`'s copy button gets two
+                    cards up, and for the same reason: a copy that failed is most
+                    likely a plain-HTTP remote gateway with no Clipboard API, which
+                    is exactly the operator who cannot fix it alone. A muted line
+                    here made the identical failure quieter in the identical case.
+                  */}
+                  {depsCmdCopyFailed && (
+                    <ErrorNotice
+                      className="mt-2"
+                      message={i18nT('pages.settings.browserPanel.copy_failed')}
+                      variant="inline"
+                      askAgent
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </SettingsCard>
       )}
     </SettingsSection>
   )
