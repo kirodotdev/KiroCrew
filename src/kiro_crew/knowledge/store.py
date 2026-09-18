@@ -195,6 +195,17 @@ def is_auto_registered(props: dict) -> bool:
 # by type here for the same structural reason.)
 _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 
+# Source types that name a LIVE ACCOUNT BINDING rather than documents: a
+# ``bedrock_kb`` row is queried on the owner's AWS credentials against the
+# owner's consent grant and holds no items. A bundle is portable knowledge
+# and untrusted input, so it never carries such a row in either direction:
+# ``export_all`` leaves them out (nothing local to carry, and the row names
+# the owner's account and profile) and ``import_bundle`` refuses them, because
+# registering one is an owner action that runs validation and the target
+# check on the gated add-source path -- a bundle would register a KB against
+# whatever grant already exists without any of that.
+_ACCOUNT_BOUND_SOURCE_TYPES = ("bedrock_kb",)
+
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
 # ``async def`` scan cannot see, which is why this guard exists.
@@ -1121,10 +1132,13 @@ class KnowledgeStore:
         # artifact aggregate sources are containers of the same kind: each is
         # created empty ('active', no items, no state rows) the moment its
         # feature first needs it and filled by a later write, so an empty one
-        # is a feature waiting for its first document, not garbage.
+        # is a feature waiting for its first document, not garbage. bedrock_kb
+        # is excluded for a stronger reason: a live-retrieval source NEVER has
+        # items (queried at search time, nothing ingested), so without the
+        # exemption every gateway restart would silently delete it.
         orphan_pred = (
             "id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
-            "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact') "
+            "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact', 'bedrock_kb') "
             "AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) "
             # Only a source whose ingest has run to an end state is reclaimable.
             # Every other status is a claim on the row: 'pending' (the column
@@ -2599,23 +2613,45 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             relations = [dict(r) for r in self.db.execute("SELECT * FROM entity_relations")]
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
             mentions = [dict(r) for r in self.db.execute("SELECT * FROM mentions")]
+        bound_ph = ",".join("?" for _ in _ACCOUNT_BOUND_SOURCE_TYPES)
         return {
             "items": items,
             "entities": [dict(r) for r in self.db.execute("SELECT * FROM entities")],
             "relations": relations,
-            "sources": [dict(r) for r in self.db.execute("SELECT * FROM sources")],
+            # An account-bound source is not knowledge and does not travel; see
+            # _ACCOUNT_BOUND_SOURCE_TYPES.
+            "sources": [dict(r) for r in self.db.execute(
+                f"SELECT * FROM sources WHERE source_type NOT IN ({bound_ph})",  # noqa: S608
+                _ACCOUNT_BOUND_SOURCE_TYPES)],
             "source_locations": source_locations,
             "mentions": mentions,
         }
 
     def import_bundle(self, bundle: dict) -> dict:
         items_imported = 0
+        items_refused = 0
         entities_created = 0
         relations_rebuilt = 0
+        sources_refused = 0
+        refused_source_ids: set[str] = set()
+        refused_item_ids: set[str] = set()
         now = datetime.now().isoformat()
         self.db.execute("BEGIN IMMEDIATE")
         try:
             for src in bundle.get("sources", []):
+                # An account-bound source (a Bedrock KB queried on the owner's
+                # credentials) is never registered by a bundle: the bundle
+                # carries no consent, runs no validation and no target check,
+                # and the import route is open to every authenticated caller
+                # while registering such a source is an owner action. The row
+                # is refused and counted; the owner adds it through the gated
+                # add-source path. Its id is remembered so the items below that
+                # name it are refused with it rather than tripping the FK and
+                # failing the whole bundle.
+                if src.get("source_type") in _ACCOUNT_BOUND_SOURCE_TYPES:
+                    sources_refused += 1
+                    refused_source_ids.add(str(src.get("id")))
+                    continue
                 # Restore the status from the COLUMN, which ``export_all`` ships
                 # (it serializes SELECT * FROM sources). Reading the blob copy
                 # instead would land every bundle exported from a fixed store at
@@ -2658,7 +2694,30 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                      _without_sync_status(props_text),
                      self._initial_status_or_default(restored),
                      src.get("created_at", now), now))
+            # An account-bound source holds no items: it is queried live and
+            # nothing local is ever stored under it. A bundle item that names
+            # one -- the row this import just refused, or a row the owner
+            # already registered, whose id every authenticated caller can read
+            # off the sources list -- would land local content under a
+            # live-only source, so it is refused and counted like the row.
+            bound_ph = ",".join("?" for _ in _ACCOUNT_BOUND_SOURCE_TYPES)
+            bound_source_ids = refused_source_ids | {
+                str(row[0]) for row in self.db.execute(
+                    f"SELECT id FROM sources WHERE source_type IN ({bound_ph})",
+                    _ACCOUNT_BOUND_SOURCE_TYPES)
+            }
+
+            def _names_bound_source(source_id: object) -> bool:
+                # Ids are compared as text on both sides: the columns are TEXT
+                # and a bundle is untrusted input that may carry a number where
+                # the exporter wrote a string.
+                return source_id is not None and str(source_id) in bound_source_ids
+
             for item in bundle.get("items", []):
+                if _names_bound_source(item.get("source_id")):
+                    items_refused += 1
+                    refused_item_ids.add(str(item.get("id")))
+                    continue
                 raw_emb = item.get("embedding")
                 if isinstance(raw_emb, str) and raw_emb:
                     try:
@@ -2698,6 +2757,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if cursor.rowcount > 0:
                     entities_created += 1
             for rel in bundle.get("relations", []):
+                # A relation evidenced by a refused item is evidence of nothing
+                # this store holds; its FK would fail the whole bundle.
+                if str(rel.get("source_item_id")) in refused_item_ids:
+                    continue
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2707,12 +2770,17 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if cursor.rowcount > 0:
                     relations_rebuilt += 1
             for loc in bundle.get("source_locations", []):
+                if (_names_bound_source(loc["source_id"])
+                        or str(loc["item_id"]) in refused_item_ids):
+                    continue
                 self.db.execute(
                     "INSERT OR IGNORE INTO source_locations (id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (loc["id"], loc["item_id"], loc["source_id"], loc.get("chunk_range"),
                      loc.get("section_title"), loc.get("anchor"), loc.get("created_at", now)))
             for m in bundle.get("mentions", []):
+                if str(m["item_id"]) in refused_item_ids:
+                    continue
                 self.db.execute(
                     "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) "
                     "VALUES (?, ?, ?, ?)",
@@ -2722,7 +2790,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self.db.execute("ROLLBACK")
             raise
         self._load_graph()
-        return {"items_imported": items_imported, "entities_created": entities_created, "relations_rebuilt": relations_rebuilt}
+        return {"items_imported": items_imported, "items_refused": items_refused,
+                "entities_created": entities_created, "relations_rebuilt": relations_rebuilt,
+                "sources_refused": sources_refused}
 
     def close(self):
         """Close the calling thread's connection (other threads' connections
