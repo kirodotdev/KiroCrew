@@ -3693,6 +3693,8 @@
         "changes": "Changes",
         "clear": "Clear",
         "complete": "Complete",
+        "credits_not_reported": "Credit usage not reported",
+        "credits_used": "Used {{credits}} credits",
         "dismiss_done_count": "Dismiss done ({{count}})",
         "error": "Error",
         "issues": "Issues",

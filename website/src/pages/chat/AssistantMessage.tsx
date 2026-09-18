@@ -21,7 +21,7 @@ import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
-import { fmtCurrency, fmtDuration, fmtNumber, fmtUnit } from '../../i18n/format'
+import { fmtCredits, fmtCurrency, fmtDuration, fmtUnit } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
@@ -50,14 +50,6 @@ export function fmtTurnElapsed(ms: number): string {
   // before rounding seconds can push the remainder to 60).
   const total = Math.round(s)
   return fmtDuration([[Math.floor(total / 60), 'minute'], [total % 60, 'second']])
-}
-
-/** Trim credit noise: 2 decimals under 10, 1 decimal beyond ("0.25", "12.5"). */
-export function fmtCredits(c: number): string {
-  // Precision rule unchanged; only the decimal separator becomes locale-aware
-  // (de/fr/ru want `0,25`). Both bounds are pinned so trailing zeros survive.
-  const digits = c >= 10 ? 1 : 2
-  return fmtNumber(c, { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
 // A compact "Steered" chip rendered in place of the raw [STEERING …] marker.

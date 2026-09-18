@@ -111,6 +111,8 @@ def _info(**kw: Any) -> Any:
         "result": "",
         "result_path": "",
         "started": 1_700_000_000.0,
+        "elapsed": 0.0,
+        "credits": 0.0,
         "turns": 2,
         "last_tool": "fs_read",
         "parent_session_key": "dashboard:chat-1",
@@ -628,6 +630,78 @@ class TestApiSpawnStatus:
         assert data["result"].strip() == "all good"
         assert "orphaned by restart" in data["error"]
 
+    def test_disk_fallback_reads_tombstone_off_event_loop(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        agent_dir = tmp_path / "a1"
+        agent_dir.mkdir()
+        caller_thread = threading.get_ident()
+        reader_threads: list[int] = []
+
+        def _read_tombstone(_agent_id: str) -> dict[str, object]:
+            reader_threads.append(threading.get_ident())
+            return {"cause": "delivered", "elapsed": 4.0, "credits": 0.5}
+
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(mod, "read_state", lambda aid: {"task": "t"})
+        monkeypatch.setattr(mod, "read_tombstone", _read_tombstone)
+        monkeypatch.setattr(mod, "_agent_dir", lambda aid: agent_dir)
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        data = _payload(_run(mod.api_spawn_status, req))
+
+        assert reader_threads and reader_threads[0] != caller_thread
+        assert data["elapsed"] == 4.0
+        assert data["credits"] == 0.5
+
+    def test_disk_fallback_does_not_trust_agent_state_usage(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        agent_dir = tmp_path / "a1"
+        agent_dir.mkdir()
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(
+            mod,
+            "read_state",
+            lambda aid: {"task": "t", "elapsed": 999.0, "credits": 999.0},
+        )
+        monkeypatch.setattr(
+            mod,
+            "read_tombstone",
+            lambda aid: {"cause": "delivered", "elapsed": 4.0, "credits": 0.5},
+        )
+        monkeypatch.setattr(mod, "_agent_dir", lambda aid: agent_dir)
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        data = _payload(_run(mod.api_spawn_status, req))
+
+        assert data["elapsed"] == 4.0
+        assert data["credits"] == 0.5
+
+    @pytest.mark.parametrize("value", [True, -1, float("nan"), float("inf"), "0.5"])
+    def test_disk_fallback_omits_unsafe_tombstone_usage(
+        self, monkeypatch, tmp_path: Path, value: object
+    ) -> None:
+        agent_dir = tmp_path / "a1"
+        agent_dir.mkdir()
+        mgr = _mgr()
+        mgr.get.return_value = None
+        monkeypatch.setattr(mod, "read_state", lambda aid: {"task": "t"})
+        monkeypatch.setattr(
+            mod,
+            "read_tombstone",
+            lambda aid: {"cause": "delivered", "elapsed": value, "credits": value},
+        )
+        monkeypatch.setattr(mod, "_agent_dir", lambda aid: agent_dir)
+        req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
+
+        data = _payload(_run(mod.api_spawn_status, req))
+
+        assert "elapsed" not in data
+        assert "credits" not in data
+
     def test_disk_fallback_reports_unknown_cause_on_corrupt_tombstone(
         self, monkeypatch, tmp_path: Path
     ) -> None:
@@ -676,12 +750,19 @@ class TestApiSpawnStatus:
         result_file.write_text("full transcript", encoding="utf-8")
         mgr = _mgr()
         mgr.get.return_value = _info(
-            done=True, result="truncated", result_path=str(result_file), error="oops"
+            done=True,
+            result="truncated",
+            result_path=str(result_file),
+            error="oops",
+            elapsed=28.5,
+            credits=0.75,
         )
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         data = _payload(_run(mod.api_spawn_status, req))
         assert data["result"] == "full transcript"
         assert data["error"] == "oops"
+        assert data["elapsed"] == 28.5
+        assert data["credits"] == 0.75
 
     def test_done_agent_falls_back_to_in_memory_result_on_read_error(self, tmp_path: Path) -> None:
         mgr = _mgr()
@@ -703,18 +784,30 @@ class TestApiSpawnList:
         mgr = _mgr(
             all_agents=[
                 _info(id="run", done=False),
-                _info(id="fin", done=True, result="r", error="e", outcome="failed"),
+                _info(
+                    id="fin",
+                    done=True,
+                    result="r",
+                    error="e",
+                    outcome="failed",
+                    elapsed=42.5,
+                    credits=1.25,
+                ),
             ]
         )
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert [a["id"] for a in agents] == ["run", "fin"]
         assert "turns" in agents[0] and "result" not in agents[0]
         assert agents[1]["outcome"] == "failed" and agents[1]["stopped"] is False
+        assert "elapsed" not in agents[1]
+        assert "credits" not in agents[1]
 
     def test_finished_agent_without_error_reports_empty_string(self) -> None:
         mgr = _mgr(all_agents=[_info(done=True, error="")])
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert agents[0]["error"] == ""
+        assert "elapsed" not in agents[0]
+        assert "credits" not in agents[0]
 
 
 class TestApiSpawnRetry:

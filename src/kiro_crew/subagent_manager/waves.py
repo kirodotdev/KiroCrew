@@ -9,6 +9,7 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _RESET_TIMEOUT,
+        SubagentDelivery,
         SubagentInfo,
         asyncio,
         logger,
@@ -396,7 +397,7 @@ class WaveDigestCoordinator(ManagerComponent):
             return
         self._manager._settle_digest_holds(info)
 
-    async def settle_queued_delivery_impl(self, agent_ids: list[str]) -> None:
+    async def settle_queued_delivery_impl(self, deliveries: list[SubagentDelivery]) -> None:
         """Write the ``delivered`` tombstones for completions consumed from a queue.
 
         The queued-injection path deliberately leaves a completion
@@ -420,7 +421,8 @@ class WaveDigestCoordinator(ManagerComponent):
         The tombstone write itself is offloaded: it fsyncs, and this runs on the
         gateway event loop.
         """
-        for agent_id in agent_ids:
+        for delivery in deliveries:
+            agent_id = delivery.agent_id
             gate = self._manager._teardown_gates.get(agent_id)
             if gate is not None and not gate.is_set():
                 try:
@@ -432,7 +434,12 @@ class WaveDigestCoordinator(ManagerComponent):
                         agent_id,
                     )
             try:
-                await asyncio.to_thread(mark_delivered, agent_id)
+                await asyncio.to_thread(
+                    mark_delivered,
+                    agent_id,
+                    elapsed=delivery.elapsed,
+                    credits=delivery.credits,
+                )
             except Exception:
                 logger.debug(
                     "Failed to mark drained subagent %s delivered", agent_id, exc_info=True
@@ -457,9 +464,13 @@ class WaveDigestCoordinator(ManagerComponent):
         A failing tombstone write is logged and skipped, never raised: one
         unwritable run folder must not strand the rest of the chunk.
         """
-        ids, info._digest_settle_ids = info._digest_settle_ids, []
-        for _hid in ids:
+        deliveries, info._digest_settle_deliveries = info._digest_settle_deliveries, []
+        for delivery in deliveries:
             try:
-                mark_delivered(_hid)
+                mark_delivered(
+                    delivery.agent_id,
+                    elapsed=delivery.elapsed,
+                    credits=delivery.credits,
+                )
             except Exception:
-                logger.debug("Failed to settle held subagent %s", _hid, exc_info=True)
+                logger.debug("Failed to settle held subagent %s", delivery.agent_id, exc_info=True)
