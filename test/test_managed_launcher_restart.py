@@ -161,6 +161,7 @@ print("PROBE=" + json.dumps({
     "pythonpath": os.environ["PYTHONPATH"],
     "utf8": os.environ.get("PYTHONUTF8"),
     "encoding": os.environ.get("PYTHONIOENCODING"),
+    "dont_write_bytecode": sys.dont_write_bytecode,
 }), flush=True)
 if os.environ.pop("PROBE_FIRST", ""):
     sys.path.extend(DEPENDENCY_PATHS)
@@ -267,6 +268,8 @@ def test_managed_bundle_switch(tmp_path, mode, remove_a):
         "TMP": str(root),
         "TEMP": str(root),
         "PROBE_FIRST": "1",
+        # Package directory symlinks lead into the real checkout.
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONUTF8": "0",
         "PYTHONIOENCODING": "ascii",
     }
@@ -278,6 +281,7 @@ def test_managed_bundle_switch(tmp_path, mode, remove_a):
     ]
     assert len(records) == 2, result.stdout
     before, after = records
+    assert before["dont_write_bytecode"] is after["dont_write_bytecode"] is True
     assert before["core"] == before["companion"] == "A"
     assert before["executable"] == str(root / "A" / "python")
     assert after["core"] == after["companion"] == "B"
