@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -168,7 +169,7 @@ describe('ChatEmbed', () => {
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
-      const input = screen.getByLabelText('Chat message') as HTMLInputElement
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
 
       await act(async () => {
         fireEvent.change(input, { target: { value: 'test message' } })
@@ -192,7 +193,7 @@ describe('ChatEmbed', () => {
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
-      const input = screen.getByLabelText('Chat message') as HTMLInputElement
+      const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
 
       await act(async () => {
         fireEvent.change(input, { target: { value: 'hello' } })
@@ -284,6 +285,100 @@ describe('ChatEmbed', () => {
       })
 
       expect(mockPost).not.toHaveBeenCalled()
+    })
+
+    it('Shift+Enter inserts a newline into the draft instead of sending', async () => {
+      // userEvent's keystroke pipeline wedges under this file's strict fake
+      // timers — measured: setup({ advanceTimers: vi.advanceTimersByTime })
+      // and the same with delay: null both time the test out at 15s. The
+      // in-tree bridge that works elsewhere pairs advanceTimers with
+      // vi.useFakeTimers({ shouldAdvanceTime: true }) (FolderPanel.search),
+      // but this file's beforeEach arms strict fake timers for every test and
+      // rewiring that risks its 35 neighbours. This test needs no timer
+      // control, so it runs on real ones (afterEach/beforeEach re-arm fake
+      // timers for the neighbours); nothing here waits on the wall clock, so
+      // the 5s refetchInterval cannot fire inside it.
+      vi.useRealTimers()
+      const user = userEvent.setup()
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      const composer = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+
+      await user.click(composer)
+      await user.keyboard('line1{Shift>}{Enter}{/Shift}line2')
+
+      // The break must LAND in the draft — a single-line box silently drops it,
+      // which is exactly the reported defect. And it must not have sent.
+      expect(composer.value).toBe('line1\nline2')
+      expect(mockPost).not.toHaveBeenCalled()
+    })
+
+    it('the composer is a textarea attached to the bounded auto-grow ref', async () => {
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      const composer = screen.getByLabelText('Chat message') as HTMLTextAreaElement
+      // A textarea, resting one row tall — the element swap itself. (happy-dom
+      // reports `rows` as a string, so compare through Number.)
+      expect(composer.tagName).toBe('TEXTAREA')
+      expect(Number(composer.rows)).toBe(1)
+
+      // Attached to useComposerDraft's autosize ref: growing content resizes the
+      // box, and past the 240px default cap it stops (scrolls instead). The test
+      // DOM never lays out, so scrollHeight is pinned to model the content
+      // height — the same technique as useComposerDraft's own auto-grow tests.
+      Object.defineProperty(composer, 'scrollHeight', { value: 120, configurable: true })
+      await act(async () => {
+        fireEvent.change(composer, { target: { value: 'a few\nlines' } })
+      })
+      expect(composer.style.height).toBe('120px')
+
+      Object.defineProperty(composer, 'scrollHeight', { value: 9999, configurable: true })
+      await act(async () => {
+        fireEvent.change(composer, { target: { value: 'a very long draft' } })
+      })
+      expect(composer.style.height).toBe('240px')
+    })
+
+    it('the border lives outside the height math and the class contract is pinned', async () => {
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+      })
+      const composer = screen.getByLabelText('Chat message')
+      const classes = composer.className.split(/\s+/)
+
+      // The auto-grow effect writes a BORDER-BOX height taken from scrollHeight,
+      // which excludes borders — a real border on the auto-sized element leaves
+      // the box exactly its border-widths short of the content at EVERY height,
+      // clipping descenders on the last visible line. The field's edge is drawn
+      // with an inset ring (box-shadow — no layout space) instead, the
+      // OAuthRelayAffordance field precedent; forced-colors keeps a real border
+      // (ring is invisible there; the borders-back cost is bounded to 2px of
+      // scrollable overflow past one line — at rest the floor absorbs it).
+      // jsdom/happy-dom do no layout, so this pins the class contract, the
+      // same convention flexInputMinWidth.test.tsx states.
+      expect(classes).toContain('ring-1')
+      expect(classes).toContain('ring-inset')
+      expect(classes).toContain('ring-border')
+      expect(classes).not.toContain('border')
+      expect(classes).not.toContain('border-border')
+
+      // The hook's docstring delegates the EMPTY size to the element's own CSS
+      // floor; this floor reproduces the old input's 38px resting geometry and
+      // guards the hidden mount: a display:none mount measures scrollHeight 0
+      // and would otherwise write a 0px height that persists until the draft
+      // next changes.
+      expect(classes).toContain('min-h-[38px]')
+
+      // No drag-resize; bounded growth scrolls vertically past the cap.
+      expect(classes).toContain('resize-none')
+      expect(classes).toContain('overflow-y-auto')
+
+      // The row bottom-aligns so the send button holds its resting position
+      // while the box grows.
+      const row = composer.parentElement as HTMLElement
+      expect(row.className.split(/\s+/)).toContain('items-end')
     })
   })
 
@@ -455,7 +550,7 @@ describe('ChatEmbed', () => {
         vi.advanceTimersByTime(100)
       })
 
-      expect((screen.getByLabelText('Chat message') as HTMLInputElement).disabled).toBe(false)
+      expect((screen.getByLabelText('Chat message') as HTMLTextAreaElement).disabled).toBe(false)
     })
   })
 })
@@ -541,7 +636,7 @@ describe('ChatEmbed follow-up options', () => {
     await act(async () => {
       vi.advanceTimersByTime(100)
     })
-    const input = screen.getByLabelText('Chat message') as HTMLInputElement
+    const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
 
     // Chip clicks are debounced 220ms (so a double-click can still fire the
     // distinct "send now" gesture) whenever onSend is supplied, as it is here.
@@ -566,18 +661,20 @@ describe('ChatEmbed follow-up options', () => {
     await act(async () => {
       vi.advanceTimersByTime(100)
     })
-    const input = screen.getByLabelText('Chat message') as HTMLInputElement
+    const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
 
     // Chip clicks are debounced 220ms (so a double-click can still fire the
     // distinct "send now" gesture) whenever onSend is supplied, as it is here.
+    // The chip is addressed by BUTTON role: once the first pick lands in the
+    // draft, a bare text query would match the textarea's content too.
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('Run tests')
 
     await act(async () => {
-      fireEvent.click(screen.getByText('Run tests'))
+      fireEvent.click(screen.getByRole('button', { name: 'Run tests' }))
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('')
@@ -613,7 +710,7 @@ describe('ChatEmbed follow-up options', () => {
     await act(async () => {
       vi.advanceTimersByTime(100)
     })
-    const input = screen.getByLabelText('Chat message') as HTMLInputElement
+    const input = screen.getByLabelText('Chat message') as HTMLTextAreaElement
     expect(screen.getByText('Go')).toBeInTheDocument()
 
     // Chip clicks are debounced 220ms (so a double-click can still fire the
