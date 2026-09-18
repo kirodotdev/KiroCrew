@@ -86,6 +86,16 @@ const INSTALLING_STATUS = "Finishing installation…";
 const RESTARTING_STATUS = "Restarting Kiro Crew to finish the update…";
 const POLL_INTERVAL_MS = 500;
 const ADOPTED_RECOVERY_WAIT_MS = 30_000;
+// loadFile query that tells loading.html it is being painted by a reconnect
+// path rather than a cold boot, so it can offer its exit control at once
+// (loading.html reads `reconnect=1`). A query, not an IPC send: the splash
+// loads asynchronously and a message sent right after loadFile can be missed.
+const SPLASH_RECONNECT_QUERY = Object.freeze({ reconnect: "1" });
+// loadFile query that tells loading.html it is painted into the main window:
+// the one window whose close hides to tray and keeps the connect loop alive.
+// A connection window is destroyed by close, so the page words its close hint
+// from this flag (loading.html reads `primary=1`; absent means not primary).
+const SPLASH_PRIMARY_QUERY = Object.freeze({ primary: "1" });
 // How long this instance stays alive waiting for a successor copy of the app
 // to prove itself by serving on the gateway port (relaunchViaConfirmedSuccessor):
 // Electron boot plus the successor's own gateway budget, with margin.
@@ -256,7 +266,7 @@ function createGatewaySupervisor({
       if (window && !window.isDestroyed()) {
         try {
           window.webContents.loadFile(path.join(dirname, "loading.html"), {
-            query: { accent: currentThemeAccent() },
+            query: splashQuery(window, { accent: currentThemeAccent() }),
           });
         } catch { /* window may be tearing down */ }
       }
@@ -339,6 +349,19 @@ function createGatewaySupervisor({
   function currentThemeAccent() {
     const configured = store.get("themeAccent") || "";
     return THEME_ACCENT_RE.test(configured) ? configured : DEFAULT_THEME_ACCENT;
+  }
+
+  /**
+   * The loadFile query every loading.html painter uses. `primary` is decided
+   * here, from the window being painted, so no painter can mark a connection
+   * window as the main one (see SPLASH_PRIMARY_QUERY).
+   */
+  function splashQuery(window, { reconnect = false, accent = "" } = {}) {
+    const query = {};
+    if (accent) query.accent = accent;
+    if (reconnect) Object.assign(query, SPLASH_RECONNECT_QUERY);
+    if (window === mainWindow()) Object.assign(query, SPLASH_PRIMARY_QUERY);
+    return query;
   }
 
   // NOTE: /api/health carries app identity; /api/status does not.
@@ -1354,7 +1377,7 @@ function createGatewaySupervisor({
 
   async function reconnectExternalGateway(window) {
     const webContents = window.webContents;
-    try { webContents.loadFile(path.join(dirname, "loading.html")); }
+    try { webContents.loadFile(path.join(dirname, "loading.html"), { query: splashQuery(window, { reconnect: true }) }); }
     catch { /* window may be tearing down */ }
     if (!window || window.isDestroyed() || quitting()) return;
     // No reveal here: network/tunnel healing must not re-surface a window the
@@ -1376,7 +1399,7 @@ function createGatewaySupervisor({
 
   async function reconnectOrRespawnAdoptedGateway(window) {
     const webContents = window.webContents;
-    try { webContents.loadFile(path.join(dirname, "loading.html")); }
+    try { webContents.loadFile(path.join(dirname, "loading.html"), { query: splashQuery(window, { reconnect: true }) }); }
     catch { /* window may be tearing down */ }
     if (!window || window.isDestroyed() || quitting()) return;
     sendStatus("Gateway stopped responding — waiting for it to recover…");
@@ -1501,7 +1524,7 @@ function createGatewaySupervisor({
     const healthUrl = `${targetBackendUrl}/api/status`;
     const webContents = window.webContents;
     webContents.loadFile(path.join(dirname, "loading.html"), {
-      query: { accent: currentThemeAccent() },
+      query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
     });
     // Cold boot and user-clicked retries raise. Autonomous liveness recovery
     // loads into the existing hidden/minimized window without touching focus.

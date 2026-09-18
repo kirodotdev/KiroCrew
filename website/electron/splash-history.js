@@ -48,21 +48,34 @@
 const TRANSIENT_SHELL_PAGES = new Set(["loading.html", "token-prompt.html"]);
 
 /**
- * True when `url` is one of the transient shell pages this process loads from
- * disk. Only file: URLs qualify — the dashboard is always http(s), so a
- * dashboard route that merely CONTAINS "loading.html" in a path or query can
- * never match.
+ * The basename of a shell page this process loaded from disk, or "" for any
+ * other URL. Only file: URLs qualify — the dashboard is always http(s), so a
+ * dashboard route that merely CONTAINS "loading.html" in a path or query
+ * yields "" — and the query string is ignored (the supervisor appends
+ * ?reconnect=1&primary=1&accent=... to the splash). Junk yields "" rather
+ * than throwing, so a caller that gates on a page name fails closed.
+ *
+ * Shared by the history pruning below and by the window-control admission in
+ * window-lifecycle.js, so the parse exists once and both read the same page
+ * name from the same URL shape.
  */
-function isTransientShellPage(url) {
-  if (typeof url !== "string" || !url.startsWith("file:")) return false;
+function fileShellPageBasename(url) {
+  if (typeof url !== "string" || !url.startsWith("file:")) return "";
   let pathname;
   try {
     pathname = new URL(url).pathname;
   } catch {
-    return false;
+    return "";
   }
-  const base = pathname.slice(pathname.lastIndexOf("/") + 1);
-  return TRANSIENT_SHELL_PAGES.has(base);
+  return pathname.slice(pathname.lastIndexOf("/") + 1);
+}
+
+/**
+ * True when `url` is one of the transient shell pages this process loads from
+ * disk (see fileShellPageBasename for which URLs qualify).
+ */
+function isTransientShellPage(url) {
+  return TRANSIENT_SHELL_PAGES.has(fileShellPageBasename(url));
 }
 
 /**
@@ -133,4 +146,9 @@ function armSplashHistoryClear(wc, { isAlive = () => true, log = () => {} } = {}
   return onDidFinishLoad;
 }
 
-module.exports = { armSplashHistoryClear, transientEntryIndexes, isTransientShellPage };
+module.exports = {
+  armSplashHistoryClear,
+  transientEntryIndexes,
+  isTransientShellPage,
+  fileShellPageBasename,
+};

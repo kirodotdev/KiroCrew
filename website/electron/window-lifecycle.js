@@ -6,7 +6,7 @@ const path = require("path");
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
 const { createHangRecovery } = require("./hang-recovery");
-const { armSplashHistoryClear } = require("./splash-history");
+const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { createDisplayMediaHandler } = require("./display-media");
@@ -1745,10 +1745,43 @@ function createWindowLifecycle(options) {
     applyFocusModeChrome(win, visible, { positionTrafficLights });
   }
 
-  function handleWindowControl(sender, action) {
-    if (!LINUX_FRAMELESS) return;
+  function handleWindowControl(sender, action, senderFrame) {
     const win = windowForWebContents(sender);
-    if (win) applyWindowControl(win, action);
+    if (!win) return;
+    if (LINUX_FRAMELESS) {
+      applyWindowControl(win, action);
+      return;
+    }
+    // Off Linux the OS draws the captions, so this channel stays closed to the
+    // dashboard. The one admission is `close` from the splash (loading.html):
+    // it is painted into this window with no chrome of its own, and on macOS
+    // the window may have no reachable close control at that moment -- native
+    // fullscreen hides the traffic lights, and focus mode hides them in
+    // windowed mode with nothing left to restore them once the dashboard
+    // document is gone. `close` runs the window's own close handler, which
+    // hides to tray and leaves fullscreen first, exactly like the native
+    // button. Admission uses the immutable URL of the top-level frame that sent
+    // the IPC; the WebContents current URL may change before this handler runs.
+    // The page is named by exactly one literal: the splash is the only shell
+    // page that carries a close control. The token prompt is a transient shell
+    // page for history pruning (splash-history.js) but sends nothing on this
+    // channel, so it gets no admission on it. fileShellPageBasename yields ""
+    // for anything that is not a file: URL, so a dashboard route that merely
+    // mentions loading.html never matches, and junk fails closed.
+    if (
+      action !== "close"
+      || fileShellPageBasename(sendingMainFrameUrl(sender, senderFrame)) !== "loading.html"
+    ) return;
+    applyWindowControl(win, "close");
+  }
+
+  function sendingMainFrameUrl(sender, senderFrame) {
+    try {
+      if (!senderFrame || senderFrame !== sender?.mainFrame) return "";
+      return typeof senderFrame.url === "string" ? senderFrame.url : "";
+    } catch {
+      return ""; // missing, malformed, or torn down: fail closed
+    }
   }
 
   function setThemeMode(pref) {

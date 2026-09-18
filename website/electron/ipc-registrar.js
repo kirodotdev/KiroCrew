@@ -122,7 +122,7 @@ function createIpcRegistrar({
     ipcMain.on("focus-mode-chrome", (event, visible) =>
       windows.chrome.focusMode(event.sender, visible));
     ipcMain.on("window-control", (event, action) =>
-      windows.chrome.windowControl(event.sender, action));
+      windows.chrome.windowControl(event.sender, action, event.senderFrame));
     ipcMain.on("theme-mode-changed", (_event, pref) =>
       windows.chrome.setThemeMode(pref));
     ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
