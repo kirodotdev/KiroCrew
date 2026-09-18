@@ -195,6 +195,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "blocks_reads": ("property", False, False, "(self) -> 'bool'"),
     "bump_tags_revision": ("function", False, False, "(self) -> 'str'"),
     "cancel_close": ("function", False, False, "(self) -> 'None'"),
+    "claim_cwd": ("property", False, False, "(self) -> 'str | None'"),
     "clear_mcp_report": ("function", False, False, "(self) -> 'bool'"),
     "clear_todo_recovery_pending": ("function", False, False, "(self) -> 'None'"),
     "deferred_context_count": ("function", False, False, "(self) -> 'int'"),
@@ -269,6 +270,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "pin_completed_todo_rows": ("function", False, False, "(self) -> 'None'"),
     "purge_chunks": ("function", False, False, "(self) -> 'int'"),
     "project": ("property", False, False, "(self) -> 'str'"),
+    "project_cleared": ("property", False, False, "(self) -> 'bool'"),
     "push_wire_frame": ("function", False, False, "(self, cls: 'str', content: 'str') -> 'None'"),
     "queue_append": (
         "function",

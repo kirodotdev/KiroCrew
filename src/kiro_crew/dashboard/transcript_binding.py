@@ -27,10 +27,11 @@ if TYPE_CHECKING:
 class TranscriptBinding:
     """The cells a slot shares with every live alias on its transcript."""
 
-    __slots__ = ("project", "assigned", "_commit")
+    __slots__ = ("project", "cleared", "assigned", "_commit")
 
-    def __init__(self, project: str = "", assigned: bool = False) -> None:
+    def __init__(self, project: str = "", assigned: bool = False, cleared: bool = False) -> None:
         self.project = project
+        self.cleared = cleared
         # Whether the group has chosen its directory: it held one, or cleared one it
         # held. A slot born linked and never seeded holds "" without choosing it.
         self.assigned = assigned
@@ -109,7 +110,7 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
             if own.assigned and not shared.assigned:
                 # The peer never chose a directory (born linked, never seeded); the
                 # joiner's own value, often just read from disk, is the group's.
-                shared.project = own.project
+                shared.project, shared.cleared = own.project, own.cleared
                 shared.assigned = True
             slot._binding = shared
             if seeded:
@@ -126,7 +127,9 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
             return
     if any(other._binding is slot._binding for other in live):
         slot._binding = TranscriptBinding(
-            project=slot._binding.project, assigned=slot._binding.assigned
+            project=slot._binding.project,
+            assigned=slot._binding.assigned,
+            cleared=slot._binding.cleared,
         )
 
 
@@ -204,3 +207,11 @@ def seed_project_from_disk(state: Any, slot: Any, value: str) -> None:
     slot.project = value
     if shared and changed:
         _reset_if_running(state, slot)
+
+
+def seed_cleared_from_disk(state: Any, slot: Any, value: bool) -> None:
+    """Restore the stored clear marker unless a live alias's choice outranks disk."""
+    if not live_project_outranks_disk(state, slot):
+        slot.project_cleared = value
+        if value and isinstance(getattr(slot, "_binding", None), TranscriptBinding):
+            slot._binding.assigned = True

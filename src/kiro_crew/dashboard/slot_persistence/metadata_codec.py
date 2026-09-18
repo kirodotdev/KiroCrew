@@ -508,6 +508,13 @@ def _read_project(r: _Read) -> None:
     seed_project_from_disk(r.state, r.slot, r.meta.get("project") or "")
 
 
+def _read_project_cleared(r: _Read) -> None:
+    from kiro_crew.dashboard.transcript_binding import seed_cleared_from_disk
+
+    # Literal True only: the STRING "false" is truthy, and would restore a clear never made.
+    seed_cleared_from_disk(r.state, r.slot, r.meta.get("project_cleared") is True)
+
+
 def _read_executor(r: _Read) -> None:
     # The marker is restored INDEPENDENTLY of its target fields. The line is a
     # file, so a truncated write or a hand-edit can leave ``executor="remote"``
@@ -959,6 +966,15 @@ FIELDS: tuple[Field, ...] = (
         merge=_always(lambda s: s.project),
         read=_read_project,
     ),
+    # Restored independently of the project, which spells a clear and a never-set one alike.
+    Field(
+        "project_cleared",
+        _ALL,
+        attr="project_cleared",
+        line=_flag(lambda s: s.project_cleared),
+        merge=_always(lambda s: bool(s.project_cleared)),
+        read=_read_project_cleared,
+    ),
     # Written while a local turn is between admission and teardown and omitted
     # otherwise -- slot ownership makes the omission the durable clear; the merge,
     # which cannot delete a key, writes the cleared ``0`` / ``None``.
@@ -1359,6 +1375,7 @@ LINE_ORDER: tuple[str, ...] = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_cleared",
     "executor",
     "instance_id",
     "remote_slot",
@@ -1420,6 +1437,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "crew_mode_agent",
     "app_agent_owner",
     "project",
+    "project_cleared",
     "app",
     "origin",
     "created_by",

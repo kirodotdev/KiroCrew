@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import copy
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from test_cleared_project_not_resurrected import _make_state
 
@@ -30,6 +31,7 @@ def _state(tmp_path, monkeypatch):
     state = _make_state(tmp_path)
     # A metadata line must exist so a message-less forced save reaches the merge.
     state.conversation_log.update_metadata(KEY, {"folder_id": "f1"})
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda k, c, *_: c or "/w/_default")
     return state
 
 
@@ -483,6 +485,17 @@ def test_a_restored_tab_keeps_a_live_aliases_clear(tmp_path, monkeypatch):
     )
 
     assert live.project == restored.project == ""
+
+
+def test_a_restored_clear_survives_joining_an_unseeded_alias(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.slot_persistence import metadata_codec as codec
+
+    state = _state(tmp_path, monkeypatch)
+    fallback = state.get_or_create_slot("workflow-r1", linked_session_key=KEY)
+    restored = state.get_or_create_slot("r")
+    meta = {"linked_session_key": KEY, "project": "", "project_cleared": True}
+    codec.apply(state, restored, meta, codec.Restore(name="r"))
+    assert restored._binding is fallback._binding and fallback.project_cleared is True
 
 
 def test_seeding_a_running_alias_arms_its_reset(tmp_path, monkeypatch):

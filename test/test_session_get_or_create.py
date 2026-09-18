@@ -1227,6 +1227,7 @@ class TestGetOrCreatePoolClaim:
             seen[session_key] = kwargs.get("cwd")
             provider = base(session_key, agent, channel_id, **kwargs)
             provider.startup_notice = None
+            provider.cwd = kwargs.get("cwd") or str(tmp_path / "default")
             providers[session_key] = provider
             return provider
 
@@ -1238,6 +1239,8 @@ class TestGetOrCreatePoolClaim:
             patch("kiro_crew.sandbox_tiers._clamp_sandbox_mode", side_effect=lambda mode: mode),
         ):
             await mgr.get_or_create("k-old", cwd=str(old_tree), fallback_hidden_cwd=True)
+            mgr.release("k-old")
+            again = await mgr.get_or_create("k-old", cwd=str(old_tree), fallback_hidden_cwd=True)
             mgr.release("k-old")
             await mgr.get_or_create("k-project", cwd=str(project), fallback_hidden_cwd=True)
             mgr.release("k-project")
@@ -1254,12 +1257,14 @@ class TestGetOrCreatePoolClaim:
             mgr.release("k-subagent")
         assert not seen["k-old"]
         notice = providers["k-old"].startup_notice
+        assert again[0] is providers["k-old"] and again[1] is False, "the fallback was evicted"
         assert notice[0] == HIDDEN_SCRATCH_CWD_NOTICE
         assert str(old_tree) in notice[1]
         assert seen["k-project"] == str(project)
         assert providers["k-project"].startup_notice is None
         assert seen["k-shared"] == str(old_tree)
         assert providers["k-shared"].startup_notice is None
+
         assert seen["k-subagent"] == str(old_tree)
         assert providers["k-subagent"].startup_notice is None
         await mgr.close_all()
@@ -1497,5 +1502,36 @@ class TestRealClaimJoinsAnInFlightEagerStart:
         assert real_new is True
         assert mgr.count == 1
         assert mgr._allocation_state.speculative_starts == {}
+        mgr.release(key)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_joined_claim_follows_an_arm_that_moved_while_it_waited(self, cfg, tmp_path):
+        gate = asyncio.Event()
+        providers: list = []
+        base = self._gated_factory(gate, providers)
+
+        def factory(*args, **kwargs):
+            provider = base(*args, **kwargs)
+            provider.cwd = kwargs.get("cwd")
+            return provider
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        key, p2, p3 = "dashboard:join-arm", str(tmp_path / "p2"), str(tmp_path / "p3")
+        mgr.mark_retire_on_next_claim(key, p2)
+        eager = asyncio.create_task(mgr.get_or_create(key, speculative=True))
+        await async_wait_until(lambda: len(providers) == 1, describe=lambda: len(providers))
+        real = asyncio.create_task(mgr.get_or_create(key))
+        await async_wait_until(
+            lambda: self._real_claim_parked(mgr, key, providers),
+            describe=lambda: len(providers),
+        )
+        mgr.mark_retire_on_next_claim(key, p3)
+        gate.set()
+        await await_until(eager, what="eager start")
+        mgr.release(key)
+        real_provider, _new, _ = await await_until(real, what="real claim")
+
+        assert real_provider.cwd == p3
         mgr.release(key)
         await mgr.close_all()
