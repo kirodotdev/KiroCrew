@@ -125,6 +125,9 @@ def _make_state(tmp_path, **kwargs):
     sessions.resumable_sid = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.discard_conversation = AsyncMock()
+    # Resolve-only helper: async, and it must hand back a real path string because the arm
+    # sites record `slot.project or <this>`.
+    sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/workspace/_default")
     sessions.aflush = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
@@ -380,3 +383,15 @@ class AsyncIterator:
         item = self._items[self._index]
         self._index += 1
         return item
+
+
+def armed_cwd(boundary, folded: str) -> str | None:
+    """The directory this key's arm names, or ``None`` when it names none."""
+    arm = boundary._arm_if_any(folded)
+    return arm.cwd if arm is not None else None
+
+
+def armed_agent(boundary, folded: str) -> str | None:
+    """The agent this key's arm names, or ``None`` when it names none."""
+    arm = boundary._arm_if_any(folded)
+    return arm.agent if arm is not None else None

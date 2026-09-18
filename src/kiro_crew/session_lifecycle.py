@@ -116,6 +116,9 @@ class SessionLifecycleOwner(Protocol):
 
     _compact_cooldown_until: MutableMapping[str, float]
     _compact_pending_verdict: MutableMapping[str, float]
+
+    def _allocation_boundary(self) -> Any: ...
+
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
 
@@ -246,6 +249,18 @@ class SessionLifecycleState:
     # beside the sibling per-key dicts, so a long-lived gateway does not keep
     # one entry per channel thread it ever stopped.
     stop_requests: dict[str, int] = field(default_factory=dict)
+
+
+def _turn_in_flight(session: Any) -> bool:
+    """Whether *session* is busy, as a caller's ``skip_if_busy`` means it.
+
+    A held lease is the answer, and the strict one: it also covers a turn that has acquired
+    but put no prompt in flight yet, which ``has_active_turn`` cannot see, and it is what a
+    background sweep needs. A channel member holds its lease for the whole listening
+    lifetime and CACHES the provider it was handed, so a sweep that tore that provider down
+    would leave every later message driving a dead one with nothing to re-fetch it.
+    """
+    return session is not None and session.semaphore.locked()
 
 
 class SessionLifecycleService:
@@ -476,7 +491,7 @@ class SessionLifecycleService:
             current = owner._sessions.get(key)
             if expect_session is not None and current is not expect_session:
                 return False
-            if skip_if_busy and current is not None and current.semaphore.locked():
+            if skip_if_busy and _turn_in_flight(current):
                 return False
             session = owner._sessions.pop(key, None)
             owner._advance_session_generation(key)
@@ -884,6 +899,9 @@ class SessionLifecycleService:
             # conditional mode preserves this independently owned sidecar.
             if not preserve_autocompact_override:
                 owner.set_autocompact_pct(key, None)
+            # The slot itself is gone -- the session-map entry goes with it -- so no
+            # successor can arrive to pay the arm and it must not outlive them.
+            owner._allocation_boundary().spend_retire_arm(key)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
             # The map delete is the destructive persistence linearization point.
@@ -989,7 +1007,11 @@ class SessionLifecycleService:
         )
 
     async def discard_conversation(
-        self, key: str, *, replay: bool = True, skip_if_busy: bool = False
+        self,
+        key: str,
+        *,
+        replay: bool = True,
+        skip_if_busy: bool = False,
     ) -> bool:
         """Drop only the native conversation while preserving channel linkage.
 
@@ -1020,10 +1042,13 @@ class SessionLifecycleService:
         key = owner._fold_key(key)
         async with owner._lock:
             current = owner._sessions.get(key)
-            if skip_if_busy and current is not None and current.semaphore.locked():
+            if skip_if_busy and _turn_in_flight(current):
                 return False
             session = owner._sessions.pop(key, None)
             owner._advance_session_generation(key)
+            # Regardless of what the pop found: a cold start that cached its resume SID has
+            # not registered, so an ABSENT session is exactly the case this covers.
+            owner._allocation_boundary().note_conversation_discarded(key)
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
             # Store replay suppression atomically with the pop. Origin-link
@@ -1261,6 +1286,8 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.clear()
             self._suppress_replay.clear()
             owner._compact_pending_verdict.clear()
+            closing_alloc = owner._allocation_boundary()
+            closing_alloc.discard_all_retire_arms()
             # Same lock hold as the clear: the whole drained set is accounted for
             # in one call, so the awaited unlink cannot be cancelled between two
             # keys. Per-key awaits would leave every key after the cancellation
