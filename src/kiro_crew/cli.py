@@ -2456,6 +2456,10 @@ Examples:
     # like mcp-dashboard: mounted only for an agent whose spec grants it, so a
     # session that is neither a conductor nor a worker spends nothing on it.
     sub.add_parser("mcp-work")
+    # mcp-crew-log (MCP server — the three read-only crew-log tools). Opt-in like
+    # the two above: the crew log is an optional subsystem behind a flag, so a
+    # session that never verifies or audits it spends nothing on the set.
+    sub.add_parser("mcp-crew-log")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing).
     # Only builtins that actually ship an ``mcp_server`` module get a verb —
@@ -3172,6 +3176,11 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         # Same importlib form and the same reason as mcp-dashboard above: a
         # default-off optional subsystem must not be imported to start the gateway.
         importlib.import_module("kiro_crew.mcp_work").run_mcp_server()
+    elif args.command == "mcp-crew-log":
+        # Same importlib form and the same reason again, and here the subsystem
+        # the module reads is itself flag-gated: `kirocrew gateway` boots through
+        # this module and must not import the crew log to start.
+        importlib.import_module("kiro_crew.mcp_crew_log").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # Registration gates this verb on _builtin_mcp_server_available, and
         # _run_app_mcp_server is the ONE dispatch-time spelling of "import the

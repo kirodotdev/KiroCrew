@@ -120,6 +120,10 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
 
 # ── Session crew log (handlers/crew_log.py) ──
 from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
+    api_crew_log_resolve,
+    api_crew_log_sessions,
+    api_crew_log_unit_page,
+    api_crew_log_unit_projection,
     api_session_crew_log,
     api_session_crew_log_projection,
     install_crew_log_publisher,

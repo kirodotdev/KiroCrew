@@ -405,6 +405,14 @@ _CORE_MANAGED_MCP_NAMES = frozenset(
         "kirocrew-cron",
         "kirocrew-computer",
         "kirocrew-dashboard",
+        # The two opt-in sets. They are managed names like the four above, so an
+        # entry under either must never be carried over from a runtime the user is
+        # migrating away from -- it would name a binary that cannot start. The
+        # work-ledger name was missing here while this list already held every
+        # always-on server; adding the crew-log one without it would have left the
+        # same gap open next to a test that closes it.
+        "kirocrew-work",
+        "kirocrew-crew-log",
         "openclaw-core",
         "openclaw-cron",
         "openclaw-computer",

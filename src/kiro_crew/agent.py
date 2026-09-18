@@ -1237,6 +1237,25 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-work"),
         "opt_in": True,
     },
+    # Read-only reads over the crew log (list the logs, page one, read a fold).
+    # ``opt_in`` for the same reason as the two above: the crew log is an optional
+    # subsystem behind a flag, and for a session that is not verifying or auditing
+    # it the only reachable answer is ``crew_log_disabled`` or its own unit -- so
+    # both spec-writing loops skip it and a session that never references the
+    # server spends no context on three schemas it has no use for. An agent that
+    # should read the log is granted the set in its own spec.
+    #
+    # No ``autoApprove`` key, and none may ever be added -- the same prohibition
+    # the three servers above carry, for the same mechanism: kiro-cli approves an
+    # autoApproved MCP tool locally and emits no permission request, so
+    # ``hooks.on_tool_call`` (the always-on deny floor, the sensitive-path check,
+    # the governance ceiling) is NEVER reached for it. These tools read a record
+    # that carries the session's own message bodies; that is not the place to
+    # break it.
+    "kirocrew-crew-log": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-crew-log"),
+        "opt_in": True,
+    },
 }
 
 

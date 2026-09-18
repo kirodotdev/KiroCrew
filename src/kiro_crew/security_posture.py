@@ -1684,6 +1684,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "knowledge/ingestion.py",
         "workflows/library.py",
         "mcp_core.py",
+        # Same class as mcp_core.py: this stdio server redacts every rendered tool
+        # result -- a crew log page, a fold, a refusal -- before returning it, but
+        # the egress boundary is the transport the result crosses, not this module.
+        "mcp_crew_log.py",
         "mcp_cron.py",
         # Same class as mcp_core.py: an MCP stdio server redacts tool RESULTS and
         # agent-authored names before they are persisted or returned, but the
@@ -2100,6 +2104,7 @@ def _suspicious_pattern_items() -> list[PostureItem]:
 #: names, so an omission fails there rather than quietly shrinking the report.
 _SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
     "MCP_CORE_SCHEMAS",
+    "MCP_CREW_LOG_SCHEMAS",
     "MCP_CRON_SCHEMAS",
     "MCP_COMPUTER_SCHEMAS",
     "MCP_DASHBOARD_SCHEMAS",

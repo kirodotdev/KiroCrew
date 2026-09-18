@@ -155,6 +155,15 @@ at different seqs.
 | `GET /api/sessions/{id}/crew-log?from=&to=` | The entries in a seq range, oldest first, with every `ref` on the page resolved (FR-4). |
 | `GET /api/sessions/{id}/crew-log/projection/{name}` | One fold's `value` and the `seq` it folded through. |
 
+Those two are the BROWSER's door: cookie auth, keyed on a session id the dashboard
+already holds. A second, unit-keyed door serves the `kirocrew-crew-log` MCP server
+over the same `read_page` and projection reads, on the strict internal transport
+only: `GET /api/crew-log/sessions` lists units, `GET /api/crew-log/resolve` answers
+which unit a caller's key lands in, and `GET /api/crew-log/units/{unit}/page` and
+`/projection/{name}` are the unit-keyed forms of the two above. Their gate, and the
+argument for granting them to an agent at all, is in
+`docs/reference/crew-log/reading-from-an-agent.md`.
+
 A page reports the tail it OBSERVED, not the one its handle remembers. `last_seq`
 on a store handle is that handle's own cached figure -- authoritative only for its
 own appends -- and a reader never appends, so a writer growing the file after the

@@ -971,6 +971,7 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
     {
         "mcp_computer.py",
+        "mcp_crew_log.py",
         "mcp_cron.py",
         "mcp_dashboard.py",
         "mcp_work.py",

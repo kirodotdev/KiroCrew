@@ -27,6 +27,7 @@ and frame that serve them, read
 | [crew-types.md](crew-types.md) | The crew's log's type families and the two dispatch contracts. |
 | [reading-and-writing.md](reading-and-writing.md) | Reader API, writer rules, ownership, and the fail-soft emitter. |
 | [errors.md](errors.md) | Every `CrewLogError` code, its trigger, and what a caller does about it. |
+| [reading-from-an-agent.md](reading-from-an-agent.md) | The read-only `kirocrew-crew-log` MCP server: its three tools, their caps and codes, who may read what, and the one-line agent-spec grant. |
 
 ## Glossary
 

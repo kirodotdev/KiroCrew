@@ -3381,6 +3381,65 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_tag_assign": CHAT_TAG_ASSIGN_SCHEMA,
 }
 
+# ── Tool Schemas (MCP crew log — server ``kirocrew-crew-log``) ──
+#
+# Its own registry for the same reason the dashboard and work ones are separate:
+# the three crew-log tools ship on an opt-in server, so their schemas do not
+# belong in the always-on core registry. The registry must exist at all because
+# ``call_tool_with_logging`` routes validation through it, and a tool absent from
+# its server's registry has its arguments passed through raw.
+#
+# Every bound here is the TOOL's promise; the endpoint clamps independently. Two
+# layers on purpose: a caller that asks for more than a tool will give learns so
+# from the schema, and a caller that reaches the route another way still cannot
+# ask the store for an unbounded read.
+
+#: A unit argument: a raw unit id, a session/slot key, or ``self``. Sized for a
+#: namespaced channel key, which is the longest legitimate form.
+_CREW_LOG_UNIT_MAX = 256
+
+CREW_LOG_LIST_SCHEMA = ToolSchema(
+    tool_name="crew_log_list",
+    fields=[
+        FieldSpec("slot_contains", str, max_len=_CREW_LOG_UNIT_MAX),
+        FieldSpec("active_within_secs", int, min_val=1, max_val=31_536_000),
+        FieldSpec("with_type_counts", bool),
+        FieldSpec("limit", int, min_val=1, max_val=200, default=50),
+    ],
+)
+
+CREW_LOG_READ_SCHEMA = ToolSchema(
+    tool_name="crew_log_read",
+    fields=[
+        FieldSpec("unit", str, required=True, max_len=_CREW_LOG_UNIT_MAX),
+        FieldSpec("from_seq", int, min_val=1, default=1),
+        FieldSpec("limit", int, min_val=1, max_val=200, default=100),
+        FieldSpec("types", list, max_items=32, item_type=str, item_max_len=64),
+        FieldSpec("since_ts", int, min_val=0),
+        FieldSpec("full", bool),
+    ],
+)
+
+CREW_LOG_PROJECTION_SCHEMA = ToolSchema(
+    tool_name="crew_log_projection",
+    fields=[
+        FieldSpec("unit", str, required=True, max_len=_CREW_LOG_UNIT_MAX),
+        FieldSpec(
+            "name",
+            str,
+            required=True,
+            allowed=frozenset({"status", "usage", "timeline", "tools", "approvals"}),
+        ),
+    ],
+)
+
+MCP_CREW_LOG_SCHEMAS: dict[str, ToolSchema] = {
+    "crew_log_list": CREW_LOG_LIST_SCHEMA,
+    "crew_log_read": CREW_LOG_READ_SCHEMA,
+    "crew_log_projection": CREW_LOG_PROJECTION_SCHEMA,
+}
+
+
 # ── Tool Schemas (MCP Work ledger — server ``kirocrew-work``) ──
 #
 # Its own registry for the same reason the dashboard one is separate: the four

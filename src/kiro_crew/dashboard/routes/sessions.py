@@ -29,6 +29,18 @@ def register(app: web.Application) -> None:
         handlers.api_session_crew_log_projection,
     )
     app.router.add_get("/api/sessions/{id}/crew-log", handlers.api_session_crew_log)
+    # The unit-keyed door the ``kirocrew-crew-log`` MCP server proxies. A separate
+    # prefix from the two routes above because its authorization model is
+    # different (an internal caller scoped on the session key it forwards, rather
+    # than the owner's cookie), not because the data differs -- both doors call the
+    # same page reader and the same fold. Literal paths before the patterned ones,
+    # per this module's ordering rule.
+    app.router.add_get("/api/crew-log/sessions", handlers.api_crew_log_sessions)
+    app.router.add_get("/api/crew-log/resolve", handlers.api_crew_log_resolve)
+    app.router.add_get(
+        "/api/crew-log/units/{unit}/projection/{name}", handlers.api_crew_log_unit_projection
+    )
+    app.router.add_get("/api/crew-log/units/{unit}/page", handlers.api_crew_log_unit_page)
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)

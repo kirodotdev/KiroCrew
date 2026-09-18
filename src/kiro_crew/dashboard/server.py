@@ -480,6 +480,17 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # the tools' internal-secret calls fall through to cookie auth and are
         # refused before the handler's own session recognition can run.
         "/api/work-ledger",
+        # MCP-only (the three kirocrew-crew-log read tools); no browser caller.
+        # Prefix matching covers "/sessions", "/resolve" and every "/units/..."
+        # sub-route. STRICT, not mixed, for the reason the session-control block
+        # below gives: these read ANOTHER live session's recorded history, so a
+        # forwarded browser must be hard-denied rather than fall through to a
+        # cookie. Strict membership is NOT the whole gate -- a loopback request
+        # with no secret header still reaches the handler through cookie auth --
+        # so handlers/crew_log.py refuses a cookie-authed caller itself, and the
+        # browser reads its own log through the cookie-only
+        # "/api/sessions/{id}/crew-log" pair this entry does not cover.
+        "/api/crew-log",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.

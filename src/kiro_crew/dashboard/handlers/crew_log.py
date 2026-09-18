@@ -73,6 +73,19 @@ def _crew_log() -> ModuleType:
     return projection
 
 
+def _crew_log_read() -> ModuleType:
+    """The shared read module, loaded the first time a call actually needs it.
+
+    Lazily for the same reason as :func:`_crew_log`, and it has to be a function
+    rather than a module-level import for a reason a test enforces: this module is
+    on the gateway's boot path and a clean interpreter importing it must load NO
+    ``kiro_crew.crew_log`` submodule at all.
+    """
+    from kiro_crew.crew_log import read
+
+    return read
+
+
 #: The frame a growing crew log pushes. The RFC's name, kept.
 FRAME = "session_projection"
 
@@ -131,76 +144,15 @@ def _span(request: web.Request) -> tuple[int, int]:
 
 
 def _read_page(session_id: str, start: int, end: int) -> dict[str, Any]:
-    """One range of entries with their refs resolved. Blocking; runs off the loop."""
-    handle = _crew_log().open_session_log(session_id)
-    if handle is None:
-        return {
-            "session_id": session_id,
-            "exists": False,
-            "from": start,
-            "to": end,
-            "last_seq": 0,
-            "entries": [],
-            "next_from": None,
-            "refs_unresolved": 0,
-        }
-    # No vocabulary: a page renders history, so an unfamiliar line is shown
-    # rather than made to refuse the lines around it.
-    #
-    # ``handle.last_seq`` is this instance's own cached figure -- the store's
-    # docstring says it is authoritative only for its OWN appends -- and a reader
-    # handle never appends, so a writer that grows the file after this handle
-    # opened is invisible to it. The iteration below reads the file live and walks
-    # the whole tail from ``start``, discarding what is past ``end`` rather than
-    # never seeing it, so the true tail is observable here for free. Deriving
-    # ``next_from`` from the cached figure instead would let a page return rows up
-    # to ``end`` and still report that nothing follows, and a client that believes
-    # it stops paging with entries left unread.
-    observed_last = handle.last_seq
-    entries: list[Any] = []
-    for entry in handle.iter_from(start):
-        if entry.seq > observed_last:
-            observed_last = entry.seq
-        if entry.seq <= end:
-            entries.append(entry)
-    resolutions: dict[tuple[Any, ...], dict[str, Any]] = {}
-    unresolved = 0
-    rows: list[dict[str, Any]] = []
-    for entry in entries:
-        row = entry.to_dict()
-        if entry.ref is not None:
-            key = (entry.ref.unit, entry.ref.id, entry.ref.from_seq, entry.ref.to_seq)
-            found = resolutions.get(key)
-            if found is None:
-                if len(resolutions) >= MAX_PAGE_REFS:
-                    unresolved += 1
-                    rows.append(row)
-                    continue
-                outcome = handle.resolve(entry.ref)
-                found = {
-                    "status": outcome.status,
-                    "entries": len(outcome.entries),
-                    "first_seq": outcome.entries[0].seq if outcome.entries else None,
-                    "last_seq": outcome.entries[-1].seq if outcome.entries else None,
-                }
-                resolutions[key] = found
-            # The citation's VERDICT and span, not its bytes: the cited lines are
-            # a page of their own unit, which this route already serves, and
-            # inlining them would make one page carry up to MAX_REF_SPAN lines
-            # per entry.
-            row["ref_resolution"] = dict(found)
-        rows.append(row)
-    last_seq = observed_last
-    return {
-        "session_id": session_id,
-        "exists": True,
-        "from": start,
-        "to": end,
-        "last_seq": last_seq,
-        "entries": rows,
-        "next_from": end + 1 if end < last_seq else None,
-        "refs_unresolved": unresolved,
-    }
+    """One range of entries with their refs resolved. Blocking; runs off the loop.
+
+    The implementation lives in :func:`kiro_crew.crew_log.read.read_page`, because
+    the ``kirocrew-crew-log`` MCP server's proxy leg reads the same pages and a
+    second copy is how two callers come to disagree about what a page is. This
+    stays as the named seam the route calls, so the lazy load happens on the first
+    read rather than at import.
+    """
+    return _crew_log_read().read_page(session_id, start, end)
 
 
 async def api_session_crew_log(request: web.Request) -> web.Response:
@@ -257,6 +209,352 @@ def _crew_log_refusal(exc: "CrewLogError") -> web.Response:
         return web.json_response({"error": exc.message, "code": code}, status=409)
     logger.debug("crew log read refused (%s): %s", code, exc)
     return web.json_response({"error": exc.message, "code": code}, status=422)
+
+
+# --------------------------------------------------------------------------- #
+# The agent's door: unit-keyed reads the kirocrew-crew-log MCP server proxies
+# --------------------------------------------------------------------------- #
+#
+# A SECOND prefix rather than a second gate on the two routes above, and the
+# distinction is the authorization model, not the bytes. Those routes are keyed by
+# the session id the SPA already holds and are gated on the owner's cookie; these
+# are keyed by a crew log UNIT, are reachable over the internal-secret transport,
+# and scope every read against the session key the proxy forwards. One handler
+# serving both would be one gate that has to be right for two callers whose
+# identity arrives from different places, which is how a read widens by accident.
+# The page and the fold themselves are the SAME implementations -- ``_read_page``
+# and ``projection.read_projection`` -- so the two doors cannot answer differently.
+
+#: The component name this module's internal door recognizes on
+#: ``X-Internal-Caller``. Spelled here rather than imported from
+#: :mod:`kiro_crew.mcp_crew_log`, because that module is an MCP stdio server and
+#: this one is on the gateway's boot path; a test pins the two together so they
+#: cannot drift.
+CREW_LOG_MCP_CALLER: Final[str] = "kirocrew-crew-log"
+
+#: How to switch the crew log on, quoted in the refusal a disabled read earns. An
+#: agent that reads ``crew_log_disabled`` should not have to be told separately.
+CREW_LOG_ENABLE_HINT: Final[str] = (
+    f"set {CREW_LOG_ENV}=1 in ~/.kiro/crew/.env and restart the gateway"
+)
+
+
+def _forbidden(reason: str) -> web.Response:
+    """A 403 in this module's own vocabulary, with the reason the agent can act on."""
+    return web.json_response({"error": reason, "code": "forbidden"}, status=403)
+
+
+def _disabled() -> web.Response:
+    """The refusal a read earns while the crew log is switched off.
+
+    422 rather than 404: the route exists and the request is well formed, and what
+    blocks it is the state of the subsystem. The agent learns the flag state from
+    THIS, which is why the MCP server registers its tools whether or not the flag
+    is on -- a missing tool would read as a Kiro Crew that cannot do this at all.
+    """
+    return web.json_response(
+        {
+            "error": f"the crew log is switched off; {CREW_LOG_ENABLE_HINT}",
+            "code": "crew_log_disabled",
+        },
+        status=422,
+    )
+
+
+def _caller_session_key(request: web.Request) -> str:
+    """The session key the internal proxy forwarded, or ``""``.
+
+    The agent cannot forge it: it does not build the request, and the MCP request
+    helpers set it from the calling session's own strictly-resolved context rather
+    than from tool arguments.
+    """
+    return (request.headers.get("X-Session-Key") or "").strip()
+
+
+def _owner_session_refusal(request: web.Request, session_key: str) -> str:
+    """``""`` when *session_key* is the owner at a dashboard tab, else the reason.
+
+    Three conditions, and each rules out a caller class that must not read another
+    session's crew log:
+
+    * a ``dashboard:`` key, so a headless or channel-bound caller is refused by
+      the namespace it carries rather than by a list of what it is not;
+    * no app owns it, derived by :func:`~kiro_crew.dashboard.token_auth.derive_caller_app`
+      against the server-side registries -- an app agent granted this server
+      arrives on the same transport as the person and is otherwise
+      indistinguishable;
+    * the session keeps persistent memory, so an incognito or temporary session is
+      refused. Those sessions are the ones the person asked to leave no trace, and
+      a read that hands one every other session's history is the opposite of that.
+    """
+    from kiro_crew.dashboard.token_auth import derive_caller_app
+
+    if not session_key:
+        return (
+            "this read needs a session identity and the request carried none; "
+            "only the owner's own dashboard session may read another unit"
+        )
+    if not session_key.startswith("dashboard:"):
+        return (
+            f"{session_key.split(':', 1)[0]}: sessions may read their own unit but not "
+            "another's; that read is the owner's dashboard session only"
+        )
+    state = request.app.get("state")
+    slots = getattr(state, "_slots", None)
+    lookup = getattr(slots, "get", None) if slots is not None else None
+    slot = lookup(session_key.split(":", 1)[1]) if lookup is not None else None
+    if slot is None:
+        return (
+            "the calling session names no live dashboard slot, so it cannot be "
+            "placed as the owner's own tab"
+        )
+    jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    subagents = getattr(getattr(state, "subagents", None), "_agents", None)
+    if derive_caller_app(slots, session_key, jobs, subagents):
+        return "an app-owned session may read its own unit but not another's"
+    if getattr(slot, "is_restricted", False):
+        return (
+            "an incognito or temporary session may not read another session's "
+            "crew log; that session is meant to leave and learn nothing"
+        )
+    return ""
+
+
+async def _authorize_crew_log_read(
+    request: web.Request, operation: str, *, self_scope: bool
+) -> web.Response | None:
+    """``None`` when the caller may read, else the refusal. Internal transport only.
+
+    The header check below is LOAD-BEARING, not a re-assert of the transport. Being
+    on ``_STRICT_INTERNAL_API_PATHS`` does not mean the secret was checked: for a
+    LOOPBACK request carrying no ``X-Internal-Secret``, ``token_auth_middleware``
+    falls through to ordinary cookie auth and calls this handler on success
+    (``token_auth.py``, "No secret header (browser request)"). Strict membership
+    decides only the NON-loopback case -- hard deny, where a mixed path would get
+    the cookie fall-through -- and with ``local_only=False`` a strict path is
+    reclassified mixed anyway. So a same-machine tab, and a forwarded one once
+    remote access is on, both arrive here with a valid cookie and no secret; this
+    branch is the only thing that refuses them.
+
+    Refused rather than admitted because the browser already has its own door for
+    the only log it should read: the cookie-only ``/api/sessions/{id}/crew-log``
+    pair, which this prefix deliberately does not cover. Admitting a cookie here
+    would make the owner-dashboard test below a second authorization path into
+    ANOTHER session's recorded history, reachable from any authenticated page.
+
+    The rule the internal arm applies: a read of the caller's OWN unit needs only
+    its forwarded session identity (the gate ``session_ledger_read`` uses), and any
+    wider read needs the owner at a dashboard tab.
+
+    Every read is audited under the operation name the caller passes, which is the
+    same name the browser routes use, so an operator querying
+    ``session_crew_log.read`` sees every read of a page regardless of which door it
+    came through. EVERY denial too, including the two that refuse a caller before
+    its identity is settled -- those are the ones an operator most wants, because a
+    secret-less request at an MCP-only route and a request naming another component
+    are both the shape of an attempted boundary crossing, while a refused session
+    class is ordinary. ``request_origin`` is resolved FIRST so they can be recorded:
+    it returns ``("dashboard", "dashboard")`` for a request with no secret and
+    clamps an unrecognized component to ``"unknown-internal"``, so reading it early
+    cannot let an unauthenticated caller name itself into the audit log.
+    """
+    from kiro_crew.dashboard.token_auth import request_origin
+
+    source, caller = request_origin(request, what="crew log read", log=logger)
+    if request.headers.get("X-Internal-Secret") is None:
+        refusal = (
+            "these reads are internal-transport only; a browser reads its own "
+            "crew log through /api/sessions/{id}/crew-log"
+        )
+        _audit_crew_log_read(caller, source, operation, "denied", refusal)
+        return _forbidden(refusal)
+    if caller != CREW_LOG_MCP_CALLER:
+        refusal = f"this route serves {CREW_LOG_MCP_CALLER}; the request named {caller!r}"
+        _audit_crew_log_read(caller, source, operation, "denied", refusal)
+        return _forbidden(refusal)
+    session_key = _caller_session_key(request)
+    if not self_scope:
+        refusal = _owner_session_refusal(request, session_key)
+        if refusal:
+            _audit_crew_log_read(caller, source, operation, "denied", refusal)
+            return _forbidden(refusal)
+    elif not session_key:
+        refusal = "a read of your own unit needs a session identity and none arrived"
+        _audit_crew_log_read(caller, source, operation, "denied", refusal)
+        return _forbidden(refusal)
+    _audit_crew_log_read(caller, source, operation, "granted", "")
+    return None
+
+
+def _audit_crew_log_read(
+    caller: str, source: str, operation: str, outcome: str, error: str
+) -> None:
+    """SEL for one internal read, under the SAME action name the browser uses.
+
+    The browser arm is audited inside ``require_owner_dashboard_request``, which
+    records a DENIAL only. This arm records both, because a granted read over the
+    internal transport is the event an operator asked about -- "what did the agent
+    read" has no other answer -- while a granted browser read is the person looking
+    at their own panel.
+    """
+    try:
+        from kiro_crew.sel import sel as _sel
+
+        _sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome=outcome,
+            source=source,
+            error=error,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _unit_param(request: web.Request) -> str:
+    """The unit id from the path, already percent-decoded by the router."""
+    return (request.match_info.get("unit") or "").strip()
+
+
+async def api_crew_log_sessions(request: web.Request) -> web.Response:
+    """GET /api/crew-log/sessions -- one row per session crew log on this host."""
+    denied = await _authorize_crew_log_read(request, "session_crew_log.list", self_scope=False)
+    if denied is not None:
+        return denied
+    if not env_flag_enabled(CREW_LOG_ENV):
+        return _disabled()
+    from kiro_crew.crew_log.errors import CrewLogError
+
+    try:
+        limit = int(request.query.get("limit") or 50)
+        active_within_secs = int(request.query.get("active_within_secs") or 0)
+    except ValueError as exc:
+        return _bad_request(str(exc), "bad_range")
+    if limit < 1 or active_within_secs < 0:
+        return _bad_request("limit must be at least 1 and a window cannot be negative", "bad_range")
+    try:
+        payload = await asyncio.to_thread(
+            _crew_log_read().list_session_units,
+            slot_contains=request.query.get("slot_contains", "") or "",
+            active_within_ms=active_within_secs * 1000,
+            with_type_counts=request.query.get("with_type_counts") in ("1", "true", "True"),
+            limit=limit,
+        )
+    except CrewLogError as exc:
+        return _crew_log_refusal(exc)
+    return web.json_response(payload)
+
+
+async def api_crew_log_resolve(request: web.Request) -> web.Response:
+    """GET /api/crew-log/resolve?key= -- the unit a slot or session key is landing in."""
+    key = (request.query.get("key") or "").strip()
+    # Authorize BEFORE answering the request's shape. An empty key is a 400, and
+    # returning it first tells a caller the route refuses it for a reason other than
+    # being unwelcome, and leaves no audit row for a probe that never got past the
+    # gate. ``self_scope`` needs ``key`` read, which is why it is parsed above -- but
+    # an empty key equals no caller's session key, so it resolves ``self_scope`` to
+    # False and the request is held to the owner test, which is the stricter side.
+    self_scope = bool(key) and key == _caller_session_key(request)
+    denied = await _authorize_crew_log_read(
+        request, "session_crew_log.resolve", self_scope=self_scope
+    )
+    if denied is not None:
+        return denied
+    if not key:
+        return _bad_request("key is required", "unresolvable_key")
+    if not env_flag_enabled(CREW_LOG_ENV):
+        return _disabled()
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+
+    state = request.app.get("state")
+    unit = unit_for_session_key(getattr(state, "sessions", None), key)
+    if not unit:
+        # The resolver's own vocabulary: a key with no LIVE ACP session is
+        # unresolvable rather than unknown, and the difference matters to the
+        # caller -- a slot that has never run a turn, or whose session was torn
+        # down, has no unit to name and will have a different one next turn.
+        return web.json_response(
+            {
+                "error": (
+                    f"{key!r} has no live ACP session, so no crew log unit is "
+                    "receiving its work right now"
+                ),
+                "code": "unresolvable_key",
+            },
+            status=404,
+        )
+    return web.json_response({"key": key, "unit": unit})
+
+
+async def api_crew_log_unit_page(request: web.Request) -> web.Response:
+    """GET /api/crew-log/units/{unit}/page -- entries in a seq range, refs resolved."""
+    unit = _unit_param(request)
+    denied = await _authorize_crew_log_read(
+        request, "session_crew_log.read", self_scope=_reads_own_unit(request, unit)
+    )
+    if denied is not None:
+        return denied
+    if not env_flag_enabled(CREW_LOG_ENV):
+        return _disabled()
+    from kiro_crew.crew_log.errors import CrewLogError
+
+    try:
+        start, end = _span(request)
+    except ValueError as exc:
+        return _bad_request(str(exc), "bad_range")
+    try:
+        payload = await asyncio.to_thread(_read_page, unit, start, end)
+    except CrewLogError as exc:
+        return _crew_log_refusal(exc)
+    if not payload.get("exists"):
+        return web.json_response(
+            {"error": f"no session crew log for {unit!r}", "code": "unknown_unit"}, status=404
+        )
+    return web.json_response(payload)
+
+
+async def api_crew_log_unit_projection(request: web.Request) -> web.Response:
+    """GET /api/crew-log/units/{unit}/projection/{name} -- one fold and its seq."""
+    unit = _unit_param(request)
+    denied = await _authorize_crew_log_read(
+        request, "session_crew_log.projection", self_scope=_reads_own_unit(request, unit)
+    )
+    if denied is not None:
+        return denied
+    if not env_flag_enabled(CREW_LOG_ENV):
+        return _disabled()
+    from kiro_crew.crew_log.errors import CrewLogError
+
+    projections = _crew_log()
+    name = request.match_info.get("name", "")
+    try:
+        projections.require_name(name)
+    except CrewLogError as exc:
+        return _bad_request(exc.message, "unknown_projection")
+    try:
+        result = await asyncio.to_thread(projections.read_projection, unit, name)
+    except CrewLogError as exc:
+        return _crew_log_refusal(exc)
+    return web.json_response({"session_id": unit, **result.to_dict()})
+
+
+def _reads_own_unit(request: web.Request, unit: str) -> bool:
+    """Whether *unit* is the one the CALLING session's own work is landing in.
+
+    Resolved server-side from the forwarded session key, never from the request:
+    a caller that could name its own scope could name someone else's. An empty
+    unit, or a key with no live ACP session, answers False -- so the read falls to
+    the owner rule rather than being waved through as "self".
+    """
+    if not unit:
+        return False
+    from kiro_crew.crew_log.resolve import unit_for_session_key
+
+    session_key = _caller_session_key(request)
+    if not session_key:
+        return False
+    state = request.app.get("state")
+    return unit_for_session_key(getattr(state, "sessions", None), session_key) == unit
 
 
 # --------------------------------------------------------------------------- #

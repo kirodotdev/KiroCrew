@@ -532,7 +532,7 @@ def _binary_version(command: str) -> str:
 #: what its bytes say it is, and re-partitioning its pool on every Kiro Crew
 #: commit would cold-start it for no reason.
 _KIROCREW_MCP_SUBCOMMANDS = frozenset(
-    {"mcp-core", "mcp-cron", "mcp-work", "mcp-computer", "mcp-dashboard"}
+    {"mcp-core", "mcp-cron", "mcp-work", "mcp-computer", "mcp-dashboard", "mcp-crew-log"}
 )
 
 
